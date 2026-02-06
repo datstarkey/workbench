@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { Terminal } from 'xterm';
+	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
-	import 'xterm/css/xterm.css';
+	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
 	import { terminalOptions } from '$lib/terminal-config';
 	import {
@@ -34,13 +34,14 @@
 	let resizeObserver: ResizeObserver | null = null;
 	let exited = false;
 	let terminalError = $state('');
+	let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	// Buffer early output to detect Claude CLI errors for auto-retry
 	let earlyOutput = '';
 	let claudeRetryCmd = '';
 
 	function detectClaudeRetry(data: string): void {
-		if (!startupCommand?.startsWith('claude ') || claudeRetryCmd) return;
+		if (!startupCommand?.startsWith('claude') || claudeRetryCmd) return;
 		earlyOutput += data;
 		// Stop buffering after ~2KB
 		if (earlyOutput.length > 2048) {
@@ -50,16 +51,8 @@
 		const plain = earlyOutput.replace(new RegExp(String.raw`\x1b\[[0-9;]*[a-zA-Z]`, 'g'), '');
 		let retryCmd = '';
 		if (plain.includes('No conversation found with session ID:')) {
-			// --resume failed → restart as new session
-			const match = startupCommand.match(/claude --resume (\S+)/);
-			if (match) retryCmd = `claude --session-id ${match[1]}`;
-		} else if (
-			plain.includes('already exists') ||
-			(plain.includes('Session ID') && plain.includes('is already in use'))
-		) {
-			// --session-id failed → restart as resume
-			const match = startupCommand.match(/claude --session-id (\S+)/);
-			if (match) retryCmd = `claude --resume ${match[1]}`;
+			// --resume failed → start a fresh session instead
+			retryCmd = 'claude';
 		}
 		if (retryCmd) {
 			claudeRetryCmd = retryCmd;
@@ -71,29 +64,39 @@
 		}
 	}
 
-	async function syncResize() {
-		if (!fitAddon || !terminal) return;
-		fitAddon.fit();
-		await resizeTerminal(sessionId, terminal.cols, terminal.rows);
+	function debouncedFit() {
+		if (resizeTimeout) clearTimeout(resizeTimeout);
+		resizeTimeout = setTimeout(() => {
+			if (fitAddon && terminal) {
+				fitAddon.fit();
+			}
+		}, 50);
 	}
 
 	$effect(() => {
 		if (active && fitAddon && terminal) {
 			requestAnimationFrame(() => {
-				void syncResize();
+				fitAddon!.fit();
 			});
 		}
 	});
 
 	onMount(async () => {
 		try {
-			terminal = new Terminal(terminalOptions);
+			// Wait for fonts to load so cell measurements are accurate
+			await document.fonts.ready;
 
+			terminal = new Terminal(terminalOptions);
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
 			terminal.open(container);
 
-			terminal.onData((data) => {
+			// Sync PTY size whenever xterm resizes (from FitAddon or any source)
+			terminal.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+				void resizeTerminal(sessionId, cols, rows);
+			});
+
+			terminal.onData((data: string) => {
 				writeTerminal(sessionId, data);
 			});
 
@@ -111,19 +114,21 @@
 				}
 			});
 
+			// Fit before creating PTY so it starts with the correct size
+			fitAddon.fit();
+
 			await createTerminal({
 				id: sessionId,
 				projectPath: project.path,
 				shell: project.shell || '',
-				cols: 120,
-				rows: 30,
+				cols: terminal.cols,
+				rows: terminal.rows,
 				startupCommand
 			});
 
-			await syncResize();
-
+			// Debounced resize on container changes to avoid feedback loops
 			resizeObserver = new ResizeObserver(() => {
-				void syncResize();
+				debouncedFit();
 			});
 			resizeObserver.observe(container);
 		} catch (error) {
@@ -132,6 +137,7 @@
 	});
 
 	onDestroy(() => {
+		if (resizeTimeout) clearTimeout(resizeTimeout);
 		unlistenData?.();
 		unlistenExit?.();
 		resizeObserver?.disconnect();
@@ -142,21 +148,26 @@
 	});
 </script>
 
-<div class="terminal-shell" bind:this={container}></div>
-{#if terminalError}
-	<div class="terminal-error">{terminalError}</div>
-{/if}
+<div class="terminal-wrapper">
+	<div class="terminal-shell" bind:this={container}></div>
+	{#if terminalError}
+		<div class="terminal-error">{terminalError}</div>
+	{/if}
+</div>
 
 <style>
+	.terminal-wrapper {
+		height: 100%;
+		width: 100%;
+		padding: 6px 8px;
+		background: #1a1a1e;
+		overflow: hidden;
+		box-sizing: border-box;
+	}
+
 	.terminal-shell {
 		height: 100%;
 		width: 100%;
-		background: #1a1a1e;
-		overflow: hidden;
-	}
-
-	.terminal-shell :global(.xterm) {
-		padding: 6px 8px;
 	}
 
 	.terminal-error {

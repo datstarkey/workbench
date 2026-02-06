@@ -90,23 +90,48 @@ impl PtyManager {
             .try_clone_reader()
             .context("Failed to get PTY reader")?;
 
-        // Reader thread — reads from PTY and emits events to frontend
+        // Reader thread — reads from PTY and emits events to frontend.
+        // Handles UTF-8 boundaries: if a multi-byte character is split across
+        // reads, the trailing incomplete bytes are carried over to the next read.
         let sid = session_id.clone();
         let handle = app_handle.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut carry = Vec::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = handle.emit(
-                            "terminal:data",
-                            TerminalDataEvent {
-                                session_id: sid.clone(),
-                                data,
-                            },
-                        );
+                        // Prepend any leftover bytes from the previous read
+                        let chunk = if carry.is_empty() {
+                            &buf[..n]
+                        } else {
+                            carry.extend_from_slice(&buf[..n]);
+                            carry.as_slice()
+                        };
+
+                        // Find the last valid UTF-8 boundary
+                        let valid_up_to = match std::str::from_utf8(chunk) {
+                            Ok(_) => chunk.len(),
+                            Err(e) => e.valid_up_to(),
+                        };
+
+                        if valid_up_to > 0 {
+                            // Safety: we just validated this range is valid UTF-8
+                            let data =
+                                unsafe { std::str::from_utf8_unchecked(&chunk[..valid_up_to]) };
+                            let _ = handle.emit(
+                                "terminal:data",
+                                TerminalDataEvent {
+                                    session_id: sid.clone(),
+                                    data: data.to_string(),
+                                },
+                            );
+                        }
+
+                        // Save any trailing incomplete bytes for the next read
+                        let remainder = &chunk[valid_up_to..];
+                        carry = remainder.to_vec();
                     }
                     Err(_) => break,
                 }

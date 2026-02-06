@@ -1,4 +1,4 @@
-import type { ITheme, ITerminalOptions } from 'xterm';
+import type { ITheme, ITerminalOptions } from '@xterm/xterm';
 
 export const TERMINAL_BG = '#1a1a1e';
 
