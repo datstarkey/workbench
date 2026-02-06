@@ -1,0 +1,19 @@
+{
+	"identifier": "default",
+	"description": "Default capability for the main window",
+	"windows": ["main"],
+	"permissions": [
+		"core:default",
+		"dialog:default",
+		"dialog:allow-open",
+		"dialog:allow-confirm",
+		"dialog:allow-message",
+		"store:default",
+		"store:allow-get",
+		"store:allow-set",
+		"store:allow-save",
+		"store:allow-load",
+		"shell:default",
+		"shell:allow-open"
+	]
+}

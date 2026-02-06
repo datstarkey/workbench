@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+dist-electron/
+.svelte-kit/
+
+# Tauri / Rust
+src-tauri/target/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Electron build cache
+.electron-gyp/
+
+# macOS artifacts
+Library/
+
+# Logs
+*.log
+
+# MCP config (contains local paths/tokens)
+.mcp.json
