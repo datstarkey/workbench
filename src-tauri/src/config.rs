@@ -4,9 +4,7 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 use crate::paths;
-use crate::types::{
-    ClaudeSessionsFile, DiscoveredClaudeSession, ProjectConfig, ProjectsFile, WorkspaceFile,
-};
+use crate::types::{DiscoveredClaudeSession, ProjectConfig, ProjectsFile, WorkspaceFile};
 
 fn config_path() -> PathBuf {
     paths::workbench_config_dir().join("projects.json")
@@ -59,32 +57,6 @@ pub fn save_workspaces(file: &WorkspaceFile) -> Result<()> {
 
     let content = serde_json::to_string_pretty(file)?;
     fs::write(workspace_path(), content)?;
-    Ok(())
-}
-
-fn claude_sessions_path() -> PathBuf {
-    paths::workbench_config_dir().join("claude-sessions.json")
-}
-
-pub fn load_claude_sessions() -> Result<ClaudeSessionsFile> {
-    let path = claude_sessions_path();
-    if !path.exists() {
-        return Ok(ClaudeSessionsFile {
-            sessions: Vec::new(),
-        });
-    }
-
-    let content = fs::read_to_string(&path)?;
-    let file: ClaudeSessionsFile = serde_json::from_str(&content)?;
-    Ok(file)
-}
-
-pub fn save_claude_sessions(file: &ClaudeSessionsFile) -> Result<()> {
-    let dir = paths::workbench_config_dir();
-    fs::create_dir_all(&dir)?;
-
-    let content = serde_json::to_string_pretty(file)?;
-    fs::write(claude_sessions_path(), content)?;
     Ok(())
 }
 
@@ -147,38 +119,52 @@ pub fn discover_claude_sessions(project_path: &str) -> Result<Vec<DiscoveredClau
             }
 
             // Find first real user message text
-            if obj.get("type").and_then(|v| v.as_str()) == Some("user") {
-                if let Some(content) = obj
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_array())
-                {
-                    for item in content {
+            if obj.get("type").and_then(|v| v.as_str()) != Some("user") {
+                continue;
+            }
+            // Skip meta/system messages
+            if obj.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
+                continue;
+            }
+
+            let content = obj
+                .get("message")
+                .and_then(|m| m.get("content"));
+
+            let text = match content {
+                // content can be a plain string or an array of content blocks
+                Some(serde_json::Value::String(s)) => Some(s.clone()),
+                Some(serde_json::Value::Array(arr)) => {
+                    arr.iter().find_map(|item| {
                         if item.get("type").and_then(|v| v.as_str()) == Some("text") {
-                            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                                let trimmed = text.trim();
-                                // Skip system/tool messages
-                                if !trimmed.is_empty()
-                                    && !trimmed.starts_with("[Request interrupted")
-                                    && !trimmed.starts_with("Base directory")
-                                    && trimmed.len() > 5
-                                {
-                                    // Truncate to first line or 80 chars
-                                    let first_line = trimmed.lines().next().unwrap_or(trimmed);
-                                    label = if first_line.len() > 80 {
-                                        format!("{}...", &first_line[..77])
-                                    } else {
-                                        first_line.to_string()
-                                    };
-                                    break;
-                                }
-                            }
+                            item.get("text").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        } else {
+                            None
                         }
-                    }
+                    })
                 }
-                if !label.is_empty() {
-                    break;
+                _ => None,
+            };
+
+            if let Some(raw) = text {
+                let trimmed = raw.trim();
+                // Skip system/tool/command messages
+                if trimmed.is_empty()
+                    || trimmed.len() <= 5
+                    || trimmed.starts_with('<')
+                    || trimmed.starts_with("[Request interrupted")
+                    || trimmed.starts_with("Base directory")
+                {
+                    continue;
                 }
+                // Truncate to first line or 80 chars
+                let first_line = trimmed.lines().next().unwrap_or(trimmed);
+                label = if first_line.len() > 80 {
+                    format!("{}...", &first_line[..77])
+                } else {
+                    first_line.to_string()
+                };
+                break;
             }
         }
 

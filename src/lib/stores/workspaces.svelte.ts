@@ -101,33 +101,25 @@ class WorkspaceStore {
 		}
 	}
 
-	open(project: ProjectConfig): { claudeSessionId: string; tabLabel: string } | null {
+	open(project: ProjectConfig) {
 		const existing = this.getByProjectPath(project.path);
 		if (existing) {
 			this.selectedId = existing.id;
 			this.persist();
-			return null;
+			return;
 		}
 
-		const claudeSessionId = uid();
-		const tabLabel = 'Claude 1';
-		const initialTab = this.createClaudeTab(
-			tabLabel,
-			claudeSessionId,
-			claudeNewSessionCommand(claudeSessionId)
-		);
 		const workspace: ProjectWorkspace = {
 			id: uid(),
 			projectPath: project.path,
 			projectName: project.name,
-			terminalTabs: [initialTab],
-			activeTerminalTabId: initialTab.id
+			terminalTabs: [],
+			activeTerminalTabId: ''
 		};
 
 		this.workspaces = [...this.workspaces, workspace];
 		this.selectedId = workspace.id;
 		this.persist();
-		return { claudeSessionId, tabLabel };
 	}
 
 	close(workspaceId: string) {
@@ -178,14 +170,15 @@ class WorkspaceStore {
 
 	closeTerminalTab(workspaceId: string, tabId: string) {
 		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId || w.terminalTabs.length === 1) return w;
+			if (w.id !== workspaceId) return w;
 			const tabIndex = w.terminalTabs.findIndex((t) => t.id === tabId);
 			const updatedTabs = w.terminalTabs.filter((t) => t.id !== tabId);
 			const fallback = updatedTabs[tabIndex] || updatedTabs[tabIndex - 1] || updatedTabs[0];
 			return {
 				...w,
 				terminalTabs: updatedTabs,
-				activeTerminalTabId: w.activeTerminalTabId === tabId ? fallback.id : w.activeTerminalTabId
+				activeTerminalTabId:
+					w.activeTerminalTabId === tabId ? (fallback?.id ?? '') : w.activeTerminalTabId
 			};
 		});
 		this.persist();
@@ -234,18 +227,14 @@ class WorkspaceStore {
 		this.persist();
 	}
 
-	addClaudeSession(workspaceId: string): { tabLabel: string; claudeSessionId: string } {
-		const claudeSessionId = uid();
-		let tabLabel = '';
+	addClaudeSession(workspaceId: string): { tabId: string } {
+		let tabId = '';
 		this.workspaces = this.workspaces.map((w) => {
 			if (w.id !== workspaceId) return w;
 			const claudeCount = w.terminalTabs.filter((t) => t.type === 'claude').length;
-			tabLabel = `Claude ${claudeCount + 1}`;
-			const newTab = this.createClaudeTab(
-				tabLabel,
-				claudeSessionId,
-				claudeNewSessionCommand(claudeSessionId)
-			);
+			const label = `Claude ${claudeCount + 1}`;
+			const newTab = this.createClaudeTab(label, '', claudeNewSessionCommand());
+			tabId = newTab.id;
 			return {
 				...w,
 				terminalTabs: [...w.terminalTabs, newTab],
@@ -253,7 +242,45 @@ class WorkspaceStore {
 			};
 		});
 		this.persist();
-		return { tabLabel, claudeSessionId };
+		return { tabId };
+	}
+
+	/** Update a Claude tab once its session ID has been discovered from the JSONL */
+	updateClaudeTab(workspaceId: string, tabId: string, sessionId: string, label: string) {
+		this.workspaces = this.workspaces.map((w) => {
+			if (w.id !== workspaceId) return w;
+			return {
+				...w,
+				terminalTabs: w.terminalTabs.map((t) => {
+					if (t.id !== tabId) return t;
+					return {
+						...t,
+						label,
+						panes: t.panes.map((p) =>
+							p.type === 'claude' ? { ...p, claudeSessionId: sessionId } : p
+						)
+					};
+				})
+			};
+		});
+		this.persist();
+	}
+
+	restartClaudeSession(workspaceId: string, tabId: string) {
+		this.workspaces = this.workspaces.map((w) => {
+			if (w.id !== workspaceId) return w;
+			const tab = w.terminalTabs.find((t) => t.id === tabId);
+			if (!tab || tab.type !== 'claude') return w;
+			const sessionId = tab.panes[0]?.claudeSessionId;
+			const command = sessionId ? claudeResumeCommand(sessionId) : claudeNewSessionCommand();
+			const newTab = this.createClaudeTab(tab.label, sessionId ?? '', command);
+			return {
+				...w,
+				terminalTabs: w.terminalTabs.map((t) => (t.id === tabId ? newTab : t)),
+				activeTerminalTabId: newTab.id
+			};
+		});
+		this.persist();
 	}
 
 	resumeClaudeSession(workspaceId: string, claudeSessionId: string, label: string) {
@@ -273,19 +300,22 @@ class WorkspaceStore {
 		this.persist();
 	}
 
-	ensureShape(getProject: (path: string) => ProjectConfig | undefined) {
+	ensureShape() {
 		let changed = false;
 		const normalized = this.workspaces.map((w) => {
 			let nextTabs = w.terminalTabs;
-			const project = getProject(w.projectPath);
 
-			if (!Array.isArray(nextTabs) || nextTabs.length === 0) {
-				if (project) {
-					nextTabs = [this.createTerminalTab(project, false, 1)];
+			if (!Array.isArray(nextTabs)) {
+				nextTabs = [];
+				changed = true;
+			}
+			// Empty tab list is valid (workspace landing page)
+			if (nextTabs.length === 0) {
+				if (w.activeTerminalTabId) {
 					changed = true;
-				} else {
-					nextTabs = [];
+					return { ...w, terminalTabs: nextTabs, activeTerminalTabId: '' };
 				}
+				return w;
 			}
 
 			nextTabs = nextTabs.map((tab) => {
@@ -293,13 +323,20 @@ class WorkspaceStore {
 					changed = true;
 					return { ...tab, panes: [{ id: uid() }] };
 				}
-				// Auto-resume: ensure Claude panes have resume command on app restart
+				// Auto-resume: ensure Claude panes with a known session ID get a resume command on restart
 				const fixedPanes = tab.panes.map((pane) => {
 					if (pane.type === 'claude' && pane.claudeSessionId) {
 						const resumeCmd = claudeResumeCommand(pane.claudeSessionId);
 						if (pane.startupCommand !== resumeCmd) {
 							changed = true;
 							return { ...pane, startupCommand: resumeCmd };
+						}
+					} else if (pane.type === 'claude' && !pane.claudeSessionId) {
+						// No session ID yet — start a fresh session
+						const newCmd = claudeNewSessionCommand();
+						if (pane.startupCommand !== newCmd) {
+							changed = true;
+							return { ...pane, startupCommand: newCmd };
 						}
 					}
 					return pane;

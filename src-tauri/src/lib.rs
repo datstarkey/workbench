@@ -24,8 +24,6 @@ pub fn run() {
             commands::open_in_vscode,
             commands::load_workspaces,
             commands::save_workspaces,
-            commands::load_claude_sessions,
-            commands::save_claude_sessions,
             commands::discover_claude_sessions,
             commands::load_claude_settings,
             commands::save_claude_settings,

@@ -97,20 +97,6 @@ pub struct WorkspaceFile {
     pub selected_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClaudeSessionRecord {
-    pub id: String,
-    pub label: String,
-    pub project_path: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeSessionsFile {
-    pub sessions: Vec<ClaudeSessionRecord>,
-}
-
 // Claude CLI session discovery types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

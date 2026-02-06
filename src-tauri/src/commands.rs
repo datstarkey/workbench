@@ -4,8 +4,8 @@ use crate::config;
 use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
-    ClaudeSessionsFile, CreateTerminalRequest, CreateTerminalResponse, DiscoveredClaudeSession,
-    HookScriptInfo, PluginInfo, ProjectConfig, SkillInfo, WorkspaceFile,
+    CreateTerminalRequest, CreateTerminalResponse, DiscoveredClaudeSession, HookScriptInfo,
+    PluginInfo, ProjectConfig, SkillInfo, WorkspaceFile,
 };
 
 #[tauri::command]
@@ -97,17 +97,6 @@ pub fn load_workspaces() -> Result<WorkspaceFile, String> {
 #[tauri::command]
 pub fn save_workspaces(snapshot: WorkspaceFile) -> Result<bool, String> {
     config::save_workspaces(&snapshot).map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-#[tauri::command]
-pub fn load_claude_sessions() -> Result<ClaudeSessionsFile, String> {
-    config::load_claude_sessions().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn save_claude_sessions(file: ClaudeSessionsFile) -> Result<bool, String> {
-    config::save_claude_sessions(&file).map_err(|e| e.to_string())?;
     Ok(true)
 }
 

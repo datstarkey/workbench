@@ -3,13 +3,13 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Resizable from '$lib/components/ui/resizable';
-	import { Button } from '$lib/components/ui/button';
 	import ProjectSidebar from '$components/ProjectSidebar.svelte';
 	import WorkspaceTabs from '$components/WorkspaceTabs.svelte';
 	import TerminalTabs from '$components/TerminalTabs.svelte';
 	import TerminalGrid from '$components/TerminalGrid.svelte';
 	import ProjectDialog from '$components/ProjectDialog.svelte';
 	import EmptyState from '$components/EmptyState.svelte';
+	import WorkspaceLanding from '$components/WorkspaceLanding.svelte';
 	import ConfirmDialog from '$components/ConfirmDialog.svelte';
 	import SettingsSheet from '$components/settings/SettingsSheet.svelte';
 	import { projectStore } from '$stores/projects.svelte';
@@ -17,8 +17,8 @@
 	import { claudeSessionStore } from '$stores/claudeSessions.svelte';
 	import { selectFolder } from '$lib/hooks/useDialog.svelte';
 	import type {
-		ActiveClaudeSession,
 		DiscoveredClaudeSession,
+		ActiveClaudeSession,
 		ProjectConfig,
 		ProjectFormState
 	} from '$types/workbench';
@@ -164,22 +164,37 @@
 		pendingRemovePath = null;
 	}
 
-	function registerClaudeSession(claudeSessionId: string, tabLabel: string, projectPath: string) {
-		claudeSessionStore.addSession({
-			id: claudeSessionId,
-			label: tabLabel,
-			projectPath,
-			createdAt: new Date().toISOString()
-		});
+	/**
+	 * After launching a new Claude tab, poll discover_claude_sessions to find the
+	 * session ID that Claude CLI assigned. Once found, update the tab with the
+	 * real session ID and friendly label from the JSONL.
+	 */
+	function pollForNewSession(workspaceId: string, tabId: string, projectPath: string) {
+		// Snapshot known session IDs before polling starts
+		const knownIds = new Set(discoveredSessions.map((s) => s.sessionId));
+		let attempts = 0;
+		const maxAttempts = 30; // ~60 seconds
+		const interval = setInterval(async () => {
+			attempts++;
+			if (attempts > maxAttempts) {
+				clearInterval(interval);
+				return;
+			}
+			const sessions = await claudeSessionStore.discoverSessions(projectPath);
+			const newSession = sessions.find((s) => !knownIds.has(s.sessionId));
+			if (newSession) {
+				clearInterval(interval);
+				workspaceStore.updateClaudeTab(workspaceId, tabId, newSession.sessionId, newSession.label);
+				// Refresh discovered sessions cache
+				discoveredSessions = sessions;
+			}
+		}, 2000);
 	}
 
 	function openProject(projectPath: string) {
 		const project = projectStore.getByPath(projectPath);
 		if (!project) return;
-		const result = workspaceStore.open(project);
-		if (result) {
-			registerClaudeSession(result.claudeSessionId, result.tabLabel, project.path);
-		}
+		workspaceStore.open(project);
 	}
 
 	async function openInVSCode(projectPath: string) {
@@ -198,22 +213,36 @@
 		}
 	}
 
+	function handleSidebarRestartSession(projectPath: string, tabId: string) {
+		const ws = workspaceStore.getByProjectPath(projectPath);
+		if (ws) workspaceStore.restartClaudeSession(ws.id, tabId);
+	}
+
+	function handleSidebarCloseSession(projectPath: string, tabId: string) {
+		const ws = workspaceStore.getByProjectPath(projectPath);
+		if (ws) workspaceStore.closeTerminalTab(ws.id, tabId);
+	}
+
 	function handleSidebarAddClaude(projectPath: string) {
 		openProject(projectPath);
 		const ws = workspaceStore.getByProjectPath(projectPath);
 		if (!ws) return;
-		const { tabLabel, claudeSessionId } = workspaceStore.addClaudeSession(ws.id);
-		registerClaudeSession(claudeSessionId, tabLabel, projectPath);
+		const { tabId } = workspaceStore.addClaudeSession(ws.id);
+		pollForNewSession(ws.id, tabId, projectPath);
 	}
 
 	$effect(() => {
-		workspaceStore.ensureShape((path) => projectStore.getByPath(path));
+		workspaceStore.ensureShape();
 	});
+
+	function startClaudeInWorkspace(ws: { id: string; projectPath: string }) {
+		const { tabId } = workspaceStore.addClaudeSession(ws.id);
+		pollForNewSession(ws.id, tabId, ws.projectPath);
+	}
 
 	onMount(async () => {
 		await projectStore.load();
 		await workspaceStore.load();
-		await claudeSessionStore.load();
 		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
 			openProject(projectStore.projects[0].path);
 		}
@@ -248,6 +277,8 @@
 					onOpenInVSCode={openInVSCode}
 					onAddClaude={handleSidebarAddClaude}
 					onSelectTab={handleSidebarSelectTab}
+					onRestartSession={handleSidebarRestartSession}
+					onCloseSession={handleSidebarCloseSession}
 					onOpenSettings={() => (settingsOpen = true)}
 					onToggleSidebar={toggleSidebar}
 				/>
@@ -273,7 +304,7 @@
 								ws.terminalTabs.find((t) => t.id === ws.activeTerminalTabId) ?? ws.terminalTabs[0]}
 							{@const wsProject = projectStore.getByPath(ws.projectPath)}
 							<div class="flex min-h-0 flex-1 flex-col" class:hidden={!isActiveWs}>
-								{#if activeTab}
+								{#if activeTab && wsProject}
 									<TerminalTabs
 										tabs={ws.terminalTabs}
 										activeTabId={ws.activeTerminalTabId}
@@ -282,10 +313,7 @@
 										onAdd={() => {
 											if (wsProject) workspaceStore.addTerminalTab(ws.id, wsProject);
 										}}
-										onAddClaude={() => {
-											const { tabLabel, claudeSessionId } = workspaceStore.addClaudeSession(ws.id);
-											registerClaudeSession(claudeSessionId, tabLabel, ws.projectPath);
-										}}
+										onAddClaude={() => startClaudeInWorkspace(ws)}
 										onResumeClaude={(sessionId, label) =>
 											workspaceStore.resumeClaudeSession(ws.id, sessionId, label)}
 										{discoveredSessions}
@@ -298,40 +326,37 @@
 										onSplitVertical={() => workspaceStore.splitTerminal(ws.id, 'vertical')}
 									/>
 
-									{#if wsProject}
-										{#each ws.terminalTabs as tab (tab.id)}
-											{@const isActiveTab = tab.id === ws.activeTerminalTabId}
-											<div
-												class="min-h-0 flex-1"
-												class:hidden={!isActiveTab || !isActiveWs}
-												class:flex={isActiveTab && isActiveWs}
-											>
-												<TerminalGrid
-													panes={tab.panes}
-													split={tab.split}
-													active={isActiveTab && isActiveWs}
-													project={wsProject}
-													onRemovePane={(paneId) => workspaceStore.removePane(ws.id, paneId)}
-												/>
-											</div>
-										{/each}
-									{/if}
-								{:else}
-									<div class="flex flex-1 items-center justify-center">
-										<div class="text-center">
-											<h2 class="text-lg font-semibold tracking-tight">Workspace needs repair</h2>
-											<p class="mt-1 text-sm text-muted-foreground">
-												Terminal state is inconsistent.
-											</p>
-											<Button
-												type="button"
-												class="mt-4"
-												onclick={() => workspaceStore.ensureShape((p) => projectStore.getByPath(p))}
-											>
-												Repair Workspace
-											</Button>
+									{#each ws.terminalTabs as tab (tab.id)}
+										{@const isActiveTab = tab.id === ws.activeTerminalTabId}
+										<div
+											class="min-h-0 flex-1"
+											class:hidden={!isActiveTab || !isActiveWs}
+											class:flex={isActiveTab && isActiveWs}
+										>
+											<TerminalGrid
+												panes={tab.panes}
+												split={tab.split}
+												active={isActiveTab && isActiveWs}
+												project={wsProject}
+												onRemovePane={(paneId) => workspaceStore.removePane(ws.id, paneId)}
+											/>
 										</div>
-									</div>
+									{/each}
+								{:else}
+									<WorkspaceLanding
+										sessions={discoveredSessions}
+										onNewClaude={() => startClaudeInWorkspace(ws)}
+										onResume={(sessionId, label) =>
+											workspaceStore.resumeClaudeSession(ws.id, sessionId, label)}
+										onDiscover={async () => {
+											discoveredSessions = await claudeSessionStore.discoverSessions(
+												ws.projectPath
+											);
+										}}
+										onNewTerminal={() => {
+											if (wsProject) workspaceStore.addTerminalTab(ws.id, wsProject);
+										}}
+									/>
 								{/if}
 							</div>
 						{/each}

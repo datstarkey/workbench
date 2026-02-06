@@ -9,11 +9,14 @@
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
+	import * as ContextMenu from '$lib/components/ui/context-menu';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -34,6 +37,8 @@
 		onOpenInVSCode,
 		onAddClaude,
 		onSelectTab,
+		onRestartSession,
+		onCloseSession,
 		onOpenSettings,
 		onToggleSidebar
 	}: {
@@ -50,6 +55,8 @@
 		onOpenInVSCode: (path: string) => void;
 		onAddClaude: (projectPath: string) => void;
 		onSelectTab: (projectPath: string, tabId: string) => void;
+		onRestartSession: (projectPath: string, tabId: string) => void;
+		onCloseSession: (projectPath: string, tabId: string) => void;
 		onOpenSettings: () => void;
 		onToggleSidebar: () => void;
 	} = $props();
@@ -125,7 +132,8 @@
 						{@const isOpen = openProjectPaths.includes(project.path)}
 						{@const isActive = activeProjectPath === project.path}
 						{@const sessions = sessionsForProject(project.path)}
-						{@const isExpanded = expandedProjects.has(project.path)}
+						{@const isExpanded =
+							expandedProjects.has(project.path) || project.path === activeProjectPath}
 						<div>
 							<div
 								class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
@@ -198,14 +206,34 @@
 							{#if isExpanded && sessions.length > 0}
 								<div class="mt-0.5 ml-5 space-y-0.5 border-l border-border/40 pl-2">
 									{#each sessions as session (session.tabId)}
-										<button
-											class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-											type="button"
-											onclick={() => onSelectTab(project.path, session.tabId)}
-										>
-											<SparklesIcon class="size-3 shrink-0 text-violet-400" />
-											<span class="truncate text-xs font-medium">{session.label}</span>
-										</button>
+										<ContextMenu.Root>
+											<ContextMenu.Trigger class="w-full">
+												<button
+													class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+													type="button"
+													onclick={() => onSelectTab(project.path, session.tabId)}
+												>
+													<SparklesIcon class="size-3 shrink-0 text-violet-400" />
+													<span class="truncate text-xs font-medium">{session.label}</span>
+												</button>
+											</ContextMenu.Trigger>
+											<ContextMenu.Content class="w-40">
+												<ContextMenu.Item
+													onclick={() => onRestartSession(project.path, session.tabId)}
+												>
+													<RotateCcwIcon class="size-3.5" />
+													Restart
+												</ContextMenu.Item>
+												<ContextMenu.Separator />
+												<ContextMenu.Item
+													class="text-destructive"
+													onclick={() => onCloseSession(project.path, session.tabId)}
+												>
+													<XIcon class="size-3.5" />
+													Close
+												</ContextMenu.Item>
+											</ContextMenu.Content>
+										</ContextMenu.Root>
 									{/each}
 									<button
 										class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"

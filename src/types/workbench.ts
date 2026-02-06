@@ -58,13 +58,6 @@ export type TerminalTabState = {
 	type?: SessionType;
 };
 
-export type ClaudeSessionRecord = {
-	id: string;
-	label: string;
-	projectPath: string;
-	createdAt: string;
-};
-
 export type ActiveClaudeSession = {
 	claudeSessionId: string;
 	tabId: string;
