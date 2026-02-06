@@ -31,7 +31,7 @@ export const terminalOptions: ITerminalOptions = {
 	cursorBlink: true,
 	fontFamily: 'JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace',
 	fontSize: 13,
-	lineHeight: 1.3,
+	lineHeight: 1.0,
 	scrollback: 5000,
 	theme: terminalTheme
 };
