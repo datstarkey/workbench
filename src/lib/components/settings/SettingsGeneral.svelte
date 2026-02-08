@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { Input } from '$lib/components/ui/input';
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
 	import SettingsSelect from './SettingsSelect.svelte';
 	import SettingsToggle from './SettingsToggle.svelte';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 
 	const effortOptions = [
 		{ value: 'low', label: 'Low' },
@@ -31,7 +33,8 @@
 		description="Controls how much effort Claude puts into responses."
 		options={effortOptions}
 		value={settings.effortLevel ?? 'high'}
-		onValueChange={(v) => claudeSettingsStore.update({ effortLevel: v })}
+		onValueChange={(v) =>
+			claudeSettingsStore.update({ effortLevel: v as typeof settings.effortLevel })}
 	/>
 
 	<SettingsToggle
@@ -46,7 +49,8 @@
 		description="Release channel for auto-updates."
 		options={updateChannelOptions}
 		value={settings.autoUpdatesChannel ?? 'latest'}
-		onValueChange={(v) => claudeSettingsStore.update({ autoUpdatesChannel: v })}
+		onValueChange={(v) =>
+			claudeSettingsStore.update({ autoUpdatesChannel: v as typeof settings.autoUpdatesChannel })}
 	/>
 
 	<SettingsSelect
@@ -54,7 +58,10 @@
 		description="Where to send completion notifications."
 		options={notifChannelOptions}
 		value={settings.preferredNotifChannel ?? 'terminal'}
-		onValueChange={(v) => claudeSettingsStore.update({ preferredNotifChannel: v })}
+		onValueChange={(v) =>
+			claudeSettingsStore.update({
+				preferredNotifChannel: v as typeof settings.preferredNotifChannel
+			})}
 	/>
 
 	<div>

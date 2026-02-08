@@ -8,48 +8,46 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import ClaudeSessionMenu from '$components/ClaudeSessionMenu.svelte';
-	import type { DiscoveredClaudeSession, TerminalTabState } from '$types/workbench';
+	import ClaudeSessionMenu from '$features/claude/ClaudeSessionMenu.svelte';
+	import { getClaudeSessionStore, getProjectStore, getWorkspaceStore } from '$stores/context';
+	import { effectivePath } from '$lib/utils/path';
+	import type { ProjectWorkspace } from '$types/workbench';
+
+	const workspaceStore = getWorkspaceStore();
+	const claudeSessionStore = getClaudeSessionStore();
+	const projectStore = getProjectStore();
 
 	let {
-		tabs,
-		activeTabId,
-		discoveredSessions,
-		onSelect,
-		onClose,
-		onAdd,
-		onAddClaude,
-		onResumeClaude,
-		onDiscoverSessions,
-		onSplitHorizontal,
-		onSplitVertical
+		workspace
 	}: {
-		tabs: TerminalTabState[];
-		activeTabId: string;
-		discoveredSessions: DiscoveredClaudeSession[];
-		onSelect: (id: string) => void;
-		onClose: (id: string) => void;
-		onAdd: () => void;
-		onAddClaude: () => void;
-		onResumeClaude: (sessionId: string, label: string) => void;
-		onDiscoverSessions: () => void;
-		onSplitHorizontal: () => void;
-		onSplitVertical: () => void;
+		workspace: ProjectWorkspace;
 	} = $props();
+
+	let tabs = $derived(workspace.terminalTabs);
+	let activeTabId = $derived(workspace.activeTerminalTabId);
+	let wsProject = $derived(projectStore.getByPath(workspace.projectPath));
+	let wsCwd = $derived(effectivePath(workspace));
 </script>
 
 <div class="flex h-9 shrink-0 items-center border-b border-border/60 px-1">
-	<div class="flex flex-1 items-center gap-0.5 overflow-x-auto">
+	<div
+		class="flex flex-1 items-center gap-0.5 overflow-x-auto"
+		role="tablist"
+		aria-label="Terminal tabs"
+	>
 		{#each tabs as tab (tab.id)}
 			{@const isActive = tab.id === activeTabId}
 			{@const isClaude = tab.type === 'claude'}
 			<div
 				class={`inline-flex items-center rounded-md transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
+				role="presentation"
 			>
 				<button
 					class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium"
 					type="button"
-					onclick={() => onSelect(tab.id)}
+					role="tab"
+					aria-selected={isActive}
+					onclick={() => workspaceStore.setActiveTab(workspace.id, tab.id)}
 				>
 					{#if isClaude}
 						<SparklesIcon class="size-3 text-violet-400" />
@@ -63,7 +61,7 @@
 						class="mr-0.5 flex size-5 items-center justify-center rounded opacity-50 transition-opacity hover:bg-muted hover:opacity-100"
 						type="button"
 						aria-label="Close terminal tab"
-						onclick={() => onClose(tab.id)}
+						onclick={() => workspaceStore.closeTerminalTab(workspace.id, tab.id)}
 					>
 						<XIcon class="size-3" />
 					</button>
@@ -80,7 +78,9 @@
 					size="icon-sm"
 					class="size-7 text-muted-foreground hover:text-foreground"
 					type="button"
-					onclick={onAdd}
+					onclick={() => {
+						if (wsProject) workspaceStore.addTerminalTab(workspace.id, wsProject);
+					}}
 				>
 					<PlusIcon class="size-3.5" />
 				</Button>
@@ -95,7 +95,7 @@
 					size="icon-sm"
 					class="size-7 text-violet-400 hover:text-violet-300"
 					type="button"
-					onclick={onAddClaude}
+					onclick={() => claudeSessionStore.startSessionInWorkspace(workspace)}
 				>
 					<SparklesIcon class="size-3.5" />
 				</Button>
@@ -104,9 +104,9 @@
 		</Tooltip.Root>
 
 		<ClaudeSessionMenu
-			sessions={discoveredSessions}
-			onResume={onResumeClaude}
-			onOpen={onDiscoverSessions}
+			onResume={(sessionId, label) =>
+				workspaceStore.resumeClaudeSession(workspace.id, sessionId, label)}
+			onOpen={() => claudeSessionStore.discoverSessions(wsCwd)}
 		/>
 
 		<Separator orientation="vertical" class="!h-4" />
@@ -118,7 +118,7 @@
 					size="icon-sm"
 					class="size-7 text-muted-foreground hover:text-foreground"
 					type="button"
-					onclick={onSplitHorizontal}
+					onclick={() => workspaceStore.splitTerminal(workspace.id, 'horizontal')}
 				>
 					<Columns2Icon class="size-3.5" />
 				</Button>
@@ -133,7 +133,7 @@
 					size="icon-sm"
 					class="size-7 text-muted-foreground hover:text-foreground"
 					type="button"
-					onclick={onSplitVertical}
+					onclick={() => workspaceStore.splitTerminal(workspace.id, 'vertical')}
 				>
 					<Rows2Icon class="size-3.5" />
 				</Button>

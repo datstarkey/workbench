@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { Label } from '$lib/components/ui/label';
 	import { Input } from '$lib/components/ui/input';
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
 	import EditableStringList from './EditableStringList.svelte';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 	import SettingsToggle from './SettingsToggle.svelte';
 
 	let settings = $derived(claudeSettingsStore.currentSettings);
@@ -50,18 +52,8 @@
 			<div class="mt-2">
 				<EditableStringList
 					items={excludedCommands}
-					onAdd={(value) => {
-						const current = [...excludedCommands];
-						if (!current.includes(value)) {
-							current.push(value);
-							claudeSettingsStore.updateSandbox({ excludedCommands: current });
-						}
-					}}
-					onRemove={(value) => {
-						claudeSettingsStore.updateSandbox({
-							excludedCommands: excludedCommands.filter((c) => c !== value)
-						});
-					}}
+					onAdd={(v) => claudeSettingsStore.addToSandboxList('excludedCommands', v)}
+					onRemove={(v) => claudeSettingsStore.removeFromSandboxList('excludedCommands', v)}
 					placeholder="e.g. docker"
 				/>
 			</div>
@@ -124,18 +116,8 @@
 				<div class="mt-2">
 					<EditableStringList
 						items={allowedDomains}
-						onAdd={(value) => {
-							const current = [...allowedDomains];
-							if (!current.includes(value)) {
-								current.push(value);
-								claudeSettingsStore.updateSandboxNetwork({ allowedDomains: current });
-							}
-						}}
-						onRemove={(value) => {
-							claudeSettingsStore.updateSandboxNetwork({
-								allowedDomains: allowedDomains.filter((d) => d !== value)
-							});
-						}}
+						onAdd={(v) => claudeSettingsStore.addToSandboxNetworkList('allowedDomains', v)}
+						onRemove={(v) => claudeSettingsStore.removeFromSandboxNetworkList('allowedDomains', v)}
 						placeholder="e.g. api.github.com"
 					/>
 				</div>
@@ -150,18 +132,9 @@
 					<div class="mt-2">
 						<EditableStringList
 							items={allowUnixSockets}
-							onAdd={(value) => {
-								const current = [...allowUnixSockets];
-								if (!current.includes(value)) {
-									current.push(value);
-									claudeSettingsStore.updateSandboxNetwork({ allowUnixSockets: current });
-								}
-							}}
-							onRemove={(value) => {
-								claudeSettingsStore.updateSandboxNetwork({
-									allowUnixSockets: allowUnixSockets.filter((s) => s !== value)
-								});
-							}}
+							onAdd={(v) => claudeSettingsStore.addToSandboxNetworkList('allowUnixSockets', v)}
+							onRemove={(v) =>
+								claudeSettingsStore.removeFromSandboxNetworkList('allowUnixSockets', v)}
 							placeholder="e.g. /var/run/docker.sock"
 						/>
 					</div>

@@ -1,7 +1,7 @@
 <script lang="ts">
-	import Button from '$lib/components/ui/button/button.svelte';
-	import Input from '$lib/components/ui/input/input.svelte';
-	import Badge from '$lib/components/ui/badge/badge.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
+	import { Badge } from '$lib/components/ui/badge';
 	import XIcon from '@lucide/svelte/icons/x';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 

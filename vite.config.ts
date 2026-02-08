@@ -11,6 +11,7 @@ export default defineConfig({
 		alias: {
 			$lib: resolve('./src/lib'),
 			$components: resolve('./src/lib/components'),
+			$features: resolve('./src/lib/features'),
 			$stores: resolve('./src/lib/stores'),
 			$types: resolve('./src/types')
 		}

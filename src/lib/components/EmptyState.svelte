@@ -2,12 +2,9 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
 	import { Button } from '$lib/components/ui/button';
+	import { getProjectManager } from '$stores/context';
 
-	let {
-		onAddProject
-	}: {
-		onAddProject: () => void;
-	} = $props();
+	const projectManager = getProjectManager();
 </script>
 
 <div class="flex flex-1 items-center justify-center">
@@ -19,7 +16,7 @@
 		</div>
 		<h2 class="text-lg font-semibold tracking-tight">Open a project to start</h2>
 		<p class="mt-1 text-sm text-muted-foreground">Each project gets its own terminal workspace.</p>
-		<Button type="button" class="mt-4" onclick={onAddProject}>
+		<Button type="button" class="mt-4" onclick={() => projectManager.add()}>
 			<PlusIcon class="size-4" />
 			Add Project
 		</Button>

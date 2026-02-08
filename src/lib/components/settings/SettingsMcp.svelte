@@ -2,8 +2,11 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
+	import SettingsEmptyState from './SettingsEmptyState.svelte';
 	import type { McpServerConfig } from '$types/claude-settings';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 
 	let settings = $derived(claudeSettingsStore.currentSettings);
 	let servers = $derived((settings.mcpServers ?? {}) as Record<string, McpServerConfig>);
@@ -33,9 +36,11 @@
 	<div>
 		<h3 class="text-sm font-medium">MCP Servers</h3>
 		{#if serverNames.length === 0}
-			<div class="mt-2 rounded-md border border-dashed border-border/60 py-8 text-center">
-				<p class="text-sm text-muted-foreground">No MCP servers configured.</p>
-				<p class="mt-1 text-xs text-muted-foreground/60">Add servers to your settings JSON file.</p>
+			<div class="mt-2">
+				<SettingsEmptyState
+					title="No MCP servers configured."
+					subtitle="Add servers to your settings JSON file."
+				/>
 			</div>
 		{:else}
 			<div class="mt-2 space-y-2">

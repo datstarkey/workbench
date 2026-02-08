@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { Switch } from '$lib/components/ui/switch';
 	import { Badge } from '$lib/components/ui/badge';
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
+	import SettingsEmptyState from './SettingsEmptyState.svelte';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 
 	let settings = $derived(claudeSettingsStore.currentSettings);
 	let enabledPlugins = $derived((settings.enabledPlugins ?? []) as string[]);
@@ -30,10 +33,7 @@
 	</p>
 
 	{#if claudeSettingsStore.plugins.length === 0}
-		<div class="rounded-md border border-dashed border-border/60 py-8 text-center">
-			<p class="text-sm text-muted-foreground">No plugins found.</p>
-			<p class="mt-1 text-xs text-muted-foreground/60">Install plugins via Claude Code CLI.</p>
-		</div>
+		<SettingsEmptyState title="No plugins found." subtitle="Install plugins via Claude Code CLI." />
 	{:else}
 		<div class="space-y-2">
 			{#each claudeSettingsStore.plugins as plugin (plugin.dirName)}

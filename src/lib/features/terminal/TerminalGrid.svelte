@@ -1,22 +1,25 @@
 <script lang="ts">
 	import XIcon from '@lucide/svelte/icons/x';
-	import TerminalPane from '$components/TerminalPane.svelte';
+	import TerminalPane from '$features/terminal/TerminalPane.svelte';
+	import { getWorkspaceStore } from '$stores/context';
 	import type { ProjectConfig, SplitDirection, TerminalPaneState } from '$types/workbench';
 
+	const workspaceStore = getWorkspaceStore();
+
 	let {
+		workspaceId,
 		panes,
 		split,
 		active,
 		project,
-		cwd,
-		onRemovePane
+		cwd
 	}: {
+		workspaceId: string;
 		panes: TerminalPaneState[];
 		split: SplitDirection;
 		active: boolean;
 		project: ProjectConfig;
 		cwd?: string;
-		onRemovePane: (paneId: string) => void;
 	} = $props();
 </script>
 
@@ -40,7 +43,7 @@
 					class="absolute top-2 right-2 flex size-6 items-center justify-center rounded bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground [div:hover>&]:opacity-100"
 					type="button"
 					aria-label="Close pane"
-					onclick={() => onRemovePane(pane.id)}
+					onclick={() => workspaceStore.removePane(workspaceId, pane.id)}
 				>
 					<XIcon class="size-3" />
 				</button>

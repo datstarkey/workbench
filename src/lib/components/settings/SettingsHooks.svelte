@@ -4,8 +4,11 @@
 	import { Input } from '$lib/components/ui/input';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
+	import SettingsEmptyState from './SettingsEmptyState.svelte';
 	import type { HookEntry } from '$types/claude-settings';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 
 	let settings = $derived(claudeSettingsStore.currentSettings);
 	let hooks = $derived((settings.hooks ?? {}) as Record<string, HookEntry[]>);
@@ -54,9 +57,7 @@
 	</p>
 
 	{#if hookEvents.length === 0 && availableEvents.length > 0}
-		<div class="rounded-md border border-dashed border-border/60 py-8 text-center">
-			<p class="text-sm text-muted-foreground">No hooks configured.</p>
-		</div>
+		<SettingsEmptyState title="No hooks configured." />
 	{/if}
 
 	{#each hookEvents as event (event)}

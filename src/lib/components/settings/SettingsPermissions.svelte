@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { Label } from '$lib/components/ui/label';
-	import * as Select from '$lib/components/ui/select';
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
 	import type { PermissionsConfig } from '$types/claude-settings';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 	import EditableStringList from './EditableStringList.svelte';
+	import SettingsSelect from './SettingsSelect.svelte';
 	import SettingsToggle from './SettingsToggle.svelte';
 
 	let settings = $derived(claudeSettingsStore.currentSettings);
@@ -27,29 +29,14 @@
 </script>
 
 <div class="space-y-6">
-	<div>
-		<h3 class="text-sm font-medium">Default Permission Mode</h3>
-		<p class="mt-1 text-xs text-muted-foreground">
-			Controls how Claude handles tool permissions by default.
-		</p>
-		<div class="mt-2">
-			<Select.Root
-				type="single"
-				value={perms.defaultMode ?? 'default'}
-				onValueChange={(v) => updatePerms({ defaultMode: v })}
-			>
-				<Select.Trigger class="w-48">
-					{modeOptions.find((o) => o.value === (perms.defaultMode ?? 'default'))?.label ??
-						'Default'}
-				</Select.Trigger>
-				<Select.Content>
-					{#each modeOptions as opt (opt.value)}
-						<Select.Item value={opt.value}>{opt.label}</Select.Item>
-					{/each}
-				</Select.Content>
-			</Select.Root>
-		</div>
-	</div>
+	<SettingsSelect
+		label="Default Permission Mode"
+		description="Controls how Claude handles tool permissions by default."
+		options={modeOptions}
+		value={perms.defaultMode ?? 'default'}
+		onValueChange={(v) => updatePerms({ defaultMode: v as typeof perms.defaultMode })}
+		triggerClass="w-48"
+	/>
 
 	<SettingsToggle
 		label="Disable Bypass Mode"
@@ -105,16 +92,12 @@
 		<EditableStringList
 			items={additionalDirs}
 			onAdd={(v) => {
-				const dir = v.trim();
-				if (!dir) return;
-				const current = [...additionalDirs];
-				if (!current.includes(dir)) {
-					current.push(dir);
-					updatePerms({ additionalDirectories: current });
+				if (!additionalDirs.includes(v)) {
+					updatePerms({ additionalDirectories: [...additionalDirs, v] });
 				}
 			}}
-			onRemove={(dir) => {
-				updatePerms({ additionalDirectories: additionalDirs.filter((d) => d !== dir) });
+			onRemove={(v) => {
+				updatePerms({ additionalDirectories: additionalDirs.filter((d) => d !== v) });
 			}}
 			placeholder="/path/to/directory"
 		/>

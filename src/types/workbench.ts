@@ -7,10 +7,6 @@ export interface ProjectConfig {
 	startupCommand?: string;
 }
 
-export interface ProjectsFile {
-	projects: ProjectConfig[];
-}
-
 export interface CreateTerminalRequest {
 	id: string;
 	projectPath: string;
@@ -36,43 +32,38 @@ export interface TerminalExitEvent {
 	signal?: number;
 }
 
-export interface TerminalWritePayload {
-	sessionId: string;
-	data: string;
-}
-
 export type SessionType = 'shell' | 'claude';
 
-export type TerminalPaneState = {
+export interface TerminalPaneState {
 	id: string;
 	startupCommand?: string;
 	type?: SessionType;
 	claudeSessionId?: string;
-};
+}
 
-export type TerminalTabState = {
+export interface TerminalTabState {
 	id: string;
 	label: string;
 	split: SplitDirection;
 	panes: TerminalPaneState[];
 	type?: SessionType;
-};
+}
 
-export type ActiveClaudeSession = {
+export interface ActiveClaudeSession {
 	claudeSessionId: string;
 	tabId: string;
 	label: string;
 	needsAttention?: boolean;
-};
+}
 
-export type DiscoveredClaudeSession = {
+export interface DiscoveredClaudeSession {
 	sessionId: string;
 	label: string;
 	timestamp: string;
-	lastMessageRole?: string;
-};
+	lastMessageRole?: 'user' | 'assistant';
+}
 
-export type ProjectWorkspace = {
+export interface ProjectWorkspace {
 	id: string;
 	projectPath: string;
 	projectName: string;
@@ -80,7 +71,7 @@ export type ProjectWorkspace = {
 	activeTerminalTabId: string;
 	worktreePath?: string;
 	branch?: string;
-};
+}
 
 // Git types
 
@@ -104,16 +95,9 @@ export interface BranchInfo {
 	isRemote: boolean;
 }
 
-export interface CreateWorktreeRequest {
-	repoPath: string;
-	branch: string;
-	newBranch: boolean;
-	path?: string;
-}
-
-export type ProjectFormState = {
+export interface ProjectFormState {
 	name: string;
 	path: string;
 	shell: string;
 	startupCommand: string;
-};
+}

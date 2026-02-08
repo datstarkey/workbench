@@ -24,54 +24,32 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { SvelteSet } from 'svelte/reactivity';
-	import type { ActiveClaudeSession, ProjectConfig, WorktreeInfo } from '$types/workbench';
+	import {
+		getClaudeSessionStore,
+		getGitStore,
+		getProjectManager,
+		getProjectStore,
+		getWorktreeManager,
+		getWorkspaceStore
+	} from '$stores/context';
+	import { openInVSCode } from '$lib/utils/vscode';
+	import type { ActiveClaudeSession, WorktreeInfo } from '$types/workbench';
+
+	const projectStore = getProjectStore();
+	const workspaceStore = getWorkspaceStore();
+	const claudeSessionStore = getClaudeSessionStore();
+	const gitStore = getGitStore();
+	const projectManager = getProjectManager();
+	const worktreeManager = getWorktreeManager();
 
 	let {
-		projects,
-		loaded,
 		sidebarCollapsed,
-		activeProjectPath,
-		openProjectPaths,
-		activeSessionsByProject,
-		worktreesByProject,
-		branchByProject,
-		onAddProject,
-		onOpenProject,
-		onEditProject,
-		onRemoveProject,
-		onOpenInVSCode,
-		onAddClaude,
-		onSelectTab,
-		onRestartSession,
-		onCloseSession,
 		onOpenSettings,
-		onToggleSidebar,
-		onOpenWorktree,
-		onAddWorktree,
-		onRemoveWorktree
+		onToggleSidebar
 	}: {
-		projects: ProjectConfig[];
-		loaded: boolean;
 		sidebarCollapsed: boolean;
-		activeProjectPath: string | null;
-		openProjectPaths: string[];
-		activeSessionsByProject: Record<string, ActiveClaudeSession[]>;
-		worktreesByProject: Record<string, WorktreeInfo[]>;
-		branchByProject: Record<string, string>;
-		onAddProject: () => void;
-		onOpenProject: (path: string) => void;
-		onEditProject: (path: string) => void;
-		onRemoveProject: (path: string) => void;
-		onOpenInVSCode: (path: string) => void;
-		onAddClaude: (projectPath: string) => void;
-		onSelectTab: (projectPath: string, tabId: string) => void;
-		onRestartSession: (projectPath: string, tabId: string) => void;
-		onCloseSession: (projectPath: string, tabId: string) => void;
 		onOpenSettings: () => void;
 		onToggleSidebar: () => void;
-		onOpenWorktree: (projectPath: string, worktreePath: string, branch: string) => void;
-		onAddWorktree: (projectPath: string) => void;
-		onRemoveWorktree: (projectPath: string, worktreePath: string) => void;
 	} = $props();
 
 	const expandedProjects = new SvelteSet<string>();
@@ -85,11 +63,11 @@
 	}
 
 	function sessionsForProject(projectPath: string): ActiveClaudeSession[] {
-		return activeSessionsByProject[projectPath] ?? [];
+		return claudeSessionStore.activeSessionsByProject[projectPath] ?? [];
 	}
 
 	function worktreesForProject(projectPath: string): WorktreeInfo[] {
-		return (worktreesByProject[projectPath] ?? []).filter((wt) => !wt.isMain);
+		return (gitStore.worktreesByProject[projectPath] ?? []).filter((wt) => !wt.isMain);
 	}
 
 	function projectHasAttention(projectPath: string): boolean {
@@ -138,7 +116,7 @@
 				variant="outline"
 				size="sm"
 				class="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
-				onclick={onAddProject}
+				onclick={() => projectManager.add()}
 			>
 				<PlusIcon class="size-3.5" />
 				Add Project
@@ -147,24 +125,25 @@
 
 		<ScrollArea class="flex-1">
 			<div class="space-y-0.5 px-2 pb-2">
-				{#if !loaded}
+				{#if !projectStore.loaded}
 					<p class="px-2 py-8 text-center text-xs text-muted-foreground">Loading...</p>
-				{:else if projects.length === 0}
+				{:else if projectStore.projects.length === 0}
 					<div class="px-2 py-8 text-center">
 						<p class="text-xs text-muted-foreground">No projects yet.</p>
 						<p class="mt-1 text-xs text-muted-foreground/60">Add a folder to get started.</p>
 					</div>
 				{:else}
-					{#each projects as project (project.path)}
-						{@const isOpen = openProjectPaths.includes(project.path)}
-						{@const isActive = activeProjectPath === project.path}
+					{#each projectStore.projects as project (project.path)}
+						{@const isOpen = workspaceStore.openProjectPaths.includes(project.path)}
+						{@const isActive = workspaceStore.activeProjectPath === project.path}
 						{@const sessions = sessionsForProject(project.path)}
 						{@const worktrees = worktreesForProject(project.path)}
-						{@const branch = branchByProject[project.path]}
+						{@const branch = gitStore.branchByProject[project.path]}
 						{@const hasAttention = projectHasAttention(project.path)}
 						{@const hasChildren = hasExpandableContent(project.path)}
 						{@const isExpanded =
-							expandedProjects.has(project.path) || project.path === activeProjectPath}
+							expandedProjects.has(project.path) ||
+							project.path === workspaceStore.activeProjectPath}
 						<div>
 							<div
 								class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
@@ -173,6 +152,8 @@
 									<button
 										class="flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted"
 										type="button"
+										aria-label={isExpanded ? 'Collapse' : 'Expand'}
+										aria-expanded={isExpanded}
 										onclick={() => toggleExpanded(project.path)}
 									>
 										{#if isExpanded}
@@ -187,7 +168,7 @@
 								<button
 									class="flex min-w-0 flex-1 items-center gap-2 text-left"
 									type="button"
-									onclick={() => onOpenProject(project.path)}
+									onclick={() => projectStore.openProject(project.path)}
 								>
 									<FolderIcon class="size-3.5 shrink-0 opacity-60" />
 									<span class="truncate text-sm">{project.name}</span>
@@ -211,30 +192,32 @@
 										</Button>
 									</DropdownMenu.Trigger>
 									<DropdownMenu.Content align="end" class="w-44">
-										<DropdownMenu.Item onclick={() => onOpenProject(project.path)}>
+										<DropdownMenu.Item onclick={() => projectStore.openProject(project.path)}>
 											<ExternalLinkIcon class="size-3.5" />
 											Open
 										</DropdownMenu.Item>
-										<DropdownMenu.Item onclick={() => onAddClaude(project.path)}>
+										<DropdownMenu.Item
+											onclick={() => claudeSessionStore.startSessionByProject(project.path)}
+										>
 											<SparklesIcon class="size-3.5" />
 											New Claude Session
 										</DropdownMenu.Item>
-										<DropdownMenu.Item onclick={() => onAddWorktree(project.path)}>
+										<DropdownMenu.Item onclick={() => worktreeManager.add(project.path)}>
 											<GitBranchIcon class="size-3.5" />
 											Add Worktree
 										</DropdownMenu.Item>
-										<DropdownMenu.Item onclick={() => onOpenInVSCode(project.path)}>
+										<DropdownMenu.Item onclick={() => openInVSCode(project.path)}>
 											<CodeIcon class="size-3.5" />
 											Open in VS Code
 										</DropdownMenu.Item>
 										<DropdownMenu.Separator />
-										<DropdownMenu.Item onclick={() => onEditProject(project.path)}>
+										<DropdownMenu.Item onclick={() => projectManager.edit(project.path)}>
 											<PencilIcon class="size-3.5" />
 											Edit
 										</DropdownMenu.Item>
 										<DropdownMenu.Item
 											class="text-destructive"
-											onclick={() => onRemoveProject(project.path)}
+											onclick={() => projectManager.remove(project.path)}
 										>
 											<Trash2Icon class="size-3.5" />
 											Remove
@@ -252,7 +235,7 @@
 													<button
 														class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
 														type="button"
-														onclick={() => onOpenWorktree(project.path, wt.path, wt.branch)}
+														onclick={() => worktreeManager.open(project.path, wt.path, wt.branch)}
 													>
 														<GitBranchIcon class="size-3 shrink-0 text-emerald-400" />
 														<span class="truncate text-xs font-medium">{wt.branch}</span>
@@ -260,7 +243,7 @@
 												</ContextMenu.Trigger>
 												<ContextMenu.Content class="w-40">
 													<ContextMenu.Item
-														onclick={() => onOpenWorktree(project.path, wt.path, wt.branch)}
+														onclick={() => worktreeManager.open(project.path, wt.path, wt.branch)}
 													>
 														<ExternalLinkIcon class="size-3.5" />
 														Open
@@ -268,7 +251,7 @@
 													<ContextMenu.Separator />
 													<ContextMenu.Item
 														class="text-destructive"
-														onclick={() => onRemoveWorktree(project.path, wt.path)}
+														onclick={() => worktreeManager.remove(project.path, wt.path)}
 													>
 														<Trash2Icon class="size-3.5" />
 														Remove
@@ -279,7 +262,7 @@
 										<button
 											class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
 											type="button"
-											onclick={() => onAddWorktree(project.path)}
+											onclick={() => worktreeManager.add(project.path)}
 										>
 											<PlusIcon class="size-3 shrink-0" />
 											<span class="text-xs">Add Worktree</span>
@@ -291,7 +274,8 @@
 												<button
 													class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
 													type="button"
-													onclick={() => onSelectTab(project.path, session.tabId)}
+													onclick={() =>
+														workspaceStore.selectTabByProject(project.path, session.tabId)}
 												>
 													{#if session.needsAttention}
 														<CirclePauseIcon class="size-3 shrink-0 text-amber-400" />
@@ -308,7 +292,8 @@
 											</ContextMenu.Trigger>
 											<ContextMenu.Content class="w-40">
 												<ContextMenu.Item
-													onclick={() => onRestartSession(project.path, session.tabId)}
+													onclick={() =>
+														workspaceStore.restartClaudeByProject(project.path, session.tabId)}
 												>
 													<RotateCcwIcon class="size-3.5" />
 													Restart
@@ -316,7 +301,8 @@
 												<ContextMenu.Separator />
 												<ContextMenu.Item
 													class="text-destructive"
-													onclick={() => onCloseSession(project.path, session.tabId)}
+													onclick={() =>
+														workspaceStore.closeTabByProject(project.path, session.tabId)}
 												>
 													<XIcon class="size-3.5" />
 													Close
@@ -328,7 +314,7 @@
 										<button
 											class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
 											type="button"
-											onclick={() => onAddClaude(project.path)}
+											onclick={() => claudeSessionStore.startSessionByProject(project.path)}
 										>
 											<PlusIcon class="size-3 shrink-0" />
 											<span class="text-xs">New Session</span>
@@ -363,7 +349,7 @@
 						size="icon-sm"
 						class="text-muted-foreground hover:text-foreground"
 						type="button"
-						onclick={onAddProject}
+						onclick={() => projectManager.add()}
 					>
 						<PlusIcon class="size-3.5" />
 					</Button>

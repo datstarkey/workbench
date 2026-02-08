@@ -1,13 +1,20 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { SvelteSet } from 'svelte/reactivity';
-import type { DiscoveredClaudeSession, TerminalDataEvent } from '$types/workbench';
+import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import type {
+	ActiveClaudeSession,
+	DiscoveredClaudeSession,
+	TerminalDataEvent
+} from '$types/workbench';
+import { effectivePath } from '$lib/utils/path';
+import type { WorkspaceStore } from './workspaces.svelte';
+import type { ProjectStore } from './projects.svelte';
 
 const QUIET_THRESHOLD_MS = 1000;
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 30;
 
-class ClaudeSessionStore {
+export class ClaudeSessionStore {
 	/** Set of terminal pane IDs that are idle (no output for QUIET_THRESHOLD_MS) */
 	panesNeedingAttention: SvelteSet<string> = $state(new SvelteSet());
 
@@ -15,11 +22,31 @@ class ClaudeSessionStore {
 	discoveredSessions: DiscoveredClaudeSession[] = $state([]);
 
 	/** Per-pane debounce timeouts for quiescence detection */
-	private quiesceTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+	private quiesceTimeouts = new SvelteMap<string, ReturnType<typeof setTimeout>>();
 	/** Active poll intervals keyed by tabId */
-	private pollIntervals = new Map<string, ReturnType<typeof setInterval>>();
-	/** Callback to check if a pane ID belongs to a Claude session */
-	private isClaudePane: (paneId: string) => boolean = () => false;
+	private pollIntervals = new SvelteMap<string, ReturnType<typeof setInterval>>();
+	/** Reference to workspace store for Claude pane detection */
+	private workspaces: WorkspaceStore;
+	/** Reference to project store for opening projects */
+	private projects: ProjectStore;
+
+	/** Active Claude sessions grouped by project path */
+	get activeSessionsByProject(): Record<string, ActiveClaudeSession[]> {
+		return this.workspaces.workspaces.reduce<Record<string, ActiveClaudeSession[]>>((acc, ws) => {
+			const sessions = ws.terminalTabs
+				.filter((t) => t.type === 'claude')
+				.map((t) => ({
+					claudeSessionId: t.panes[0]?.claudeSessionId ?? '',
+					tabId: t.id,
+					label: t.label,
+					needsAttention: this.panesNeedingAttention.has(t.panes[0]?.id ?? '')
+				}));
+			if (sessions.length > 0) {
+				acc[ws.projectPath] = sessions;
+			}
+			return acc;
+		}, {});
+	}
 
 	/** Read Claude CLI session files from ~/.claude/projects/ */
 	async discoverSessions(projectPath: string): Promise<DiscoveredClaudeSession[]> {
@@ -29,7 +56,8 @@ class ClaudeSessionStore {
 			});
 			this.discoveredSessions = sessions;
 			return sessions;
-		} catch {
+		} catch (e) {
+			console.error('[ClaudeSessionStore] Failed to discover sessions:', e);
 			return [];
 		}
 	}
@@ -53,7 +81,7 @@ class ClaudeSessionStore {
 		const existing = this.pollIntervals.get(tabId);
 		if (existing) clearInterval(existing);
 
-		const knownIds = new Set(this.discoveredSessions.map((s) => s.sessionId));
+		const knownIds = new SvelteSet(this.discoveredSessions.map((s) => s.sessionId));
 		let attempts = 0;
 		const interval = setInterval(async () => {
 			attempts++;
@@ -73,12 +101,46 @@ class ClaudeSessionStore {
 		this.pollIntervals.set(tabId, interval);
 	}
 
-	/** Set the predicate used to decide which panes get quiescence tracking */
-	setClaudePaneCheck(fn: (paneId: string) => boolean): void {
-		this.isClaudePane = fn;
+	/** Start a new Claude session: add tab + poll for session discovery */
+	startSession(workspaceId: string, sessionPath: string) {
+		const { tabId } = this.workspaces.addClaudeSession(workspaceId);
+		this.pollForNewSession(tabId, sessionPath, (session) => {
+			this.workspaces.updateClaudeTab(workspaceId, tabId, session.sessionId, session.label);
+		});
 	}
 
-	constructor() {
+	/** Start a Claude session for a project (opens project if needed) */
+	startSessionByProject(projectPath: string) {
+		this.projects.openProject(projectPath);
+		const result = this.workspaces.addClaudeByProject(projectPath);
+		if (result) {
+			this.pollForNewSession(result.tabId, projectPath, (session) => {
+				this.workspaces.updateClaudeTab(
+					result.workspaceId,
+					result.tabId,
+					session.sessionId,
+					session.label
+				);
+			});
+		}
+	}
+
+	/** Start a Claude session in a specific workspace */
+	startSessionInWorkspace(ws: { id: string; projectPath: string; worktreePath?: string }) {
+		const sessionPath = effectivePath(ws);
+		this.startSession(ws.id, sessionPath);
+	}
+
+	private isClaudePane(paneId: string): boolean {
+		return this.workspaces.workspaces.some((ws) =>
+			ws.terminalTabs.some((t) => t.type === 'claude' && t.panes.some((p) => p.id === paneId))
+		);
+	}
+
+	constructor(workspaces: WorkspaceStore, projects: ProjectStore) {
+		this.workspaces = workspaces;
+		this.projects = projects;
+
 		listen<TerminalDataEvent>('terminal:data', (event) => {
 			const paneId = event.payload.sessionId;
 			if (!this.isClaudePane(paneId)) return;
@@ -98,5 +160,3 @@ class ClaudeSessionStore {
 		});
 	}
 }
-
-export const claudeSessionStore = new ClaudeSessionStore();

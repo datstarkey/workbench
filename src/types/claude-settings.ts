@@ -27,18 +27,17 @@ export interface PermissionsConfig {
 	deny?: string[];
 	ask?: string[];
 	additionalDirectories?: string[];
-	defaultMode?: string;
-	disableBypassPermissionsMode?: string;
+	defaultMode?: 'default' | 'acceptEdits' | 'plan' | 'dontAsk' | 'bypassPermissions';
+	disableBypassPermissionsMode?: 'disable';
 	[key: string]: unknown;
 }
 
 export interface ClaudeSettings {
 	// General
-	preferredNotifChannel?: string;
+	preferredNotifChannel?: 'terminal' | 'iterm2' | 'terminal_bell';
 	language?: string;
-	outputStyle?: string;
 	cleanupPeriodDays?: number;
-	autoUpdatesChannel?: string;
+	autoUpdatesChannel?: 'stable' | 'latest';
 	showTurnDuration?: boolean;
 	spinnerTipsEnabled?: boolean;
 	terminalProgressBarEnabled?: boolean;
@@ -47,7 +46,7 @@ export interface ClaudeSettings {
 
 	// Thinking / effort
 	alwaysThinkingEnabled?: boolean;
-	effortLevel?: string;
+	effortLevel?: 'low' | 'medium' | 'high' | 'max';
 
 	// Attribution
 	attribution?: {

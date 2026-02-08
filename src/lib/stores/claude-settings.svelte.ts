@@ -10,7 +10,7 @@ import type {
 
 const SCOPES: SettingsScope[] = ['user', 'user-local', 'project', 'project-local'];
 
-class ClaudeSettingsStore {
+export class ClaudeSettingsStore {
 	settings: Record<SettingsScope, ClaudeSettings> = $state({
 		user: {},
 		'user-local': {},
@@ -18,7 +18,6 @@ class ClaudeSettingsStore {
 		'project-local': {}
 	});
 
-	activeScope: SettingsScope = $state('user');
 	activeScopeGroup: ScopeGroup = $state('user');
 	localOnly = $state(false);
 
@@ -32,26 +31,24 @@ class ClaudeSettingsStore {
 
 	private projectPath: string | null = null;
 
-	get currentSettings(): ClaudeSettings {
-		return this.settings[this.activeScope];
-	}
-
-	get resolvedScope(): SettingsScope {
+	get activeScope(): SettingsScope {
 		if (this.activeScopeGroup === 'user') {
 			return this.localOnly ? 'user-local' : 'user';
 		}
 		return this.localOnly ? 'project-local' : 'project';
 	}
 
+	get currentSettings(): ClaudeSettings {
+		return this.settings[this.activeScope];
+	}
+
 	setScopeGroup(group: ScopeGroup) {
 		this.activeScopeGroup = group;
-		this.activeScope = this.resolvedScope;
 		this.dirty = false;
 	}
 
 	setLocalOnly(local: boolean) {
 		this.localOnly = local;
-		this.activeScope = this.resolvedScope;
 		this.dirty = false;
 	}
 
@@ -65,14 +62,16 @@ class ClaudeSettingsStore {
 		} else {
 			this.activeScopeGroup = 'user';
 		}
-		this.activeScope = this.resolvedScope;
 
 		const results = await Promise.all(
 			SCOPES.map((scope) =>
 				invoke<ClaudeSettings>('load_claude_settings', {
 					scope,
 					projectPath: scope.startsWith('project') ? projectPath : null
-				}).catch(() => ({}) as ClaudeSettings)
+				}).catch((e) => {
+					console.warn(`[ClaudeSettings] Failed to load scope "${scope}":`, e);
+					return {} as ClaudeSettings;
+				})
 			)
 		);
 
@@ -84,9 +83,18 @@ class ClaudeSettingsStore {
 		};
 
 		const [plugins, skills, hookScripts] = await Promise.all([
-			invoke<PluginInfo[]>('list_claude_plugins').catch(() => []),
-			invoke<SkillInfo[]>('list_claude_skills').catch(() => []),
-			invoke<HookScriptInfo[]>('list_claude_hooks_scripts').catch(() => [])
+			invoke<PluginInfo[]>('list_claude_plugins').catch((e) => {
+				console.warn('[ClaudeSettings] Failed to list plugins:', e);
+				return [] as PluginInfo[];
+			}),
+			invoke<SkillInfo[]>('list_claude_skills').catch((e) => {
+				console.warn('[ClaudeSettings] Failed to list skills:', e);
+				return [] as SkillInfo[];
+			}),
+			invoke<HookScriptInfo[]>('list_claude_hooks_scripts').catch((e) => {
+				console.warn('[ClaudeSettings] Failed to list hook scripts:', e);
+				return [] as HookScriptInfo[];
+			})
 		]);
 
 		this.plugins = plugins;
@@ -156,11 +164,37 @@ class ClaudeSettingsStore {
 		this.updateNested('sandbox', sandbox);
 	}
 
+	addToSandboxList(key: string, value: string) {
+		const sandbox = this.currentSettings.sandbox ?? {};
+		const current = (sandbox[key] as string[] | undefined) ?? [];
+		if (!current.includes(value)) {
+			this.updateSandbox({ [key]: [...current, value] });
+		}
+	}
+
+	removeFromSandboxList(key: string, value: string) {
+		const sandbox = this.currentSettings.sandbox ?? {};
+		const current = (sandbox[key] as string[] | undefined) ?? [];
+		this.updateSandbox({ [key]: current.filter((v) => v !== value) });
+	}
+
 	updateSandboxNetwork(partial: Record<string, unknown>) {
 		const sandbox = { ...(this.currentSettings.sandbox ?? {}) };
 		sandbox.network = { ...(sandbox.network ?? {}), ...partial };
 		this.updateNested('sandbox', sandbox);
 	}
-}
 
-export const claudeSettingsStore = new ClaudeSettingsStore();
+	addToSandboxNetworkList(key: string, value: string) {
+		const network = this.currentSettings.sandbox?.network ?? {};
+		const current = (network[key] as string[] | undefined) ?? [];
+		if (!current.includes(value)) {
+			this.updateSandboxNetwork({ [key]: [...current, value] });
+		}
+	}
+
+	removeFromSandboxNetworkList(key: string, value: string) {
+		const network = this.currentSettings.sandbox?.network ?? {};
+		const current = (network[key] as string[] | undefined) ?? [];
+		this.updateSandboxNetwork({ [key]: current.filter((v) => v !== value) });
+	}
+}

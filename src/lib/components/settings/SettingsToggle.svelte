@@ -1,6 +1,6 @@
 <script lang="ts">
-	import Label from '$lib/components/ui/label/label.svelte';
-	import Switch from '$lib/components/ui/switch/switch.svelte';
+	import { Label } from '$lib/components/ui/label';
+	import { Switch } from '$lib/components/ui/switch';
 
 	let {
 		label,

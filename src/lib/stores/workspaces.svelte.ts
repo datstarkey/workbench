@@ -5,7 +5,7 @@ import type {
 	TerminalTabState
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
-import { claudeNewSessionCommand, claudeResumeCommand } from '$lib/utils/claude';
+import { CLAUDE_NEW_SESSION_COMMAND, claudeResumeCommand } from '$lib/utils/claude';
 import { uid } from '$lib/utils/uid';
 
 interface WorkspaceSnapshot {
@@ -13,7 +13,7 @@ interface WorkspaceSnapshot {
 	selectedId: string | null;
 }
 
-class WorkspaceStore {
+export class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
 	selectedId: string | null = $state(null);
 
@@ -26,6 +26,14 @@ class WorkspaceStore {
 
 	get activeWorkspace(): ProjectWorkspace | null {
 		return this.workspaces.find((w) => w.id === this.activeWorkspaceId) ?? null;
+	}
+
+	get openProjectPaths(): string[] {
+		return this.workspaces.map((w) => w.projectPath);
+	}
+
+	get activeProjectPath(): string | null {
+		return this.activeWorkspace?.projectPath ?? null;
 	}
 
 	get activeTerminalTab(): TerminalTabState | null {
@@ -91,7 +99,9 @@ class WorkspaceStore {
 			workspaces: this.workspaces,
 			selectedId: this.selectedId
 		};
-		invoke('save_workspaces', { snapshot }).catch(() => {});
+		invoke('save_workspaces', { snapshot }).catch((e) => {
+			console.error('[WorkspaceStore] Failed to persist:', e);
+		});
 	}
 
 	/** Apply an updater function to a single workspace by ID, then persist. */
@@ -110,34 +120,15 @@ class WorkspaceStore {
 				this.workspaces = snapshot.workspaces;
 				this.selectedId = snapshot.selectedId;
 			}
-		} catch {
-			// No saved workspaces — that's fine
+		} catch (e) {
+			console.warn('[WorkspaceStore] No saved workspaces:', e);
 		}
 	}
 
-	open(project: ProjectConfig) {
-		const existing = this.getByProjectPath(project.path);
-		if (existing) {
-			this.selectedId = existing.id;
-			this.persist();
-			return;
-		}
-
-		const workspace: ProjectWorkspace = {
-			id: uid(),
-			projectPath: project.path,
-			projectName: project.name,
-			terminalTabs: [],
-			activeTerminalTabId: ''
-		};
-
-		this.workspaces = [...this.workspaces, workspace];
-		this.selectedId = workspace.id;
-		this.persist();
-	}
-
-	openWorktree(project: ProjectConfig, worktreePath: string, branch: string) {
-		const existing = this.getByWorktreePath(worktreePath);
+	private openInternal(project: ProjectConfig, opts?: { worktreePath: string; branch: string }) {
+		const existing = opts
+			? this.getByWorktreePath(opts.worktreePath)
+			: this.getByProjectPath(project.path);
 		if (existing) {
 			this.selectedId = existing.id;
 			this.persist();
@@ -150,13 +141,20 @@ class WorkspaceStore {
 			projectName: project.name,
 			terminalTabs: [],
 			activeTerminalTabId: '',
-			worktreePath,
-			branch
+			...opts
 		};
 
 		this.workspaces = [...this.workspaces, workspace];
 		this.selectedId = workspace.id;
 		this.persist();
+	}
+
+	open(project: ProjectConfig) {
+		this.openInternal(project);
+	}
+
+	openWorktree(project: ProjectConfig, worktreePath: string, branch: string) {
+		this.openInternal(project, { worktreePath, branch });
 	}
 
 	closeAllForProject(projectPath: string) {
@@ -269,7 +267,7 @@ class WorkspaceStore {
 		this.updateWorkspace(workspaceId, (w) => {
 			const claudeCount = w.terminalTabs.filter((t) => t.type === 'claude').length;
 			const label = `Claude ${claudeCount + 1}`;
-			const newTab = this.createClaudeTab(label, '', claudeNewSessionCommand());
+			const newTab = this.createClaudeTab(label, '', CLAUDE_NEW_SESSION_COMMAND);
 			tabId = newTab.id;
 			return {
 				...w,
@@ -302,7 +300,7 @@ class WorkspaceStore {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);
 			if (!tab || tab.type !== 'claude') return w;
 			const sessionId = tab.panes[0]?.claudeSessionId;
-			const command = sessionId ? claudeResumeCommand(sessionId) : claudeNewSessionCommand();
+			const command = sessionId ? claudeResumeCommand(sessionId) : CLAUDE_NEW_SESSION_COMMAND;
 			const newTab = this.createClaudeTab(tab.label, sessionId ?? '', command);
 			return {
 				...w,
@@ -327,30 +325,39 @@ class WorkspaceStore {
 		});
 	}
 
-	// --- projectPath-based convenience methods (eliminate thin wrappers in App.svelte) ---
+	// --- projectPath-based convenience methods ---
+
+	private withMainWorkspace<T>(
+		projectPath: string,
+		fn: (ws: ProjectWorkspace) => T
+	): T | undefined {
+		const ws = this.getByProjectPath(projectPath);
+		if (!ws) return undefined;
+		return fn(ws);
+	}
 
 	selectTabByProject(projectPath: string, tabId: string) {
-		const ws = this.getByProjectPath(projectPath);
-		if (!ws) return;
-		this.selectedId = ws.id;
-		this.setActiveTab(ws.id, tabId);
+		this.withMainWorkspace(projectPath, (ws) => {
+			this.selectedId = ws.id;
+			this.setActiveTab(ws.id, tabId);
+		});
 	}
 
 	restartClaudeByProject(projectPath: string, tabId: string) {
-		const ws = this.getByProjectPath(projectPath);
-		if (ws) this.restartClaudeSession(ws.id, tabId);
+		this.withMainWorkspace(projectPath, (ws) => this.restartClaudeSession(ws.id, tabId));
 	}
 
 	closeTabByProject(projectPath: string, tabId: string) {
-		const ws = this.getByProjectPath(projectPath);
-		if (ws) this.closeTerminalTab(ws.id, tabId);
+		this.withMainWorkspace(projectPath, (ws) => this.closeTerminalTab(ws.id, tabId));
 	}
 
 	addClaudeByProject(projectPath: string): { workspaceId: string; tabId: string } | null {
-		const ws = this.getByProjectPath(projectPath);
-		if (!ws) return null;
-		const { tabId } = this.addClaudeSession(ws.id);
-		return { workspaceId: ws.id, tabId };
+		return (
+			this.withMainWorkspace(projectPath, (ws) => {
+				const { tabId } = this.addClaudeSession(ws.id);
+				return { workspaceId: ws.id, tabId };
+			}) ?? null
+		);
 	}
 
 	// --- ensureShape sub-methods ---
@@ -386,7 +393,7 @@ class WorkspaceStore {
 						return { ...pane, startupCommand: resumeCmd };
 					}
 				} else if (pane.type === 'claude' && !pane.claudeSessionId) {
-					const newCmd = claudeNewSessionCommand();
+					const newCmd = CLAUDE_NEW_SESSION_COMMAND;
 					if (pane.startupCommand !== newCmd) {
 						changed = true;
 						return { ...pane, startupCommand: newCmd };
@@ -434,5 +441,3 @@ class WorkspaceStore {
 		}
 	}
 }
-
-export const workspaceStore = new WorkspaceStore();

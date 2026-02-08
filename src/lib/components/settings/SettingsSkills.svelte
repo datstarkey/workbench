@@ -1,5 +1,8 @@
 <script lang="ts">
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
+	import SettingsEmptyState from './SettingsEmptyState.svelte';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 </script>
 
 <div class="space-y-4">
@@ -9,12 +12,10 @@
 	</p>
 
 	{#if claudeSettingsStore.skills.length === 0}
-		<div class="rounded-md border border-dashed border-border/60 py-8 text-center">
-			<p class="text-sm text-muted-foreground">No skills found.</p>
-			<p class="mt-1 text-xs text-muted-foreground/60">
-				Add skill directories to ~/.claude/skills/
-			</p>
-		</div>
+		<SettingsEmptyState
+			title="No skills found."
+			subtitle="Add skill directories to ~/.claude/skills/"
+		/>
 	{:else}
 		<div class="space-y-2">
 			{#each claudeSettingsStore.skills as skill (skill.dirName)}

@@ -4,7 +4,7 @@
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
-	import { terminalOptions } from '$lib/terminal-config';
+	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
 	import {
 		createTerminal,
 		writeTerminal,
@@ -12,7 +12,8 @@
 		killTerminal,
 		onTerminalData,
 		onTerminalExit
-	} from '$lib/hooks/useTerminal.svelte';
+	} from '$lib/utils/terminal';
+	import { stripAnsi } from '$lib/utils/format';
 
 	let {
 		sessionId,
@@ -50,7 +51,7 @@
 			earlyOutput = '';
 			return;
 		}
-		const plain = earlyOutput.replace(new RegExp(String.raw`\x1b\[[0-9;]*[a-zA-Z]`, 'g'), '');
+		const plain = stripAnsi(earlyOutput);
 		let retryCmd = '';
 		if (plain.includes('No conversation found with session ID:')) {
 			// --resume failed → start a fresh session instead
@@ -150,10 +151,21 @@
 	});
 </script>
 
-<div class="terminal-wrapper">
+<div class="terminal-wrapper" style:background={TERMINAL_BG}>
 	<div class="terminal-shell" bind:this={container}></div>
 	{#if terminalError}
-		<div class="terminal-error">{terminalError}</div>
+		<div class="terminal-error" style:background={TERMINAL_BG}>
+			<div class="text-center">
+				<p>{terminalError}</p>
+				<button
+					class="mt-2 rounded bg-white/10 px-3 py-1 text-xs hover:bg-white/20"
+					type="button"
+					onclick={() => (terminalError = '')}
+				>
+					Dismiss
+				</button>
+			</div>
+		</div>
 	{/if}
 </div>
 
@@ -162,7 +174,6 @@
 		height: 100%;
 		width: 100%;
 		padding: 6px 8px;
-		background: #1a1a1e;
 		overflow: hidden;
 		box-sizing: border-box;
 	}
@@ -180,6 +191,5 @@
 		justify-content: center;
 		color: #fca5a5;
 		font-size: 13px;
-		background: #1a1a1e;
 	}
 </style>

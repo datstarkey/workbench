@@ -3,28 +3,18 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import type { DiscoveredClaudeSession } from '$types/workbench';
+	import { getClaudeSessionStore } from '$stores/context';
+	import { formatSessionDate } from '$lib/utils/format';
+
+	const claudeSessionStore = getClaudeSessionStore();
 
 	let {
-		sessions,
 		onResume,
 		onOpen
 	}: {
-		sessions: DiscoveredClaudeSession[];
 		onResume: (sessionId: string, label: string) => void;
 		onOpen: () => void;
 	} = $props();
-
-	const formatDate = (iso: string) => {
-		if (!iso) return '';
-		const d = new Date(iso);
-		return d.toLocaleDateString(undefined, {
-			month: 'short',
-			day: 'numeric',
-			hour: 'numeric',
-			minute: '2-digit'
-		});
-	};
 </script>
 
 <DropdownMenu.Root
@@ -53,14 +43,16 @@
 	<DropdownMenu.Content align="end" class="max-h-80 w-72 overflow-y-auto">
 		<DropdownMenu.Label>Past Sessions</DropdownMenu.Label>
 		<DropdownMenu.Separator />
-		{#if sessions.length === 0}
+		{#if claudeSessionStore.discoveredSessions.length === 0}
 			<div class="px-2 py-3 text-center text-xs text-muted-foreground">No past sessions found</div>
 		{:else}
-			{#each sessions as session (session.sessionId)}
+			{#each claudeSessionStore.discoveredSessions as session (session.sessionId)}
 				<DropdownMenu.Item onclick={() => onResume(session.sessionId, session.label)}>
 					<div class="flex flex-col gap-0.5">
 						<span class="line-clamp-1 text-xs font-medium">{session.label}</span>
-						<span class="text-[10px] text-muted-foreground">{formatDate(session.timestamp)}</span>
+						<span class="text-[10px] text-muted-foreground"
+							>{formatSessionDate(session.timestamp)}</span
+						>
 					</div>
 				</DropdownMenu.Item>
 			{/each}

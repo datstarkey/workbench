@@ -6,8 +6,10 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import SaveIcon from '@lucide/svelte/icons/save';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
-	import { claudeSettingsStore } from '$stores/claude-settings.svelte';
+	import { getClaudeSettingsStore } from '$stores/context';
 	import type { ScopeGroup } from '$types/claude-settings';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
 	import SettingsGeneral from './SettingsGeneral.svelte';
 	import SettingsPlugins from './SettingsPlugins.svelte';
 	import SettingsMcp from './SettingsMcp.svelte';
@@ -111,10 +113,16 @@
 
 		<div class="flex min-h-0 flex-1">
 			<!-- Section nav -->
-			<nav class="flex w-36 shrink-0 flex-col gap-0.5 border-r border-border/60 p-2">
+			<div
+				class="flex w-36 shrink-0 flex-col gap-0.5 border-r border-border/60 p-2"
+				role="tablist"
+				aria-label="Settings sections"
+			>
 				{#each sections as section (section.id)}
 					<button
 						type="button"
+						role="tab"
+						aria-selected={activeSection === section.id}
 						class="rounded-md px-2 py-1.5 text-left text-xs transition-colors {activeSection ===
 						section.id
 							? 'bg-accent font-medium text-accent-foreground'
@@ -124,7 +132,7 @@
 						{section.label}
 					</button>
 				{/each}
-			</nav>
+			</div>
 
 			<!-- Section content -->
 			<ScrollArea class="flex-1">
