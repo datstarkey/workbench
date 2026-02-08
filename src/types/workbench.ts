@@ -62,12 +62,14 @@ export type ActiveClaudeSession = {
 	claudeSessionId: string;
 	tabId: string;
 	label: string;
+	needsAttention?: boolean;
 };
 
 export type DiscoveredClaudeSession = {
 	sessionId: string;
 	label: string;
 	timestamp: string;
+	lastMessageRole?: string;
 };
 
 export type ProjectWorkspace = {
@@ -76,7 +78,38 @@ export type ProjectWorkspace = {
 	projectName: string;
 	terminalTabs: TerminalTabState[];
 	activeTerminalTabId: string;
+	worktreePath?: string;
+	branch?: string;
 };
+
+// Git types
+
+export interface GitInfo {
+	branch: string;
+	repoRoot: string;
+	isWorktree: boolean;
+}
+
+export interface WorktreeInfo {
+	path: string;
+	head: string;
+	branch: string;
+	isMain: boolean;
+}
+
+export interface BranchInfo {
+	name: string;
+	sha: string;
+	isCurrent: boolean;
+	isRemote: boolean;
+}
+
+export interface CreateWorktreeRequest {
+	repoPath: string;
+	branch: string;
+	newBranch: boolean;
+	path?: string;
+}
 
 export type ProjectFormState = {
 	name: string;

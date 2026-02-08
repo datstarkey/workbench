@@ -5,6 +5,7 @@
 	import EllipsisVerticalIcon from '@lucide/svelte/icons/ellipsis-vertical';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import FolderIcon from '@lucide/svelte/icons/folder';
+	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PanelLeftCloseIcon from '@lucide/svelte/icons/panel-left-close';
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
@@ -13,6 +14,8 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
+	import CirclePauseIcon from '@lucide/svelte/icons/circle-pause';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
@@ -21,7 +24,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { SvelteSet } from 'svelte/reactivity';
-	import type { ActiveClaudeSession, ProjectConfig } from '$types/workbench';
+	import type { ActiveClaudeSession, ProjectConfig, WorktreeInfo } from '$types/workbench';
 
 	let {
 		projects,
@@ -30,6 +33,8 @@
 		activeProjectPath,
 		openProjectPaths,
 		activeSessionsByProject,
+		worktreesByProject,
+		branchByProject,
 		onAddProject,
 		onOpenProject,
 		onEditProject,
@@ -40,7 +45,10 @@
 		onRestartSession,
 		onCloseSession,
 		onOpenSettings,
-		onToggleSidebar
+		onToggleSidebar,
+		onOpenWorktree,
+		onAddWorktree,
+		onRemoveWorktree
 	}: {
 		projects: ProjectConfig[];
 		loaded: boolean;
@@ -48,6 +56,8 @@
 		activeProjectPath: string | null;
 		openProjectPaths: string[];
 		activeSessionsByProject: Record<string, ActiveClaudeSession[]>;
+		worktreesByProject: Record<string, WorktreeInfo[]>;
+		branchByProject: Record<string, string>;
 		onAddProject: () => void;
 		onOpenProject: (path: string) => void;
 		onEditProject: (path: string) => void;
@@ -59,6 +69,9 @@
 		onCloseSession: (projectPath: string, tabId: string) => void;
 		onOpenSettings: () => void;
 		onToggleSidebar: () => void;
+		onOpenWorktree: (projectPath: string, worktreePath: string, branch: string) => void;
+		onAddWorktree: (projectPath: string) => void;
+		onRemoveWorktree: (projectPath: string, worktreePath: string) => void;
 	} = $props();
 
 	const expandedProjects = new SvelteSet<string>();
@@ -73,6 +86,20 @@
 
 	function sessionsForProject(projectPath: string): ActiveClaudeSession[] {
 		return activeSessionsByProject[projectPath] ?? [];
+	}
+
+	function worktreesForProject(projectPath: string): WorktreeInfo[] {
+		return (worktreesByProject[projectPath] ?? []).filter((wt) => !wt.isMain);
+	}
+
+	function projectHasAttention(projectPath: string): boolean {
+		return sessionsForProject(projectPath).some((s) => s.needsAttention);
+	}
+
+	function hasExpandableContent(projectPath: string): boolean {
+		return (
+			sessionsForProject(projectPath).length > 0 || worktreesForProject(projectPath).length > 0
+		);
 	}
 </script>
 
@@ -132,13 +159,17 @@
 						{@const isOpen = openProjectPaths.includes(project.path)}
 						{@const isActive = activeProjectPath === project.path}
 						{@const sessions = sessionsForProject(project.path)}
+						{@const worktrees = worktreesForProject(project.path)}
+						{@const branch = branchByProject[project.path]}
+						{@const hasAttention = projectHasAttention(project.path)}
+						{@const hasChildren = hasExpandableContent(project.path)}
 						{@const isExpanded =
 							expandedProjects.has(project.path) || project.path === activeProjectPath}
 						<div>
 							<div
 								class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
 							>
-								{#if sessions.length > 0}
+								{#if hasChildren}
 									<button
 										class="flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted"
 										type="button"
@@ -160,7 +191,12 @@
 								>
 									<FolderIcon class="size-3.5 shrink-0 opacity-60" />
 									<span class="truncate text-sm">{project.name}</span>
-									{#if isOpen}
+									{#if branch}
+										<span class="truncate text-[10px] text-muted-foreground/60">({branch})</span>
+									{/if}
+									{#if hasAttention}
+										<CirclePauseIcon class="size-3 shrink-0 text-amber-400" />
+									{:else if isOpen}
 										<span class="size-1.5 shrink-0 rounded-full bg-primary"></span>
 									{/if}
 								</button>
@@ -183,6 +219,10 @@
 											<SparklesIcon class="size-3.5" />
 											New Claude Session
 										</DropdownMenu.Item>
+										<DropdownMenu.Item onclick={() => onAddWorktree(project.path)}>
+											<GitBranchIcon class="size-3.5" />
+											Add Worktree
+										</DropdownMenu.Item>
 										<DropdownMenu.Item onclick={() => onOpenInVSCode(project.path)}>
 											<CodeIcon class="size-3.5" />
 											Open in VS Code
@@ -203,8 +243,48 @@
 								</DropdownMenu.Root>
 							</div>
 
-							{#if isExpanded && sessions.length > 0}
+							{#if isExpanded && hasChildren}
 								<div class="mt-0.5 ml-5 space-y-0.5 border-l border-border/40 pl-2">
+									{#if worktrees.length > 0}
+										{#each worktrees as wt (wt.path)}
+											<ContextMenu.Root>
+												<ContextMenu.Trigger class="w-full">
+													<button
+														class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+														type="button"
+														onclick={() => onOpenWorktree(project.path, wt.path, wt.branch)}
+													>
+														<GitBranchIcon class="size-3 shrink-0 text-emerald-400" />
+														<span class="truncate text-xs font-medium">{wt.branch}</span>
+													</button>
+												</ContextMenu.Trigger>
+												<ContextMenu.Content class="w-40">
+													<ContextMenu.Item
+														onclick={() => onOpenWorktree(project.path, wt.path, wt.branch)}
+													>
+														<ExternalLinkIcon class="size-3.5" />
+														Open
+													</ContextMenu.Item>
+													<ContextMenu.Separator />
+													<ContextMenu.Item
+														class="text-destructive"
+														onclick={() => onRemoveWorktree(project.path, wt.path)}
+													>
+														<Trash2Icon class="size-3.5" />
+														Remove
+													</ContextMenu.Item>
+												</ContextMenu.Content>
+											</ContextMenu.Root>
+										{/each}
+										<button
+											class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
+											type="button"
+											onclick={() => onAddWorktree(project.path)}
+										>
+											<PlusIcon class="size-3 shrink-0" />
+											<span class="text-xs">Add Worktree</span>
+										</button>
+									{/if}
 									{#each sessions as session (session.tabId)}
 										<ContextMenu.Root>
 											<ContextMenu.Trigger class="w-full">
@@ -213,8 +293,17 @@
 													type="button"
 													onclick={() => onSelectTab(project.path, session.tabId)}
 												>
-													<SparklesIcon class="size-3 shrink-0 text-violet-400" />
-													<span class="truncate text-xs font-medium">{session.label}</span>
+													{#if session.needsAttention}
+														<CirclePauseIcon class="size-3 shrink-0 text-amber-400" />
+													{:else}
+														<LoaderCircleIcon
+															class="size-3 shrink-0 animate-spin text-violet-400"
+														/>
+													{/if}
+													<span
+														class="truncate text-xs font-medium"
+														class:text-amber-300={session.needsAttention}>{session.label}</span
+													>
 												</button>
 											</ContextMenu.Trigger>
 											<ContextMenu.Content class="w-40">
@@ -235,14 +324,16 @@
 											</ContextMenu.Content>
 										</ContextMenu.Root>
 									{/each}
-									<button
-										class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
-										type="button"
-										onclick={() => onAddClaude(project.path)}
-									>
-										<PlusIcon class="size-3 shrink-0" />
-										<span class="text-xs">New Session</span>
-									</button>
+									{#if sessions.length > 0}
+										<button
+											class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
+											type="button"
+											onclick={() => onAddClaude(project.path)}
+										>
+											<PlusIcon class="size-3 shrink-0" />
+											<span class="text-xs">New Session</span>
+										</button>
+									{/if}
 								</div>
 							{/if}
 						</div>

@@ -1,11 +1,13 @@
 use tauri::State;
 
 use crate::config;
+use crate::git;
 use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
-    CreateTerminalRequest, CreateTerminalResponse, DiscoveredClaudeSession, HookScriptInfo,
-    PluginInfo, ProjectConfig, SkillInfo, WorkspaceFile,
+    BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
+    DiscoveredClaudeSession, GitInfo, HookScriptInfo, PluginInfo, ProjectConfig, SkillInfo,
+    WorkspaceFile, WorktreeInfo,
 };
 
 #[tauri::command]
@@ -140,4 +142,32 @@ pub fn list_claude_skills() -> Result<Vec<SkillInfo>, String> {
 #[tauri::command]
 pub fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
     settings::list_hooks_scripts().map_err(|e| e.to_string())
+}
+
+// Git commands
+
+#[tauri::command]
+pub fn git_info(path: String) -> Result<GitInfo, String> {
+    git::git_info(&path)
+}
+
+#[tauri::command]
+pub fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
+    git::list_worktrees(&path)
+}
+
+#[tauri::command]
+pub fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
+    git::create_worktree(&request)
+}
+
+#[tauri::command]
+pub fn remove_worktree(repo_path: String, worktree_path: String) -> Result<bool, String> {
+    git::remove_worktree(&repo_path, &worktree_path)?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
+    git::list_branches(&path)
 }

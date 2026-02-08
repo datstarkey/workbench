@@ -18,12 +18,14 @@
 		sessionId,
 		project,
 		active,
-		startupCommand
+		startupCommand,
+		cwd
 	}: {
 		sessionId: string;
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
+		cwd?: string;
 	} = $props();
 
 	let container: HTMLDivElement;
@@ -119,7 +121,7 @@
 
 			await createTerminal({
 				id: sessionId,
-				projectPath: project.path,
+				projectPath: cwd ?? project.path,
 				shell: project.shell || '',
 				cols: terminal.cols,
 				rows: terminal.rows,

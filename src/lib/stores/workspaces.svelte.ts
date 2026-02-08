@@ -5,19 +5,13 @@ import type {
 	TerminalTabState
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
-import { claudeNewSessionCommand, claudeResumeCommand } from '$lib/claude';
+import { claudeNewSessionCommand, claudeResumeCommand } from '$lib/utils/claude';
+import { uid } from '$lib/utils/uid';
 
 interface WorkspaceSnapshot {
 	workspaces: ProjectWorkspace[];
 	selectedId: string | null;
 }
-
-const uid = (): string => {
-	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-		return crypto.randomUUID();
-	}
-	return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-};
 
 class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
@@ -42,8 +36,19 @@ class WorkspaceStore {
 		);
 	}
 
+	/** Find the main workspace (not a worktree) for a project path */
 	getByProjectPath(projectPath: string): ProjectWorkspace | undefined {
-		return this.workspaces.find((w) => w.projectPath === projectPath);
+		return this.workspaces.find((w) => w.projectPath === projectPath && !w.worktreePath);
+	}
+
+	/** Find a worktree workspace by its worktree path */
+	getByWorktreePath(worktreePath: string): ProjectWorkspace | undefined {
+		return this.workspaces.find((w) => w.worktreePath === worktreePath);
+	}
+
+	/** Get all workspaces (main + worktrees) for a project */
+	getWorkspacesForProject(projectPath: string): ProjectWorkspace[] {
+		return this.workspaces.filter((w) => w.projectPath === projectPath);
 	}
 
 	private createTerminalTab(
@@ -89,6 +94,15 @@ class WorkspaceStore {
 		invoke('save_workspaces', { snapshot }).catch(() => {});
 	}
 
+	/** Apply an updater function to a single workspace by ID, then persist. */
+	private updateWorkspace(
+		workspaceId: string,
+		updater: (ws: ProjectWorkspace) => ProjectWorkspace
+	): void {
+		this.workspaces = this.workspaces.map((w) => (w.id === workspaceId ? updater(w) : w));
+		this.persist();
+	}
+
 	async load() {
 		try {
 			const snapshot = await invoke<WorkspaceSnapshot>('load_workspaces');
@@ -119,6 +133,41 @@ class WorkspaceStore {
 
 		this.workspaces = [...this.workspaces, workspace];
 		this.selectedId = workspace.id;
+		this.persist();
+	}
+
+	openWorktree(project: ProjectConfig, worktreePath: string, branch: string) {
+		const existing = this.getByWorktreePath(worktreePath);
+		if (existing) {
+			this.selectedId = existing.id;
+			this.persist();
+			return;
+		}
+
+		const workspace: ProjectWorkspace = {
+			id: uid(),
+			projectPath: project.path,
+			projectName: project.name,
+			terminalTabs: [],
+			activeTerminalTabId: '',
+			worktreePath,
+			branch
+		};
+
+		this.workspaces = [...this.workspaces, workspace];
+		this.selectedId = workspace.id;
+		this.persist();
+	}
+
+	closeAllForProject(projectPath: string) {
+		const ids = this.getWorkspacesForProject(projectPath).map((w) => w.id);
+		if (ids.length === 0) return;
+
+		this.workspaces = this.workspaces.filter((w) => !ids.includes(w.id));
+
+		if (this.selectedId && ids.includes(this.selectedId)) {
+			this.selectedId = this.workspaces[0]?.id ?? null;
+		}
 		this.persist();
 	}
 
@@ -156,8 +205,7 @@ class WorkspaceStore {
 	}
 
 	addTerminalTab(workspaceId: string, project: ProjectConfig) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
+		this.updateWorkspace(workspaceId, (w) => {
 			const newTab = this.createTerminalTab(project, false, w.terminalTabs.length + 1);
 			return {
 				...w,
@@ -165,12 +213,10 @@ class WorkspaceStore {
 				activeTerminalTabId: newTab.id
 			};
 		});
-		this.persist();
 	}
 
 	closeTerminalTab(workspaceId: string, tabId: string) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
+		this.updateWorkspace(workspaceId, (w) => {
 			const tabIndex = w.terminalTabs.findIndex((t) => t.id === tabId);
 			const updatedTabs = w.terminalTabs.filter((t) => t.id !== tabId);
 			const fallback = updatedTabs[tabIndex] || updatedTabs[tabIndex - 1] || updatedTabs[0];
@@ -181,20 +227,14 @@ class WorkspaceStore {
 					w.activeTerminalTabId === tabId ? (fallback?.id ?? '') : w.activeTerminalTabId
 			};
 		});
-		this.persist();
 	}
 
 	setActiveTab(workspaceId: string, tabId: string) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
-			return { ...w, activeTerminalTabId: tabId };
-		});
-		this.persist();
+		this.updateWorkspace(workspaceId, (w) => ({ ...w, activeTerminalTabId: tabId }));
 	}
 
 	splitTerminal(workspaceId: string, direction: SplitDirection) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
+		this.updateWorkspace(workspaceId, (w) => {
 			const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
 			if (!tab) return w;
 			const updatedTab: TerminalTabState = {
@@ -207,12 +247,10 @@ class WorkspaceStore {
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tab.id ? updatedTab : t))
 			};
 		});
-		this.persist();
 	}
 
 	removePane(workspaceId: string, paneId: string) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
+		this.updateWorkspace(workspaceId, (w) => {
 			const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
 			if (!tab || tab.panes.length <= 1) return w;
 			const updatedTab: TerminalTabState = {
@@ -224,13 +262,11 @@ class WorkspaceStore {
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tab.id ? updatedTab : t))
 			};
 		});
-		this.persist();
 	}
 
 	addClaudeSession(workspaceId: string): { tabId: string } {
 		let tabId = '';
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
+		this.updateWorkspace(workspaceId, (w) => {
 			const claudeCount = w.terminalTabs.filter((t) => t.type === 'claude').length;
 			const label = `Claude ${claudeCount + 1}`;
 			const newTab = this.createClaudeTab(label, '', claudeNewSessionCommand());
@@ -241,34 +277,28 @@ class WorkspaceStore {
 				activeTerminalTabId: newTab.id
 			};
 		});
-		this.persist();
 		return { tabId };
 	}
 
 	/** Update a Claude tab once its session ID has been discovered from the JSONL */
 	updateClaudeTab(workspaceId: string, tabId: string, sessionId: string, label: string) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
-			return {
-				...w,
-				terminalTabs: w.terminalTabs.map((t) => {
-					if (t.id !== tabId) return t;
-					return {
-						...t,
-						label,
-						panes: t.panes.map((p) =>
-							p.type === 'claude' ? { ...p, claudeSessionId: sessionId } : p
-						)
-					};
-				})
-			};
-		});
-		this.persist();
+		this.updateWorkspace(workspaceId, (w) => ({
+			...w,
+			terminalTabs: w.terminalTabs.map((t) => {
+				if (t.id !== tabId) return t;
+				return {
+					...t,
+					label,
+					panes: t.panes.map((p) =>
+						p.type === 'claude' ? { ...p, claudeSessionId: sessionId } : p
+					)
+				};
+			})
+		}));
 	}
 
 	restartClaudeSession(workspaceId: string, tabId: string) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
+		this.updateWorkspace(workspaceId, (w) => {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);
 			if (!tab || tab.type !== 'claude') return w;
 			const sessionId = tab.panes[0]?.claudeSessionId;
@@ -280,12 +310,10 @@ class WorkspaceStore {
 				activeTerminalTabId: newTab.id
 			};
 		});
-		this.persist();
 	}
 
 	resumeClaudeSession(workspaceId: string, claudeSessionId: string, label: string) {
-		this.workspaces = this.workspaces.map((w) => {
-			if (w.id !== workspaceId) return w;
+		this.updateWorkspace(workspaceId, (w) => {
 			const newTab = this.createClaudeTab(
 				label,
 				claudeSessionId,
@@ -297,64 +325,111 @@ class WorkspaceStore {
 				activeTerminalTabId: newTab.id
 			};
 		});
-		this.persist();
+	}
+
+	// --- projectPath-based convenience methods (eliminate thin wrappers in App.svelte) ---
+
+	selectTabByProject(projectPath: string, tabId: string) {
+		const ws = this.getByProjectPath(projectPath);
+		if (!ws) return;
+		this.selectedId = ws.id;
+		this.setActiveTab(ws.id, tabId);
+	}
+
+	restartClaudeByProject(projectPath: string, tabId: string) {
+		const ws = this.getByProjectPath(projectPath);
+		if (ws) this.restartClaudeSession(ws.id, tabId);
+	}
+
+	closeTabByProject(projectPath: string, tabId: string) {
+		const ws = this.getByProjectPath(projectPath);
+		if (ws) this.closeTerminalTab(ws.id, tabId);
+	}
+
+	addClaudeByProject(projectPath: string): { workspaceId: string; tabId: string } | null {
+		const ws = this.getByProjectPath(projectPath);
+		if (!ws) return null;
+		const { tabId } = this.addClaudeSession(ws.id);
+		return { workspaceId: ws.id, tabId };
+	}
+
+	// --- ensureShape sub-methods ---
+
+	private ensureTabStructure(tabs: TerminalTabState[]): {
+		tabs: TerminalTabState[];
+		changed: boolean;
+	} {
+		let changed = false;
+		if (!Array.isArray(tabs)) return { tabs: [], changed: true };
+
+		const fixed = tabs.map((tab) => {
+			if (!Array.isArray(tab.panes) || tab.panes.length === 0) {
+				changed = true;
+				return { ...tab, panes: [{ id: uid() }] };
+			}
+			return tab;
+		});
+		return { tabs: fixed, changed };
+	}
+
+	private ensureClaudeResumeCommands(tabs: TerminalTabState[]): {
+		tabs: TerminalTabState[];
+		changed: boolean;
+	} {
+		let changed = false;
+		const fixed = tabs.map((tab) => {
+			const fixedPanes = tab.panes.map((pane) => {
+				if (pane.type === 'claude' && pane.claudeSessionId) {
+					const resumeCmd = claudeResumeCommand(pane.claudeSessionId);
+					if (pane.startupCommand !== resumeCmd) {
+						changed = true;
+						return { ...pane, startupCommand: resumeCmd };
+					}
+				} else if (pane.type === 'claude' && !pane.claudeSessionId) {
+					const newCmd = claudeNewSessionCommand();
+					if (pane.startupCommand !== newCmd) {
+						changed = true;
+						return { ...pane, startupCommand: newCmd };
+					}
+				}
+				return pane;
+			});
+			return { ...tab, panes: fixedPanes };
+		});
+		return { tabs: fixed, changed };
+	}
+
+	private ensureActiveTabId(
+		tabs: TerminalTabState[],
+		currentActiveId: string
+	): { activeId: string; changed: boolean } {
+		if (tabs.length === 0) {
+			return { activeId: '', changed: currentActiveId !== '' };
+		}
+		const hasActiveTab = tabs.some((t) => t.id === currentActiveId);
+		if (hasActiveTab) return { activeId: currentActiveId, changed: false };
+		return { activeId: tabs[0]?.id || '', changed: true };
 	}
 
 	ensureShape() {
-		let changed = false;
+		let anyChanged = false;
 		const normalized = this.workspaces.map((w) => {
-			let nextTabs = w.terminalTabs;
+			const structure = this.ensureTabStructure(w.terminalTabs);
+			const commands = this.ensureClaudeResumeCommands(structure.tabs);
+			const activeTab = this.ensureActiveTabId(commands.tabs, w.activeTerminalTabId);
 
-			if (!Array.isArray(nextTabs)) {
-				nextTabs = [];
-				changed = true;
-			}
-			// Empty tab list is valid (workspace landing page)
-			if (nextTabs.length === 0) {
-				if (w.activeTerminalTabId) {
-					changed = true;
-					return { ...w, terminalTabs: nextTabs, activeTerminalTabId: '' };
-				}
-				return w;
-			}
+			const changed = structure.changed || commands.changed || activeTab.changed;
+			if (changed) anyChanged = true;
 
-			nextTabs = nextTabs.map((tab) => {
-				if (!Array.isArray(tab.panes) || tab.panes.length === 0) {
-					changed = true;
-					return { ...tab, panes: [{ id: uid() }] };
-				}
-				// Auto-resume: ensure Claude panes with a known session ID get a resume command on restart
-				const fixedPanes = tab.panes.map((pane) => {
-					if (pane.type === 'claude' && pane.claudeSessionId) {
-						const resumeCmd = claudeResumeCommand(pane.claudeSessionId);
-						if (pane.startupCommand !== resumeCmd) {
-							changed = true;
-							return { ...pane, startupCommand: resumeCmd };
-						}
-					} else if (pane.type === 'claude' && !pane.claudeSessionId) {
-						// No session ID yet — start a fresh session
-						const newCmd = claudeNewSessionCommand();
-						if (pane.startupCommand !== newCmd) {
-							changed = true;
-							return { ...pane, startupCommand: newCmd };
-						}
-					}
-					return pane;
-				});
-				return { ...tab, panes: fixedPanes };
-			});
-
-			const hasActiveTab = nextTabs.some((t) => t.id === w.activeTerminalTabId);
-			const nextActiveId = hasActiveTab ? w.activeTerminalTabId : nextTabs[0]?.id || '';
-			if (nextActiveId !== w.activeTerminalTabId) changed = true;
-
-			if (nextTabs !== w.terminalTabs || nextActiveId !== w.activeTerminalTabId) {
-				return { ...w, terminalTabs: nextTabs, activeTerminalTabId: nextActiveId };
-			}
-			return w;
+			if (!changed) return w;
+			return {
+				...w,
+				terminalTabs: commands.tabs,
+				activeTerminalTabId: activeTab.activeId
+			};
 		});
 
-		if (changed) {
+		if (anyChanged) {
 			this.workspaces = normalized;
 		}
 	}

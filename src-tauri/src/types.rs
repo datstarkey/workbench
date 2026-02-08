@@ -88,6 +88,10 @@ pub struct WorkspaceSnapshot {
     pub project_name: String,
     pub terminal_tabs: Vec<TerminalTabSnapshot>,
     pub active_terminal_tab_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +109,46 @@ pub struct DiscoveredClaudeSession {
     pub session_id: String,
     pub label: String,
     pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_role: Option<String>,
+}
+
+// Git types
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitInfo {
+    pub branch: String,
+    pub repo_root: String,
+    pub is_worktree: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub head: String,
+    pub branch: String,
+    pub is_main: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    pub name: String,
+    pub sha: String,
+    pub is_current: bool,
+    pub is_remote: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorktreeRequest {
+    pub repo_path: String,
+    pub branch: String,
+    pub new_branch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 // Claude Code settings types

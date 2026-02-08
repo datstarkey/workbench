@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod git;
 mod paths;
 mod pty;
 mod settings;
@@ -30,6 +31,11 @@ pub fn run() {
             commands::list_claude_plugins,
             commands::list_claude_skills,
             commands::list_claude_hooks_scripts,
+            commands::git_info,
+            commands::list_worktrees,
+            commands::create_worktree,
+            commands::remove_worktree,
+            commands::list_branches,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Workbench");

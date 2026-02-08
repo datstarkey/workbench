@@ -8,6 +8,7 @@
 	import TerminalTabs from '$components/TerminalTabs.svelte';
 	import TerminalGrid from '$components/TerminalGrid.svelte';
 	import ProjectDialog from '$components/ProjectDialog.svelte';
+	import WorktreeDialog from '$components/WorktreeDialog.svelte';
 	import EmptyState from '$components/EmptyState.svelte';
 	import WorkspaceLanding from '$components/WorkspaceLanding.svelte';
 	import ConfirmDialog from '$components/ConfirmDialog.svelte';
@@ -16,8 +17,14 @@
 	import { workspaceStore } from '$stores/workspaces.svelte';
 	import { claudeSessionStore } from '$stores/claudeSessions.svelte';
 	import { selectFolder } from '$lib/hooks/useDialog.svelte';
-	import { baseName } from '$lib/utils/path';
-	import type { ActiveClaudeSession, ProjectConfig, ProjectFormState } from '$types/workbench';
+	import { baseName, effectivePath } from '$lib/utils/path';
+	import type {
+		ActiveClaudeSession,
+		BranchInfo,
+		ProjectConfig,
+		ProjectFormState,
+		WorktreeInfo
+	} from '$types/workbench';
 
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
@@ -38,6 +45,16 @@
 	let pendingRemovePath: string | null = $state(null);
 	let settingsOpen = $state(false);
 
+	// Git worktree state
+	let worktreeDialogOpen = $state(false);
+	let worktreeDialogProjectPath = $state('');
+	let worktreeDialogBranches: BranchInfo[] = $state([]);
+	let worktreeDialogError = $state('');
+	let worktreesByProject: Record<string, WorktreeInfo[]> = $state({});
+	let branchByProject: Record<string, string> = $state({});
+	let worktreeRemoveConfirmOpen = $state(false);
+	let pendingWorktreeRemove: { projectPath: string; worktreePath: string } | null = $state(null);
+
 	let openProjectPaths = $derived(workspaceStore.workspaces.map((w) => w.projectPath));
 	let activeProjectPath = $derived(workspaceStore.activeWorkspace?.projectPath ?? null);
 
@@ -57,6 +74,105 @@
 			return acc;
 		}, {})
 	);
+
+	// --- Git info fetching ---
+
+	async function fetchGitInfo(projectPath: string) {
+		try {
+			const info = await invoke<{ branch: string; repoRoot: string; isWorktree: boolean }>(
+				'git_info',
+				{ path: projectPath }
+			);
+			branchByProject = { ...branchByProject, [projectPath]: info.branch };
+		} catch {
+			// Not a git repo — that's fine
+		}
+	}
+
+	async function fetchWorktrees(projectPath: string) {
+		try {
+			const wts = await invoke<WorktreeInfo[]>('list_worktrees', { path: projectPath });
+			worktreesByProject = { ...worktreesByProject, [projectPath]: wts };
+		} catch {
+			// Not a git repo or no worktrees
+		}
+	}
+
+	async function refreshGitState(projectPath: string) {
+		await Promise.all([fetchGitInfo(projectPath), fetchWorktrees(projectPath)]);
+	}
+
+	async function refreshAllGitState() {
+		await Promise.all(projectStore.projects.map((p) => refreshGitState(p.path)));
+	}
+
+	// --- Worktree handlers ---
+
+	async function handleAddWorktree(projectPath: string) {
+		worktreeDialogProjectPath = projectPath;
+		worktreeDialogError = '';
+		worktreeDialogBranches = [];
+		worktreeDialogOpen = true;
+
+		try {
+			worktreeDialogBranches = await invoke<BranchInfo[]>('list_branches', {
+				path: projectPath
+			});
+		} catch {
+			worktreeDialogError = 'Failed to list branches.';
+		}
+	}
+
+	async function handleCreateWorktree(branch: string, newBranch: boolean, path: string) {
+		try {
+			await invoke<string>('create_worktree', {
+				request: {
+					repoPath: worktreeDialogProjectPath,
+					branch,
+					newBranch,
+					path
+				}
+			});
+			worktreeDialogOpen = false;
+			await refreshGitState(worktreeDialogProjectPath);
+
+			// Open the new worktree workspace
+			const project = projectStore.getByPath(worktreeDialogProjectPath);
+			if (project) {
+				workspaceStore.openWorktree(project, path, branch);
+			}
+		} catch (e) {
+			worktreeDialogError = String(e);
+		}
+	}
+
+	function handleOpenWorktree(projectPath: string, worktreePath: string, branch: string) {
+		const project = projectStore.getByPath(projectPath);
+		if (!project) return;
+		workspaceStore.openWorktree(project, worktreePath, branch);
+	}
+
+	function handleRemoveWorktree(projectPath: string, worktreePath: string) {
+		pendingWorktreeRemove = { projectPath, worktreePath };
+		worktreeRemoveConfirmOpen = true;
+	}
+
+	async function confirmRemoveWorktree() {
+		if (!pendingWorktreeRemove) return;
+		const { projectPath, worktreePath } = pendingWorktreeRemove;
+		try {
+			await invoke('remove_worktree', { repoPath: projectPath, worktreePath });
+			// Close the worktree workspace if open
+			const ws = workspaceStore.getByWorktreePath(worktreePath);
+			if (ws) workspaceStore.close(ws.id);
+			await refreshGitState(projectPath);
+		} catch {
+			// Worktree removal failed — may have uncommitted changes
+		}
+		pendingWorktreeRemove = null;
+	}
+
+	// --- Project handlers ---
 
 	function resetProjectForm() {
 		projectForm = { name: '', path: '', shell: '', startupCommand: '' };
@@ -128,6 +244,7 @@
 		if (projectDialogMode === 'create') {
 			await projectStore.add(nextProject);
 			openProject(nextProject.path);
+			refreshGitState(nextProject.path);
 		} else {
 			const previousPath = editingProjectPath;
 			if (!previousPath) {
@@ -149,8 +266,7 @@
 
 	async function confirmRemoveProject() {
 		if (!pendingRemovePath) return;
-		const ws = workspaceStore.getByProjectPath(pendingRemovePath);
-		if (ws) workspaceStore.close(ws.id);
+		workspaceStore.closeAllForProject(pendingRemovePath);
 		await projectStore.remove(pendingRemovePath);
 		pendingRemovePath = null;
 	}
@@ -169,8 +285,8 @@
 		}
 	}
 
-	function pollClaudeSession(workspaceId: string, tabId: string, projectPath: string) {
-		claudeSessionStore.pollForNewSession(tabId, projectPath, (session) => {
+	function pollClaudeSession(workspaceId: string, tabId: string, sessionPath: string) {
+		claudeSessionStore.pollForNewSession(tabId, sessionPath, (session) => {
 			workspaceStore.updateClaudeTab(workspaceId, tabId, session.sessionId, session.label);
 		});
 	}
@@ -183,9 +299,10 @@
 		}
 	}
 
-	function startClaudeInWorkspace(ws: { id: string; projectPath: string }) {
+	function startClaudeInWorkspace(ws: { id: string; projectPath: string; worktreePath?: string }) {
 		const { tabId } = workspaceStore.addClaudeSession(ws.id);
-		pollClaudeSession(ws.id, tabId, ws.projectPath);
+		const sessionPath = ws.worktreePath ?? ws.projectPath;
+		pollClaudeSession(ws.id, tabId, sessionPath);
 	}
 
 	onMount(async () => {
@@ -194,14 +311,13 @@
 		workspaceStore.ensureShape();
 		claudeSessionStore.setClaudePaneCheck((paneId) =>
 			workspaceStore.workspaces.some((ws) =>
-				ws.terminalTabs.some(
-					(t) => t.type === 'claude' && t.panes.some((p) => p.id === paneId)
-				)
+				ws.terminalTabs.some((t) => t.type === 'claude' && t.panes.some((p) => p.id === paneId))
 			)
 		);
 		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
 			openProject(projectStore.projects[0].path);
 		}
+		refreshAllGitState();
 	});
 </script>
 
@@ -226,6 +342,8 @@
 					{activeProjectPath}
 					{openProjectPaths}
 					{activeSessionsByProject}
+					{worktreesByProject}
+					{branchByProject}
 					onAddProject={openCreateProjectDialog}
 					onOpenProject={openProject}
 					onEditProject={openEditProjectDialog}
@@ -237,6 +355,9 @@
 					onCloseSession={(path, tabId) => workspaceStore.closeTabByProject(path, tabId)}
 					onOpenSettings={() => (settingsOpen = true)}
 					onToggleSidebar={toggleSidebar}
+					onOpenWorktree={handleOpenWorktree}
+					onAddWorktree={handleAddWorktree}
+					onRemoveWorktree={handleRemoveWorktree}
 				/>
 			</Resizable.Pane>
 			<Resizable.Handle withHandle class="cursor-col-resize" />
@@ -259,6 +380,7 @@
 							{@const activeTab =
 								ws.terminalTabs.find((t) => t.id === ws.activeTerminalTabId) ?? ws.terminalTabs[0]}
 							{@const wsProject = projectStore.getByPath(ws.projectPath)}
+							{@const wsCwd = effectivePath(ws)}
 							<div class="flex min-h-0 flex-1 flex-col" class:hidden={!isActiveWs}>
 								{#if activeTab && wsProject}
 									<TerminalTabs
@@ -272,7 +394,7 @@
 										onAddClaude={() => startClaudeInWorkspace(ws)}
 										onResumeClaude={(sessionId, label) =>
 											workspaceStore.resumeClaudeSession(ws.id, sessionId, label)}
-										onDiscoverSessions={() => claudeSessionStore.discoverSessions(ws.projectPath)}
+										onDiscoverSessions={() => claudeSessionStore.discoverSessions(wsCwd)}
 										onSplitHorizontal={() => workspaceStore.splitTerminal(ws.id, 'horizontal')}
 										onSplitVertical={() => workspaceStore.splitTerminal(ws.id, 'vertical')}
 									/>
@@ -289,6 +411,7 @@
 												split={tab.split}
 												active={isActiveTab && isActiveWs}
 												project={wsProject}
+												cwd={ws.worktreePath}
 												onRemovePane={(paneId) => workspaceStore.removePane(ws.id, paneId)}
 											/>
 										</div>
@@ -299,7 +422,7 @@
 										onNewClaude={() => startClaudeInWorkspace(ws)}
 										onResume={(sessionId, label) =>
 											workspaceStore.resumeClaudeSession(ws.id, sessionId, label)}
-										onDiscover={() => claudeSessionStore.discoverSessions(ws.projectPath)}
+										onDiscover={() => claudeSessionStore.discoverSessions(wsCwd)}
 										onNewTerminal={() => {
 											if (wsProject) workspaceStore.addTerminalTab(ws.id, wsProject);
 										}}
@@ -329,6 +452,14 @@
 	onPickFolder={pickProjectFolder}
 />
 
+<WorktreeDialog
+	bind:open={worktreeDialogOpen}
+	branches={worktreeDialogBranches}
+	projectPath={worktreeDialogProjectPath}
+	error={worktreeDialogError}
+	onSave={handleCreateWorktree}
+/>
+
 <ConfirmDialog
 	bind:open={confirmDialogOpen}
 	title="Remove Project"
@@ -336,6 +467,15 @@
 	confirmLabel="Remove"
 	destructive
 	onConfirm={confirmRemoveProject}
+/>
+
+<ConfirmDialog
+	bind:open={worktreeRemoveConfirmOpen}
+	title="Remove Worktree"
+	description="Remove this git worktree from disk and close its workspace?"
+	confirmLabel="Remove"
+	destructive
+	onConfirm={confirmRemoveWorktree}
 />
 
 <SettingsSheet bind:open={settingsOpen} projectPath={activeProjectPath} />

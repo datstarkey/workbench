@@ -47,7 +47,9 @@
 					type="button"
 					onclick={() => onSelect(workspace.id)}
 				>
-					{workspace.projectName}
+					{workspace.projectName}{#if workspace.branch}
+						<span class="ml-1 text-muted-foreground">({workspace.branch})</span>
+					{/if}
 				</button>
 				<button
 					class="mr-1 flex size-5 items-center justify-center rounded opacity-50 transition-opacity hover:bg-muted hover:opacity-100"

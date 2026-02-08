@@ -8,12 +8,14 @@
 		split,
 		active,
 		project,
+		cwd,
 		onRemovePane
 	}: {
 		panes: TerminalPaneState[];
 		split: SplitDirection;
 		active: boolean;
 		project: ProjectConfig;
+		cwd?: string;
 		onRemovePane: (paneId: string) => void;
 	} = $props();
 </script>
@@ -26,7 +28,13 @@
 			></div>
 		{/if}
 		<div class="relative min-h-0 min-w-0 flex-1">
-			<TerminalPane sessionId={pane.id} {project} {active} startupCommand={pane.startupCommand} />
+			<TerminalPane
+				sessionId={pane.id}
+				{project}
+				{active}
+				{cwd}
+				startupCommand={pane.startupCommand}
+			/>
 			{#if panes.length > 1}
 				<button
 					class="absolute top-2 right-2 flex size-6 items-center justify-center rounded bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground [div:hover>&]:opacity-100"
