@@ -109,8 +109,6 @@ pub fn discover_claude_sessions(
     config::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
 }
 
-// Claude Code settings commands
-
 #[tauri::command]
 pub fn load_claude_settings(
     scope: String,
@@ -125,7 +123,8 @@ pub fn save_claude_settings(
     project_path: Option<String>,
     value: serde_json::Value,
 ) -> Result<bool, String> {
-    settings::save_settings(&scope, project_path.as_deref(), &value).map_err(|e| e.to_string())?;
+    settings::save_settings(&scope, project_path.as_deref(), &value)
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -144,30 +143,28 @@ pub fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
     settings::list_hooks_scripts().map_err(|e| e.to_string())
 }
 
-// Git commands
-
 #[tauri::command]
 pub fn git_info(path: String) -> Result<GitInfo, String> {
-    git::git_info(&path)
+    git::git_info(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
-    git::list_worktrees(&path)
+    git::list_worktrees(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
-    git::create_worktree(&request)
+    git::create_worktree(&request).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn remove_worktree(repo_path: String, worktree_path: String) -> Result<bool, String> {
-    git::remove_worktree(&repo_path, &worktree_path)?;
+    git::remove_worktree(&repo_path, &worktree_path).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
 #[tauri::command]
 pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
-    git::list_branches(&path)
+    git::list_branches(&path).map_err(|e| e.to_string())
 }

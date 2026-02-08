@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter};
 
@@ -14,8 +14,13 @@ struct PtySession {
     child: Box<dyn portable_pty::Child + Send>,
 }
 
+type SessionMap = Arc<Mutex<HashMap<String, Arc<Mutex<PtySession>>>>>;
+
+/// Manages PTY sessions with per-session locking so operations on one terminal
+/// never block another. The outer map lock is only held briefly for
+/// insert/remove/lookup — never during I/O.
 pub struct PtyManager {
-    sessions: Arc<Mutex<HashMap<String, PtySession>>>,
+    sessions: SessionMap,
 }
 
 impl PtyManager {
@@ -23,6 +28,23 @@ impl PtyManager {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get a reference to a session by ID. Locks the map only briefly.
+    fn get_session(&self, session_id: &str) -> Option<Arc<Mutex<PtySession>>> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()
+    }
+
+    /// Remove a session from the map. Returns the session if it existed.
+    fn remove_session(sessions: &SessionMap, session_id: &str) -> Option<Arc<Mutex<PtySession>>> {
+        sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id)
     }
 
     pub fn spawn(
@@ -58,7 +80,6 @@ impl PtyManager {
         cmd.arg("-l");
         cmd.cwd(&project_path);
 
-        // Inherit important environment variables
         if let Ok(home) = std::env::var("HOME") {
             cmd.env("HOME", home);
         }
@@ -70,14 +91,16 @@ impl PtyManager {
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("LANG", std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()));
+        cmd.env(
+            "LANG",
+            std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
+        );
 
         let child = pair
             .slave
             .spawn_command(cmd)
             .context("Failed to spawn shell")?;
 
-        // Drop the slave — we only need the master side
         drop(pair.slave);
 
         let writer = pair
@@ -90,19 +113,32 @@ impl PtyManager {
             .try_clone_reader()
             .context("Failed to get PTY reader")?;
 
-        // Reader thread — reads from PTY and emits events to frontend.
-        // Handles UTF-8 boundaries: if a multi-byte character is split across
-        // reads, the trailing incomplete bytes are carried over to the next read.
+        let session = Arc::new(Mutex::new(PtySession {
+            writer,
+            master: pair.master,
+            child,
+        }));
+
+        // Insert into map before spawning threads
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.clone(), Arc::clone(&session));
+
+        // Reader thread — emits terminal:data events, then signals cleanup on EOF
         let sid = session_id.clone();
         let handle = app_handle.clone();
+        let sessions_for_cleanup = Arc::clone(&self.sessions);
+        let session_for_cleanup = Arc::clone(&session);
+
         std::thread::spawn(move || {
+            // Read loop
             let mut buf = [0u8; 8192];
             let mut carry = Vec::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        // Prepend any leftover bytes from the previous read
                         let chunk = if carry.is_empty() {
                             &buf[..n]
                         } else {
@@ -110,14 +146,13 @@ impl PtyManager {
                             carry.as_slice()
                         };
 
-                        // Find the last valid UTF-8 boundary
                         let valid_up_to = match std::str::from_utf8(chunk) {
                             Ok(_) => chunk.len(),
                             Err(e) => e.valid_up_to(),
                         };
 
                         if valid_up_to > 0 {
-                            // Safety: we just validated this range is valid UTF-8
+                            // Safety: validated this range above
                             let data =
                                 unsafe { std::str::from_utf8_unchecked(&chunk[..valid_up_to]) };
                             let _ = handle.emit(
@@ -129,94 +164,95 @@ impl PtyManager {
                             );
                         }
 
-                        // Save any trailing incomplete bytes for the next read
                         let remainder = &chunk[valid_up_to..];
                         carry = remainder.to_vec();
                     }
                     Err(_) => break,
                 }
             }
+
+            // Reader done — remove session from map and emit exit event
+            Self::remove_session(&sessions_for_cleanup, &sid);
+
+            let exit_code = session_for_cleanup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .child
+                .wait()
+                .map(|s| if s.success() { 0 } else { 1 })
+                .unwrap_or(1);
+
+            let _ = handle.emit(
+                "terminal:exit",
+                TerminalExitEvent {
+                    session_id: sid,
+                    exit_code,
+                    signal: None,
+                },
+            );
         });
 
-        // If there's a startup command, write it after a small delay
-        let sessions = self.sessions.clone();
+        // Write startup command after a small delay
         if let Some(cmd_str) = startup_command {
-            let sid = session_id.clone();
+            let session_ref = Arc::clone(&session);
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                if let Ok(mut sessions) = sessions.lock() {
-                    if let Some(session) = sessions.get_mut(&sid) {
-                        let cmd_with_newline = format!("{}\n", cmd_str);
-                        let _ = session.writer.write_all(cmd_with_newline.as_bytes());
-                    }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                if let Ok(mut sess) = session_ref.lock() {
+                    let cmd_with_newline = format!("{}\n", cmd_str);
+                    let _ = sess.writer.write_all(cmd_with_newline.as_bytes());
                 }
             });
         }
-
-        // Drop the app_handle clone — exit events are emitted via kill()
-        drop(app_handle);
-
-        // Store session
-        let session = PtySession {
-            writer,
-            master: pair.master,
-            child,
-        };
-
-        self.sessions
-            .lock()
-            .unwrap()
-            .insert(session_id, session);
 
         Ok(())
     }
 
     pub fn write(&self, session_id: &str, data: &str) -> Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(session) = sessions.get_mut(session_id) {
-            session.writer.write_all(data.as_bytes())?;
-        }
+        let session = self
+            .get_session(session_id)
+            .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
+        let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
+        sess.writer.write_all(data.as_bytes())?;
         Ok(())
     }
 
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
-        let sessions = self.sessions.lock().unwrap();
-        if let Some(session) = sessions.get(session_id) {
-            session.master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })?;
-        }
+        let session = self
+            .get_session(session_id)
+            .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
+        let sess = session.lock().unwrap_or_else(|e| e.into_inner());
+        sess.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
         Ok(())
     }
 
     pub fn kill(&self, session_id: &str, app_handle: &AppHandle) -> Result<()> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(mut session) = sessions.remove(session_id) {
-            let _ = session.child.kill();
-            let exit_code = session
-                .child
-                .wait()
-                .map(|s| {
-                    if s.success() {
-                        0
-                    } else {
-                        1
-                    }
-                })
-                .unwrap_or(1);
+        let session = match Self::remove_session(&self.sessions, session_id) {
+            Some(s) => s,
+            None => return Ok(()), // already cleaned up by reader thread
+        };
 
-            let _ = app_handle.emit(
-                "terminal:exit",
-                TerminalExitEvent {
-                    session_id: session_id.to_string(),
-                    exit_code,
-                    signal: None,
-                },
-            );
-        }
+        let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = sess.child.kill();
+        let exit_code = sess
+            .child
+            .wait()
+            .map(|s| if s.success() { 0 } else { 1 })
+            .unwrap_or(1);
+
+        let _ = app_handle.emit(
+            "terminal:exit",
+            TerminalExitEvent {
+                session_id: session_id.to_string(),
+                exit_code,
+                signal: None,
+            },
+        );
+
         Ok(())
     }
 }

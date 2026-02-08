@@ -1,24 +1,26 @@
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::{bail, Context, Result};
+
 use crate::types::{BranchInfo, CreateWorktreeRequest, GitInfo, WorktreeInfo};
 
-fn git_output(args: &[&str], cwd: &str) -> Result<String, String> {
+fn git_output(args: &[&str], cwd: &str) -> Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .output()
-        .map_err(|e| format!("Failed to run git: {e}"))?;
+        .context("Failed to run git")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(stderr);
+        bail!("{stderr}");
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn git_info(path: &str) -> Result<GitInfo, String> {
+pub fn git_info(path: &str) -> Result<GitInfo> {
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"], path)?;
     let repo_root = git_output(&["rev-parse", "--show-toplevel"], path)?;
 
@@ -35,7 +37,7 @@ pub fn git_info(path: &str) -> Result<GitInfo, String> {
     })
 }
 
-pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>, String> {
+pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>> {
     let output = git_output(&["worktree", "list", "--porcelain"], path)?;
     let mut worktrees = Vec::new();
     let mut current_path = String::new();
@@ -52,7 +54,6 @@ pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>, String> {
         } else if let Some(h) = line.strip_prefix("HEAD ") {
             current_head = h.to_string();
         } else if let Some(b) = line.strip_prefix("branch ") {
-            // branch refs/heads/main → main
             current_branch = b
                 .strip_prefix("refs/heads/")
                 .unwrap_or(b)
@@ -61,7 +62,7 @@ pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>, String> {
             is_bare = true;
         } else if line.is_empty() && !current_path.is_empty() {
             if !is_bare {
-                let is_main = worktrees.is_empty(); // first worktree is the main one
+                let is_main = worktrees.is_empty();
                 worktrees.push(WorktreeInfo {
                     path: current_path.clone(),
                     head: current_head.clone(),
@@ -87,15 +88,14 @@ pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>, String> {
     Ok(worktrees)
 }
 
-pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String, String> {
+pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
     let worktree_path = if let Some(ref p) = request.path {
         p.clone()
     } else {
-        // Default: sibling directory named <repo>-<branch>
         let repo = Path::new(&request.repo_path);
         let parent = repo
             .parent()
-            .ok_or("Cannot determine parent directory")?;
+            .context("Cannot determine parent directory")?;
         let repo_name = repo
             .file_name()
             .and_then(|n| n.to_str())
@@ -106,18 +106,9 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String, String
             .to_string()
     };
 
-    let mut args = vec!["worktree", "add"];
-    if request.new_branch {
-        args.push("-b");
-    }
-    args.push(&request.branch);
-    args.push(&worktree_path);
-
-    // For existing branches the order is: worktree add <path> <branch>
-    // For new branches: worktree add -b <branch> <path>
-    // Actually git worktree add syntax is: git worktree add <path> [<branch>]
-    // or: git worktree add -b <new-branch> <path> [<start-point>]
-    // Let's fix the arg ordering.
+    // git worktree add syntax:
+    //   new branch:      git worktree add -b <branch> <path>
+    //   existing branch:  git worktree add <path> <branch>
     let mut args = vec!["worktree", "add"];
     if request.new_branch {
         args.extend_from_slice(&["-b", &request.branch]);
@@ -132,12 +123,12 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String, String
     Ok(worktree_path)
 }
 
-pub fn remove_worktree(repo_path: &str, worktree_path: &str) -> Result<(), String> {
+pub fn remove_worktree(repo_path: &str, worktree_path: &str) -> Result<()> {
     git_output(&["worktree", "remove", worktree_path], repo_path)?;
     Ok(())
 }
 
-pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>, String> {
+pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
     let format = "%(refname:short)\t%(objectname:short)\t%(HEAD)\t%(refname:rstrip=0)";
     let output = git_output(&["branch", "-a", &format!("--format={format}")], path)?;
 
@@ -153,7 +144,6 @@ pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>, String> {
         let full_ref = parts[3];
         let is_remote = full_ref.starts_with("refs/remotes/");
 
-        // Skip HEAD pointers like origin/HEAD
         if name.ends_with("/HEAD") {
             continue;
         }

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -6,28 +6,28 @@ use std::path::PathBuf;
 use crate::paths;
 use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
 
-fn settings_path(scope: &str, project_path: Option<&str>) -> PathBuf {
+fn settings_path(scope: &str, project_path: Option<&str>) -> Result<PathBuf> {
     match scope {
-        "user" => paths::claude_user_dir().join("settings.json"),
-        "user-local" => paths::claude_user_dir().join("settings.local.json"),
+        "user" => Ok(paths::claude_user_dir().join("settings.json")),
+        "user-local" => Ok(paths::claude_user_dir().join("settings.local.json")),
         "project" => {
             let base = project_path
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
-            base.join(".claude").join("settings.json")
+            Ok(base.join(".claude").join("settings.json"))
         }
         "project-local" => {
             let base = project_path
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
-            base.join(".claude").join("settings.local.json")
+            Ok(base.join(".claude").join("settings.local.json"))
         }
-        _ => paths::claude_user_dir().join("settings.json"),
+        _ => bail!("Unknown settings scope: {scope}"),
     }
 }
 
 pub fn load_settings(scope: &str, project_path: Option<&str>) -> Result<Value> {
-    let path = settings_path(scope, project_path);
+    let path = settings_path(scope, project_path)?;
     if !path.exists() {
         return Ok(serde_json::json!({}));
     }
@@ -37,12 +37,9 @@ pub fn load_settings(scope: &str, project_path: Option<&str>) -> Result<Value> {
 }
 
 pub fn save_settings(scope: &str, project_path: Option<&str>, value: &Value) -> Result<()> {
-    let path = settings_path(scope, project_path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let path = settings_path(scope, project_path)?;
     let content = serde_json::to_string_pretty(value)?;
-    fs::write(&path, content)?;
+    paths::atomic_write(&path, &content)?;
     Ok(())
 }
 
