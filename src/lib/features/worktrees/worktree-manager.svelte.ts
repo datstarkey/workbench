@@ -40,12 +40,7 @@ export class WorktreeManagerStore {
 		}
 	}
 
-	async create(
-		branch: string,
-		newBranch: boolean,
-		path: string,
-		copyOptions: WorktreeCopyOptions
-	) {
+	async create(branch: string, newBranch: boolean, path: string, copyOptions: WorktreeCopyOptions) {
 		try {
 			const createdPath = await invoke<string>('create_worktree', {
 				request: {

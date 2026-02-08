@@ -121,7 +121,9 @@
 				<div class="flex items-center justify-between gap-3">
 					<div>
 						<p class="text-sm font-medium">AI config</p>
-						<p class="text-xs text-muted-foreground">Copy <code>.claude</code> and <code>.codex</code>.</p>
+						<p class="text-xs text-muted-foreground">
+							Copy <code>.claude</code> and <code>.codex</code>.
+						</p>
 					</div>
 					<Switch checked={copyAiConfig} onCheckedChange={(v) => (copyAiConfig = v)} />
 				</div>
