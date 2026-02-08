@@ -62,7 +62,8 @@ export class ClaudeSessionStore {
 						tabId: t.id,
 						label: t.label,
 						sessionType,
-						needsAttention: aiPaneId ? !this.panesInProgress.has(aiPaneId) : true
+						needsAttention: aiPaneId ? !this.panesInProgress.has(aiPaneId) : true,
+						worktreePath: ws.worktreePath
 					};
 				});
 			if (sessions.length > 0) {
@@ -186,10 +187,7 @@ export class ClaudeSessionStore {
 		this.lastViewportChangeAt.set(paneId, Date.now());
 	}
 
-	private classifyTerminalData(
-		paneId: string,
-		data: string
-	): boolean {
+	private classifyTerminalData(paneId: string, data: string): boolean {
 		const now = Date.now();
 		const plain = stripAnsi(data).replace(/\r/g, '');
 		if (plain.trim().length === 0) {
@@ -219,6 +217,21 @@ export class ClaudeSessionStore {
 		return false;
 	}
 
+	private payloadString(payload: Record<string, unknown>, key: string): string {
+		const value = payload[key];
+		return typeof value === 'string' ? value : '';
+	}
+
+	private isIdlePromptNotification(payload: Record<string, unknown>): boolean {
+		const notificationType = (
+			this.payloadString(payload, 'notification_type') || this.payloadString(payload, 'type')
+		).toLowerCase();
+		if (notificationType === 'idle_prompt') return true;
+
+		const message = this.payloadString(payload, 'message').toLowerCase();
+		return message.includes('waiting for your input') || message.includes('waiting for input');
+	}
+
 	private onClaudeHookEvent(event: ClaudeHookEvent): void {
 		const paneId = event.paneId;
 		if (this.paneType(paneId) !== 'claude') return;
@@ -236,6 +249,19 @@ export class ClaudeSessionStore {
 			case 'Stop':
 			case 'SessionStart':
 				this.panesInProgress.delete(paneId);
+				break;
+			case 'Notification':
+				if (this.isIdlePromptNotification(event.hookPayload)) {
+					this.panesInProgress.delete(paneId);
+				}
+				break;
+			default:
+				if (
+					event.hookEventName?.startsWith('Notification:') &&
+					this.isIdlePromptNotification(event.hookPayload)
+				) {
+					this.panesInProgress.delete(paneId);
+				}
 				break;
 		}
 	}

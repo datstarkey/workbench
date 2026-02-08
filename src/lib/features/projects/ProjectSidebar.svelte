@@ -68,8 +68,26 @@
 		}
 	}
 
-	function sessionsForProject(projectPath: string): ActiveClaudeSession[] {
+	const expandedWorktrees = new SvelteSet<string>();
+
+	function toggleWorktreeExpanded(worktreePath: string) {
+		if (expandedWorktrees.has(worktreePath)) {
+			expandedWorktrees.delete(worktreePath);
+		} else {
+			expandedWorktrees.add(worktreePath);
+		}
+	}
+
+	function allSessionsForProject(projectPath: string): ActiveClaudeSession[] {
 		return claudeSessionStore.activeSessionsByProject[projectPath] ?? [];
+	}
+
+	function mainSessionsForProject(projectPath: string): ActiveClaudeSession[] {
+		return allSessionsForProject(projectPath).filter((s) => !s.worktreePath);
+	}
+
+	function sessionsForWorktree(projectPath: string, worktreePath: string): ActiveClaudeSession[] {
+		return allSessionsForProject(projectPath).filter((s) => s.worktreePath === worktreePath);
 	}
 
 	function worktreesForProject(projectPath: string): WorktreeInfo[] {
@@ -77,7 +95,7 @@
 	}
 
 	function projectAttentionType(projectPath: string): 'claude' | 'codex' | null {
-		const attentionSessions = sessionsForProject(projectPath).filter((s) => s.needsAttention);
+		const attentionSessions = allSessionsForProject(projectPath).filter((s) => s.needsAttention);
 		if (attentionSessions.length === 0) return null;
 		return attentionSessions.some((s) => s.sessionType === 'claude') ? 'claude' : 'codex';
 	}
@@ -91,9 +109,38 @@
 		workspaceStore.runTaskByProject(project.path, task);
 	}
 
+	function runTaskInWorktree(
+		project: ProjectConfig,
+		worktreePath: string,
+		branch: string,
+		task: ProjectTask
+	): void {
+		worktreeManager.open(project.path, worktreePath, branch);
+		const ws = workspaceStore.getByWorktreePath(worktreePath);
+		if (ws) {
+			workspaceStore.runTaskInWorkspace(ws.id, task);
+		}
+	}
+
+	function startSessionInWorktree(projectPath: string, worktreePath: string, branch: string): void {
+		worktreeManager.open(projectPath, worktreePath, branch);
+		const ws = workspaceStore.getByWorktreePath(worktreePath);
+		if (ws) {
+			claudeSessionStore.startSessionInWorkspace(ws);
+		}
+	}
+
+	function worktreeHasChildren(
+		projectPath: string,
+		worktreePath: string,
+		tasks: ProjectTask[]
+	): boolean {
+		return sessionsForWorktree(projectPath, worktreePath).length > 0 || tasks.length > 0;
+	}
+
 	function hasExpandableContent(projectPath: string): boolean {
 		return (
-			sessionsForProject(projectPath).length > 0 ||
+			allSessionsForProject(projectPath).length > 0 ||
 			worktreesForProject(projectPath).length > 0 ||
 			(projectStore.getByPath(projectPath)?.tasks?.length ?? 0) > 0
 		);
@@ -155,7 +202,7 @@
 					{#each projectStore.projects as project (project.path)}
 						{@const isOpen = workspaceStore.openProjectPaths.includes(project.path)}
 						{@const isActive = workspaceStore.activeProjectPath === project.path}
-						{@const sessions = sessionsForProject(project.path)}
+						{@const mainSessions = mainSessionsForProject(project.path)}
 						{@const worktrees = worktreesForProject(project.path)}
 						{@const tasks = tasksForProject(project)}
 						{@const branch = gitStore.branchByProject[project.path]}
@@ -277,34 +324,136 @@
 									{/if}
 									{#if worktrees.length > 0}
 										{#each worktrees as wt (wt.path)}
-											<ContextMenu.Root>
-												<ContextMenu.Trigger class="w-full">
-													<button
-														class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-														type="button"
-														onclick={() => worktreeManager.open(project.path, wt.path, wt.branch)}
-													>
-														<GitBranchIcon class="size-3 shrink-0 text-emerald-400" />
-														<span class="truncate text-xs font-medium">{wt.branch}</span>
-													</button>
-												</ContextMenu.Trigger>
-												<ContextMenu.Content class="w-40">
-													<ContextMenu.Item
-														onclick={() => worktreeManager.open(project.path, wt.path, wt.branch)}
-													>
-														<ExternalLinkIcon class="size-3.5" />
-														Open
-													</ContextMenu.Item>
-													<ContextMenu.Separator />
-													<ContextMenu.Item
-														class="text-destructive"
-														onclick={() => worktreeManager.remove(project.path, wt.path)}
-													>
-														<Trash2Icon class="size-3.5" />
-														Remove
-													</ContextMenu.Item>
-												</ContextMenu.Content>
-											</ContextMenu.Root>
+											{@const wtSessions = sessionsForWorktree(project.path, wt.path)}
+											{@const wtHasChildren = worktreeHasChildren(project.path, wt.path, tasks)}
+											{@const wtExpanded = expandedWorktrees.has(wt.path)}
+											<div>
+												<ContextMenu.Root>
+													<ContextMenu.Trigger class="w-full">
+														<button
+															class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+															type="button"
+															onclick={() => {
+																if (wtHasChildren) {
+																	toggleWorktreeExpanded(wt.path);
+																} else {
+																	worktreeManager.open(project.path, wt.path, wt.branch);
+																}
+															}}
+														>
+															{#if wtHasChildren}
+																{#if wtExpanded}
+																	<ChevronDownIcon class="size-3 shrink-0 text-emerald-400" />
+																{:else}
+																	<ChevronRightIcon class="size-3 shrink-0 text-emerald-400" />
+																{/if}
+															{:else}
+																<GitBranchIcon class="size-3 shrink-0 text-emerald-400" />
+															{/if}
+															<span class="truncate text-xs font-medium">{wt.branch}</span>
+														</button>
+													</ContextMenu.Trigger>
+													<ContextMenu.Content class="w-44">
+														<ContextMenu.Item
+															onclick={() => worktreeManager.open(project.path, wt.path, wt.branch)}
+														>
+															<ExternalLinkIcon class="size-3.5" />
+															Open
+														</ContextMenu.Item>
+														<ContextMenu.Item
+															onclick={() =>
+																startSessionInWorktree(project.path, wt.path, wt.branch)}
+														>
+															<SparklesIcon class="size-3.5" />
+															New Session
+														</ContextMenu.Item>
+														<ContextMenu.Separator />
+														<ContextMenu.Item
+															class="text-destructive"
+															onclick={() => worktreeManager.remove(project.path, wt.path)}
+														>
+															<Trash2Icon class="size-3.5" />
+															Remove
+														</ContextMenu.Item>
+													</ContextMenu.Content>
+												</ContextMenu.Root>
+												{#if wtExpanded && wtHasChildren}
+													<div class="mt-0.5 ml-4 space-y-0.5 border-l border-border/30 pl-2">
+														{#if tasks.length > 0}
+															{#each tasks as task, i (`wt-${wt.path}-${task.name}-${i}`)}
+																<button
+																	class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+																	type="button"
+																	onclick={() =>
+																		runTaskInWorktree(project, wt.path, wt.branch, task)}
+																>
+																	<PlayIcon class="size-3 shrink-0 text-cyan-400" />
+																	<span class="truncate text-xs font-medium">{task.name}</span>
+																</button>
+															{/each}
+														{/if}
+														{#each wtSessions as session (session.tabId)}
+															<ContextMenu.Root>
+																<ContextMenu.Trigger class="w-full">
+																	<button
+																		class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+																		type="button"
+																		onclick={() =>
+																			workspaceStore.selectTabByProject(
+																				project.path,
+																				session.tabId
+																			)}
+																	>
+																		{#if session.needsAttention}
+																			<CirclePauseIcon
+																				class={`size-3 shrink-0 ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
+																			/>
+																		{:else}
+																			<LoaderCircleIcon
+																				class={`size-3 shrink-0 animate-spin ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
+																			/>
+																		{/if}
+																		<span
+																			class={`truncate text-xs font-medium ${session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
+																			>{session.label}</span
+																		>
+																	</button>
+																</ContextMenu.Trigger>
+																<ContextMenu.Content class="w-40">
+																	<ContextMenu.Item
+																		onclick={() =>
+																			workspaceStore.restartClaudeByProject(
+																				project.path,
+																				session.tabId
+																			)}
+																	>
+																		<RotateCcwIcon class="size-3.5" />
+																		Restart
+																	</ContextMenu.Item>
+																	<ContextMenu.Separator />
+																	<ContextMenu.Item
+																		class="text-destructive"
+																		onclick={() =>
+																			workspaceStore.closeTabByProject(project.path, session.tabId)}
+																	>
+																		<XIcon class="size-3.5" />
+																		Close
+																	</ContextMenu.Item>
+																</ContextMenu.Content>
+															</ContextMenu.Root>
+														{/each}
+														<button
+															class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
+															type="button"
+															onclick={() =>
+																startSessionInWorktree(project.path, wt.path, wt.branch)}
+														>
+															<PlusIcon class="size-3 shrink-0" />
+															<span class="text-xs">New Session</span>
+														</button>
+													</div>
+												{/if}
+											</div>
 										{/each}
 										<button
 											class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
@@ -315,7 +464,7 @@
 											<span class="text-xs">Add Worktree</span>
 										</button>
 									{/if}
-									{#each sessions as session (session.tabId)}
+									{#each mainSessions as session (session.tabId)}
 										<ContextMenu.Root>
 											<ContextMenu.Trigger class="w-full">
 												<button
@@ -359,7 +508,7 @@
 											</ContextMenu.Content>
 										</ContextMenu.Root>
 									{/each}
-									{#if sessions.length > 0}
+									{#if mainSessions.length > 0}
 										<button
 											class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
 											type="button"

@@ -502,6 +502,15 @@ export class WorkspaceStore {
 		);
 	}
 
+	runTaskInWorkspace(
+		workspaceId: string,
+		task: ProjectTask
+	): { workspaceId: string; tabId: string } {
+		this.selectedId = workspaceId;
+		const { tabId } = this.addProjectTaskTab(workspaceId, task);
+		return { workspaceId, tabId };
+	}
+
 	// --- ensureShape sub-methods ---
 
 	private ensureTabStructure(tabs: TerminalTabState[]): {
