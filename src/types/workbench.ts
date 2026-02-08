@@ -77,6 +77,7 @@ export interface ActiveClaudeSession {
 	claudeSessionId: string;
 	tabId: string;
 	label: string;
+	sessionType: 'claude' | 'codex';
 	needsAttention?: boolean;
 }
 

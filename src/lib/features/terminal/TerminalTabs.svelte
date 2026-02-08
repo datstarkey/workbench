@@ -52,7 +52,7 @@
 					onclick={() => workspaceStore.setActiveTab(workspace.id, tab.id)}
 				>
 					{#if isCodex}
-						<ZapIcon class="size-3 text-emerald-400" />
+						<ZapIcon class="size-3 text-sky-400" />
 					{:else if isClaude}
 						<SparklesIcon class="size-3 text-violet-400" />
 					{:else}
@@ -117,7 +117,7 @@
 				<Button
 					variant="ghost"
 					size="icon-sm"
-					class="size-7 text-emerald-400 hover:text-emerald-300"
+					class="size-7 text-sky-400 hover:text-sky-300"
 					type="button"
 					onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
 				>

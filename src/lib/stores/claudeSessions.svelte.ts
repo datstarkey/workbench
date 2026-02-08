@@ -53,12 +53,15 @@ export class ClaudeSessionStore {
 			const sessions = ws.terminalTabs
 				.filter((t) => t.type === 'claude' || t.type === 'codex')
 				.map((t) => {
+					const sessionType: ActiveClaudeSession['sessionType'] =
+						t.type === 'codex' ? 'codex' : 'claude';
 					const aiPaneId = this.getAIPaneId(t);
 					const aiPane = aiPaneId ? t.panes.find((p) => p.id === aiPaneId) : null;
 					return {
 						claudeSessionId: aiPane?.claudeSessionId ?? '',
 						tabId: t.id,
 						label: t.label,
+						sessionType,
 						needsAttention: aiPaneId ? !this.panesInProgress.has(aiPaneId) : true
 					};
 				});

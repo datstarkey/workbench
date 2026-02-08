@@ -76,8 +76,10 @@
 		return (gitStore.worktreesByProject[projectPath] ?? []).filter((wt) => !wt.isMain);
 	}
 
-	function projectHasAttention(projectPath: string): boolean {
-		return sessionsForProject(projectPath).some((s) => s.needsAttention);
+	function projectAttentionType(projectPath: string): 'claude' | 'codex' | null {
+		const attentionSessions = sessionsForProject(projectPath).filter((s) => s.needsAttention);
+		if (attentionSessions.length === 0) return null;
+		return attentionSessions.some((s) => s.sessionType === 'claude') ? 'claude' : 'codex';
 	}
 
 	function tasksForProject(project: ProjectConfig): ProjectTask[] {
@@ -157,7 +159,8 @@
 						{@const worktrees = worktreesForProject(project.path)}
 						{@const tasks = tasksForProject(project)}
 						{@const branch = gitStore.branchByProject[project.path]}
-						{@const hasAttention = projectHasAttention(project.path)}
+						{@const attentionType = projectAttentionType(project.path)}
+						{@const hasAttention = attentionType !== null}
 						{@const hasChildren = hasExpandableContent(project.path)}
 						{@const isExpanded =
 							expandedProjects.has(project.path) ||
@@ -194,7 +197,9 @@
 										<span class="truncate text-[10px] text-muted-foreground/60">({branch})</span>
 									{/if}
 									{#if hasAttention}
-										<CirclePauseIcon class="size-3 shrink-0 text-amber-400" />
+										<CirclePauseIcon
+											class={`size-3 shrink-0 ${attentionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
+										/>
 									{:else if isOpen}
 										<span class="size-1.5 shrink-0 rounded-full bg-primary"></span>
 									{/if}
@@ -320,15 +325,17 @@
 														workspaceStore.selectTabByProject(project.path, session.tabId)}
 												>
 													{#if session.needsAttention}
-														<CirclePauseIcon class="size-3 shrink-0 text-amber-400" />
+														<CirclePauseIcon
+															class={`size-3 shrink-0 ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
+														/>
 													{:else}
 														<LoaderCircleIcon
-															class="size-3 shrink-0 animate-spin text-violet-400"
+															class={`size-3 shrink-0 animate-spin ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
 														/>
 													{/if}
 													<span
-														class="truncate text-xs font-medium"
-														class:text-amber-300={session.needsAttention}>{session.label}</span
+														class={`truncate text-xs font-medium ${session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
+														>{session.label}</span
 													>
 												</button>
 											</ContextMenu.Trigger>

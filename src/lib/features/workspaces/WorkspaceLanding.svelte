@@ -52,7 +52,7 @@
 			</Button>
 			<Button
 				type="button"
-				class="bg-emerald-600 hover:bg-emerald-700"
+				class="bg-sky-600 hover:bg-sky-700"
 				onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
 			>
 				<ZapIcon class="size-4" />
