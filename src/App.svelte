@@ -16,15 +16,10 @@
 	import { workspaceStore } from '$stores/workspaces.svelte';
 	import { claudeSessionStore } from '$stores/claudeSessions.svelte';
 	import { selectFolder } from '$lib/hooks/useDialog.svelte';
-	import type {
-		DiscoveredClaudeSession,
-		ActiveClaudeSession,
-		ProjectConfig,
-		ProjectFormState
-	} from '$types/workbench';
+	import { baseName } from '$lib/utils/path';
+	import type { ActiveClaudeSession, ProjectConfig, ProjectFormState } from '$types/workbench';
 
 	let sidebarCollapsed = $state(false);
-	let discoveredSessions: DiscoveredClaudeSession[] = $state([]);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 
 	function toggleSidebar() {
@@ -53,7 +48,8 @@
 				.map((t) => ({
 					claudeSessionId: t.panes[0]?.claudeSessionId ?? '',
 					tabId: t.id,
-					label: t.label
+					label: t.label,
+					needsAttention: claudeSessionStore.panesNeedingAttention.has(t.panes[0]?.id ?? '')
 				}));
 			if (sessions.length > 0) {
 				acc[ws.projectPath] = sessions;
@@ -61,11 +57,6 @@
 			return acc;
 		}, {})
 	);
-
-	const baseName = (p: string) => {
-		const segments = p.replace(/\\/g, '/').split('/').filter(Boolean);
-		return segments[segments.length - 1] || p;
-	};
 
 	function resetProjectForm() {
 		projectForm = { name: '', path: '', shell: '', startupCommand: '' };
@@ -164,33 +155,6 @@
 		pendingRemovePath = null;
 	}
 
-	/**
-	 * After launching a new Claude tab, poll discover_claude_sessions to find the
-	 * session ID that Claude CLI assigned. Once found, update the tab with the
-	 * real session ID and friendly label from the JSONL.
-	 */
-	function pollForNewSession(workspaceId: string, tabId: string, projectPath: string) {
-		// Snapshot known session IDs before polling starts
-		const knownIds = new Set(discoveredSessions.map((s) => s.sessionId));
-		let attempts = 0;
-		const maxAttempts = 30; // ~60 seconds
-		const interval = setInterval(async () => {
-			attempts++;
-			if (attempts > maxAttempts) {
-				clearInterval(interval);
-				return;
-			}
-			const sessions = await claudeSessionStore.discoverSessions(projectPath);
-			const newSession = sessions.find((s) => !knownIds.has(s.sessionId));
-			if (newSession) {
-				clearInterval(interval);
-				workspaceStore.updateClaudeTab(workspaceId, tabId, newSession.sessionId, newSession.label);
-				// Refresh discovered sessions cache
-				discoveredSessions = sessions;
-			}
-		}, 2000);
-	}
-
 	function openProject(projectPath: string) {
 		const project = projectStore.getByPath(projectPath);
 		if (!project) return;
@@ -205,44 +169,36 @@
 		}
 	}
 
-	function handleSidebarSelectTab(projectPath: string, tabId: string) {
-		const ws = workspaceStore.getByProjectPath(projectPath);
-		if (ws) {
-			workspaceStore.selectedId = ws.id;
-			workspaceStore.setActiveTab(ws.id, tabId);
-		}
-	}
-
-	function handleSidebarRestartSession(projectPath: string, tabId: string) {
-		const ws = workspaceStore.getByProjectPath(projectPath);
-		if (ws) workspaceStore.restartClaudeSession(ws.id, tabId);
-	}
-
-	function handleSidebarCloseSession(projectPath: string, tabId: string) {
-		const ws = workspaceStore.getByProjectPath(projectPath);
-		if (ws) workspaceStore.closeTerminalTab(ws.id, tabId);
+	function pollClaudeSession(workspaceId: string, tabId: string, projectPath: string) {
+		claudeSessionStore.pollForNewSession(tabId, projectPath, (session) => {
+			workspaceStore.updateClaudeTab(workspaceId, tabId, session.sessionId, session.label);
+		});
 	}
 
 	function handleSidebarAddClaude(projectPath: string) {
 		openProject(projectPath);
-		const ws = workspaceStore.getByProjectPath(projectPath);
-		if (!ws) return;
-		const { tabId } = workspaceStore.addClaudeSession(ws.id);
-		pollForNewSession(ws.id, tabId, projectPath);
+		const result = workspaceStore.addClaudeByProject(projectPath);
+		if (result) {
+			pollClaudeSession(result.workspaceId, result.tabId, projectPath);
+		}
 	}
-
-	$effect(() => {
-		workspaceStore.ensureShape();
-	});
 
 	function startClaudeInWorkspace(ws: { id: string; projectPath: string }) {
 		const { tabId } = workspaceStore.addClaudeSession(ws.id);
-		pollForNewSession(ws.id, tabId, ws.projectPath);
+		pollClaudeSession(ws.id, tabId, ws.projectPath);
 	}
 
 	onMount(async () => {
 		await projectStore.load();
 		await workspaceStore.load();
+		workspaceStore.ensureShape();
+		claudeSessionStore.setClaudePaneCheck((paneId) =>
+			workspaceStore.workspaces.some((ws) =>
+				ws.terminalTabs.some(
+					(t) => t.type === 'claude' && t.panes.some((p) => p.id === paneId)
+				)
+			)
+		);
 		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
 			openProject(projectStore.projects[0].path);
 		}
@@ -276,9 +232,9 @@
 					onRemoveProject={removeProject}
 					onOpenInVSCode={openInVSCode}
 					onAddClaude={handleSidebarAddClaude}
-					onSelectTab={handleSidebarSelectTab}
-					onRestartSession={handleSidebarRestartSession}
-					onCloseSession={handleSidebarCloseSession}
+					onSelectTab={(path, tabId) => workspaceStore.selectTabByProject(path, tabId)}
+					onRestartSession={(path, tabId) => workspaceStore.restartClaudeByProject(path, tabId)}
+					onCloseSession={(path, tabId) => workspaceStore.closeTabByProject(path, tabId)}
 					onOpenSettings={() => (settingsOpen = true)}
 					onToggleSidebar={toggleSidebar}
 				/>
@@ -316,12 +272,7 @@
 										onAddClaude={() => startClaudeInWorkspace(ws)}
 										onResumeClaude={(sessionId, label) =>
 											workspaceStore.resumeClaudeSession(ws.id, sessionId, label)}
-										{discoveredSessions}
-										onDiscoverSessions={async () => {
-											discoveredSessions = await claudeSessionStore.discoverSessions(
-												ws.projectPath
-											);
-										}}
+										onDiscoverSessions={() => claudeSessionStore.discoverSessions(ws.projectPath)}
 										onSplitHorizontal={() => workspaceStore.splitTerminal(ws.id, 'horizontal')}
 										onSplitVertical={() => workspaceStore.splitTerminal(ws.id, 'vertical')}
 									/>
@@ -344,17 +295,19 @@
 									{/each}
 								{:else}
 									<WorkspaceLanding
-										sessions={discoveredSessions}
+										sessions={claudeSessionStore.discoveredSessions}
 										onNewClaude={() => startClaudeInWorkspace(ws)}
 										onResume={(sessionId, label) =>
 											workspaceStore.resumeClaudeSession(ws.id, sessionId, label)}
-										onDiscover={async () => {
-											discoveredSessions = await claudeSessionStore.discoverSessions(
-												ws.projectPath
-											);
-										}}
+										onDiscover={() => claudeSessionStore.discoverSessions(ws.projectPath)}
 										onNewTerminal={() => {
 											if (wsProject) workspaceStore.addTerminalTab(ws.id, wsProject);
+										}}
+										onRestartSession={(sessionId, label) => {
+											workspaceStore.resumeClaudeSession(ws.id, sessionId, label);
+										}}
+										onCloseSession={(sessionId) => {
+											claudeSessionStore.removeDiscoveredSession(sessionId);
 										}}
 									/>
 								{/if}
