@@ -4,12 +4,18 @@ import { baseName } from '$lib/utils/path';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
 import type { WorkspaceStore } from '$stores/workspaces.svelte';
-import type { ProjectConfig, ProjectFormState } from '$types/workbench';
+import type { ProjectConfig, ProjectFormState, ProjectTask } from '$types/workbench';
 
 export class ProjectManagerStore {
 	dialogOpen = $state(false);
 	dialogMode: 'create' | 'edit' = $state('create');
-	form: ProjectFormState = $state({ name: '', path: '', shell: '', startupCommand: '' });
+	form: ProjectFormState = $state({
+		name: '',
+		path: '',
+		shell: '',
+		startupCommand: '',
+		tasks: []
+	});
 	formError = $state('');
 	readonly removal = new ConfirmAction<string>();
 
@@ -25,7 +31,7 @@ export class ProjectManagerStore {
 	}
 
 	private resetForm() {
-		this.form = { name: '', path: '', shell: '', startupCommand: '' };
+		this.form = { name: '', path: '', shell: '', startupCommand: '', tasks: [] };
 		this.formError = '';
 		this.editingProjectPath = null;
 	}
@@ -51,10 +57,39 @@ export class ProjectManagerStore {
 			name: project.name,
 			path: project.path,
 			shell: project.shell || '',
-			startupCommand: project.startupCommand || ''
+			startupCommand: project.startupCommand || '',
+			tasks: (project.tasks ?? []).map((task) => ({ ...task }))
 		};
 		this.formError = '';
 		this.dialogOpen = true;
+	}
+
+	addTask() {
+		this.form = {
+			...this.form,
+			tasks: [...this.form.tasks, { name: '', command: '' }]
+		};
+	}
+
+	removeTask(index: number) {
+		this.form = {
+			...this.form,
+			tasks: this.form.tasks.filter((_, i) => i !== index)
+		};
+	}
+
+	updateTaskName(index: number, name: string) {
+		this.form = {
+			...this.form,
+			tasks: this.form.tasks.map((task, i) => (i === index ? { ...task, name } : task))
+		};
+	}
+
+	updateTaskCommand(index: number, command: string) {
+		this.form = {
+			...this.form,
+			tasks: this.form.tasks.map((task, i) => (i === index ? { ...task, command } : task))
+		};
 	}
 
 	async pickFolder() {
@@ -84,11 +119,24 @@ export class ProjectManagerStore {
 			return;
 		}
 
+		const normalizedTasks = this.form.tasks
+			.map((task) => ({ name: task.name.trim(), command: task.command.trim() }))
+			.filter((task) => task.name || task.command);
+		if (normalizedTasks.some((task) => !task.name || !task.command)) {
+			this.formError = 'Each task needs both a name and a command.';
+			return;
+		}
+		if (hasDuplicateTaskNames(normalizedTasks)) {
+			this.formError = 'Task names must be unique.';
+			return;
+		}
+
 		const nextProject: ProjectConfig = {
 			name: nextName,
 			path: nextPath,
 			shell: this.form.shell.trim() || undefined,
-			startupCommand: this.form.startupCommand.trim() || undefined
+			startupCommand: this.form.startupCommand.trim() || undefined,
+			tasks: normalizedTasks.length > 0 ? normalizedTasks : undefined
 		};
 
 		if (this.dialogMode === 'create') {
@@ -118,4 +166,14 @@ export class ProjectManagerStore {
 			await this.projectStore.removeWithWorkspaces(path);
 		});
 	}
+}
+
+function hasDuplicateTaskNames(tasks: ProjectTask[]): boolean {
+	const seen: Record<string, true> = {};
+	for (const task of tasks) {
+		const key = task.name.toLowerCase();
+		if (seen[key]) return true;
+		seen[key] = true;
+	}
+	return false;
 }

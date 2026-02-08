@@ -4,7 +4,9 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
+	import { Switch } from '$lib/components/ui/switch';
 	import type { BranchInfo } from '$types/workbench';
+	import type { WorktreeCopyOptions } from '$types/workbench';
 	import { baseName } from '$lib/utils/path';
 
 	let {
@@ -18,12 +20,19 @@
 		branches: BranchInfo[];
 		projectPath: string;
 		error: string;
-		onSave: (branch: string, newBranch: boolean, path: string) => void;
+		onSave: (
+			branch: string,
+			newBranch: boolean,
+			path: string,
+			copyOptions: WorktreeCopyOptions
+		) => void;
 	} = $props();
 
 	let mode: 'new' | 'existing' = $state('new');
 	let newBranchName: string = $state('');
 	let selectedBranch: string = $state('');
+	let copyAiConfig = $state(true);
+	let copyEnvFiles = $state(true);
 
 	let branchName = $derived(mode === 'new' ? newBranchName : selectedBranch);
 
@@ -35,13 +44,18 @@
 
 	function handleSave() {
 		if (!branchName) return;
-		onSave(branchName, mode === 'new', worktreePath);
+		onSave(branchName, mode === 'new', worktreePath, {
+			aiConfig: copyAiConfig,
+			envFiles: copyEnvFiles
+		});
 	}
 
 	function resetState() {
 		mode = 'new';
 		newBranchName = '';
 		selectedBranch = '';
+		copyAiConfig = true;
+		copyEnvFiles = true;
 	}
 </script>
 
@@ -101,6 +115,26 @@
 					<Input value={worktreePath} readonly class="text-muted-foreground" />
 				</div>
 			{/if}
+
+			<div class="grid gap-3 rounded-md border p-3">
+				<Label class="text-sm">Copy ignored workspace files</Label>
+				<div class="flex items-center justify-between gap-3">
+					<div>
+						<p class="text-sm font-medium">AI config</p>
+						<p class="text-xs text-muted-foreground">Copy <code>.claude</code> and <code>.codex</code>.</p>
+					</div>
+					<Switch checked={copyAiConfig} onCheckedChange={(v) => (copyAiConfig = v)} />
+				</div>
+				<div class="flex items-center justify-between gap-3">
+					<div>
+						<p class="text-sm font-medium">Env files</p>
+						<p class="text-xs text-muted-foreground">
+							Copy <code>.env*</code>, <code>.envrc</code>, and <code>.dev.vars</code>.
+						</p>
+					</div>
+					<Switch checked={copyEnvFiles} onCheckedChange={(v) => (copyEnvFiles = v)} />
+				</div>
+			</div>
 
 			{#if error}
 				<p class="text-sm text-destructive">{error}</p>

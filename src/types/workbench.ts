@@ -1,10 +1,16 @@
 export type SplitDirection = 'horizontal' | 'vertical';
 
+export interface ProjectTask {
+	name: string;
+	command: string;
+}
+
 export interface ProjectConfig {
 	name: string;
 	path: string;
 	shell?: string;
 	startupCommand?: string;
+	tasks?: ProjectTask[];
 }
 
 export interface CreateTerminalRequest {
@@ -32,7 +38,25 @@ export interface TerminalExitEvent {
 	signal?: number;
 }
 
-export type SessionType = 'shell' | 'claude';
+export interface ClaudeHookEvent {
+	paneId: string;
+	sessionId?: string;
+	hookEventName?: string;
+	source?: string;
+	cwd?: string;
+	transcriptPath?: string;
+	hookPayload: Record<string, unknown>;
+}
+
+export interface CodexNotifyEvent {
+	paneId: string;
+	sessionId?: string;
+	notifyEvent?: string;
+	cwd?: string;
+	codexPayload: Record<string, unknown>;
+}
+
+export type SessionType = 'shell' | 'claude' | 'codex';
 
 export interface TerminalPaneState {
 	id: string;
@@ -95,9 +119,15 @@ export interface BranchInfo {
 	isRemote: boolean;
 }
 
+export interface WorktreeCopyOptions {
+	aiConfig: boolean;
+	envFiles: boolean;
+}
+
 export interface ProjectFormState {
 	name: string;
 	path: string;
 	shell: string;
 	startupCommand: string;
+	tasks: ProjectTask[];
 }

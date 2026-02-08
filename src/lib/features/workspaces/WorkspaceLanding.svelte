@@ -4,6 +4,7 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
 	import XIcon from '@lucide/svelte/icons/x';
+	import ZapIcon from '@lucide/svelte/icons/zap';
 	import { Button } from '$lib/components/ui/button';
 	import * as ContextMenu from '$lib/components/ui/context-menu';
 	import { formatSessionDate } from '$lib/utils/format';
@@ -26,6 +27,7 @@
 
 	onMount(() => {
 		claudeSessionStore.discoverSessions(wsCwd);
+		claudeSessionStore.discoverCodexSessions(wsCwd);
 	});
 </script>
 
@@ -50,6 +52,14 @@
 			</Button>
 			<Button
 				type="button"
+				class="bg-emerald-600 hover:bg-emerald-700"
+				onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
+			>
+				<ZapIcon class="size-4" />
+				New Codex Session
+			</Button>
+			<Button
+				type="button"
 				variant="ghost"
 				onclick={() => {
 					if (wsProject) workspaceStore.addTerminalTab(workspace.id, wsProject);
@@ -65,7 +75,7 @@
 				<h3
 					class="mb-2 text-left text-xs font-medium tracking-wider text-muted-foreground uppercase"
 				>
-					Recent Sessions
+					Recent Claude Sessions
 				</h3>
 				<div class="flex flex-col gap-1">
 					{#each claudeSessionStore.discoveredSessions as session (session.sessionId)}
@@ -103,6 +113,63 @@
 								<ContextMenu.Item
 									class="text-destructive"
 									onclick={() => claudeSessionStore.removeDiscoveredSession(session.sessionId)}
+								>
+									<XIcon class="size-3.5" />
+									Close
+								</ContextMenu.Item>
+							</ContextMenu.Content>
+						</ContextMenu.Root>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if claudeSessionStore.discoveredCodexSessions.length > 0}
+			<div class="mt-8 w-full">
+				<h3
+					class="mb-2 text-left text-xs font-medium tracking-wider text-muted-foreground uppercase"
+				>
+					Recent Codex Sessions
+				</h3>
+				<div class="flex flex-col gap-1">
+					{#each claudeSessionStore.discoveredCodexSessions as session (session.sessionId)}
+						<ContextMenu.Root>
+							<ContextMenu.Trigger class="w-full">
+								<button
+									type="button"
+									class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
+									onclick={() =>
+										workspaceStore.resumeAISession(
+											workspace.id,
+											session.sessionId,
+											session.label,
+											'codex'
+										)}
+								>
+									<span class="truncate text-foreground">{session.label}</span>
+									<span class="ml-3 shrink-0 text-xs text-muted-foreground">
+										{formatSessionDate(session.timestamp)}
+									</span>
+								</button>
+							</ContextMenu.Trigger>
+							<ContextMenu.Content class="w-40">
+								<ContextMenu.Item
+									onclick={() =>
+										workspaceStore.resumeAISession(
+											workspace.id,
+											session.sessionId,
+											session.label,
+											'codex'
+										)}
+								>
+									<PlayIcon class="size-3.5" />
+									Resume
+								</ContextMenu.Item>
+								<ContextMenu.Separator />
+								<ContextMenu.Item
+									class="text-destructive"
+									onclick={() =>
+										claudeSessionStore.removeDiscoveredSession(session.sessionId, 'codex')}
 								>
 									<XIcon class="size-3.5" />
 									Close

@@ -14,7 +14,15 @@
 	let hooks = $derived((settings.hooks ?? {}) as Record<string, HookEntry[]>);
 	let hookEvents = $derived(Object.keys(hooks));
 
-	const knownEvents = ['PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SubagentStop'];
+	const knownEvents = [
+		'SessionStart',
+		'UserPromptSubmit',
+		'PreToolUse',
+		'PostToolUse',
+		'Notification',
+		'Stop',
+		'SubagentStop'
+	];
 
 	let addingEvent = $state('');
 	let newCommand = $state('');

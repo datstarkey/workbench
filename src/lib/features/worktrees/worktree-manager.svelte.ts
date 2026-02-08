@@ -2,7 +2,7 @@ import { ConfirmAction } from '$lib/utils/confirm-action.svelte';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
 import type { WorkspaceStore } from '$stores/workspaces.svelte';
-import type { BranchInfo } from '$types/workbench';
+import type { BranchInfo, WorktreeCopyOptions } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 
 interface WorktreeRemoval {
@@ -40,14 +40,20 @@ export class WorktreeManagerStore {
 		}
 	}
 
-	async create(branch: string, newBranch: boolean, path: string) {
+	async create(
+		branch: string,
+		newBranch: boolean,
+		path: string,
+		copyOptions: WorktreeCopyOptions
+	) {
 		try {
-			await invoke<string>('create_worktree', {
+			const createdPath = await invoke<string>('create_worktree', {
 				request: {
 					repoPath: this.dialogProjectPath,
 					branch,
 					newBranch,
-					path
+					path,
+					copyOptions
 				}
 			});
 			this.dialogOpen = false;
@@ -55,7 +61,7 @@ export class WorktreeManagerStore {
 
 			const project = this.projectStore.getByPath(this.dialogProjectPath);
 			if (project) {
-				this.workspaceStore.openWorktree(project, path, branch);
+				this.workspaceStore.openWorktree(project, createdPath, branch);
 			}
 		} catch (e) {
 			this.dialogError = String(e);

@@ -9,6 +9,7 @@
 	import PanelLeftCloseIcon from '@lucide/svelte/icons/panel-left-close';
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
+	import PlayIcon from '@lucide/svelte/icons/play';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
@@ -33,7 +34,12 @@
 		getWorkspaceStore
 	} from '$stores/context';
 	import { openInVSCode } from '$lib/utils/vscode';
-	import type { ActiveClaudeSession, WorktreeInfo } from '$types/workbench';
+	import type {
+		ActiveClaudeSession,
+		ProjectConfig,
+		ProjectTask,
+		WorktreeInfo
+	} from '$types/workbench';
 
 	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
@@ -74,9 +80,20 @@
 		return sessionsForProject(projectPath).some((s) => s.needsAttention);
 	}
 
+	function tasksForProject(project: ProjectConfig): ProjectTask[] {
+		return project.tasks ?? [];
+	}
+
+	function runTask(project: ProjectConfig, task: ProjectTask): void {
+		projectStore.openProject(project.path);
+		workspaceStore.runTaskByProject(project.path, task);
+	}
+
 	function hasExpandableContent(projectPath: string): boolean {
 		return (
-			sessionsForProject(projectPath).length > 0 || worktreesForProject(projectPath).length > 0
+			sessionsForProject(projectPath).length > 0 ||
+			worktreesForProject(projectPath).length > 0 ||
+			(projectStore.getByPath(projectPath)?.tasks?.length ?? 0) > 0
 		);
 	}
 </script>
@@ -138,6 +155,7 @@
 						{@const isActive = workspaceStore.activeProjectPath === project.path}
 						{@const sessions = sessionsForProject(project.path)}
 						{@const worktrees = worktreesForProject(project.path)}
+						{@const tasks = tasksForProject(project)}
 						{@const branch = gitStore.branchByProject[project.path]}
 						{@const hasAttention = projectHasAttention(project.path)}
 						{@const hasChildren = hasExpandableContent(project.path)}
@@ -210,6 +228,18 @@
 											<CodeIcon class="size-3.5" />
 											Open in VS Code
 										</DropdownMenu.Item>
+										{#if tasks.length > 0}
+											<DropdownMenu.Separator />
+											<DropdownMenu.Group>
+												<DropdownMenu.GroupHeading>Tasks</DropdownMenu.GroupHeading>
+												{#each tasks as task, i (`${task.name}-${i}`)}
+													<DropdownMenu.Item onclick={() => runTask(project, task)}>
+														<PlayIcon class="size-3.5" />
+														{task.name}
+													</DropdownMenu.Item>
+												{/each}
+											</DropdownMenu.Group>
+										{/if}
 										<DropdownMenu.Separator />
 										<DropdownMenu.Item onclick={() => projectManager.edit(project.path)}>
 											<PencilIcon class="size-3.5" />
@@ -228,6 +258,18 @@
 
 							{#if isExpanded && hasChildren}
 								<div class="mt-0.5 ml-5 space-y-0.5 border-l border-border/40 pl-2">
+									{#if tasks.length > 0}
+										{#each tasks as task, i (`${task.name}-${i}`)}
+											<button
+												class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+												type="button"
+												onclick={() => runTask(project, task)}
+											>
+												<PlayIcon class="size-3 shrink-0 text-cyan-400" />
+												<span class="truncate text-xs font-medium">{task.name}</span>
+											</button>
+										{/each}
+									{/if}
 									{#if worktrees.length > 0}
 										{#each worktrees as wt (wt.path)}
 											<ContextMenu.Root>

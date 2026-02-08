@@ -1,5 +1,7 @@
+// Covers CSI, OSC, and single-char ESC sequences.
+// Adapted from common ANSI stripping patterns used by terminal tooling.
 // eslint-disable-next-line no-control-regex
-const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+const ANSI_RE = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/g;
 
 /** Strip ANSI escape codes from a string */
 export function stripAnsi(text: string): string {

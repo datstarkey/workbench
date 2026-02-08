@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectTask {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectConfig {
     pub name: String,
     pub path: String,
@@ -9,6 +16,8 @@ pub struct ProjectConfig {
     pub shell: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub startup_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<ProjectTask>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,12 +145,30 @@ pub struct BranchInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorktreeCopyOptions {
+    pub ai_config: bool,
+    pub env_files: bool,
+}
+
+impl Default for WorktreeCopyOptions {
+    fn default() -> Self {
+        Self {
+            ai_config: true,
+            env_files: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateWorktreeRequest {
     pub repo_path: String,
     pub branch: String,
     pub new_branch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy_options: Option<WorktreeCopyOptions>,
 }
 
 // Claude Code settings types

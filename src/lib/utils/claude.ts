@@ -1,7 +1,12 @@
+import type { SessionType } from '$types/workbench';
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** CLI command for a new Claude session (no session-id — let the CLI assign one) */
 export const CLAUDE_NEW_SESSION_COMMAND = 'claude';
+
+/** CLI command for a new Codex session */
+export const CODEX_NEW_SESSION_COMMAND = 'codex';
 
 /** Build the CLI command to resume an existing Claude session */
 export function claudeResumeCommand(sessionId: string): string {
@@ -9,4 +14,19 @@ export function claudeResumeCommand(sessionId: string): string {
 		throw new Error(`Invalid session ID: ${sessionId}`);
 	}
 	return `claude --resume ${sessionId}`;
+}
+
+/** Build the CLI command to resume an existing Codex session */
+export function codexResumeCommand(sessionId: string): string {
+	return `codex resume ${sessionId}`;
+}
+
+/** Generic helper: get the new-session command for a given session type */
+export function newSessionCommand(type: SessionType): string {
+	return type === 'codex' ? CODEX_NEW_SESSION_COMMAND : CLAUDE_NEW_SESSION_COMMAND;
+}
+
+/** Generic helper: get the resume command for a given session type */
+export function resumeCommand(type: SessionType, sessionId: string): string {
+	return type === 'codex' ? codexResumeCommand(sessionId) : claudeResumeCommand(sessionId);
 }

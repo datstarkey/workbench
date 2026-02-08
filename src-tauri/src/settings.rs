@@ -1,10 +1,15 @@
 use anyhow::{bail, Result};
 use serde_json::Value;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::paths;
 use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
+
+const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.py";
+const WORKBENCH_HOOK_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
 
 fn settings_path(scope: &str, project_path: Option<&str>) -> Result<PathBuf> {
     match scope {
@@ -155,4 +160,147 @@ pub fn list_hooks_scripts() -> Result<Vec<HookScriptInfo>> {
         }
     }
     Ok(scripts)
+}
+
+fn workbench_hook_script_path() -> PathBuf {
+    paths::claude_user_dir()
+        .join("hooks")
+        .join(WORKBENCH_HOOK_SCRIPT_NAME)
+}
+
+fn workbench_hook_script_body() -> &'static str {
+    r#"#!/usr/bin/env python3
+import json
+import os
+import socket
+import sys
+
+socket_path = os.environ.get("WORKBENCH_HOOK_SOCKET")
+pane_id = os.environ.get("WORKBENCH_PANE_ID")
+if not socket_path or not pane_id:
+    sys.exit(0)
+
+raw = sys.stdin.read()
+if not raw or not raw.strip():
+    sys.exit(0)
+
+try:
+    hook_payload = json.loads(raw)
+except Exception:
+    sys.exit(0)
+
+envelope = {"pane_id": pane_id, "hook": hook_payload}
+
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(socket_path)
+    msg = json.dumps(envelope, separators=(",", ":")) + "\n"
+    sock.sendall(msg.encode("utf-8"))
+    sock.close()
+except Exception:
+    pass
+"#
+}
+
+fn ensure_workbench_hook_script() -> Result<PathBuf> {
+    let hooks_dir = paths::claude_user_dir().join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+
+    let script_path = workbench_hook_script_path();
+    let desired = workbench_hook_script_body();
+    let current = fs::read_to_string(&script_path).unwrap_or_default();
+    if current != desired {
+        fs::write(&script_path, desired)?;
+    }
+
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms)?;
+    }
+
+    Ok(script_path)
+}
+
+fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
+    if !value.is_object() {
+        *value = Value::Object(serde_json::Map::new());
+    }
+    value.as_object_mut().expect("object just initialized")
+}
+
+fn ensure_event_hooks(
+    hooks_obj: &mut serde_json::Map<String, Value>,
+    event_name: &str,
+    command: &str,
+) -> bool {
+    let mut changed = false;
+
+    let event_value = hooks_obj
+        .entry(event_name.to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !event_value.is_array() {
+        *event_value = Value::Array(Vec::new());
+        changed = true;
+    }
+    let entries = event_value
+        .as_array_mut()
+        .expect("event value should be normalized to array");
+
+    let already_present = entries.iter().any(|entry| {
+        entry
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .is_some_and(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook.get("type").and_then(|v| v.as_str()) == Some("command")
+                        && hook.get("command").and_then(|v| v.as_str()) == Some(command)
+                })
+            })
+    });
+
+    if !already_present {
+        entries.push(serde_json::json!({
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command
+                }
+            ]
+        }));
+        changed = true;
+    }
+
+    changed
+}
+
+pub fn ensure_workbench_hook_integration() -> Result<()> {
+    let script_path = ensure_workbench_hook_script()?;
+    let settings_path = paths::claude_user_dir().join("settings.json");
+    let mut settings = if settings_path.exists() {
+        let raw = fs::read_to_string(&settings_path)?;
+        serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let root = ensure_object(&mut settings);
+    let hooks_value = root
+        .entry("hooks".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let hooks_obj = ensure_object(hooks_value);
+
+    let command = script_path.to_string_lossy().to_string();
+    let mut changed = false;
+    for event in WORKBENCH_HOOK_EVENTS {
+        changed |= ensure_event_hooks(hooks_obj, event, &command);
+    }
+
+    if changed || !settings_path.exists() {
+        let content = serde_json::to_string_pretty(&settings)?;
+        paths::atomic_write(&settings_path, &content)?;
+    }
+
+    Ok(())
 }

@@ -2,6 +2,7 @@ use tauri::State;
 
 use crate::config;
 use crate::git;
+use crate::hook_bridge::HookBridgeState;
 use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
@@ -25,8 +26,22 @@ pub fn save_projects(projects: Vec<ProjectConfig>) -> Result<bool, String> {
 pub fn create_terminal(
     request: CreateTerminalRequest,
     pty_manager: State<'_, PtyManager>,
+    hook_bridge: State<'_, HookBridgeState>,
     app_handle: tauri::AppHandle,
 ) -> Result<CreateTerminalResponse, String> {
+    let startup = request.startup_command.as_deref().map(str::trim_start);
+    let is_claude_start = startup.is_some_and(|cmd| {
+        cmd == "claude" || cmd.starts_with("claude ") || cmd.starts_with("claude\n")
+    });
+    let is_codex_start =
+        startup.is_some_and(|cmd| cmd == "codex" || cmd.starts_with("codex ") || cmd.starts_with("codex\n"));
+    if is_claude_start {
+        settings::ensure_workbench_hook_integration().map_err(|e| e.to_string())?;
+    }
+    if is_codex_start {
+        config::ensure_codex_config().map_err(|e| e.to_string())?;
+    }
+
     pty_manager
         .spawn(
             request.id.clone(),
@@ -35,6 +50,7 @@ pub fn create_terminal(
             request.cols,
             request.rows,
             request.startup_command,
+            hook_bridge.socket_path().map(str::to_string),
             app_handle,
         )
         .map_err(|e| e.to_string())?;
@@ -123,8 +139,7 @@ pub fn save_claude_settings(
     project_path: Option<String>,
     value: serde_json::Value,
 ) -> Result<bool, String> {
-    settings::save_settings(&scope, project_path.as_deref(), &value)
-        .map_err(|e| e.to_string())?;
+    settings::save_settings(&scope, project_path.as_deref(), &value).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -167,4 +182,11 @@ pub fn remove_worktree(repo_path: String, worktree_path: String) -> Result<bool,
 #[tauri::command]
 pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
     git::list_branches(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn discover_codex_sessions(
+    project_path: String,
+) -> Result<Vec<DiscoveredClaudeSession>, String> {
+    config::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
 }

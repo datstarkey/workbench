@@ -5,6 +5,7 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import XIcon from '@lucide/svelte/icons/x';
+	import ZapIcon from '@lucide/svelte/icons/zap';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -37,6 +38,7 @@
 	>
 		{#each tabs as tab (tab.id)}
 			{@const isActive = tab.id === activeTabId}
+			{@const isCodex = tab.type === 'codex'}
 			{@const isClaude = tab.type === 'claude'}
 			<div
 				class={`inline-flex items-center rounded-md transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
@@ -49,23 +51,23 @@
 					aria-selected={isActive}
 					onclick={() => workspaceStore.setActiveTab(workspace.id, tab.id)}
 				>
-					{#if isClaude}
+					{#if isCodex}
+						<ZapIcon class="size-3 text-emerald-400" />
+					{:else if isClaude}
 						<SparklesIcon class="size-3 text-violet-400" />
 					{:else}
 						<TerminalIcon class="size-3" />
 					{/if}
 					{tab.label}
 				</button>
-				{#if tabs.length > 1}
-					<button
-						class="mr-0.5 flex size-5 items-center justify-center rounded opacity-50 transition-opacity hover:bg-muted hover:opacity-100"
-						type="button"
-						aria-label="Close terminal tab"
-						onclick={() => workspaceStore.closeTerminalTab(workspace.id, tab.id)}
-					>
-						<XIcon class="size-3" />
-					</button>
-				{/if}
+				<button
+					class="mr-0.5 flex size-5 items-center justify-center rounded opacity-50 transition-opacity hover:bg-muted hover:opacity-100"
+					type="button"
+					aria-label="Close terminal tab"
+					onclick={() => workspaceStore.closeTerminalTab(workspace.id, tab.id)}
+				>
+					<XIcon class="size-3" />
+				</button>
 			</div>
 		{/each}
 	</div>
@@ -104,9 +106,32 @@
 		</Tooltip.Root>
 
 		<ClaudeSessionMenu
+			type="claude"
 			onResume={(sessionId, label) =>
 				workspaceStore.resumeClaudeSession(workspace.id, sessionId, label)}
 			onOpen={() => claudeSessionStore.discoverSessions(wsCwd)}
+		/>
+
+		<Tooltip.Root>
+			<Tooltip.Trigger>
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					class="size-7 text-emerald-400 hover:text-emerald-300"
+					type="button"
+					onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
+				>
+					<ZapIcon class="size-3.5" />
+				</Button>
+			</Tooltip.Trigger>
+			<Tooltip.Content>New Codex Session</Tooltip.Content>
+		</Tooltip.Root>
+
+		<ClaudeSessionMenu
+			type="codex"
+			onResume={(sessionId, label) =>
+				workspaceStore.resumeAISession(workspace.id, sessionId, label, 'codex')}
+			onOpen={() => claudeSessionStore.discoverCodexSessions(wsCwd)}
 		/>
 
 		<Separator orientation="vertical" class="!h-4" />

@@ -55,6 +55,7 @@ impl PtyManager {
         cols: u16,
         rows: u16,
         startup_command: Option<String>,
+        hook_socket_path: Option<String>,
         app_handle: AppHandle,
     ) -> Result<()> {
         let pty_system = native_pty_system();
@@ -66,9 +67,7 @@ impl PtyManager {
             pixel_height: 0,
         };
 
-        let pair = pty_system
-            .openpty(size)
-            .context("Failed to open PTY")?;
+        let pair = pty_system.openpty(size).context("Failed to open PTY")?;
 
         let shell_path = if shell.is_empty() {
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
@@ -95,6 +94,10 @@ impl PtyManager {
             "LANG",
             std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
         );
+        cmd.env("WORKBENCH_PANE_ID", session_id.clone());
+        if let Some(socket_path) = hook_socket_path {
+            cmd.env("WORKBENCH_HOOK_SOCKET", socket_path);
+        }
 
         let child = pair
             .slave

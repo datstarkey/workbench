@@ -11,7 +11,8 @@
 	branches={manager.dialogBranches}
 	projectPath={manager.dialogProjectPath}
 	error={manager.dialogError}
-	onSave={(branch, newBranch, path) => manager.create(branch, newBranch, path)}
+	onSave={(branch, newBranch, path, copyOptions) =>
+		manager.create(branch, newBranch, path, copyOptions)}
 />
 
 <ConfirmDialog

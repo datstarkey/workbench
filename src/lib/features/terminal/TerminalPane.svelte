@@ -14,6 +14,7 @@
 		onTerminalExit
 	} from '$lib/utils/terminal';
 	import { stripAnsi } from '$lib/utils/format';
+	import { getClaudeSessionStore } from '$stores/context';
 
 	let {
 		sessionId,
@@ -38,6 +39,10 @@
 	let exited = false;
 	let terminalError = $state('');
 	let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+	let removeVisibilityListener: (() => void) | null = null;
+	let lastCols = 0;
+	let lastRows = 0;
+	const claudeSessionStore = getClaudeSessionStore();
 
 	// Buffer early output to detect Claude CLI errors for auto-retry
 	let earlyOutput = '';
@@ -70,16 +75,26 @@
 	function debouncedFit() {
 		if (resizeTimeout) clearTimeout(resizeTimeout);
 		resizeTimeout = setTimeout(() => {
-			if (fitAddon && terminal) {
-				fitAddon.fit();
-			}
+			fitTerminal();
 		}, 50);
+	}
+
+	function canFitTerminal(): boolean {
+		if (!terminal || !fitAddon || !container) return false;
+		if (document.visibilityState !== 'visible') return false;
+		const { width, height } = container.getBoundingClientRect();
+		return width > 0 && height > 0;
+	}
+
+	function fitTerminal() {
+		if (!canFitTerminal()) return;
+		fitAddon!.fit();
 	}
 
 	$effect(() => {
 		if (active && fitAddon && terminal) {
 			requestAnimationFrame(() => {
-				fitAddon!.fit();
+				fitTerminal();
 			});
 		}
 	});
@@ -92,14 +107,35 @@
 			terminal = new Terminal(terminalOptions);
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
+			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+				if (
+					event.type === 'keydown' &&
+					event.key === 'Enter' &&
+					event.shiftKey &&
+					!event.altKey &&
+					!event.ctrlKey &&
+					!event.metaKey
+				) {
+					// Send a literal newline for Shift+Enter instead of the default Enter submit behavior.
+					terminal?.paste('\n');
+					return false;
+				}
+				return true;
+			});
 			terminal.open(container);
 
 			// Sync PTY size whenever xterm resizes (from FitAddon or any source)
 			terminal.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+				// Ignore hidden/invalid fits that can transiently report 0x0 while backgrounded.
+				if (cols <= 0 || rows <= 0) return;
+				lastCols = cols;
+				lastRows = rows;
+				claudeSessionStore.noteLocalViewportChange(sessionId);
 				void resizeTerminal(sessionId, cols, rows);
 			});
 
 			terminal.onData((data: string) => {
+				claudeSessionStore.noteLocalInput(sessionId, data);
 				writeTerminal(sessionId, data);
 			});
 
@@ -117,8 +153,12 @@
 				}
 			});
 
-			// Fit before creating PTY so it starts with the correct size
-			fitAddon.fit();
+			// Fit before creating PTY so it starts with the correct size.
+			// If the view is hidden/backgrounded, keep a sane fallback instead of 0x0.
+			fitTerminal();
+			if (terminal.cols <= 0 || terminal.rows <= 0) {
+				terminal.resize(lastCols > 0 ? lastCols : 80, lastRows > 0 ? lastRows : 24);
+			}
 
 			await createTerminal({
 				id: sessionId,
@@ -134,6 +174,16 @@
 				debouncedFit();
 			});
 			resizeObserver.observe(container);
+
+			const onVisibilityChange = () => {
+				if (!active || document.visibilityState !== 'visible') return;
+				claudeSessionStore.noteLocalViewportChange(sessionId);
+				requestAnimationFrame(() => fitTerminal());
+			};
+			document.addEventListener('visibilitychange', onVisibilityChange);
+			removeVisibilityListener = () => {
+				document.removeEventListener('visibilitychange', onVisibilityChange);
+			};
 		} catch (error) {
 			terminalError = `Failed to start terminal: ${String(error)}`;
 		}
@@ -141,6 +191,7 @@
 
 	onDestroy(() => {
 		if (resizeTimeout) clearTimeout(resizeTimeout);
+		removeVisibilityListener?.();
 		unlistenData?.();
 		unlistenExit?.();
 		resizeObserver?.disconnect();

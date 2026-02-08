@@ -11,17 +11,31 @@ pub fn workbench_config_dir() -> PathBuf {
     home_dir().join(".workbench")
 }
 
+pub fn workbench_hook_socket_path() -> PathBuf {
+    workbench_config_dir().join("claude-hooks.sock")
+}
+
 pub fn claude_user_dir() -> PathBuf {
     home_dir().join(".claude")
+}
+
+pub fn codex_sessions_dir() -> PathBuf {
+    home_dir().join(".codex").join("sessions")
+}
+
+pub fn codex_config_dir() -> PathBuf {
+    home_dir().join(".codex")
+}
+
+pub fn agents_dir() -> PathBuf {
+    home_dir().join(".agents")
 }
 
 /// Write content to a file atomically by writing to a temp file first,
 /// then renaming into place. This prevents data corruption if the app
 /// crashes mid-write.
 pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
-    let dir = path
-        .parent()
-        .context("Cannot determine parent directory")?;
+    let dir = path.parent().context("Cannot determine parent directory")?;
     fs::create_dir_all(dir)?;
 
     let temp_path = path.with_extension("tmp");
