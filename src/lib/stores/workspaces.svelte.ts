@@ -1,11 +1,13 @@
 import type {
 	ProjectConfig,
+	ProjectTask,
 	ProjectWorkspace,
+	SessionType,
 	SplitDirection,
 	TerminalTabState
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
-import { CLAUDE_NEW_SESSION_COMMAND, claudeResumeCommand } from '$lib/utils/claude';
+import { newSessionCommand, resumeCommand } from '$lib/utils/claude';
 import { uid } from '$lib/utils/uid';
 
 interface WorkspaceSnapshot {
@@ -77,16 +79,30 @@ export class WorkspaceStore {
 		};
 	}
 
-	private createClaudeTab(label: string, sessionId: string, command: string): TerminalTabState {
+	private createTaskTerminalTab(task: ProjectTask): TerminalTabState {
+		return {
+			id: uid(),
+			label: task.name,
+			split: 'horizontal',
+			panes: [{ id: uid(), startupCommand: task.command }]
+		};
+	}
+
+	private createAITab(
+		label: string,
+		sessionId: string,
+		command: string,
+		type: SessionType
+	): TerminalTabState {
 		return {
 			id: uid(),
 			label,
 			split: 'horizontal',
-			type: 'claude',
+			type,
 			panes: [
 				{
 					id: uid(),
-					type: 'claude',
+					type,
 					claudeSessionId: sessionId,
 					startupCommand: command
 				}
@@ -213,6 +229,18 @@ export class WorkspaceStore {
 		});
 	}
 
+	addProjectTaskTab(workspaceId: string, task: ProjectTask): { tabId: string } {
+		const tab = this.createTaskTerminalTab(task);
+		this.updateWorkspace(workspaceId, (w) => {
+			return {
+				...w,
+				terminalTabs: [...w.terminalTabs, tab],
+				activeTerminalTabId: tab.id
+			};
+		});
+		return { tabId: tab.id };
+	}
+
 	closeTerminalTab(workspaceId: string, tabId: string) {
 		this.updateWorkspace(workspaceId, (w) => {
 			const tabIndex = w.terminalTabs.findIndex((t) => t.id === tabId);
@@ -262,12 +290,14 @@ export class WorkspaceStore {
 		});
 	}
 
-	addClaudeSession(workspaceId: string): { tabId: string } {
+	/** Add a new AI session tab (Claude or Codex) */
+	addAISession(workspaceId: string, type: SessionType = 'claude'): { tabId: string } {
 		let tabId = '';
+		const labelPrefix = type === 'codex' ? 'Codex' : 'Claude';
 		this.updateWorkspace(workspaceId, (w) => {
-			const claudeCount = w.terminalTabs.filter((t) => t.type === 'claude').length;
-			const label = `Claude ${claudeCount + 1}`;
-			const newTab = this.createClaudeTab(label, '', CLAUDE_NEW_SESSION_COMMAND);
+			const count = w.terminalTabs.filter((t) => t.type === type).length;
+			const label = `${labelPrefix} ${count + 1}`;
+			const newTab = this.createAITab(label, '', newSessionCommand(type), type);
 			tabId = newTab.id;
 			return {
 				...w,
@@ -278,8 +308,19 @@ export class WorkspaceStore {
 		return { tabId };
 	}
 
-	/** Update a Claude tab once its session ID has been discovered from the JSONL */
-	updateClaudeTab(workspaceId: string, tabId: string, sessionId: string, label: string) {
+	/** Backward compat wrapper */
+	addClaudeSession(workspaceId: string): { tabId: string } {
+		return this.addAISession(workspaceId, 'claude');
+	}
+
+	/** Update an AI tab once its session ID has been discovered from the JSONL */
+	updateAITab(
+		workspaceId: string,
+		tabId: string,
+		sessionId: string,
+		label: string,
+		type: SessionType = 'claude'
+	) {
 		this.updateWorkspace(workspaceId, (w) => ({
 			...w,
 			terminalTabs: w.terminalTabs.map((t) => {
@@ -287,21 +328,76 @@ export class WorkspaceStore {
 				return {
 					...t,
 					label,
-					panes: t.panes.map((p) =>
-						p.type === 'claude' ? { ...p, claudeSessionId: sessionId } : p
-					)
+					panes: t.panes.map((p) => (p.type === type ? { ...p, claudeSessionId: sessionId } : p))
 				};
 			})
 		}));
 	}
 
-	restartClaudeSession(workspaceId: string, tabId: string) {
+	/** Update an AI pane's session ID by pane ID. */
+	updateAISessionByPaneId(paneId: string, sessionId: string, type: SessionType = 'claude') {
+		let changed = false;
+		this.workspaces = this.workspaces.map((w) => ({
+			...w,
+			terminalTabs: w.terminalTabs.map((t) => {
+				if (t.type !== type) return t;
+				let tabChanged = false;
+				const panes = t.panes.map((p) => {
+					if (p.id !== paneId || p.claudeSessionId === sessionId) return p;
+					tabChanged = true;
+					changed = true;
+					return { ...p, claudeSessionId: sessionId };
+				});
+				return tabChanged ? { ...t, panes } : t;
+			})
+		}));
+		if (changed) this.persist();
+	}
+
+	/** Find workspace/tab context for an AI pane. */
+	findAIPaneContext(
+		paneId: string,
+		type: SessionType = 'claude'
+	): { workspaceId: string; tabId: string; projectPath: string } | null {
+		for (const ws of this.workspaces) {
+			for (const tab of ws.terminalTabs) {
+				if (tab.type !== type) continue;
+				if (tab.panes.some((p) => p.id === paneId)) {
+					return { workspaceId: ws.id, tabId: tab.id, projectPath: ws.projectPath };
+				}
+			}
+		}
+		return null;
+	}
+
+	/** Update an AI tab label by pane ID. */
+	updateAITabLabelByPaneId(paneId: string, label: string, type: SessionType = 'claude') {
+		const ctx = this.findAIPaneContext(paneId, type);
+		if (!ctx) return;
+
+		const ws = this.workspaces.find((w) => w.id === ctx.workspaceId);
+		const tab = ws?.terminalTabs.find((t) => t.id === ctx.tabId);
+		if (!tab || tab.label === label) return;
+
+		this.updateWorkspace(ctx.workspaceId, (w) => ({
+			...w,
+			terminalTabs: w.terminalTabs.map((t) => (t.id === ctx.tabId ? { ...t, label } : t))
+		}));
+	}
+
+	/** Backward compat wrapper */
+	updateClaudeTab(workspaceId: string, tabId: string, sessionId: string, label: string) {
+		this.updateAITab(workspaceId, tabId, sessionId, label, 'claude');
+	}
+
+	restartAISession(workspaceId: string, tabId: string) {
 		this.updateWorkspace(workspaceId, (w) => {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);
-			if (!tab || tab.type !== 'claude') return w;
+			if (!tab || (tab.type !== 'claude' && tab.type !== 'codex')) return w;
+			const type = tab.type;
 			const sessionId = tab.panes[0]?.claudeSessionId;
-			const command = sessionId ? claudeResumeCommand(sessionId) : CLAUDE_NEW_SESSION_COMMAND;
-			const newTab = this.createClaudeTab(tab.label, sessionId ?? '', command);
+			const command = sessionId ? resumeCommand(type, sessionId) : newSessionCommand(type);
+			const newTab = this.createAITab(tab.label, sessionId ?? '', command, type);
 			return {
 				...w,
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tabId ? newTab : t)),
@@ -310,19 +406,30 @@ export class WorkspaceStore {
 		});
 	}
 
-	resumeClaudeSession(workspaceId: string, claudeSessionId: string, label: string) {
+	/** Backward compat wrapper */
+	restartClaudeSession(workspaceId: string, tabId: string) {
+		this.restartAISession(workspaceId, tabId);
+	}
+
+	resumeAISession(
+		workspaceId: string,
+		sessionId: string,
+		label: string,
+		type: SessionType = 'claude'
+	) {
 		this.updateWorkspace(workspaceId, (w) => {
-			const newTab = this.createClaudeTab(
-				label,
-				claudeSessionId,
-				claudeResumeCommand(claudeSessionId)
-			);
+			const newTab = this.createAITab(label, sessionId, resumeCommand(type, sessionId), type);
 			return {
 				...w,
 				terminalTabs: [...w.terminalTabs, newTab],
 				activeTerminalTabId: newTab.id
 			};
 		});
+	}
+
+	/** Backward compat wrapper */
+	resumeClaudeSession(workspaceId: string, claudeSessionId: string, label: string) {
+		this.resumeAISession(workspaceId, claudeSessionId, label, 'claude');
 	}
 
 	// --- projectPath-based convenience methods ---
@@ -336,25 +443,60 @@ export class WorkspaceStore {
 		return fn(ws);
 	}
 
+	private withWorkspaceForProjectTab<T>(
+		projectPath: string,
+		tabId: string,
+		fn: (ws: ProjectWorkspace) => T
+	): T | undefined {
+		const ws = this.workspaces.find(
+			(w) => w.projectPath === projectPath && w.terminalTabs.some((t) => t.id === tabId)
+		);
+		if (ws) return fn(ws);
+		return this.withMainWorkspace(projectPath, fn);
+	}
+
 	selectTabByProject(projectPath: string, tabId: string) {
-		this.withMainWorkspace(projectPath, (ws) => {
+		this.withWorkspaceForProjectTab(projectPath, tabId, (ws) => {
 			this.selectedId = ws.id;
 			this.setActiveTab(ws.id, tabId);
 		});
 	}
 
 	restartClaudeByProject(projectPath: string, tabId: string) {
-		this.withMainWorkspace(projectPath, (ws) => this.restartClaudeSession(ws.id, tabId));
+		this.withWorkspaceForProjectTab(projectPath, tabId, (ws) =>
+			this.restartAISession(ws.id, tabId)
+		);
 	}
 
 	closeTabByProject(projectPath: string, tabId: string) {
-		this.withMainWorkspace(projectPath, (ws) => this.closeTerminalTab(ws.id, tabId));
+		this.withWorkspaceForProjectTab(projectPath, tabId, (ws) =>
+			this.closeTerminalTab(ws.id, tabId)
+		);
 	}
 
 	addClaudeByProject(projectPath: string): { workspaceId: string; tabId: string } | null {
+		return this.addAIByProject(projectPath, 'claude');
+	}
+
+	addAIByProject(
+		projectPath: string,
+		type: SessionType = 'claude'
+	): { workspaceId: string; tabId: string } | null {
 		return (
 			this.withMainWorkspace(projectPath, (ws) => {
-				const { tabId } = this.addClaudeSession(ws.id);
+				const { tabId } = this.addAISession(ws.id, type);
+				return { workspaceId: ws.id, tabId };
+			}) ?? null
+		);
+	}
+
+	runTaskByProject(
+		projectPath: string,
+		task: ProjectTask
+	): { workspaceId: string; tabId: string } | null {
+		return (
+			this.withMainWorkspace(projectPath, (ws) => {
+				const { tabId } = this.addProjectTaskTab(ws.id, task);
 				return { workspaceId: ws.id, tabId };
 			}) ?? null
 		);
@@ -379,24 +521,25 @@ export class WorkspaceStore {
 		return { tabs: fixed, changed };
 	}
 
-	private ensureClaudeResumeCommands(tabs: TerminalTabState[]): {
+	private ensureAIResumeCommands(tabs: TerminalTabState[]): {
 		tabs: TerminalTabState[];
 		changed: boolean;
 	} {
 		let changed = false;
 		const fixed = tabs.map((tab) => {
 			const fixedPanes = tab.panes.map((pane) => {
-				if (pane.type === 'claude' && pane.claudeSessionId) {
-					const resumeCmd = claudeResumeCommand(pane.claudeSessionId);
-					if (pane.startupCommand !== resumeCmd) {
+				const isAI = pane.type === 'claude' || pane.type === 'codex';
+				if (isAI && pane.claudeSessionId) {
+					const cmd = resumeCommand(pane.type!, pane.claudeSessionId);
+					if (pane.startupCommand !== cmd) {
 						changed = true;
-						return { ...pane, startupCommand: resumeCmd };
+						return { ...pane, startupCommand: cmd };
 					}
-				} else if (pane.type === 'claude' && !pane.claudeSessionId) {
-					const newCmd = CLAUDE_NEW_SESSION_COMMAND;
-					if (pane.startupCommand !== newCmd) {
+				} else if (isAI && !pane.claudeSessionId) {
+					const cmd = newSessionCommand(pane.type!);
+					if (pane.startupCommand !== cmd) {
 						changed = true;
-						return { ...pane, startupCommand: newCmd };
+						return { ...pane, startupCommand: cmd };
 					}
 				}
 				return pane;
@@ -422,7 +565,7 @@ export class WorkspaceStore {
 		let anyChanged = false;
 		const normalized = this.workspaces.map((w) => {
 			const structure = this.ensureTabStructure(w.terminalTabs);
-			const commands = this.ensureClaudeResumeCommands(structure.tabs);
+			const commands = this.ensureAIResumeCommands(structure.tabs);
 			const activeTab = this.ensureActiveTabId(commands.tabs, w.activeTerminalTabId);
 
 			const changed = structure.changed || commands.changed || activeTab.changed;
