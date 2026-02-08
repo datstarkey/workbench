@@ -199,6 +199,37 @@ fn codex_session_meta_candidates<'a>(obj: &'a serde_json::Value) -> [Option<&'a 
     ]
 }
 
+fn strip_codex_request_prefix(raw: &str) -> String {
+    let trimmed = raw.trim();
+    for prefix in [
+        "## My request for Codex:\r\n",
+        "## My request for Codex:\n",
+        "## My request for Codex:",
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn is_codex_bootstrap_message(text: &str) -> bool {
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return true;
+    }
+
+    first_line.starts_with("# AGENTS.md instructions for ")
+        || first_line.starts_with("# AGENTS")
+        || first_line.starts_with("# CLAUDE.md")
+        || first_line.starts_with("<environment_context>")
+        || first_line.starts_with("<permissions instructions>")
+        || first_line.starts_with("<app-context>")
+        || first_line.starts_with("<collaboration_mode>")
+        || first_line.starts_with("<INSTRUCTIONS>")
+        || first_line.starts_with("Warning: apply_patch was requested via exec_command.")
+}
+
 fn codex_cwd_matches_project(cwd: &str, project_path: &Path) -> bool {
     let cwd_canon = fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
     cwd_canon == *project_path
@@ -289,12 +320,8 @@ fn parse_codex_session_jsonl(path: &Path, project_path: &Path) -> Option<Discove
         // Codex format: look for user messages in various possible shapes
         let text = extract_codex_user_message(&obj);
         if let Some(raw) = text {
-            let mut trimmed = raw.trim().to_string();
-            // Strip Codex's request prefix
-            if let Some(rest) = trimmed.strip_prefix("## My request for Codex:\n") {
-                trimmed = rest.trim().to_string();
-            }
-            if trimmed.is_empty() || trimmed.len() <= 5 {
+            let trimmed = strip_codex_request_prefix(&raw);
+            if trimmed.len() <= 5 || is_codex_bootstrap_message(&trimmed) {
                 continue;
             }
             let first_line = trimmed.lines().next().unwrap_or(&trimmed);
@@ -336,6 +363,17 @@ fn parse_codex_session_jsonl(path: &Path, project_path: &Path) -> Option<Discove
 
 /// Extract user message text from a Codex JSONL event object.
 fn extract_codex_user_message(obj: &serde_json::Value) -> Option<String> {
+    // Try: { "type": "response_item", "payload": { "role": "user", "type": "message", "content": [...] } }
+    if obj.get("type").and_then(|v| v.as_str()) == Some("response_item") {
+        if let Some(payload) = obj.get("payload") {
+            let is_user_message = payload.get("role").and_then(|v| v.as_str()) == Some("user")
+                && payload.get("type").and_then(|v| v.as_str()) == Some("message");
+            if is_user_message {
+                return extract_text_from_content(payload.get("content"));
+            }
+        }
+    }
+
     // Try: { "type": "user", "message": { "content": ... } } (Claude-like)
     if obj.get("type").and_then(|v| v.as_str()) == Some("user") {
         let content = obj.get("message").and_then(|m| m.get("content"));
@@ -356,6 +394,15 @@ fn extract_codex_user_message(obj: &serde_json::Value) -> Option<String> {
         return extract_text_from_content(content);
     }
 
+    // Try: { "type": "event_msg", "payload": { "type": "user_message", "text": ... } }
+    if obj.get("type").and_then(|v| v.as_str()) == Some("event_msg")
+        && obj.pointer("/payload/type").and_then(|v| v.as_str()) == Some("user_message")
+    {
+        if let Some(text) = obj.pointer("/payload/text").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+    }
+
     None
 }
 
@@ -364,16 +411,19 @@ fn extract_text_from_content(content: Option<&serde_json::Value>) -> Option<Stri
     match content {
         Some(serde_json::Value::String(s)) => Some(s.clone()),
         Some(serde_json::Value::Array(arr)) => arr.iter().find_map(|item| {
-            if item.get("type").and_then(|v| v.as_str()) == Some("text")
-                || item.get("type").and_then(|v| v.as_str()) == Some("input_text")
-            {
-                item.get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            } else {
-                None
+            let item_type = item.get("type").and_then(|v| v.as_str());
+            let item_text = item.get("text").and_then(|v| v.as_str());
+            if matches!(item_type, Some("text" | "input_text")) || item_type.is_none() {
+                if let Some(text) = item_text {
+                    return Some(text.to_string());
+                }
             }
+            None
         }),
+        Some(serde_json::Value::Object(map)) => map
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         _ => None,
     }
 }
