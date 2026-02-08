@@ -138,7 +138,7 @@ export class ClaudeSessionStore {
 		return tab.panes[0]?.id ?? null;
 	}
 
-	private paneType(paneId: string): SessionType | null {
+	paneType(paneId: string): SessionType | null {
 		for (const ws of this.workspaces.workspaces) {
 			for (const tab of ws.terminalTabs) {
 				if (this.getAIPaneId(tab) === paneId && (tab.type === 'claude' || tab.type === 'codex')) {

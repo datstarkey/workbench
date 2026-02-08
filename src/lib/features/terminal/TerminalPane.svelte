@@ -109,15 +109,22 @@
 			terminal.loadAddon(fitAddon);
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
 				if (
-					event.type === 'keydown' &&
 					event.key === 'Enter' &&
 					event.shiftKey &&
 					!event.altKey &&
 					!event.ctrlKey &&
 					!event.metaKey
 				) {
-					// Send a literal newline for Shift+Enter instead of the default Enter submit behavior.
-					terminal?.paste('\n');
+					// Block both keydown and keypress so xterm never sends \r.
+					// Only send the newline on keydown to avoid double-firing.
+					if (event.type === 'keydown') {
+						// Codex CLI doesn't support pasted newlines — use Ctrl+J (ASCII LF) instead.
+						if (claudeSessionStore.paneType(sessionId) === 'codex') {
+							writeTerminal(sessionId, '\x0A');
+						} else {
+							terminal?.paste('\n');
+						}
+					}
 					return false;
 				}
 				return true;
