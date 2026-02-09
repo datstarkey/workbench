@@ -87,7 +87,14 @@
 			{#if mode === 'new'}
 				<div class="grid gap-2">
 					<Label for="branch-name">Branch name</Label>
-					<Input id="branch-name" placeholder="feature/my-branch" bind:value={newBranchName} />
+					<Input
+						id="branch-name"
+						placeholder="feature/my-branch"
+						bind:value={newBranchName}
+						autocorrect="off"
+						autocapitalize="off"
+						spellcheck="false"
+					/>
 				</div>
 			{:else}
 				<div class="grid gap-2">
