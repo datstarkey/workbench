@@ -11,6 +11,7 @@
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
@@ -145,6 +146,8 @@
 			(projectStore.getByPath(projectPath)?.tasks?.length ?? 0) > 0
 		);
 	}
+
+	let dragOverProjectPath = $state<string | null>(null);
 </script>
 
 <aside class="flex h-full w-full flex-col overflow-hidden bg-muted/20">
@@ -212,9 +215,31 @@
 						{@const isExpanded =
 							expandedProjects.has(project.path) ||
 							project.path === workspaceStore.activeProjectPath}
-						<div>
+						{@const isDragOver = dragOverProjectPath === project.path}
+						<div
+							role="listitem"
+							draggable="true"
+							ondragstart={(event) =>
+								event.dataTransfer?.setData('text/project-path', project.path)}
+							ondragover={(event) => {
+								event.preventDefault();
+								dragOverProjectPath = project.path;
+							}}
+							ondragleave={() => {
+								if (dragOverProjectPath === project.path) dragOverProjectPath = null;
+							}}
+							ondrop={(event) => {
+								event.preventDefault();
+								const fromPath = event.dataTransfer?.getData('text/project-path');
+								if (fromPath) projectStore.reorder(fromPath, project.path);
+								dragOverProjectPath = null;
+							}}
+							ondragend={() => {
+								dragOverProjectPath = null;
+							}}
+						>
 							<div
-								class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
+								class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isDragOver ? 'border-t-2 border-primary' : 'border-t-2 border-transparent'} ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
 							>
 								{#if hasChildren}
 									<button
@@ -275,6 +300,10 @@
 										<DropdownMenu.Item onclick={() => worktreeManager.add(project.path)}>
 											<GitBranchIcon class="size-3.5" />
 											Add Worktree
+										</DropdownMenu.Item>
+										<DropdownMenu.Item onclick={() => gitStore.refreshGitState(project.path)}>
+											<RefreshCwIcon class="size-3.5" />
+											Refresh Git
 										</DropdownMenu.Item>
 										<DropdownMenu.Item onclick={() => openInVSCode(project.path)}>
 											<CodeIcon class="size-3.5" />

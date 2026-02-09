@@ -1,4 +1,5 @@
 <script lang="ts">
+	import GripVerticalIcon from '@lucide/svelte/icons/grip-vertical';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
@@ -16,7 +17,8 @@
 		onAddTask,
 		onRemoveTask,
 		onUpdateTaskName,
-		onUpdateTaskCommand
+		onUpdateTaskCommand,
+		onReorderTask
 	}: {
 		open: boolean;
 		mode: 'create' | 'edit';
@@ -28,7 +30,10 @@
 		onRemoveTask: (index: number) => void;
 		onUpdateTaskName: (index: number, name: string) => void;
 		onUpdateTaskCommand: (index: number, command: string) => void;
+		onReorderTask: (fromIndex: number, toIndex: number) => void;
 	} = $props();
+
+	let dragOverTaskIndex = $state<number | null>(null);
 </script>
 
 <Dialog.Root bind:open>
@@ -83,9 +88,33 @@
 					<p class="text-xs text-muted-foreground/70">No tasks yet.</p>
 				{:else}
 					<div class="space-y-2">
-						{#each form.tasks as task, i (i)}
-							<div class="grid gap-2 rounded-md border border-border/60 p-2">
+						{#each form.tasks as task, i (task)}
+							<div
+								role="listitem"
+								draggable="true"
+								ondragstart={(event) => event.dataTransfer?.setData('text/task-index', String(i))}
+								ondragover={(event) => {
+									event.preventDefault();
+									dragOverTaskIndex = i;
+								}}
+								ondragleave={() => {
+									if (dragOverTaskIndex === i) dragOverTaskIndex = null;
+								}}
+								ondrop={(event) => {
+									event.preventDefault();
+									const fromIndex = event.dataTransfer?.getData('text/task-index');
+									if (fromIndex != null) onReorderTask(Number(fromIndex), i);
+									dragOverTaskIndex = null;
+								}}
+								ondragend={() => {
+									dragOverTaskIndex = null;
+								}}
+								class={`grid gap-2 rounded-md border border-border/60 p-2 ${dragOverTaskIndex === i ? 'border-t-2 border-t-primary' : ''}`}
+							>
 								<div class="flex items-center gap-2">
+									<div class="cursor-grab text-muted-foreground/50 hover:text-muted-foreground">
+										<GripVerticalIcon class="size-4" />
+									</div>
 									<Input
 										value={task.name}
 										placeholder="Task name (e.g. Tests)"
@@ -106,6 +135,7 @@
 								<Input
 									value={task.command}
 									placeholder="dotnet test"
+									class="ml-6"
 									oninput={(event) =>
 										onUpdateTaskCommand(i, (event.currentTarget as HTMLInputElement).value)}
 								/>

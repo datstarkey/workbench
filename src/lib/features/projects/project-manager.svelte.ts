@@ -92,6 +92,14 @@ export class ProjectManagerStore {
 		};
 	}
 
+	reorderTask(fromIndex: number, toIndex: number) {
+		if (fromIndex === toIndex) return;
+		const next = [...this.form.tasks];
+		const [moved] = next.splice(fromIndex, 1);
+		next.splice(toIndex, 0, moved);
+		this.form = { ...this.form, tasks: next };
+	}
+
 	async pickFolder() {
 		const selectedPath = await selectFolder(this.form.path.trim() || undefined);
 		if (!selectedPath) return;

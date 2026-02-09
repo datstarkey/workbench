@@ -17,6 +17,7 @@
 	onRemoveTask={(index) => manager.removeTask(index)}
 	onUpdateTaskName={(index, name) => manager.updateTaskName(index, name)}
 	onUpdateTaskCommand={(index, command) => manager.updateTaskCommand(index, command)}
+	onReorderTask={(fromIndex, toIndex) => manager.reorderTask(fromIndex, toIndex)}
 />
 
 <ConfirmDialog

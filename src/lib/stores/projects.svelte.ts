@@ -39,6 +39,18 @@ export class ProjectStore {
 		await this.persist();
 	}
 
+	reorder(fromPath: string, toPath: string) {
+		const fromIndex = this.projects.findIndex((p) => p.path === fromPath);
+		const toIndex = this.projects.findIndex((p) => p.path === toPath);
+		if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+
+		const next = [...this.projects];
+		const [moved] = next.splice(fromIndex, 1);
+		next.splice(toIndex, 0, moved);
+		this.projects = next;
+		this.persist();
+	}
+
 	/** Open a project workspace (find by path, then open in workspace store) */
 	openProject(projectPath: string) {
 		const project = this.getByPath(projectPath);
