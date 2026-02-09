@@ -65,6 +65,9 @@ fn is_relevant_workspace_ignored_path(rel_path: &str, options: &WorktreeCopyOpti
         if normalized == ".codex" || normalized.starts_with(".codex/") {
             return true;
         }
+        if normalized == ".mcp.json" {
+            return true;
+        }
     }
 
     let file_name = Path::new(normalized)
@@ -126,6 +129,7 @@ fn collect_workspace_copy_candidates(
     if options.ai_config {
         candidates.insert(PathBuf::from(".claude"));
         candidates.insert(PathBuf::from(".codex"));
+        candidates.insert(PathBuf::from(".mcp.json"));
     }
 
     if options.env_files {

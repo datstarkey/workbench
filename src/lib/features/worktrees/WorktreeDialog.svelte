@@ -122,7 +122,7 @@
 					<div>
 						<p class="text-sm font-medium">AI config</p>
 						<p class="text-xs text-muted-foreground">
-							Copy <code>.claude</code> and <code>.codex</code>.
+							Copy <code>.claude</code>, <code>.codex</code>, and <code>.mcp.json</code>.
 						</p>
 					</div>
 					<Switch checked={copyAiConfig} onCheckedChange={(v) => (copyAiConfig = v)} />
