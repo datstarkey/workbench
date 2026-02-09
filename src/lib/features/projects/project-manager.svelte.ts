@@ -79,17 +79,11 @@ export class ProjectManagerStore {
 	}
 
 	updateTaskName(index: number, name: string) {
-		this.form = {
-			...this.form,
-			tasks: this.form.tasks.map((task, i) => (i === index ? { ...task, name } : task))
-		};
+		this.form.tasks[index].name = name;
 	}
 
 	updateTaskCommand(index: number, command: string) {
-		this.form = {
-			...this.form,
-			tasks: this.form.tasks.map((task, i) => (i === index ? { ...task, command } : task))
-		};
+		this.form.tasks[index].command = command;
 	}
 
 	reorderTask(fromIndex: number, toIndex: number) {

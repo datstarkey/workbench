@@ -88,7 +88,7 @@
 					<p class="text-xs text-muted-foreground/70">No tasks yet.</p>
 				{:else}
 					<div class="space-y-2">
-						{#each form.tasks as task, i (task)}
+						{#each form.tasks as task, i (i)}
 							<div
 								role="listitem"
 								draggable="true"
