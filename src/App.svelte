@@ -26,7 +26,8 @@
 	import { GitStore } from '$stores/git.svelte';
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
@@ -39,6 +40,28 @@
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let settingsOpen = $state(false);
+
+	// Watch/unwatch git filesystem changes for open projects only
+	let watchedPaths = new SvelteSet<string>();
+	$effect(() => {
+		const openPaths = new Set(workspaceStore.openProjectPaths);
+		untrack(() => {
+			// Watch newly opened projects
+			for (const path of openPaths) {
+				if (!watchedPaths.has(path)) {
+					gitStore.watchProject(path);
+					watchedPaths.add(path);
+				}
+			}
+			// Unwatch closed projects
+			for (const path of watchedPaths) {
+				if (!openPaths.has(path)) {
+					gitStore.unwatchProject(path);
+					watchedPaths.delete(path);
+				}
+			}
+		});
+	});
 
 	function toggleSidebar() {
 		if (sidebarCollapsed) {

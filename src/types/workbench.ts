@@ -126,6 +126,10 @@ export interface WorktreeCopyOptions {
 	envFiles: boolean;
 }
 
+export interface GitChangedEvent {
+	projectPath: string;
+}
+
 export interface ProjectFormState {
 	name: string;
 	path: string;

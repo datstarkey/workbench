@@ -1,9 +1,16 @@
-import type { WorktreeInfo } from '$types/workbench';
+import type { GitChangedEvent, WorktreeInfo } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export class GitStore {
 	worktreesByProject: Record<string, WorktreeInfo[]> = $state({});
 	branchByProject: Record<string, string> = $state({});
+
+	constructor() {
+		listen<GitChangedEvent>('git:changed', (event) => {
+			this.refreshGitState(event.payload.projectPath);
+		});
+	}
 
 	async fetchGitInfo(projectPath: string) {
 		try {
@@ -32,5 +39,21 @@ export class GitStore {
 
 	async refreshAll(projectPaths: string[]) {
 		await Promise.all(projectPaths.map((p) => this.refreshGitState(p)));
+	}
+
+	async watchProject(projectPath: string) {
+		try {
+			await invoke('watch_project', { path: projectPath });
+		} catch (e) {
+			console.warn('[GitStore] Failed to watch project:', e);
+		}
+	}
+
+	async unwatchProject(projectPath: string) {
+		try {
+			await invoke('unwatch_project', { path: projectPath });
+		} catch (e) {
+			console.warn('[GitStore] Failed to unwatch project:', e);
+		}
 	}
 }

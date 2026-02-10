@@ -195,3 +195,11 @@ pub struct HookScriptInfo {
     pub name: String,
     pub path: String,
 }
+
+// Git filesystem watcher event
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitChangedEvent {
+    pub project_path: String,
+}

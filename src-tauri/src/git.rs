@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+use crate::paths::{copy_dir_skip_symlinks, copy_file};
 use crate::types::{BranchInfo, CreateWorktreeRequest, GitInfo, WorktreeCopyOptions, WorktreeInfo};
 
 fn git_output(args: &[&str], cwd: &str) -> Result<String> {
@@ -80,45 +81,6 @@ fn is_relevant_workspace_ignored_path(rel_path: &str, options: &WorktreeCopyOpti
             || file_name.starts_with(".env.")
             || file_name == ".envrc"
             || file_name == ".dev.vars")
-}
-
-fn copy_file(src: &Path, dst: &Path) -> Result<()> {
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::copy(src, dst)?;
-    Ok(())
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let dest_path = dst.join(entry.file_name());
-
-        copy_path_recursive(&source_path, &dest_path)?;
-    }
-
-    Ok(())
-}
-
-fn copy_path_recursive(src: &Path, dst: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(src)?;
-    let file_type = metadata.file_type();
-
-    if file_type.is_symlink() {
-        return Ok(());
-    }
-
-    if file_type.is_dir() {
-        copy_dir_recursive(src, dst)
-    } else if file_type.is_file() {
-        copy_file(src, dst)
-    } else {
-        Ok(())
-    }
 }
 
 fn collect_workspace_copy_candidates(
@@ -198,8 +160,16 @@ fn copy_workspace_files_to_worktree(
             continue;
         }
 
-        copy_path_recursive(&source, &destination)
-            .with_context(|| format!("Failed to copy {}", relative.display()))?;
+        let meta = fs::symlink_metadata(&source)?;
+        if meta.file_type().is_symlink() {
+            continue;
+        } else if meta.is_dir() {
+            copy_dir_skip_symlinks(&source, &destination)
+                .with_context(|| format!("Failed to copy {}", relative.display()))?;
+        } else if meta.is_file() {
+            copy_file(&source, &destination)
+                .with_context(|| format!("Failed to copy {}", relative.display()))?;
+        }
     }
 
     Ok(())

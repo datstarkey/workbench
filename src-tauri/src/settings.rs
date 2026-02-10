@@ -1,15 +1,14 @@
 use anyhow::{bail, Result};
 use serde_json::Value;
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::paths;
 use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
 
 const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.py";
-const WORKBENCH_HOOK_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
+const WORKBENCH_HOOK_EVENTS: [&str; 4] =
+    ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
 
 fn settings_path(scope: &str, project_path: Option<&str>) -> Result<PathBuf> {
     match scope {
@@ -203,24 +202,10 @@ except Exception:
 }
 
 fn ensure_workbench_hook_script() -> Result<PathBuf> {
-    let hooks_dir = paths::claude_user_dir().join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
-    let script_path = workbench_hook_script_path();
-    let desired = workbench_hook_script_body();
-    let current = fs::read_to_string(&script_path).unwrap_or_default();
-    if current != desired {
-        fs::write(&script_path, desired)?;
-    }
-
-    #[cfg(unix)]
-    {
-        let mut perms = fs::metadata(&script_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&script_path, perms)?;
-    }
-
-    Ok(script_path)
+    paths::ensure_script(
+        &workbench_hook_script_path(),
+        workbench_hook_script_body(),
+    )
 }
 
 fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {

@@ -1,12 +1,17 @@
+mod claude_sessions;
+mod codex;
 mod commands;
 mod config;
 mod git;
+mod git_watcher;
 mod hook_bridge;
 mod paths;
 mod pty;
+mod session_utils;
 mod settings;
 mod types;
 
+use git_watcher::GitWatcher;
 use hook_bridge::HookBridgeState;
 use pty::PtyManager;
 use tauri::Manager;
@@ -19,8 +24,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(PtyManager::new())
         .setup(|app| {
-            let bridge = HookBridgeState::new(app.handle().clone());
+            let handle = app.handle().clone();
+            let bridge = HookBridgeState::new(handle.clone());
             app.manage(bridge);
+            let git_watcher = GitWatcher::new(handle);
+            app.manage(git_watcher);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -45,6 +53,8 @@ pub fn run() {
             commands::remove_worktree,
             commands::list_branches,
             commands::discover_codex_sessions,
+            commands::watch_project,
+            commands::unwatch_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Workbench");

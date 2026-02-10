@@ -1,7 +1,10 @@
 use tauri::State;
 
+use crate::claude_sessions;
+use crate::codex;
 use crate::config;
 use crate::git;
+use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::HookBridgeState;
 use crate::pty::PtyManager;
 use crate::settings;
@@ -33,13 +36,14 @@ pub fn create_terminal(
     let is_claude_start = startup.is_some_and(|cmd| {
         cmd == "claude" || cmd.starts_with("claude ") || cmd.starts_with("claude\n")
     });
-    let is_codex_start =
-        startup.is_some_and(|cmd| cmd == "codex" || cmd.starts_with("codex ") || cmd.starts_with("codex\n"));
+    let is_codex_start = startup.is_some_and(|cmd| {
+        cmd == "codex" || cmd.starts_with("codex ") || cmd.starts_with("codex\n")
+    });
     if is_claude_start {
         settings::ensure_workbench_hook_integration().map_err(|e| e.to_string())?;
     }
     if is_codex_start {
-        config::ensure_codex_config().map_err(|e| e.to_string())?;
+        codex::ensure_codex_config().map_err(|e| e.to_string())?;
     }
 
     pty_manager
@@ -122,7 +126,7 @@ pub fn save_workspaces(snapshot: WorkspaceFile) -> Result<bool, String> {
 pub fn discover_claude_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
-    config::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
+    claude_sessions::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -188,5 +192,17 @@ pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
 pub fn discover_codex_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
-    config::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
+    codex::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn watch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
+    state.watch_project(&path).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn unwatch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
+    state.unwatch_project(&path).map_err(|e| e.to_string())?;
+    Ok(true)
 }

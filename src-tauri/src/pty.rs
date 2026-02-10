@@ -8,6 +8,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::types::{TerminalDataEvent, TerminalExitEvent};
 
+const PTY_READ_BUFFER_SIZE: usize = 8192;
+const STARTUP_COMMAND_DELAY_MS: u64 = 300;
+
 struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -136,7 +139,7 @@ impl PtyManager {
 
         std::thread::spawn(move || {
             // Read loop
-            let mut buf = [0u8; 8192];
+            let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
             let mut carry = Vec::new();
             loop {
                 match reader.read(&mut buf) {
@@ -199,7 +202,7 @@ impl PtyManager {
         if let Some(cmd_str) = startup_command {
             let session_ref = Arc::clone(&session);
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::thread::sleep(std::time::Duration::from_millis(STARTUP_COMMAND_DELAY_MS));
                 if let Ok(mut sess) = session_ref.lock() {
                     let cmd_with_newline = format!("{}\n", cmd_str);
                     let _ = sess.writer.write_all(cmd_with_newline.as_bytes());
