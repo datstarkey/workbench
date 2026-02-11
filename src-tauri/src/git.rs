@@ -43,7 +43,7 @@ fn list_ignored_paths(repo_root: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-fn is_safe_relative_path(path: &Path) -> bool {
+pub(crate) fn is_safe_relative_path(path: &Path) -> bool {
     !path.is_absolute()
         && !path.components().any(|c| {
             matches!(
@@ -53,7 +53,7 @@ fn is_safe_relative_path(path: &Path) -> bool {
         })
 }
 
-fn is_relevant_workspace_ignored_path(rel_path: &str, options: &WorktreeCopyOptions) -> bool {
+pub(crate) fn is_relevant_workspace_ignored_path(rel_path: &str, options: &WorktreeCopyOptions) -> bool {
     let normalized = rel_path.trim_end_matches('/');
     if normalized.is_empty() {
         return false;
@@ -314,4 +314,222 @@ pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
     }
 
     Ok(branches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::WorktreeCopyOptions;
+    use std::path::Path;
+
+    // --- is_safe_relative_path ---
+
+    #[test]
+    fn safe_relative_path_normal() {
+        assert!(is_safe_relative_path(Path::new("foo/bar")));
+    }
+
+    #[test]
+    fn safe_relative_path_dotfile() {
+        assert!(is_safe_relative_path(Path::new(".env")));
+    }
+
+    #[test]
+    fn safe_relative_path_parent_dir_rejected() {
+        assert!(!is_safe_relative_path(Path::new("../escape")));
+    }
+
+    #[test]
+    fn safe_relative_path_absolute_rejected() {
+        assert!(!is_safe_relative_path(Path::new("/absolute/path")));
+    }
+
+    #[test]
+    fn safe_relative_path_empty() {
+        assert!(is_safe_relative_path(Path::new("")));
+    }
+
+    // --- is_relevant_workspace_ignored_path ---
+
+    #[test]
+    fn ignored_path_ai_config_claude_dir() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        assert!(is_relevant_workspace_ignored_path(".claude", &opts));
+    }
+
+    #[test]
+    fn ignored_path_ai_config_claude_subpath() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        assert!(is_relevant_workspace_ignored_path(".claude/settings.json", &opts));
+    }
+
+    #[test]
+    fn ignored_path_ai_config_codex() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        assert!(is_relevant_workspace_ignored_path(".codex", &opts));
+    }
+
+    #[test]
+    fn ignored_path_ai_config_mcp_json() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        assert!(is_relevant_workspace_ignored_path(".mcp.json", &opts));
+    }
+
+    #[test]
+    fn ignored_path_ai_config_unrelated_file() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        assert!(!is_relevant_workspace_ignored_path("src/main.rs", &opts));
+    }
+
+    #[test]
+    fn ignored_path_env_files_env() {
+        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        assert!(is_relevant_workspace_ignored_path(".env", &opts));
+    }
+
+    #[test]
+    fn ignored_path_env_files_env_local() {
+        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        assert!(is_relevant_workspace_ignored_path(".env.local", &opts));
+    }
+
+    #[test]
+    fn ignored_path_env_files_envrc() {
+        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        assert!(is_relevant_workspace_ignored_path(".envrc", &opts));
+    }
+
+    #[test]
+    fn ignored_path_env_files_dev_vars() {
+        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        assert!(is_relevant_workspace_ignored_path(".dev.vars", &opts));
+    }
+
+    #[test]
+    fn ignored_path_env_files_unrelated() {
+        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        assert!(!is_relevant_workspace_ignored_path("package.json", &opts));
+    }
+
+    #[test]
+    fn ignored_path_both_disabled() {
+        let opts = WorktreeCopyOptions { ai_config: false, env_files: false };
+        assert!(!is_relevant_workspace_ignored_path(".claude", &opts));
+        assert!(!is_relevant_workspace_ignored_path(".env", &opts));
+    }
+
+    #[test]
+    fn ignored_path_empty_string() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: true };
+        assert!(!is_relevant_workspace_ignored_path("", &opts));
+    }
+
+    #[test]
+    fn ignored_path_trailing_slash_stripped() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        assert!(is_relevant_workspace_ignored_path(".claude/", &opts));
+    }
+
+    // --- list_worktrees parser (via WorktreeInfo construction) ---
+
+    /// Simulate the porcelain parsing logic from list_worktrees
+    fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeInfo> {
+        let mut worktrees = Vec::new();
+        let mut current_path = String::new();
+        let mut current_head = String::new();
+        let mut current_branch = String::new();
+        let mut is_bare = false;
+
+        for line in output.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                current_path = p.to_string();
+                current_head.clear();
+                current_branch.clear();
+                is_bare = false;
+            } else if let Some(h) = line.strip_prefix("HEAD ") {
+                current_head = h.to_string();
+            } else if let Some(b) = line.strip_prefix("branch ") {
+                current_branch = b.strip_prefix("refs/heads/").unwrap_or(b).to_string();
+            } else if line == "bare" {
+                is_bare = true;
+            } else if line.is_empty() && !current_path.is_empty() {
+                if !is_bare {
+                    let is_main = worktrees.is_empty();
+                    worktrees.push(WorktreeInfo {
+                        path: current_path.clone(),
+                        head: current_head.clone(),
+                        branch: current_branch.clone(),
+                        is_main,
+                    });
+                }
+                current_path.clear();
+            }
+        }
+
+        if !current_path.is_empty() && !is_bare {
+            let is_main = worktrees.is_empty();
+            worktrees.push(WorktreeInfo {
+                path: current_path,
+                head: current_head,
+                branch: current_branch,
+                is_main,
+            });
+        }
+
+        worktrees
+    }
+
+    #[test]
+    fn parse_worktree_single_main() {
+        let output = "worktree /home/user/repo\nHEAD abc1234\nbranch refs/heads/main\n\n";
+        let result = parse_worktree_porcelain(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "/home/user/repo");
+        assert_eq!(result[0].branch, "main");
+        assert!(result[0].is_main);
+    }
+
+    #[test]
+    fn parse_worktree_main_plus_secondary() {
+        let output = "\
+worktree /home/user/repo
+HEAD abc1234
+branch refs/heads/main
+
+worktree /home/user/repo-feature
+HEAD def5678
+branch refs/heads/feature
+
+";
+        let result = parse_worktree_porcelain(output);
+        assert_eq!(result.len(), 2);
+        assert!(result[0].is_main);
+        assert!(!result[1].is_main);
+        assert_eq!(result[1].branch, "feature");
+    }
+
+    #[test]
+    fn parse_worktree_bare_skipped() {
+        let output = "\
+worktree /home/user/bare-repo
+bare
+
+worktree /home/user/repo-wt
+HEAD aaa1111
+branch refs/heads/dev
+
+";
+        let result = parse_worktree_porcelain(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "/home/user/repo-wt");
+        assert!(result[0].is_main); // first non-bare entry
+    }
+
+    #[test]
+    fn parse_worktree_no_trailing_newline() {
+        let output = "worktree /home/user/repo\nHEAD abc1234\nbranch refs/heads/main";
+        let result = parse_worktree_porcelain(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "/home/user/repo");
+    }
 }
