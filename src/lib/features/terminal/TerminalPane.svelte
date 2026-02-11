@@ -2,6 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
+	import { WebLinksAddon } from '@xterm/addon-web-links';
 	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
@@ -107,6 +108,7 @@
 			terminal = new Terminal(terminalOptions);
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
+			terminal.loadAddon(new WebLinksAddon());
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
 				if (
 					event.key === 'Enter' &&
