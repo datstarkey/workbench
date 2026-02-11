@@ -4,9 +4,14 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { getWorkspaceStore } from '$stores/context';
+	import { effectivePath } from '$lib/utils/path';
 	import { openInVSCode } from '$lib/utils/vscode';
 
 	const workspaceStore = getWorkspaceStore();
+
+	let activeWorkspace = $derived(
+		workspaceStore.workspaces.find((ws) => ws.id === workspaceStore.activeWorkspaceId)
+	);
 </script>
 
 <div class="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/30 px-1">
@@ -60,7 +65,7 @@
 					size="icon-sm"
 					class="size-7 text-muted-foreground hover:text-foreground"
 					type="button"
-					onclick={() => openInVSCode(workspaceStore.activeProjectPath ?? '')}
+					onclick={() => openInVSCode(activeWorkspace ? effectivePath(activeWorkspace) : '')}
 				>
 					<CodeIcon class="size-3.5" />
 				</Button>
