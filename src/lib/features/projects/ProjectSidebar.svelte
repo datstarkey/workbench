@@ -1,17 +1,14 @@
 <script lang="ts">
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
-	import CodeIcon from '@lucide/svelte/icons/code';
 	import EllipsisVerticalIcon from '@lucide/svelte/icons/ellipsis-vertical';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PanelLeftCloseIcon from '@lucide/svelte/icons/panel-left-close';
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
-	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PlusIcon from '@lucide/svelte/icons/plus';
-	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
@@ -34,13 +31,13 @@
 		getWorktreeManager,
 		getWorkspaceStore
 	} from '$stores/context';
-	import { openInVSCode } from '$lib/utils/vscode';
 	import type {
 		ActiveClaudeSession,
 		ProjectConfig,
 		ProjectTask,
 		WorktreeInfo
 	} from '$types/workbench';
+	import ProjectMenuItems from './ProjectMenuItems.svelte';
 
 	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
@@ -238,104 +235,81 @@
 								dragOverProjectPath = null;
 							}}
 						>
-							<div
-								class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isDragOver ? 'border-t-2 border-primary' : 'border-t-2 border-transparent'} ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
-							>
-								{#if hasChildren}
-									<button
-										class="flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted"
-										type="button"
-										aria-label={isExpanded ? 'Collapse' : 'Expand'}
-										aria-expanded={isExpanded}
-										onclick={() => toggleExpanded(project.path)}
+							<ContextMenu.Root>
+								<ContextMenu.Trigger>
+									<div
+										class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isDragOver ? 'border-t-2 border-primary' : 'border-t-2 border-transparent'} ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
 									>
-										{#if isExpanded}
-											<ChevronDownIcon class="size-3" />
+										{#if hasChildren}
+											<button
+												class="flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted"
+												type="button"
+												aria-label={isExpanded ? 'Collapse' : 'Expand'}
+												aria-expanded={isExpanded}
+												onclick={() => toggleExpanded(project.path)}
+											>
+												{#if isExpanded}
+													<ChevronDownIcon class="size-3" />
+												{:else}
+													<ChevronRightIcon class="size-3" />
+												{/if}
+											</button>
 										{:else}
-											<ChevronRightIcon class="size-3" />
+											<div class="size-4 shrink-0"></div>
 										{/if}
-									</button>
-								{:else}
-									<div class="size-4 shrink-0"></div>
-								{/if}
-								<button
-									class="flex min-w-0 flex-1 items-center gap-2 text-left"
-									type="button"
-									onclick={() => projectStore.openProject(project.path)}
-								>
-									<FolderIcon class="size-3.5 shrink-0 opacity-60" />
-									<span class="truncate text-sm">{project.name}</span>
-									{#if branch}
-										<span class="truncate text-[10px] text-muted-foreground/60">({branch})</span>
-									{/if}
-									{#if hasAttention}
-										<CirclePauseIcon
-											class={`size-3 shrink-0 ${attentionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
-										/>
-									{:else if isOpen}
-										<span class="size-1.5 shrink-0 rounded-full bg-primary"></span>
-									{/if}
-								</button>
-								<DropdownMenu.Root>
-									<DropdownMenu.Trigger>
-										<Button
-											variant="ghost"
-											size="icon-sm"
-											class="size-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+										<button
+											class="flex min-w-0 flex-1 items-center gap-2 text-left"
+											type="button"
+											onclick={() => projectStore.openProject(project.path)}
 										>
-											<EllipsisVerticalIcon class="size-3.5" />
-										</Button>
-									</DropdownMenu.Trigger>
-									<DropdownMenu.Content align="end" class="w-44">
-										<DropdownMenu.Item onclick={() => projectStore.openProject(project.path)}>
-											<ExternalLinkIcon class="size-3.5" />
-											Open
-										</DropdownMenu.Item>
-										<DropdownMenu.Item
-											onclick={() => claudeSessionStore.startSessionByProject(project.path)}
-										>
-											<SparklesIcon class="size-3.5" />
-											New Claude Session
-										</DropdownMenu.Item>
-										<DropdownMenu.Item onclick={() => worktreeManager.add(project.path)}>
-											<GitBranchIcon class="size-3.5" />
-											Add Worktree
-										</DropdownMenu.Item>
-										<DropdownMenu.Item onclick={() => gitStore.refreshGitState(project.path)}>
-											<RefreshCwIcon class="size-3.5" />
-											Refresh Git
-										</DropdownMenu.Item>
-										<DropdownMenu.Item onclick={() => openInVSCode(project.path)}>
-											<CodeIcon class="size-3.5" />
-											Open in VS Code
-										</DropdownMenu.Item>
-										{#if tasks.length > 0}
-											<DropdownMenu.Separator />
-											<DropdownMenu.Group>
-												<DropdownMenu.GroupHeading>Tasks</DropdownMenu.GroupHeading>
-												{#each tasks as task, i (`${task.name}-${i}`)}
-													<DropdownMenu.Item onclick={() => runTask(project, task)}>
-														<PlayIcon class="size-3.5" />
-														{task.name}
-													</DropdownMenu.Item>
-												{/each}
-											</DropdownMenu.Group>
-										{/if}
-										<DropdownMenu.Separator />
-										<DropdownMenu.Item onclick={() => projectManager.edit(project.path)}>
-											<PencilIcon class="size-3.5" />
-											Edit
-										</DropdownMenu.Item>
-										<DropdownMenu.Item
-											class="text-destructive"
-											onclick={() => projectManager.remove(project.path)}
-										>
-											<Trash2Icon class="size-3.5" />
-											Remove
-										</DropdownMenu.Item>
-									</DropdownMenu.Content>
-								</DropdownMenu.Root>
-							</div>
+											<FolderIcon class="size-3.5 shrink-0 opacity-60" />
+											<span class="truncate text-sm">{project.name}</span>
+											{#if branch}
+												<span class="truncate text-[10px] text-muted-foreground/60">({branch})</span
+												>
+											{/if}
+											{#if hasAttention}
+												<CirclePauseIcon
+													class={`size-3 shrink-0 ${attentionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
+												/>
+											{:else if isOpen}
+												<span class="size-1.5 shrink-0 rounded-full bg-primary"></span>
+											{/if}
+										</button>
+										<DropdownMenu.Root>
+											<DropdownMenu.Trigger>
+												<Button
+													variant="ghost"
+													size="icon-sm"
+													class="size-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+												>
+													<EllipsisVerticalIcon class="size-3.5" />
+												</Button>
+											</DropdownMenu.Trigger>
+											<DropdownMenu.Content align="end" class="w-44">
+												<ProjectMenuItems
+													{project}
+													{tasks}
+													Item={DropdownMenu.Item}
+													Separator={DropdownMenu.Separator}
+													Group={DropdownMenu.Group}
+													GroupHeading={DropdownMenu.GroupHeading}
+												/>
+											</DropdownMenu.Content>
+										</DropdownMenu.Root>
+									</div>
+								</ContextMenu.Trigger>
+								<ContextMenu.Content class="w-44">
+									<ProjectMenuItems
+										{project}
+										{tasks}
+										Item={ContextMenu.Item}
+										Separator={ContextMenu.Separator}
+										Group={ContextMenu.Group}
+										GroupHeading={ContextMenu.GroupHeading}
+									/>
+								</ContextMenu.Content>
+							</ContextMenu.Root>
 
 							{#if isExpanded && hasChildren}
 								<div class="mt-0.5 ml-5 space-y-0.5 border-l border-border/40 pl-2">

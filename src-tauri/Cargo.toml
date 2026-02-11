@@ -2,6 +2,7 @@
 name = "workbench"
 version = "0.1.0"
 description = "Workbench terminal manager"
+license = "AGPL-3.0-or-later"
 authors = []
 edition = "2021"
 
@@ -24,3 +25,5 @@ anyhow = "1"
 dirs = "6"
 notify = "7"
 notify-debouncer-mini = "0.5"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"

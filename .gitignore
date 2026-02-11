@@ -4,7 +4,6 @@ node_modules/
 # Build output
 dist/
 build/
-dist-electron/
 .svelte-kit/
 
 # Tauri / Rust
@@ -26,14 +25,11 @@ Thumbs.db
 *.swo
 *~
 
-# Electron build cache
-.electron-gyp/
-
-# macOS artifacts
-Library/
-
 # Logs
 *.log
 
 # MCP config (contains local paths/tokens)
 .mcp.json
+
+# Claude Code local settings (user-specific)
+.claude/settings.local.json
