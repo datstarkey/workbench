@@ -104,10 +104,21 @@ pub fn kill_terminal(
 
 #[tauri::command]
 pub fn open_in_vscode(path: String) -> Result<bool, String> {
-    std::process::Command::new("code")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        // Use `open -a` which works regardless of PATH (Tauri .app doesn't inherit shell PATH)
+        std::process::Command::new("open")
+            .args(["-a", "Visual Studio Code", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::process::Command::new("code")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
     Ok(true)
 }
 
