@@ -203,3 +203,158 @@ pub struct HookScriptInfo {
 pub struct GitChangedEvent {
     pub project_path: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    // ProjectConfig round-trip
+
+    #[test]
+    fn project_config_round_trip() {
+        let config = ProjectConfig {
+            name: "my-project".to_string(),
+            path: "/home/user/project".to_string(),
+            shell: Some("/bin/zsh".to_string()),
+            startup_command: Some("echo hello".to_string()),
+            tasks: vec![ProjectTask {
+                name: "build".to_string(),
+                command: "cargo build".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: ProjectConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "my-project");
+        assert_eq!(deserialized.path, "/home/user/project");
+        assert_eq!(deserialized.shell, Some("/bin/zsh".to_string()));
+        assert_eq!(deserialized.startup_command, Some("echo hello".to_string()));
+        assert_eq!(deserialized.tasks.len(), 1);
+        assert_eq!(deserialized.tasks[0].name, "build");
+    }
+
+    #[test]
+    fn project_config_camel_case_fields() {
+        let config = ProjectConfig {
+            name: "test".to_string(),
+            path: "/tmp".to_string(),
+            shell: Some("bash".to_string()),
+            startup_command: Some("ls".to_string()),
+            tasks: vec![],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"startupCommand\""));
+        assert!(!json.contains("\"startup_command\""));
+    }
+
+    #[test]
+    fn project_config_optional_fields_none() {
+        let config = ProjectConfig {
+            name: "minimal".to_string(),
+            path: "/tmp".to_string(),
+            shell: None,
+            startup_command: None,
+            tasks: vec![],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        // skip_serializing_if = "Option::is_none" should omit shell and startupCommand
+        assert!(!json.contains("shell"));
+        assert!(!json.contains("startupCommand"));
+        // skip_serializing_if = "Vec::is_empty" should omit tasks
+        assert!(!json.contains("tasks"));
+
+        // Deserialize back with missing optional fields
+        let json_str = r#"{"name":"minimal","path":"/tmp"}"#;
+        let deserialized: ProjectConfig = serde_json::from_str(json_str).unwrap();
+        assert_eq!(deserialized.shell, None);
+        assert_eq!(deserialized.startup_command, None);
+        assert!(deserialized.tasks.is_empty());
+    }
+
+    #[test]
+    fn project_config_with_tasks() {
+        let config = ProjectConfig {
+            name: "tasked".to_string(),
+            path: "/project".to_string(),
+            shell: None,
+            startup_command: None,
+            tasks: vec![
+                ProjectTask {
+                    name: "test".to_string(),
+                    command: "cargo test".to_string(),
+                },
+                ProjectTask {
+                    name: "lint".to_string(),
+                    command: "cargo clippy".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let tasks = val["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0]["name"], "test");
+        assert_eq!(tasks[1]["command"], "cargo clippy");
+    }
+
+    // WorkspaceFile round-trip
+
+    #[test]
+    fn workspace_file_round_trip() {
+        let ws = WorkspaceFile {
+            workspaces: vec![WorkspaceSnapshot {
+                id: "ws-1".to_string(),
+                project_path: "/project".to_string(),
+                project_name: "my-project".to_string(),
+                terminal_tabs: vec![TerminalTabSnapshot {
+                    id: "tab-1".to_string(),
+                    label: "Shell".to_string(),
+                    split: "horizontal".to_string(),
+                    panes: vec![TerminalPaneSnapshot {
+                        id: "pane-1".to_string(),
+                        startup_command: None,
+                        session_type: None,
+                        claude_session_id: None,
+                    }],
+                    session_type: None,
+                }],
+                active_terminal_tab_id: "tab-1".to_string(),
+                worktree_path: None,
+                branch: None,
+            }],
+            selected_id: Some("ws-1".to_string()),
+        };
+        let json = serde_json::to_string(&ws).unwrap();
+        let deserialized: WorkspaceFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.workspaces.len(), 1);
+        assert_eq!(deserialized.workspaces[0].id, "ws-1");
+        assert_eq!(deserialized.selected_id, Some("ws-1".to_string()));
+    }
+
+    // DiscoveredClaudeSession round-trip
+
+    #[test]
+    fn discovered_claude_session_round_trip() {
+        let session = DiscoveredClaudeSession {
+            session_id: "abc123".to_string(),
+            label: "Fix the bug".to_string(),
+            timestamp: "2025-01-15T10:30:00Z".to_string(),
+            last_message_role: Some("assistant".to_string()),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"sessionId\""));
+        assert!(json.contains("\"lastMessageRole\""));
+        let deserialized: DiscoveredClaudeSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.session_id, "abc123");
+        assert_eq!(deserialized.last_message_role, Some("assistant".to_string()));
+    }
+
+    // WorktreeCopyOptions default
+
+    #[test]
+    fn worktree_copy_options_default() {
+        let opts = WorktreeCopyOptions::default();
+        assert!(opts.ai_config);
+        assert!(opts.env_files);
+    }
+}

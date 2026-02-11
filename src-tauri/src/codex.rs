@@ -29,7 +29,7 @@ fn codex_session_meta_candidates<'a>(
     ]
 }
 
-fn strip_codex_request_prefix(raw: &str) -> String {
+pub(crate) fn strip_codex_request_prefix(raw: &str) -> String {
     let trimmed = raw.trim();
     for prefix in [
         "## My request for Codex:\r\n",
@@ -43,7 +43,7 @@ fn strip_codex_request_prefix(raw: &str) -> String {
     trimmed.to_string()
 }
 
-fn is_codex_bootstrap_message(text: &str) -> bool {
+pub(crate) fn is_codex_bootstrap_message(text: &str) -> bool {
     let first_line = text.lines().next().unwrap_or("").trim();
     if first_line.is_empty() {
         return true;
@@ -183,7 +183,7 @@ fn parse_codex_session_jsonl(path: &Path, project_path: &Path) -> Option<Discove
 }
 
 /// Extract user message text from a Codex JSONL event object.
-fn extract_codex_user_message(obj: &serde_json::Value) -> Option<String> {
+pub(crate) fn extract_codex_user_message(obj: &serde_json::Value) -> Option<String> {
     // Try: { "type": "response_item", "payload": { "role": "user", "type": "message", "content": [...] } }
     if obj.get("type").and_then(|v| v.as_str()) == Some("response_item") {
         if let Some(payload) = obj.get("payload") {
@@ -228,7 +228,7 @@ fn extract_codex_user_message(obj: &serde_json::Value) -> Option<String> {
 }
 
 /// Recursively walk a directory up to `max_depth` levels and collect .jsonl files.
-fn collect_jsonl_files(dir: &Path, max_depth: u32) -> Vec<PathBuf> {
+pub(crate) fn collect_jsonl_files(dir: &Path, max_depth: u32) -> Vec<PathBuf> {
     let mut results = Vec::new();
     if max_depth == 0 || !dir.is_dir() {
         return results;
@@ -392,7 +392,7 @@ fn sync_claude_skills_into_agents() -> Result<()> {
     }
 }
 
-fn ensure_codex_notify_config(content: &str, script_path: &str) -> (String, bool) {
+pub(crate) fn ensure_codex_notify_config(content: &str, script_path: &str) -> (String, bool) {
     let escaped_path = toml_escape_str(script_path);
     let notify_line = format!("notify = [\"python3\", \"{}\"]", escaped_path);
 
@@ -473,4 +473,328 @@ pub fn ensure_codex_config() -> Result<()> {
     sync_claude_skills_into_agents()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // -----------------------------------------------------------------------
+    // strip_codex_request_prefix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn strip_prefix_with_newline() {
+        assert_eq!(
+            strip_codex_request_prefix("## My request for Codex:\nHello world"),
+            "Hello world"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_with_crlf() {
+        assert_eq!(
+            strip_codex_request_prefix("## My request for Codex:\r\nHello world"),
+            "Hello world"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_no_separator() {
+        assert_eq!(
+            strip_codex_request_prefix("## My request for Codex:Hello"),
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_no_match() {
+        assert_eq!(
+            strip_codex_request_prefix("Just a normal message"),
+            "Just a normal message"
+        );
+    }
+
+    #[test]
+    fn strip_prefix_trims_whitespace() {
+        assert_eq!(
+            strip_codex_request_prefix("  ## My request for Codex:\n  Hello  "),
+            "Hello"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // is_codex_bootstrap_message
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bootstrap_agents_md() {
+        assert!(is_codex_bootstrap_message(
+            "# AGENTS.md instructions for foo"
+        ));
+    }
+
+    #[test]
+    fn bootstrap_agents_short() {
+        assert!(is_codex_bootstrap_message("# AGENTS"));
+    }
+
+    #[test]
+    fn bootstrap_claude_md() {
+        assert!(is_codex_bootstrap_message("# CLAUDE.md"));
+    }
+
+    #[test]
+    fn bootstrap_environment_context() {
+        assert!(is_codex_bootstrap_message("<environment_context>"));
+    }
+
+    #[test]
+    fn bootstrap_permissions() {
+        assert!(is_codex_bootstrap_message("<permissions instructions>"));
+    }
+
+    #[test]
+    fn bootstrap_app_context() {
+        assert!(is_codex_bootstrap_message("<app-context>"));
+    }
+
+    #[test]
+    fn bootstrap_collaboration_mode() {
+        assert!(is_codex_bootstrap_message("<collaboration_mode>"));
+    }
+
+    #[test]
+    fn bootstrap_instructions() {
+        assert!(is_codex_bootstrap_message("<INSTRUCTIONS>"));
+    }
+
+    #[test]
+    fn bootstrap_apply_patch_warning() {
+        assert!(is_codex_bootstrap_message(
+            "Warning: apply_patch was requested via exec_command. Something else."
+        ));
+    }
+
+    #[test]
+    fn bootstrap_empty_string() {
+        // Empty first line → true
+        assert!(is_codex_bootstrap_message(""));
+    }
+
+    #[test]
+    fn bootstrap_normal_message_is_false() {
+        assert!(!is_codex_bootstrap_message("Normal user message"));
+    }
+
+    #[test]
+    fn bootstrap_multiline_with_empty_first_line() {
+        assert!(is_codex_bootstrap_message("\nSome content after"));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_codex_user_message
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_response_item_format() {
+        let obj = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "role": "user",
+                "type": "message",
+                "content": [{"type": "input_text", "text": "hello from response_item"}]
+            }
+        });
+        assert_eq!(
+            extract_codex_user_message(&obj),
+            Some("hello from response_item".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_claude_like_user_format() {
+        let obj = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{"type": "text", "text": "hello from claude format"}]
+            }
+        });
+        assert_eq!(
+            extract_codex_user_message(&obj),
+            Some("hello from claude format".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_item_role_user_format() {
+        let obj = serde_json::json!({
+            "item": {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello from item"}]
+            }
+        });
+        assert_eq!(
+            extract_codex_user_message(&obj),
+            Some("hello from item".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_direct_role_user_format() {
+        let obj = serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hello direct"}]
+        });
+        assert_eq!(
+            extract_codex_user_message(&obj),
+            Some("hello direct".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_event_msg_user_message_format() {
+        let obj = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "text": "hello from event_msg"
+            }
+        });
+        assert_eq!(
+            extract_codex_user_message(&obj),
+            Some("hello from event_msg".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_non_user_message_returns_none() {
+        let obj = serde_json::json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "I am the assistant"}]
+        });
+        assert_eq!(extract_codex_user_message(&obj), None);
+    }
+
+    #[test]
+    fn extract_empty_object_returns_none() {
+        let obj = serde_json::json!({});
+        assert_eq!(extract_codex_user_message(&obj), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_codex_notify_config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn notify_config_empty_content() {
+        let (result, changed) = ensure_codex_notify_config("", "/path/to/script.py");
+        assert!(changed);
+        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn notify_config_already_contains_script_path() {
+        let content = "notify = [\"python3\", \"/path/to/script.py\"]\n";
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        assert!(!changed);
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn notify_config_replaces_existing_notify_line() {
+        let content = "some_key = true\nnotify = [\"old\", \"command\"]\nother = 1\n";
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        assert!(changed);
+        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+        assert!(!result.contains("old"));
+        assert!(result.contains("some_key = true"));
+        assert!(result.contains("other = 1"));
+    }
+
+    #[test]
+    fn notify_config_appends_when_no_notify() {
+        let content = "some_key = true\nother = 1\n";
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        assert!(changed);
+        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn notify_config_preserves_trailing_newline() {
+        let content = "notify = [\"old\"]\n";
+        let (result, _) = ensure_codex_notify_config(content, "/new/script.py");
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn notify_config_adds_newline_before_appending() {
+        let content = "key = value";
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        assert!(changed);
+        assert!(result.starts_with("key = value\n"));
+        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_jsonl_files
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn collect_jsonl_max_depth_zero() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.jsonl"), "{}").unwrap();
+        let files = collect_jsonl_files(dir.path(), 0);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn collect_jsonl_depth_one_top_level_only() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.jsonl"), "{}").unwrap();
+        fs::write(dir.path().join("b.jsonl"), "{}").unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/c.jsonl"), "{}").unwrap();
+
+        let files = collect_jsonl_files(dir.path(), 1);
+        assert_eq!(files.len(), 2);
+        for f in &files {
+            assert_eq!(f.parent().unwrap(), dir.path());
+        }
+    }
+
+    #[test]
+    fn collect_jsonl_ignores_non_jsonl() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.jsonl"), "{}").unwrap();
+        fs::write(dir.path().join("b.txt"), "text").unwrap();
+        fs::write(dir.path().join("c.json"), "{}").unwrap();
+
+        let files = collect_jsonl_files(dir.path(), 1);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].extension().unwrap() == "jsonl");
+    }
+
+    #[test]
+    fn collect_jsonl_recursive() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.jsonl"), "{}").unwrap();
+        fs::create_dir_all(dir.path().join("y/m/d")).unwrap();
+        fs::write(dir.path().join("y/b.jsonl"), "{}").unwrap();
+        fs::write(dir.path().join("y/m/c.jsonl"), "{}").unwrap();
+        fs::write(dir.path().join("y/m/d/e.jsonl"), "{}").unwrap();
+
+        let files = collect_jsonl_files(dir.path(), 4);
+        assert_eq!(files.len(), 4);
+    }
+
+    #[test]
+    fn collect_jsonl_nonexistent_dir() {
+        let files = collect_jsonl_files(Path::new("/nonexistent/path"), 3);
+        assert!(files.is_empty());
+    }
 }

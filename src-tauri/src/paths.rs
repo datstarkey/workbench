@@ -160,3 +160,223 @@ pub fn copy_dir_follow_symlinks(
     visited.remove(&canonical_src);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // --- atomic_write ---
+
+    #[test]
+    fn test_atomic_write_and_read_back() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.json");
+        atomic_write(&path, "hello world").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_atomic_write_creates_parent_dirs() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nested").join("deep").join("file.txt");
+        atomic_write(&path, "nested content").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nested content");
+    }
+
+    #[test]
+    fn test_atomic_write_overwrites_existing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("overwrite.txt");
+        atomic_write(&path, "first").unwrap();
+        atomic_write(&path, "second").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+    }
+
+    // --- remove_path_if_exists ---
+
+    #[test]
+    fn test_remove_path_if_exists_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("removeme.txt");
+        fs::write(&path, "bye").unwrap();
+        assert!(path.exists());
+        remove_path_if_exists(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_remove_path_if_exists_directory() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("subdir");
+        fs::create_dir_all(sub.join("inner")).unwrap();
+        fs::write(sub.join("inner").join("file.txt"), "data").unwrap();
+        assert!(sub.exists());
+        remove_path_if_exists(&sub).unwrap();
+        assert!(!sub.exists());
+    }
+
+    #[test]
+    fn test_remove_path_if_exists_nonexistent() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ghost.txt");
+        assert!(remove_path_if_exists(&path).is_ok());
+    }
+
+    // --- copy_file ---
+
+    #[test]
+    fn test_copy_file_contents_match() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        fs::write(&src, "copy me").unwrap();
+        copy_file(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "copy me");
+    }
+
+    #[test]
+    fn test_copy_file_creates_parent_dirs() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("a").join("b").join("dst.txt");
+        fs::write(&src, "deep copy").unwrap();
+        copy_file(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "deep copy");
+    }
+
+    // --- copy_dir_skip_symlinks ---
+
+    #[test]
+    fn test_copy_dir_skip_symlinks_copies_files() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("root.txt"), "root").unwrap();
+        fs::write(src.join("sub").join("nested.txt"), "nested").unwrap();
+
+        copy_dir_skip_symlinks(&src, &dst).unwrap();
+
+        assert_eq!(fs::read_to_string(dst.join("root.txt")).unwrap(), "root");
+        assert_eq!(
+            fs::read_to_string(dst.join("sub").join("nested.txt")).unwrap(),
+            "nested"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_dir_skip_symlinks_skips_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("real.txt"), "real").unwrap();
+        symlink(src.join("real.txt"), src.join("link.txt")).unwrap();
+
+        copy_dir_skip_symlinks(&src, &dst).unwrap();
+
+        assert!(dst.join("real.txt").exists());
+        assert!(!dst.join("link.txt").exists());
+    }
+
+    // --- copy_dir_follow_symlinks ---
+
+    #[test]
+    fn test_copy_dir_follow_symlinks_copies_tree() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        fs::create_dir_all(src.join("child")).unwrap();
+        fs::write(src.join("a.txt"), "aaa").unwrap();
+        fs::write(src.join("child").join("b.txt"), "bbb").unwrap();
+
+        let mut visited = HashSet::new();
+        copy_dir_follow_symlinks(&src, &dst, &mut visited).unwrap();
+
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "aaa");
+        assert_eq!(
+            fs::read_to_string(dst.join("child").join("b.txt")).unwrap(),
+            "bbb"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_dir_follow_symlinks_follows_file_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("real.txt"), "followed").unwrap();
+        symlink(src.join("real.txt"), src.join("link.txt")).unwrap();
+
+        let mut visited = HashSet::new();
+        copy_dir_follow_symlinks(&src, &dst, &mut visited).unwrap();
+
+        assert_eq!(fs::read_to_string(dst.join("link.txt")).unwrap(), "followed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_dir_follow_symlinks_cycle_detection() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("child")).unwrap();
+        fs::write(src.join("file.txt"), "data").unwrap();
+        // Create a cycle: child/loop -> src
+        symlink(&src, src.join("child").join("loop")).unwrap();
+
+        let dst = dir.path().join("dst");
+        let mut visited = HashSet::new();
+        // Should terminate without error despite the cycle
+        copy_dir_follow_symlinks(&src, &dst, &mut visited).unwrap();
+        assert!(dst.join("file.txt").exists());
+    }
+
+    // --- ensure_script ---
+
+    #[test]
+    fn test_ensure_script_creates_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("script.sh");
+        let result = ensure_script(&path, "#!/bin/bash\necho hi").unwrap();
+        assert_eq!(result, path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "#!/bin/bash\necho hi");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ensure_script_sets_executable_permissions() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("exec.sh");
+        ensure_script(&path, "#!/bin/bash").unwrap();
+        let perms = fs::metadata(&path).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o755);
+    }
+
+    #[test]
+    fn test_ensure_script_no_rewrite_if_unchanged() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("stable.sh");
+        let body = "#!/bin/bash\necho stable";
+        ensure_script(&path, body).unwrap();
+        let mtime1 = fs::metadata(&path).unwrap().modified().unwrap();
+
+        // Small sleep to ensure filesystem timestamp would differ if rewritten
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        ensure_script(&path, body).unwrap();
+        let mtime2 = fs::metadata(&path).unwrap().modified().unwrap();
+
+        assert_eq!(mtime1, mtime2);
+    }
+}
