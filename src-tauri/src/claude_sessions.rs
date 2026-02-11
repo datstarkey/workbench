@@ -8,12 +8,12 @@ use crate::session_utils;
 use crate::types::DiscoveredClaudeSession;
 
 /// Encode a project path the same way Claude CLI does: replace `/` with `-`
-fn encode_project_path(project_path: &str) -> String {
+pub(crate) fn encode_project_path(project_path: &str) -> String {
     project_path.replace('/', "-")
 }
 
 /// Parse a single JSONL session file into a DiscoveredClaudeSession.
-fn parse_session_jsonl(
+pub(crate) fn parse_session_jsonl(
     path: &std::path::Path,
     session_id: String,
 ) -> Option<DiscoveredClaudeSession> {
@@ -110,4 +110,204 @@ pub fn discover_claude_sessions(project_path: &str) -> Result<Vec<DiscoveredClau
     sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     Ok(sessions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    // encode_project_path tests
+
+    #[test]
+    fn encode_project_path_typical() {
+        assert_eq!(
+            encode_project_path("/Users/jake/project"),
+            "-Users-jake-project"
+        );
+    }
+
+    #[test]
+    fn encode_project_path_empty_string() {
+        assert_eq!(encode_project_path(""), "");
+    }
+
+    #[test]
+    fn encode_project_path_root() {
+        assert_eq!(encode_project_path("/"), "-");
+    }
+
+    #[test]
+    fn encode_project_path_no_slashes() {
+        assert_eq!(encode_project_path("project"), "project");
+    }
+
+    #[test]
+    fn encode_project_path_trailing_slash() {
+        assert_eq!(
+            encode_project_path("/Users/jake/project/"),
+            "-Users-jake-project-"
+        );
+    }
+
+    // parse_session_jsonl tests
+
+    #[test]
+    fn parse_valid_session_with_user_message() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("abc12345-1234-1234-1234-123456789abc.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:00:00Z","message":{{"content":"Fix the login bug"}}}}"#
+        )
+        .unwrap();
+
+        let result =
+            parse_session_jsonl(&path, "abc12345-1234-1234-1234-123456789abc".to_string());
+        assert!(result.is_some());
+        let session = result.unwrap();
+        assert_eq!(session.session_id, "abc12345-1234-1234-1234-123456789abc");
+        assert_eq!(session.label, "Fix the login bug");
+        assert_eq!(session.timestamp, "2024-01-15T10:00:00Z");
+    }
+
+    #[test]
+    fn parse_session_with_array_content() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:00:00Z","message":{{"content":[{{"type":"text","text":"Refactor the auth module"}}]}}}}"#
+        )
+        .unwrap();
+
+        let result = parse_session_jsonl(&path, "session123".to_string());
+        let session = result.unwrap();
+        assert_eq!(session.label, "Refactor the auth module");
+    }
+
+    #[test]
+    fn parse_session_only_meta_messages_falls_back() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:00:00Z","isMeta":true,"message":{{"content":"meta info"}}}}"#
+        )
+        .unwrap();
+
+        let result = parse_session_jsonl(&path, "abcdef1234567890".to_string());
+        let session = result.unwrap();
+        assert_eq!(session.label, "Session abcdef12");
+        assert_eq!(session.timestamp, "2024-01-15T10:00:00Z");
+    }
+
+    #[test]
+    fn parse_session_skips_meta_finds_real_message() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:00:00Z","isMeta":true,"message":{{"content":"meta info"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:01:00Z","message":{{"content":"Real user message here"}}}}"#
+        )
+        .unwrap();
+
+        let result = parse_session_jsonl(&path, "abcdef1234567890".to_string());
+        let session = result.unwrap();
+        assert_eq!(session.label, "Real user message here");
+        // Timestamp should come from the first entry
+        assert_eq!(session.timestamp, "2024-01-15T10:00:00Z");
+    }
+
+    #[test]
+    fn parse_session_empty_file_returns_fallback() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        fs::File::create(&path).unwrap();
+
+        let result = parse_session_jsonl(&path, "abcdef1234567890".to_string());
+        let session = result.unwrap();
+        assert_eq!(session.label, "Session abcdef12");
+        assert_eq!(session.timestamp, "");
+    }
+
+    #[test]
+    fn parse_session_skips_assistant_messages() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"assistant","timestamp":"2024-01-15T10:00:00Z","message":{{"content":"I can help with that"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:01:00Z","message":{{"content":"Add unit tests to the project"}}}}"#
+        )
+        .unwrap();
+
+        let result = parse_session_jsonl(&path, "session456".to_string());
+        let session = result.unwrap();
+        assert_eq!(session.label, "Add unit tests to the project");
+        assert_eq!(session.timestamp, "2024-01-15T10:00:00Z");
+    }
+
+    #[test]
+    fn parse_session_skips_short_user_messages() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:00:00Z","message":{{"content":"hi"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:01:00Z","message":{{"content":"Please fix the broken tests"}}}}"#
+        )
+        .unwrap();
+
+        let result = parse_session_jsonl(&path, "session789".to_string());
+        let session = result.unwrap();
+        assert_eq!(session.label, "Please fix the broken tests");
+    }
+
+    #[test]
+    fn parse_session_nonexistent_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.jsonl");
+
+        let result = parse_session_jsonl(&path, "session000".to_string());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_session_invalid_json_lines_skipped() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(file, "not valid json").unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:00:00Z","message":{{"content":"Valid message after garbage"}}}}"#
+        )
+        .unwrap();
+
+        let result = parse_session_jsonl(&path, "session111".to_string());
+        let session = result.unwrap();
+        assert_eq!(session.label, "Valid message after garbage");
+        assert_eq!(session.timestamp, "2024-01-15T10:00:00Z");
+    }
 }

@@ -10,7 +10,7 @@ const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.py";
 const WORKBENCH_HOOK_EVENTS: [&str; 4] =
     ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
 
-fn settings_path(scope: &str, project_path: Option<&str>) -> Result<PathBuf> {
+pub(crate) fn settings_path(scope: &str, project_path: Option<&str>) -> Result<PathBuf> {
     match scope {
         "user" => Ok(paths::claude_user_dir().join("settings.json")),
         "user-local" => Ok(paths::claude_user_dir().join("settings.local.json")),
@@ -288,4 +288,97 @@ pub fn ensure_workbench_hook_integration() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- settings_path ---
+
+    #[test]
+    fn settings_path_user_scope() {
+        let path = settings_path("user", None).unwrap();
+        assert!(path.ends_with("settings.json"));
+        assert!(path.to_string_lossy().contains(".claude"));
+    }
+
+    #[test]
+    fn settings_path_user_local_scope() {
+        let path = settings_path("user-local", None).unwrap();
+        assert!(path.ends_with("settings.local.json"));
+        assert!(path.to_string_lossy().contains(".claude"));
+    }
+
+    #[test]
+    fn settings_path_project_with_path() {
+        let path = settings_path("project", Some("/home/user/myproject")).unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("/home/user/myproject/.claude/settings.json")
+        );
+    }
+
+    #[test]
+    fn settings_path_project_local_with_path() {
+        let path = settings_path("project-local", Some("/home/user/myproject")).unwrap();
+        assert_eq!(
+            path,
+            PathBuf::from("/home/user/myproject/.claude/settings.local.json")
+        );
+    }
+
+    #[test]
+    fn settings_path_project_without_path() {
+        let path = settings_path("project", None).unwrap();
+        assert_eq!(path, PathBuf::from("./.claude/settings.json"));
+    }
+
+    #[test]
+    fn settings_path_unknown_scope_errors() {
+        let result = settings_path("invalid", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown settings scope")
+        );
+    }
+
+    // --- load_settings / save_settings round-trip ---
+
+    #[test]
+    fn settings_round_trip_with_temp_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_path = dir.path().to_str().unwrap();
+        let value = serde_json::json!({"foo": "bar", "nested": {"key": 42}});
+
+        save_settings("project", Some(project_path), &value).unwrap();
+        let loaded = load_settings("project", Some(project_path)).unwrap();
+        assert_eq!(loaded, value);
+    }
+
+    #[test]
+    fn load_settings_returns_empty_object_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_path = dir.path().to_str().unwrap();
+
+        let loaded = load_settings("project", Some(project_path)).unwrap();
+        assert_eq!(loaded, serde_json::json!({}));
+    }
+
+    #[test]
+    fn save_settings_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_path = dir.path().to_str().unwrap();
+
+        let v1 = serde_json::json!({"version": 1});
+        let v2 = serde_json::json!({"version": 2, "extra": true});
+
+        save_settings("project", Some(project_path), &v1).unwrap();
+        save_settings("project", Some(project_path), &v2).unwrap();
+        let loaded = load_settings("project", Some(project_path)).unwrap();
+        assert_eq!(loaded, v2);
+    }
 }
