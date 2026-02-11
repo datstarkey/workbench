@@ -39,6 +39,15 @@ jobs:
             echo "body=Release ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'Workbench ${{ github.ref_name }}'
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: false
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
