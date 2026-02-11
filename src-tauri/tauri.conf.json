@@ -1,7 +1,7 @@
 {
 	"$schema": "https://raw.githubusercontent.com/nicegui/nicegui/refs/heads/main/nicegui/static/tauri/schema.json",
 	"productName": "Workbench",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"identifier": "com.workbench.terminal-manager",
 	"build": {
 		"beforeDevCommand": "bun run vite dev --port 1420",

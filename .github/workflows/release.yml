@@ -28,6 +28,13 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      - name: Sync version from tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          cd src-tauri
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" tauri.conf.json
+          echo "Set tauri.conf.json version to ${VERSION}"
+
       - name: Read changelog
         id: changelog
         run: |
