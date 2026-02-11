@@ -26,6 +26,19 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      - name: Read changelog
+        id: changelog
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          FILE="changelog/RELEASE_v${VERSION}.md"
+          if [ -f "$FILE" ]; then
+            echo "body<<EOF" >> "$GITHUB_OUTPUT"
+            cat "$FILE" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "body=Release ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -34,7 +47,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'Workbench v__VERSION__'
-          releaseBody: 'See the assets to download and install.'
+          releaseBody: '${{ steps.changelog.outputs.body }}'
           releaseDraft: false
           prerelease: false
           tauriScript: bunx tauri
