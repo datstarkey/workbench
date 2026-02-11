@@ -22,6 +22,8 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: release-universal-apple-darwin
 
       - name: Install frontend dependencies
         run: bun install
