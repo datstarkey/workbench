@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use crate::types::{GitHubBranchStatus, GitHubChecksStatus, GitHubPR, GitHubRemote};
+use crate::types::{GitHubChecksStatus, GitHubPR, GitHubProjectStatus, GitHubRemote};
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
     let output = Command::new("gh")
@@ -19,10 +19,11 @@ fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn is_gh_available(cwd: &str) -> bool {
+pub fn is_gh_available() -> bool {
+    let home = dirs::home_dir().unwrap_or_default();
     Command::new("gh")
         .args(["auth", "status"])
-        .current_dir(cwd)
+        .current_dir(home)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -64,27 +65,38 @@ fn parse_github_remote(url: &str) -> Result<GitHubRemote> {
     })
 }
 
-pub fn get_pr_for_branch(path: &str, branch: &str) -> Result<Option<GitHubPR>> {
-    let fields = "number,title,state,url,isDraft,reviewDecision,statusCheckRollup";
-    let result = gh_output(&["pr", "view", branch, "--json", fields], path);
+pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
+    let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup";
+    let result = gh_output(
+        &["pr", "list", "--state", "all", "--limit", "100", "--json", fields],
+        path,
+    );
 
     match result {
         Ok(json_str) => {
-            let v: serde_json::Value = serde_json::from_str(&json_str)?;
-            Ok(Some(parse_pr_json(&v)?))
+            let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str)?;
+            arr.iter().map(parse_pr_json).collect()
         }
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("no pull requests found")
-                || msg.contains("Could not resolve")
-                || msg.contains("not found")
-            {
-                Ok(None)
+            if msg.contains("not a git repository") || msg.contains("no GitHub remotes") {
+                Ok(vec![])
             } else {
                 Err(e)
             }
         }
     }
+}
+
+pub fn get_project_status(path: &str) -> GitHubProjectStatus {
+    let remote = get_github_remote(path).ok();
+    let prs = if remote.is_some() {
+        list_project_prs(path).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    GitHubProjectStatus { remote, prs }
 }
 
 fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {
@@ -96,6 +108,7 @@ fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {
         state: v["state"].as_str().unwrap_or("OPEN").to_string(),
         url: v["url"].as_str().unwrap_or("").to_string(),
         is_draft: v["isDraft"].as_bool().unwrap_or(false),
+        head_ref_name: v["headRefName"].as_str().unwrap_or("").to_string(),
         review_decision: v["reviewDecision"].as_str().map(String::from),
         checks_status: checks,
     })
@@ -150,20 +163,6 @@ fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus
         passing,
         failing,
         pending,
-    }
-}
-
-pub fn get_branch_status(project_path: &str, branch: &str) -> GitHubBranchStatus {
-    let remote = get_github_remote(project_path).ok();
-    let pr = remote
-        .as_ref()
-        .and_then(|_| get_pr_for_branch(project_path, branch).ok().flatten());
-
-    GitHubBranchStatus {
-        project_path: project_path.to_string(),
-        branch: branch.to_string(),
-        pr,
-        remote,
     }
 }
 

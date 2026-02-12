@@ -232,17 +232,16 @@ pub struct GitHubPR {
     pub state: String,
     pub url: String,
     pub is_draft: bool,
+    pub head_ref_name: String,
     pub review_decision: Option<String>,
     pub checks_status: GitHubChecksStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GitHubBranchStatus {
-    pub project_path: String,
-    pub branch: String,
-    pub pr: Option<GitHubPR>,
+pub struct GitHubProjectStatus {
     pub remote: Option<GitHubRemote>,
+    pub prs: Vec<GitHubPR>,
 }
 
 #[cfg(test)]

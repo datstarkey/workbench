@@ -152,13 +152,17 @@ export interface GitHubPR {
 	state: 'OPEN' | 'CLOSED' | 'MERGED';
 	url: string;
 	isDraft: boolean;
+	headRefName: string;
 	reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
 	checksStatus: GitHubChecksStatus;
 }
 
+export interface GitHubProjectStatus {
+	remote: GitHubRemote | null;
+	prs: GitHubPR[];
+}
+
 export interface GitHubBranchStatus {
-	projectPath: string;
-	branch: string;
 	pr: GitHubPR | null;
 	remote: GitHubRemote | null;
 }

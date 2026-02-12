@@ -11,7 +11,7 @@ use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitHubBranchStatus, GitHubRemote, GitInfo, HookScriptInfo, PluginInfo,
+    DiscoveredClaudeSession, GitHubProjectStatus, GitHubRemote, GitInfo, HookScriptInfo, PluginInfo,
     ProjectConfig, SkillInfo, WorkspaceFile, WorktreeInfo,
 };
 
@@ -221,19 +221,19 @@ pub fn unwatch_project(path: String, state: State<'_, GitWatcher>) -> Result<boo
 
 // GitHub integration commands
 
-#[tauri::command]
-pub fn github_is_available(path: String) -> bool {
-    github::is_gh_available(&path)
+#[tauri::command(async)]
+pub fn github_is_available() -> bool {
+    github::is_gh_available()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn github_get_remote(path: String) -> Result<GitHubRemote, String> {
     github::get_github_remote(&path).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn github_branch_status(project_path: String, branch: String) -> GitHubBranchStatus {
-    github::get_branch_status(&project_path, &branch)
+#[tauri::command(async)]
+pub fn github_project_status(project_path: String) -> GitHubProjectStatus {
+    github::get_project_status(&project_path)
 }
 
 #[tauri::command]

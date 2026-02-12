@@ -1,20 +1,29 @@
-import type { GitChangedEvent, GitHubBranchStatus, GitHubRemote } from '$types/workbench';
+import type {
+	GitChangedEvent,
+	GitHubBranchStatus,
+	GitHubPR,
+	GitHubProjectStatus,
+	GitHubRemote
+} from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { SvelteSet } from 'svelte/reactivity';
 
 export class GitHubStore {
-	ghAvailableByProject: Record<string, boolean> = $state({});
+	ghAvailable: boolean | null = $state(null);
 	remoteByProject: Record<string, GitHubRemote | null> = $state({});
-	branchStatusByKey: Record<string, GitHubBranchStatus> = $state({});
+	prsByProject: Record<string, GitHubPR[]> = $state({});
 
-	private pendingKeys = new SvelteSet<string>();
+	// Not reactive — internal bookkeeping only
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	private pendingProjects = new Set<string>();
 	private pollIntervalId: ReturnType<typeof setInterval> | null = null;
 	private activeBranches: Array<{ projectPath: string; branch: string }> = [];
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 	constructor() {
 		listen<GitChangedEvent>('git:changed', (event) => {
-			this.refreshProject(event.payload.projectPath);
+			this.debouncedRefresh(event.payload.projectPath);
 		});
 
 		this.pollIntervalId = setInterval(() => {
@@ -22,59 +31,53 @@ export class GitHubStore {
 		}, 90_000);
 	}
 
-	private static branchKey(projectPath: string, branch: string): string {
-		return `${projectPath}::${branch}`;
+	private debouncedRefresh(projectPath: string): void {
+		const existing = this.debounceTimers.get(projectPath);
+		if (existing) clearTimeout(existing);
+		this.debounceTimers.set(
+			projectPath,
+			setTimeout(() => {
+				this.debounceTimers.delete(projectPath);
+				this.refreshProject(projectPath);
+			}, 2_000)
+		);
 	}
 
-	async checkGhAvailable(projectPath: string): Promise<boolean> {
-		if (projectPath in this.ghAvailableByProject) {
-			return this.ghAvailableByProject[projectPath];
-		}
+	async checkGhAvailable(): Promise<boolean> {
+		if (this.ghAvailable !== null) return this.ghAvailable;
 		try {
-			const available = await invoke<boolean>('github_is_available', { path: projectPath });
-			this.ghAvailableByProject = { ...this.ghAvailableByProject, [projectPath]: available };
+			const available = await invoke<boolean>('github_is_available');
+			this.ghAvailable = available;
 			return available;
 		} catch {
-			this.ghAvailableByProject = { ...this.ghAvailableByProject, [projectPath]: false };
+			this.ghAvailable = false;
 			return false;
 		}
 	}
 
-	async fetchRemote(projectPath: string): Promise<GitHubRemote | null> {
-		try {
-			const remote = await invoke<GitHubRemote>('github_get_remote', { path: projectPath });
-			this.remoteByProject = { ...this.remoteByProject, [projectPath]: remote };
-			return remote;
-		} catch {
-			this.remoteByProject = { ...this.remoteByProject, [projectPath]: null };
-			return null;
-		}
-	}
-
-	async fetchBranchStatus(projectPath: string, branch: string): Promise<void> {
-		const key = GitHubStore.branchKey(projectPath, branch);
-		if (this.pendingKeys.has(key)) return;
-		this.pendingKeys.add(key);
+	async fetchProjectStatus(projectPath: string): Promise<void> {
+		if (this.pendingProjects.has(projectPath)) return;
+		this.pendingProjects.add(projectPath);
 
 		try {
-			const status = await invoke<GitHubBranchStatus>('github_branch_status', {
-				projectPath,
-				branch
+			const status = await invoke<GitHubProjectStatus>('github_project_status', {
+				projectPath
 			});
-			this.branchStatusByKey = { ...this.branchStatusByKey, [key]: status };
-
-			if (status.remote) {
-				this.remoteByProject = { ...this.remoteByProject, [projectPath]: status.remote };
-			}
+			this.remoteByProject = { ...this.remoteByProject, [projectPath]: status.remote };
+			this.prsByProject = { ...this.prsByProject, [projectPath]: status.prs };
 		} catch (e) {
-			console.warn('[GitHubStore] Failed to fetch branch status:', e);
+			console.warn('[GitHubStore] Failed to fetch project status:', e);
 		} finally {
-			this.pendingKeys.delete(key);
+			this.pendingProjects.delete(projectPath);
 		}
 	}
 
 	getBranchStatus(projectPath: string, branch: string): GitHubBranchStatus | undefined {
-		return this.branchStatusByKey[GitHubStore.branchKey(projectPath, branch)];
+		const prs = this.prsByProject[projectPath];
+		if (!prs) return undefined;
+		const pr = prs.find((p) => p.headRefName === branch) ?? null;
+		const remote = this.remoteByProject[projectPath] ?? null;
+		return { pr, remote };
 	}
 
 	getRemoteUrl(projectPath: string): string | null {
@@ -86,34 +89,44 @@ export class GitHubStore {
 	}
 
 	async refreshProject(projectPath: string): Promise<void> {
-		const available = await this.checkGhAvailable(projectPath);
-		if (!available) return;
-
-		const branchesToRefresh = this.activeBranches.filter((b) => b.projectPath === projectPath);
-		await Promise.all(
-			branchesToRefresh.map((b) => this.fetchBranchStatus(b.projectPath, b.branch))
-		);
+		if (this.ghAvailable === false) return;
+		await this.fetchProjectStatus(projectPath);
 	}
 
 	private async pollActiveBranches(): Promise<void> {
-		for (const { projectPath, branch } of this.activeBranches) {
-			const available = this.ghAvailableByProject[projectPath];
-			if (available === false) continue;
-			const key = GitHubStore.branchKey(projectPath, branch);
-			const existing = this.branchStatusByKey[key];
-			if (existing?.pr) {
-				await this.fetchBranchStatus(projectPath, branch);
-			}
+		if (this.ghAvailable === false) return;
+
+		// Collect unique projects that have any open PRs
+		const seen: Record<string, true> = {};
+		const projectsWithOpenPrs = this.activeBranches
+			.filter(({ projectPath }) => {
+				if (seen[projectPath]) return false;
+				const prs = this.prsByProject[projectPath];
+				if (!prs?.some((p) => p.state === 'OPEN')) return false;
+				seen[projectPath] = true;
+				return true;
+			})
+			.map(({ projectPath }) => projectPath);
+
+		for (const projectPath of projectsWithOpenPrs) {
+			await this.fetchProjectStatus(projectPath);
 		}
 	}
 
+	/** Call after projects load — checks gh availability, then fetches status per project */
 	async initForProjects(projectPaths: string[]): Promise<void> {
-		await Promise.all(projectPaths.map((p) => this.checkGhAvailable(p)));
+		const available = await this.checkGhAvailable();
+		if (!available) return;
+
+		await Promise.all(projectPaths.map((p) => this.fetchProjectStatus(p)));
 	}
 
 	destroy() {
 		if (this.pollIntervalId) {
 			clearInterval(this.pollIntervalId);
+		}
+		for (const timer of this.debounceTimers.values()) {
+			clearTimeout(timer);
 		}
 	}
 }

@@ -62,7 +62,7 @@ pub fn run() {
             commands::unwatch_project,
             commands::github_is_available,
             commands::github_get_remote,
-            commands::github_branch_status,
+            commands::github_project_status,
             commands::open_url,
         ])
         .run(tauri::generate_context!())
