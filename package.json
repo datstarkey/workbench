@@ -12,7 +12,7 @@
 		"check": "svelte-check --tsconfig ./tsconfig.json",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
-		"test": "vitest run",
+		"test": "svelte-check --tsconfig ./tsconfig.json && vitest run",
 		"test:watch": "vitest",
 		"test:unit": "vitest run --project unit",
 		"test:component": "vitest run --project component"

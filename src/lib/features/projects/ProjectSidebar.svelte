@@ -155,14 +155,14 @@
 		const branches: Array<{ projectPath: string; branch: string }> = [];
 		for (const project of projectStore.projects) {
 			const branch = gitStore.branchByProject[project.path];
-			if (branch && githubStore.ghAvailableByProject[project.path] !== false) {
+			if (branch && githubStore.ghAvailable !== false) {
 				branches.push({ projectPath: project.path, branch });
-				githubStore.fetchBranchStatus(project.path, branch);
+				githubStore.fetchProjectStatus(project.path);
 			}
 			for (const wt of worktreesForProject(project.path)) {
-				if (wt.branch && githubStore.ghAvailableByProject[project.path] !== false) {
+				if (wt.branch && githubStore.ghAvailable !== false) {
 					branches.push({ projectPath: project.path, branch: wt.branch });
-					githubStore.fetchBranchStatus(project.path, wt.branch);
+					githubStore.fetchProjectStatus(project.path);
 				}
 			}
 		}
