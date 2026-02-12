@@ -14,9 +14,9 @@
 	);
 </script>
 
-<div class="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/30 px-1">
+<div class="flex shrink-0 items-start border-b border-border/60 bg-muted/30 px-1 py-1">
 	<div
-		class="flex flex-1 items-center gap-0.5 overflow-x-auto"
+		class="flex flex-1 flex-wrap items-center gap-0.5"
 		role="tablist"
 		aria-label="Workspaces"
 	>
@@ -35,7 +35,7 @@
 				}}
 			>
 				<button
-					class="px-3 py-1.5 text-xs font-medium"
+					class="whitespace-nowrap px-3 py-1.5 text-xs font-medium"
 					type="button"
 					role="tab"
 					aria-selected={isActive}
