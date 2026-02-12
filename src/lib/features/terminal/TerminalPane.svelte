@@ -120,11 +120,12 @@
 					// Block both keydown and keypress so xterm never sends \r.
 					// Only send the newline on keydown to avoid double-firing.
 					if (event.type === 'keydown') {
-						// Codex CLI doesn't support pasted newlines — use Ctrl+J (ASCII LF) instead.
+						// Write directly to PTY, bypassing xterm's paste pipeline.
+						// Codex: Ctrl+J (ASCII LF). Claude: bracketed paste newline.
 						if (claudeSessionStore.paneType(sessionId) === 'codex') {
 							writeTerminal(sessionId, '\x0A');
 						} else {
-							terminal?.paste('\n');
+							writeTerminal(sessionId, '\x1b[200~\n\x1b[201~');
 						}
 					}
 					return false;
