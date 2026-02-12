@@ -18,6 +18,7 @@
 	import {
 		setClaudeSessionStore,
 		setClaudeSettingsStore,
+		setGitHubStore,
 		setGitStore,
 		setProjectManager,
 		setProjectStore,
@@ -25,6 +26,7 @@
 		setWorktreeManager,
 		setWorkspaceStore
 	} from '$stores/context';
+	import { GitHubStore } from '$stores/github.svelte';
 	import { UpdaterStore } from '$stores/updater.svelte';
 	import { GitStore } from '$stores/git.svelte';
 	import { ProjectStore } from '$stores/projects.svelte';
@@ -37,6 +39,7 @@
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
 	setClaudeSessionStore(new ClaudeSessionStore(workspaceStore, projectStore));
 	const gitStore = setGitStore(new GitStore());
+	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
 	setProjectManager(new ProjectManagerStore(projectStore, workspaceStore, gitStore));
@@ -88,6 +91,7 @@
 			projectStore.openProject(projectStore.projects[0].path);
 		}
 		gitStore.refreshAll(projectStore.projects.map((p) => p.path));
+		githubStore.initForProjects(projectStore.projects.map((p) => p.path));
 	});
 </script>
 

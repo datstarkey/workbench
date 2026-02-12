@@ -1,17 +1,34 @@
 <script lang="ts">
 	import CodeIcon from '@lucide/svelte/icons/code';
+	import GithubIcon from '@lucide/svelte/icons/github';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { getWorkspaceStore } from '$stores/context';
+	import { getGitHubStore, getWorkspaceStore } from '$stores/context';
+	import { branchUrl, openInGitHub } from '$lib/utils/github';
 	import { effectivePath } from '$lib/utils/path';
 	import { openInVSCode } from '$lib/utils/vscode';
 
 	const workspaceStore = getWorkspaceStore();
+	const githubStore = getGitHubStore();
 
 	let activeWorkspace = $derived(
 		workspaceStore.workspaces.find((ws) => ws.id === workspaceStore.activeWorkspaceId)
 	);
+
+	let activeGitHubUrl = $derived.by(() => {
+		if (!activeWorkspace) return null;
+		const repoUrl = githubStore.getRemoteUrl(activeWorkspace.projectPath);
+		if (!repoUrl) return null;
+		if (
+			activeWorkspace.branch &&
+			activeWorkspace.branch !== 'main' &&
+			activeWorkspace.branch !== 'master'
+		) {
+			return branchUrl(repoUrl, activeWorkspace.branch);
+		}
+		return repoUrl;
+	});
 </script>
 
 <div class="flex shrink-0 items-start border-b border-border/60 bg-muted/30 px-1 py-1">
@@ -72,5 +89,21 @@
 			</Tooltip.Trigger>
 			<Tooltip.Content>Open in VS Code</Tooltip.Content>
 		</Tooltip.Root>
+		{#if activeGitHubUrl}
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="size-7 text-muted-foreground hover:text-foreground"
+						type="button"
+						onclick={() => openInGitHub(activeGitHubUrl!)}
+					>
+						<GithubIcon class="size-3.5" />
+					</Button>
+				</Tooltip.Trigger>
+				<Tooltip.Content>Open in GitHub</Tooltip.Content>
+			</Tooltip.Root>
+		{/if}
 	</div>
 </div>

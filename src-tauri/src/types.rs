@@ -204,6 +204,46 @@ pub struct GitChangedEvent {
     pub project_path: String,
 }
 
+// GitHub integration types
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRemote {
+    pub owner: String,
+    pub repo: String,
+    pub html_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubChecksStatus {
+    pub overall: String,
+    pub total: u32,
+    pub passing: u32,
+    pub failing: u32,
+    pub pending: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubPR {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub url: String,
+    pub is_draft: bool,
+    pub head_ref_name: String,
+    pub review_decision: Option<String>,
+    pub checks_status: GitHubChecksStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubProjectStatus {
+    pub remote: Option<GitHubRemote>,
+    pub prs: Vec<GitHubPR>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
