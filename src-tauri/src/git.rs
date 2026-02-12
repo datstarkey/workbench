@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use crate::paths::{copy_dir_skip_symlinks, copy_file};
 use crate::types::{BranchInfo, CreateWorktreeRequest, GitInfo, WorktreeCopyOptions, WorktreeInfo};
 
-fn git_output(args: &[&str], cwd: &str) -> Result<String> {
+pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)

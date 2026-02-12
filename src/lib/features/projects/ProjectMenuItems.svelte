@@ -3,6 +3,7 @@
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
+	import GithubIcon from '@lucide/svelte/icons/github';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -10,12 +11,14 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import {
 		getClaudeSessionStore,
+		getGitHubStore,
 		getGitStore,
 		getProjectManager,
 		getProjectStore,
 		getWorktreeManager,
 		getWorkspaceStore
 	} from '$stores/context';
+	import { openInGitHub } from '$lib/utils/github';
 	import { openInVSCode } from '$lib/utils/vscode';
 	import type { ProjectConfig, ProjectTask } from '$types/workbench';
 
@@ -43,6 +46,7 @@
 	const workspaceStore = getWorkspaceStore();
 	const claudeSessionStore = getClaudeSessionStore();
 	const gitStore = getGitStore();
+	const githubStore = getGitHubStore();
 	const projectManager = getProjectManager();
 	const worktreeManager = getWorktreeManager();
 
@@ -72,6 +76,12 @@
 	<CodeIcon class="size-3.5" />
 	Open in VS Code
 </Item>
+{#if githubStore.getRemoteUrl(project.path)}
+	<Item onclick={() => openInGitHub(githubStore.getRemoteUrl(project.path)!)}>
+		<GithubIcon class="size-3.5" />
+		Open in GitHub
+	</Item>
+{/if}
 {#if tasks.length > 0}
 	<Separator />
 	<Group>

@@ -25,24 +25,28 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		getClaudeSessionStore,
+		getGitHubStore,
 		getGitStore,
 		getProjectManager,
 		getProjectStore,
 		getWorktreeManager,
 		getWorkspaceStore
 	} from '$stores/context';
+	import { openInGitHub } from '$lib/utils/github';
 	import type {
 		ActiveClaudeSession,
 		ProjectConfig,
 		ProjectTask,
 		WorktreeInfo
 	} from '$types/workbench';
+	import PRStatusBadge from './PRStatusBadge.svelte';
 	import ProjectMenuItems from './ProjectMenuItems.svelte';
 
 	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
 	const claudeSessionStore = getClaudeSessionStore();
 	const gitStore = getGitStore();
+	const githubStore = getGitHubStore();
 	const projectManager = getProjectManager();
 	const worktreeManager = getWorktreeManager();
 
@@ -145,6 +149,25 @@
 	}
 
 	let dragOverProjectPath = $state<string | null>(null);
+
+	// Collect visible project+branch pairs and fetch GitHub status
+	$effect(() => {
+		const branches: Array<{ projectPath: string; branch: string }> = [];
+		for (const project of projectStore.projects) {
+			const branch = gitStore.branchByProject[project.path];
+			if (branch && githubStore.ghAvailableByProject[project.path] !== false) {
+				branches.push({ projectPath: project.path, branch });
+				githubStore.fetchBranchStatus(project.path, branch);
+			}
+			for (const wt of worktreesForProject(project.path)) {
+				if (wt.branch && githubStore.ghAvailableByProject[project.path] !== false) {
+					branches.push({ projectPath: project.path, branch: wt.branch });
+					githubStore.fetchBranchStatus(project.path, wt.branch);
+				}
+			}
+		}
+		githubStore.setActiveBranches(branches);
+	});
 </script>
 
 <aside class="flex h-full w-full flex-col overflow-hidden bg-muted/20">
@@ -267,6 +290,13 @@
 											{#if branch}
 												<span class="truncate text-[10px] text-muted-foreground/60">({branch})</span
 												>
+												{@const branchStatus = githubStore.getBranchStatus(project.path, branch)}
+												{#if branchStatus?.pr}
+													<PRStatusBadge
+														pr={branchStatus.pr}
+														onClickPr={() => openInGitHub(branchStatus.pr!.url)}
+													/>
+												{/if}
 											{/if}
 											{#if hasAttention}
 												<CirclePauseIcon
@@ -354,6 +384,13 @@
 																<GitBranchIcon class="size-3 shrink-0 text-emerald-400" />
 															{/if}
 															<span class="truncate text-xs font-medium">{wt.branch}</span>
+															{#if githubStore.getBranchStatus(project.path, wt.branch)?.pr}
+																{@const wtPr = githubStore.getBranchStatus(
+																	project.path,
+																	wt.branch
+																)!.pr!}
+																<PRStatusBadge pr={wtPr} onClickPr={() => openInGitHub(wtPr.url)} />
+															{/if}
 														</button>
 													</ContextMenu.Trigger>
 													<ContextMenu.Content class="w-44">

@@ -4,14 +4,15 @@ use crate::claude_sessions;
 use crate::codex;
 use crate::config;
 use crate::git;
+use crate::github;
 use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::HookBridgeState;
 use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitInfo, HookScriptInfo, PluginInfo, ProjectConfig, SkillInfo,
-    WorkspaceFile, WorktreeInfo,
+    DiscoveredClaudeSession, GitHubBranchStatus, GitHubRemote, GitInfo, HookScriptInfo, PluginInfo,
+    ProjectConfig, SkillInfo, WorkspaceFile, WorktreeInfo,
 };
 
 #[tauri::command]
@@ -215,5 +216,28 @@ pub fn watch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool,
 #[tauri::command]
 pub fn unwatch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
     state.unwatch_project(&path).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+// GitHub integration commands
+
+#[tauri::command]
+pub fn github_is_available(path: String) -> bool {
+    github::is_gh_available(&path)
+}
+
+#[tauri::command]
+pub fn github_get_remote(path: String) -> Result<GitHubRemote, String> {
+    github::get_github_remote(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn github_branch_status(project_path: String, branch: String) -> GitHubBranchStatus {
+    github::get_branch_status(&project_path, &branch)
+}
+
+#[tauri::command]
+pub fn open_url(url: String) -> Result<bool, String> {
+    github::open_url(&url).map_err(|e| e.to_string())?;
     Ok(true)
 }

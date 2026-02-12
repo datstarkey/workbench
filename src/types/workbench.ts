@@ -130,6 +130,39 @@ export interface GitChangedEvent {
 	projectPath: string;
 }
 
+// GitHub types
+
+export interface GitHubRemote {
+	owner: string;
+	repo: string;
+	htmlUrl: string;
+}
+
+export interface GitHubChecksStatus {
+	overall: 'success' | 'failure' | 'pending' | 'none';
+	total: number;
+	passing: number;
+	failing: number;
+	pending: number;
+}
+
+export interface GitHubPR {
+	number: number;
+	title: string;
+	state: 'OPEN' | 'CLOSED' | 'MERGED';
+	url: string;
+	isDraft: boolean;
+	reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
+	checksStatus: GitHubChecksStatus;
+}
+
+export interface GitHubBranchStatus {
+	projectPath: string;
+	branch: string;
+	pr: GitHubPR | null;
+	remote: GitHubRemote | null;
+}
+
 export interface ProjectFormState {
 	name: string;
 	path: string;
