@@ -7,6 +7,7 @@ import type { GitStore } from './git.svelte';
 import type { ProjectManagerStore } from '$features/projects/project-manager.svelte';
 import type { GitHubStore } from './github.svelte';
 import type { WorktreeManagerStore } from '$features/worktrees/worktree-manager.svelte';
+import type { UpdaterStore } from './updater.svelte';
 
 export const [getProjectStore, setProjectStore] = createContext<ProjectStore>();
 export const [getWorkspaceStore, setWorkspaceStore] = createContext<WorkspaceStore>();
@@ -17,3 +18,4 @@ export const [getGitStore, setGitStore] = createContext<GitStore>();
 export const [getProjectManager, setProjectManager] = createContext<ProjectManagerStore>();
 export const [getWorktreeManager, setWorktreeManager] = createContext<WorktreeManagerStore>();
 export const [getGitHubStore, setGitHubStore] = createContext<GitHubStore>();
+export const [getUpdaterStore, setUpdaterStore] = createContext<UpdaterStore>();

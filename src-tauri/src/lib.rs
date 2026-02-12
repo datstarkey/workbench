@@ -6,6 +6,7 @@ mod git;
 mod git_watcher;
 mod github;
 mod hook_bridge;
+mod menu;
 mod paths;
 mod pty;
 mod session_utils;
@@ -28,6 +29,7 @@ pub fn run() {
         .manage(PtyManager::new())
         .setup(|app| {
             let handle = app.handle().clone();
+            menu::build(&handle).expect("failed to build menu");
             let bridge = HookBridgeState::new(handle.clone());
             app.manage(bridge);
             let git_watcher = GitWatcher::new(handle);

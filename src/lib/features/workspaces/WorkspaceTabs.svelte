@@ -6,18 +6,26 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { getGitHubStore, getWorkspaceStore } from '$stores/context';
 	import { branchUrl, openInGitHub } from '$lib/utils/github';
+	import { effectivePath } from '$lib/utils/path';
 	import { openInVSCode } from '$lib/utils/vscode';
 
 	const workspaceStore = getWorkspaceStore();
 	const githubStore = getGitHubStore();
 
+	let activeWorkspace = $derived(
+		workspaceStore.workspaces.find((ws) => ws.id === workspaceStore.activeWorkspaceId)
+	);
+
 	let activeGitHubUrl = $derived.by(() => {
-		const ws = workspaceStore.workspaces.find((w) => w.id === workspaceStore.activeWorkspaceId);
-		if (!ws) return null;
-		const repoUrl = githubStore.getRemoteUrl(ws.projectPath);
+		if (!activeWorkspace) return null;
+		const repoUrl = githubStore.getRemoteUrl(activeWorkspace.projectPath);
 		if (!repoUrl) return null;
-		if (ws.branch && ws.branch !== 'main' && ws.branch !== 'master') {
-			return branchUrl(repoUrl, ws.branch);
+		if (
+			activeWorkspace.branch &&
+			activeWorkspace.branch !== 'main' &&
+			activeWorkspace.branch !== 'master'
+		) {
+			return branchUrl(repoUrl, activeWorkspace.branch);
 		}
 		return repoUrl;
 	});
@@ -74,7 +82,7 @@
 					size="icon-sm"
 					class="size-7 text-muted-foreground hover:text-foreground"
 					type="button"
-					onclick={() => openInVSCode(workspaceStore.activeProjectPath ?? '')}
+					onclick={() => openInVSCode(activeWorkspace ? effectivePath(activeWorkspace) : '')}
 				>
 					<CodeIcon class="size-3.5" />
 				</Button>

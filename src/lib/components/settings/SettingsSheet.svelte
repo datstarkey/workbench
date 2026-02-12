@@ -58,7 +58,7 @@
 		class="flex w-[560px] max-w-[90vw] flex-col gap-0 p-0 sm:max-w-[560px]"
 	>
 		<Sheet.Header class="shrink-0 border-b border-border/60 px-4 py-3">
-			<div class="flex items-center justify-between">
+			<div class="flex items-center justify-between pr-6">
 				<Sheet.Title class="text-base">Claude Code Settings</Sheet.Title>
 				<div class="flex items-center gap-2">
 					{#if claudeSettingsStore.dirty}

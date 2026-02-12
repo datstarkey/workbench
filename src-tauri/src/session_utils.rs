@@ -48,3 +48,132 @@ pub fn extract_text_from_content(content: Option<&serde_json::Value>) -> Option<
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // is_skippable_user_message tests
+
+    #[test]
+    fn skippable_empty_string() {
+        assert!(is_skippable_user_message(""));
+    }
+
+    #[test]
+    fn skippable_short_string() {
+        assert!(is_skippable_user_message("hi"));
+        assert!(is_skippable_user_message("abcde")); // exactly 5 chars
+    }
+
+    #[test]
+    fn skippable_starts_with_angle_bracket() {
+        assert!(is_skippable_user_message("<system>some meta</system>"));
+    }
+
+    #[test]
+    fn skippable_starts_with_request_interrupted() {
+        assert!(is_skippable_user_message("[Request interrupted by user]"));
+    }
+
+    #[test]
+    fn skippable_starts_with_base_directory() {
+        assert!(is_skippable_user_message("Base directory: /home/user/project"));
+    }
+
+    #[test]
+    fn not_skippable_normal_message() {
+        assert!(!is_skippable_user_message("Please fix the bug in main.rs"));
+    }
+
+    // truncate_label tests
+
+    #[test]
+    fn truncate_label_short_unchanged() {
+        assert_eq!(truncate_label("short label"), "short label");
+    }
+
+    #[test]
+    fn truncate_label_long_string_truncated() {
+        let long = "a".repeat(100);
+        let result = truncate_label(&long);
+        assert_eq!(result.len(), 80); // 77 chars + "..."
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_label_exactly_80_unchanged() {
+        let exact = "b".repeat(80);
+        assert_eq!(truncate_label(&exact), exact);
+    }
+
+    #[test]
+    fn truncate_label_multiline_takes_first_line() {
+        let multiline = "first line\nsecond line\nthird line";
+        assert_eq!(truncate_label(multiline), "first line");
+    }
+
+    // fallback_label tests
+
+    #[test]
+    fn fallback_label_normal_id() {
+        let id = "abcdef1234567890";
+        assert_eq!(fallback_label(id), "Session abcdef12");
+    }
+
+    #[test]
+    fn fallback_label_short_id() {
+        let id = "abc";
+        assert_eq!(fallback_label(id), "Session abc");
+    }
+
+    // extract_text_from_content tests
+
+    #[test]
+    fn extract_text_none_returns_none() {
+        assert_eq!(extract_text_from_content(None), None);
+    }
+
+    #[test]
+    fn extract_text_string_value() {
+        let val = json!("hello world");
+        assert_eq!(
+            extract_text_from_content(Some(&val)),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_text_array_with_text_block() {
+        let val = json!([{"type": "text", "text": "found it"}]);
+        assert_eq!(
+            extract_text_from_content(Some(&val)),
+            Some("found it".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_text_array_with_input_text_block() {
+        let val = json!([{"type": "input_text", "text": "input found"}]);
+        assert_eq!(
+            extract_text_from_content(Some(&val)),
+            Some("input found".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_text_object_with_text_key() {
+        let val = json!({"text": "object text"});
+        assert_eq!(
+            extract_text_from_content(Some(&val)),
+            Some("object text".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_text_array_no_matching_type_returns_none() {
+        let val = json!([{"type": "image", "url": "http://example.com/img.png"}]);
+        assert_eq!(extract_text_from_content(Some(&val)), None);
+    }
+}

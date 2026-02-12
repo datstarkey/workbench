@@ -12,6 +12,7 @@
 	import { WorktreeManagerStore } from '$features/worktrees/worktree-manager.svelte';
 	import * as Resizable from '$lib/components/ui/resizable';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import UpdateDialog from '$components/UpdateDialog.svelte';
 	import { ClaudeSettingsStore } from '$stores/claude-settings.svelte';
 	import { ClaudeSessionStore } from '$stores/claudeSessions.svelte';
 	import {
@@ -21,13 +22,16 @@
 		setGitStore,
 		setProjectManager,
 		setProjectStore,
+		setUpdaterStore,
 		setWorktreeManager,
 		setWorkspaceStore
 	} from '$stores/context';
 	import { GitHubStore } from '$stores/github.svelte';
+	import { UpdaterStore } from '$stores/updater.svelte';
 	import { GitStore } from '$stores/git.svelte';
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
+	import { listen } from '@tauri-apps/api/event';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
@@ -37,6 +41,7 @@
 	const gitStore = setGitStore(new GitStore());
 	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
+	setUpdaterStore(new UpdaterStore());
 	setProjectManager(new ProjectManagerStore(projectStore, workspaceStore, gitStore));
 	setWorktreeManager(new WorktreeManagerStore(projectStore, workspaceStore, gitStore));
 
@@ -73,6 +78,10 @@
 			sidebarPane?.collapse();
 		}
 	}
+
+	listen('menu:open-settings', () => {
+		settingsOpen = true;
+	});
 
 	onMount(async () => {
 		await projectStore.load();
@@ -155,3 +164,4 @@
 <ProjectManager />
 <WorktreeManager />
 <SettingsSheet bind:open={settingsOpen} projectPath={workspaceStore.activeProjectPath} />
+<UpdateDialog />
