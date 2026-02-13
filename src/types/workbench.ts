@@ -79,6 +79,7 @@ export interface ActiveClaudeSession {
 	label: string;
 	sessionType: 'claude' | 'codex';
 	needsAttention?: boolean;
+	awaitingInput?: boolean;
 	worktreePath?: string;
 }
 

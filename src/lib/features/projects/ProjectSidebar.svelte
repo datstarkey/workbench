@@ -13,6 +13,7 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
+	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import CirclePauseIcon from '@lucide/svelte/icons/circle-pause';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
@@ -97,8 +98,10 @@
 		return (gitStore.worktreesByProject[projectPath] ?? []).filter((wt) => !wt.isMain);
 	}
 
-	function projectAttentionType(projectPath: string): 'claude' | 'codex' | null {
-		const attentionSessions = allSessionsForProject(projectPath).filter((s) => s.needsAttention);
+	function projectAttentionType(projectPath: string): 'claude' | 'codex' | 'input' | null {
+		const sessions = allSessionsForProject(projectPath);
+		if (sessions.some((s) => s.awaitingInput)) return 'input';
+		const attentionSessions = sessions.filter((s) => s.needsAttention);
 		if (attentionSessions.length === 0) return null;
 		return attentionSessions.some((s) => s.sessionType === 'claude') ? 'claude' : 'codex';
 	}
@@ -307,7 +310,9 @@
 													/>
 												{/if}
 											{/if}
-											{#if hasAttention}
+											{#if attentionType === 'input'}
+												<CircleAlertIcon class="size-3 shrink-0 text-red-400" />
+											{:else if hasAttention}
 												<CirclePauseIcon
 													class={`size-3 shrink-0 ${attentionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
 												/>
@@ -459,7 +464,9 @@
 																				session.tabId
 																			)}
 																	>
-																		{#if session.needsAttention}
+																		{#if session.awaitingInput}
+																			<CircleAlertIcon class="size-3 shrink-0 text-red-400" />
+																		{:else if session.needsAttention}
 																			<CirclePauseIcon
 																				class={`size-3 shrink-0 ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
 																			/>
@@ -469,7 +476,7 @@
 																			/>
 																		{/if}
 																		<span
-																			class={`truncate text-xs font-medium ${session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
+																			class={`truncate text-xs font-medium ${session.awaitingInput ? 'text-red-300' : session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
 																			>{session.label}</span
 																		>
 																	</button>
@@ -528,7 +535,9 @@
 													onclick={() =>
 														workspaceStore.selectTabByProject(project.path, session.tabId)}
 												>
-													{#if session.needsAttention}
+													{#if session.awaitingInput}
+														<CircleAlertIcon class="size-3 shrink-0 text-red-400" />
+													{:else if session.needsAttention}
 														<CirclePauseIcon
 															class={`size-3 shrink-0 ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
 														/>
@@ -538,7 +547,7 @@
 														/>
 													{/if}
 													<span
-														class={`truncate text-xs font-medium ${session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
+														class={`truncate text-xs font-medium ${session.awaitingInput ? 'text-red-300' : session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
 														>{session.label}</span
 													>
 												</button>
