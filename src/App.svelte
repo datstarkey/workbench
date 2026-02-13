@@ -56,28 +56,6 @@
 	let githubSidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let settingsOpen = $state(false);
 
-	// Watch/unwatch git filesystem changes for open projects only
-	let watchedPaths = new SvelteSet<string>();
-	$effect(() => {
-		const openPaths = new Set(workspaceStore.openProjectPaths);
-		untrack(() => {
-			// Watch newly opened projects
-			for (const path of openPaths) {
-				if (!watchedPaths.has(path)) {
-					gitStore.watchProject(path);
-					watchedPaths.add(path);
-				}
-			}
-			// Unwatch closed projects
-			for (const path of watchedPaths) {
-				if (!openPaths.has(path)) {
-					gitStore.unwatchProject(path);
-					watchedPaths.delete(path);
-				}
-			}
-		});
-	});
-
 	function toggleSidebar() {
 		if (sidebarCollapsed) {
 			sidebarPane?.expand();
@@ -104,7 +82,7 @@
 		});
 	});
 
-	// Sync githubStore.sidebarOpen → pane expand/collapse
+	// Sync githubStore.sidebarOpen → pane expand/collapse (imperative DOM API)
 	$effect(() => {
 		const open = githubStore.sidebarOpen;
 		untrack(() => {
