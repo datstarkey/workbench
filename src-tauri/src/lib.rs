@@ -58,6 +58,8 @@ pub fn run() {
             commands::remove_worktree,
             commands::list_branches,
             commands::discover_codex_sessions,
+            commands::load_workbench_settings,
+            commands::save_workbench_settings,
             commands::watch_project,
             commands::unwatch_project,
             commands::github_is_available,

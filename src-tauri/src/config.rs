@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::paths;
-use crate::types::{ProjectConfig, ProjectsFile, WorkspaceFile};
+use crate::types::{ProjectConfig, ProjectsFile, WorkbenchSettings, WorkspaceFile};
 
 fn config_path() -> PathBuf {
     paths::workbench_config_dir().join("projects.json")
@@ -51,6 +51,26 @@ pub fn load_workspaces() -> Result<WorkspaceFile> {
 pub fn save_workspaces(file: &WorkspaceFile) -> Result<()> {
     let content = serde_json::to_string_pretty(file)?;
     paths::atomic_write(&workspace_path(), &content)?;
+    Ok(())
+}
+
+fn settings_path() -> PathBuf {
+    paths::workbench_config_dir().join("settings.json")
+}
+
+pub fn load_workbench_settings() -> Result<WorkbenchSettings> {
+    let path = settings_path();
+    if !path.exists() {
+        return Ok(WorkbenchSettings::default());
+    }
+    let content = fs::read_to_string(&path)?;
+    let settings: WorkbenchSettings = serde_json::from_str(&content)?;
+    Ok(settings)
+}
+
+pub fn save_workbench_settings(settings: &WorkbenchSettings) -> Result<()> {
+    let content = serde_json::to_string_pretty(settings)?;
+    paths::atomic_write(&settings_path(), &content)?;
     Ok(())
 }
 

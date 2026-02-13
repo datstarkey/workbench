@@ -19,7 +19,8 @@
 	bind:open={manager.removal.open}
 	title="Remove Worktree"
 	description="Remove this git worktree from disk and close its workspace?"
-	confirmLabel="Remove"
+	confirmLabel={manager.removal.error ? 'Force Remove' : 'Remove'}
+	error={manager.removal.error}
 	destructive
-	onConfirm={() => manager.confirmRemove()}
+	onConfirm={() => manager.confirmRemove(!!manager.removal.error)}
 />

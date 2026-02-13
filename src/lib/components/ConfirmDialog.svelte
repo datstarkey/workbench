@@ -9,6 +9,7 @@
 		confirmLabel = 'Confirm',
 		cancelLabel = 'Cancel',
 		destructive = false,
+		error = '',
 		onConfirm
 	}: {
 		open: boolean;
@@ -17,13 +18,9 @@
 		confirmLabel?: string;
 		cancelLabel?: string;
 		destructive?: boolean;
+		error?: string;
 		onConfirm: () => void;
 	} = $props();
-
-	function handleConfirm() {
-		onConfirm();
-		open = false;
-	}
 </script>
 
 <Dialog.Root bind:open>
@@ -34,13 +31,12 @@
 				<Dialog.Description>{description}</Dialog.Description>
 			{/if}
 		</Dialog.Header>
+		{#if error}
+			<p class="text-sm text-destructive">{error}</p>
+		{/if}
 		<Dialog.Footer>
 			<Button type="button" variant="ghost" onclick={() => (open = false)}>{cancelLabel}</Button>
-			<Button
-				type="button"
-				variant={destructive ? 'destructive' : 'default'}
-				onclick={handleConfirm}
-			>
+			<Button type="button" variant={destructive ? 'destructive' : 'default'} onclick={onConfirm}>
 				{confirmLabel}
 			</Button>
 		</Dialog.Footer>

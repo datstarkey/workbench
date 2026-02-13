@@ -243,9 +243,16 @@ pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>> {
 pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
     let repo_root = git_output(&["rev-parse", "--show-toplevel"], &request.repo_path)?;
     let copy_options = request.copy_options.clone().unwrap_or_default();
+    let strategy = request.strategy.as_deref().unwrap_or("sibling");
 
     let worktree_path = if let Some(ref p) = request.path {
         p.clone()
+    } else if strategy == "inside" {
+        Path::new(&repo_root)
+            .join(".worktrees")
+            .join(&request.branch)
+            .to_string_lossy()
+            .to_string()
     } else {
         let repo = Path::new(&request.repo_path);
         let parent = repo.parent().context("Cannot determine parent directory")?;
@@ -269,6 +276,12 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
     }
 
     git_output(&args, &request.repo_path)?;
+
+    if strategy == "inside" {
+        let gitignore_path = Path::new(&repo_root).join(".gitignore");
+        ensure_gitignore_entry(&gitignore_path, ".worktrees/")?;
+    }
+
     if copy_options.ai_config || copy_options.env_files {
         copy_workspace_files_to_worktree(
             Path::new(&repo_root),
@@ -280,8 +293,31 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
     Ok(worktree_path)
 }
 
-pub fn remove_worktree(repo_path: &str, worktree_path: &str) -> Result<()> {
-    git_output(&["worktree", "remove", worktree_path], repo_path)?;
+/// Append an entry to a .gitignore file if it's not already present.
+fn ensure_gitignore_entry(gitignore_path: &Path, entry: &str) -> Result<()> {
+    let content = fs::read_to_string(gitignore_path).unwrap_or_default();
+    let already_present = content
+        .lines()
+        .any(|line| line.trim() == entry.trim());
+    if !already_present {
+        let mut new_content = content;
+        if !new_content.is_empty() && !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(entry);
+        new_content.push('\n');
+        fs::write(gitignore_path, new_content)?;
+    }
+    Ok(())
+}
+
+pub fn remove_worktree(repo_path: &str, worktree_path: &str, force: bool) -> Result<()> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(worktree_path);
+    git_output(&args, repo_path)?;
     Ok(())
 }
 

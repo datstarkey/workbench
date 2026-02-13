@@ -198,6 +198,14 @@ export interface GitHubBranchStatus {
 	branchRuns: GitHubBranchRuns | null;
 }
 
+// Workbench app settings
+
+export type WorktreeStrategy = 'sibling' | 'inside';
+
+export interface WorkbenchSettings {
+	worktreeStrategy: WorktreeStrategy;
+}
+
 export interface ProjectFormState {
 	name: string;
 	path: string;

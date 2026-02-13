@@ -27,7 +27,7 @@ Use **Bun** exclusively — do not introduce npm/yarn/pnpm lockfiles.
 - `main.rs` — Entry point, calls `workbench_lib::run()`
 - `lib.rs` — Plugin registration, `PtyManager` state, command registration
 - `types.rs` — Shared types (`ProjectConfig`, `CreateTerminalRequest`, `TerminalDataEvent`, workspace snapshots). All `Serialize`/`Deserialize`
-- `config.rs` — Project/workspace persistence (`~/.workbench/`), Claude JSONL session discovery (`~/.claude/`)
+- `config.rs` — Project/workspace/settings persistence (`~/.workbench/`), Claude JSONL session discovery (`~/.claude/`)
 - `pty.rs` — `PtyManager` with per-session locking (`SessionMap`). Reader threads (8KB buffer) emit `terminal:data` and self-cleanup on EOF
 - `commands.rs` — `#[tauri::command]` handlers for all IPC
 - `git.rs` — Git CLI wrappers: branch info, worktree CRUD, branch listing
@@ -55,7 +55,7 @@ All IPC uses `invoke()` from `@tauri-apps/api/core` and `listen()` from `@tauri-
 **Components** (`src/lib/components/`):
 
 - `ConfirmDialog`, `EmptyState`
-- `settings/` — `SettingsSheet` + per-tab components (`SettingsEmptyState`, `SettingsSelect`, `SettingsToggle`, `EditableStringList`)
+- `settings/` — `SettingsSheet` (Workbench/Claude Code tabs) + per-tab components (`SettingsWorkbench`, `SettingsEmptyState`, `SettingsSelect`, `SettingsToggle`, `EditableStringList`)
 - `ui/` — shadcn-svelte primitives
 
 **Utils** (`src/lib/utils/`):
@@ -100,6 +100,8 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Multiple workspaces share the same `projectPath` (one main + N worktrees). `getByProjectPath()` returns only main workspace.
 - Sidebar nests worktrees under parent project. Git state lives in `GitStore` (`branchByProject`, `worktreesByProject`), accessed via context.
 - `closeAllForProject()` closes main + all worktree workspaces.
+- Worktree location strategy (workbench setting): `"sibling"` creates `<parent>/<repo>-<branch>`, `"inside"` creates `<repo>/.worktrees/<branch>` (auto-adds to `.gitignore`).
+- `WorkbenchSettingsStore` manages `~/.workbench/settings.json` — simpler single-scope store compared to `ClaudeSettingsStore`.
 - `github.rs` — GitHub CLI wrappers: remote detection, PR listing, workflow runs, check details
 
 ### GitHub CI integration
@@ -122,3 +124,5 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - `.prettierignore` excludes `.claude/`, `src-tauri/target/`, and `*.rs`.
 - Rust types use `#[serde(rename_all = "camelCase")]` to match frontend field names.
 - Store constructors run at import time. Side effects like `listen()` are fine — Tauri event system is available immediately.
+- `ConfirmDialog` delegates close behavior to the bound `ConfirmAction.open` — don't auto-close on confirm (allows async error display + retry).
+- Svelte 5 `$state` with union types: use `$state<'a' | 'b'>('a')` not `let x: 'a' | 'b' = $state('a')` — the latter narrows to the initial value's literal type.
