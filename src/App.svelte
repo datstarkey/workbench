@@ -7,6 +7,7 @@
 	import TerminalGrid from '$features/terminal/TerminalGrid.svelte';
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
 	import WorkspaceLanding from '$features/workspaces/WorkspaceLanding.svelte';
+	import GitHubSidebar from '$features/github/GitHubSidebar.svelte';
 	import WorkspaceTabs from '$features/workspaces/WorkspaceTabs.svelte';
 	import WorktreeManager from '$features/worktrees/WorktreeManager.svelte';
 	import { WorktreeManagerStore } from '$features/worktrees/worktree-manager.svelte';
@@ -47,6 +48,7 @@
 
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
+	let githubSidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let settingsOpen = $state(false);
 
 	// Watch/unwatch git filesystem changes for open projects only
@@ -83,6 +85,18 @@
 		settingsOpen = true;
 	});
 
+	// Sync githubStore.sidebarOpen → pane expand/collapse
+	$effect(() => {
+		const open = githubStore.sidebarOpen;
+		untrack(() => {
+			if (open) {
+				githubSidebarPane?.expand();
+			} else {
+				githubSidebarPane?.collapse();
+			}
+		});
+	});
+
 	onMount(async () => {
 		await projectStore.load();
 		await workspaceStore.load();
@@ -92,6 +106,7 @@
 		}
 		gitStore.refreshAll(projectStore.projects.map((p) => p.path));
 		githubStore.initForProjects(projectStore.projects.map((p) => p.path));
+		githubStore.initSidebarState();
 	});
 </script>
 
@@ -157,6 +172,22 @@
 					{/if}
 				</main>
 			</Resizable.Pane>
+			{#if workspaceStore.workspaces.length > 0}
+				<Resizable.Handle withHandle class="cursor-col-resize" />
+				<Resizable.Pane
+					bind:this={githubSidebarPane}
+					defaultSize={0}
+					minSize={15}
+					maxSize={35}
+					collapsible
+					collapsedSize={0}
+					onCollapse={() => (githubStore.sidebarOpen = false)}
+					onExpand={() => (githubStore.sidebarOpen = true)}
+					class="h-full"
+				>
+					<GitHubSidebar onClose={() => githubStore.toggleSidebar()} />
+				</Resizable.Pane>
+			{/if}
 		</Resizable.PaneGroup>
 	</div>
 </Tooltip.Provider>

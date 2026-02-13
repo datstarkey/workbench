@@ -2,7 +2,9 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use crate::types::{GitHubChecksStatus, GitHubPR, GitHubProjectStatus, GitHubRemote};
+use crate::types::{
+    GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubProjectStatus, GitHubRemote,
+};
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
     let output = Command::new("gh")
@@ -163,6 +165,38 @@ fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus
         passing,
         failing,
         pending,
+    }
+}
+
+pub fn list_pr_checks(path: &str, pr_number: u64) -> Result<Vec<GitHubCheckDetail>> {
+    let fields = "name,bucket,completedAt,startedAt,link,workflow,description";
+    let result = gh_output(
+        &[
+            "pr",
+            "checks",
+            &pr_number.to_string(),
+            "--json",
+            fields,
+        ],
+        path,
+    );
+
+    match result {
+        Ok(json_str) => {
+            if json_str.is_empty() {
+                return Ok(vec![]);
+            }
+            let checks: Vec<GitHubCheckDetail> = serde_json::from_str(&json_str)?;
+            Ok(checks)
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("no checks") || msg.contains("no pull requests") {
+                Ok(vec![])
+            } else {
+                Err(e)
+            }
+        }
     }
 }
 

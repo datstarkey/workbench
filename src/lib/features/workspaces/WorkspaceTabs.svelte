@@ -1,6 +1,7 @@
 <script lang="ts">
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import GithubIcon from '@lucide/svelte/icons/github';
+	import PanelRightOpenIcon from '@lucide/svelte/icons/panel-right-open';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -103,6 +104,22 @@
 					</Button>
 				</Tooltip.Trigger>
 				<Tooltip.Content>Open in GitHub</Tooltip.Content>
+			</Tooltip.Root>
+		{/if}
+		{#if githubStore.ghAvailable !== false}
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="size-7 {githubStore.sidebarOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}"
+						type="button"
+						onclick={() => githubStore.toggleSidebar()}
+					>
+						<PanelRightOpenIcon class="size-3.5" />
+					</Button>
+				</Tooltip.Trigger>
+				<Tooltip.Content>Show/Hide GitHub Actions</Tooltip.Content>
 			</Tooltip.Root>
 		{/if}
 	</div>
