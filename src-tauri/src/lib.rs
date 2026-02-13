@@ -42,6 +42,7 @@ pub fn run() {
             commands::create_terminal,
             commands::write_terminal,
             commands::resize_terminal,
+            commands::signal_foreground,
             commands::kill_terminal,
             commands::open_in_vscode,
             commands::load_workspaces,

@@ -93,6 +93,17 @@ pub fn resize_terminal(
 }
 
 #[tauri::command]
+pub fn signal_foreground(
+    session_id: String,
+    pty_manager: State<'_, PtyManager>,
+) -> Result<bool, String> {
+    pty_manager
+        .signal_foreground(&session_id)
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
 pub fn kill_terminal(
     session_id: String,
     pty_manager: State<'_, PtyManager>,

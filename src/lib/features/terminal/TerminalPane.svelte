@@ -12,6 +12,7 @@
 		writeTerminal,
 		resizeTerminal,
 		killTerminal,
+		signalForeground,
 		onTerminalData,
 		onTerminalExit
 	} from '$lib/utils/terminal';
@@ -110,12 +111,30 @@
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
 			terminal.loadAddon(new WebLinksAddon((_event, uri) => open(uri)));
+			let escFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
 				// Always forward Escape directly to PTY. xterm.js may swallow it
 				// (e.g. to clear a selection) which makes it feel unresponsive in TUIs.
 				if (event.key === 'Escape') {
 					if (event.type === 'keydown') {
-						writeTerminal(sessionId, '\x1b');
+						if (escFallbackTimer) clearTimeout(escFallbackTimer);
+
+						// For Claude/Codex TUIs, send \x1b\x1b so the input library
+						// can instantly disambiguate standalone Escape from a CSI
+						// sequence start, bypassing the ~100ms detection timeout.
+						const isAI = claudeSessionStore.paneType(sessionId) !== null;
+						writeTerminal(sessionId, isAI ? '\x1b\x1b' : '\x1b');
+
+						// Fallback: if still generating after 400ms, escalate to
+						// SIGINT delivered directly to the foreground process.
+						if (isAI && claudeSessionStore.panesInProgress.has(sessionId)) {
+							escFallbackTimer = setTimeout(() => {
+								if (claudeSessionStore.panesInProgress.has(sessionId)) {
+									signalForeground(sessionId);
+								}
+							}, 400);
+						}
 					}
 					return false;
 				}
