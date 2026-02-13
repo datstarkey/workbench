@@ -219,6 +219,7 @@ impl PtyManager {
             .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
         let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
         sess.writer.write_all(data.as_bytes())?;
+        sess.writer.flush()?;
         Ok(())
     }
 
