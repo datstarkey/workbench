@@ -8,6 +8,7 @@ import type {
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 import { newSessionCommand, resumeCommand } from '$lib/utils/claude';
+import { getGitStore } from './context';
 import { uid } from '$lib/utils/uid';
 
 interface WorkspaceSnapshot {
@@ -151,6 +152,8 @@ export class WorkspaceStore {
 			return;
 		}
 
+		const isNewProject = !this.workspaces.some((w) => w.projectPath === project.path);
+
 		const workspace: ProjectWorkspace = {
 			id: uid(),
 			projectPath: project.path,
@@ -163,6 +166,8 @@ export class WorkspaceStore {
 		this.workspaces = [...this.workspaces, workspace];
 		this.selectedId = workspace.id;
 		this.persist();
+
+		if (isNewProject) getGitStore().watchProject(project.path);
 	}
 
 	open(project: ProjectConfig) {
@@ -183,12 +188,15 @@ export class WorkspaceStore {
 			this.selectedId = this.workspaces[0]?.id ?? null;
 		}
 		this.persist();
+		getGitStore().unwatchProject(projectPath);
 	}
 
 	close(workspaceId: string) {
-		const idx = this.workspaces.findIndex((w) => w.id === workspaceId);
-		if (idx === -1) return;
+		const ws = this.workspaces.find((w) => w.id === workspaceId);
+		if (!ws) return;
+		const projectPath = ws.projectPath;
 
+		const idx = this.workspaces.indexOf(ws);
 		this.workspaces = this.workspaces.filter((w) => w.id !== workspaceId);
 
 		if (this.selectedId === workspaceId) {
@@ -196,6 +204,10 @@ export class WorkspaceStore {
 			this.selectedId = fallback?.id ?? null;
 		}
 		this.persist();
+
+		if (!this.workspaces.some((w) => w.projectPath === projectPath)) {
+			getGitStore().unwatchProject(projectPath);
+		}
 	}
 
 	reorder(fromId: string, toId: string) {
