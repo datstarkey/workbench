@@ -75,7 +75,7 @@
 	<div class="flex items-start gap-2">
 		<PrIcon class="mt-0.5 size-4 shrink-0 {prColor}" />
 		<div class="min-w-0 flex-1">
-			<p class="text-sm font-medium leading-snug">{pr.title}</p>
+			<p class="text-sm leading-snug font-medium">{pr.title}</p>
 			<p class="text-xs text-muted-foreground">#{pr.number}</p>
 		</div>
 	</div>

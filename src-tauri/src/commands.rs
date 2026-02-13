@@ -12,7 +12,8 @@ use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
     DiscoveredClaudeSession, GitHubCheckDetail, GitHubProjectStatus, GitHubRemote, GitInfo,
-    HookScriptInfo, PluginInfo, ProjectConfig, SkillInfo, WorkspaceFile, WorktreeInfo,
+    HookScriptInfo, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile,
+    WorktreeInfo,
 };
 
 #[tauri::command]
@@ -189,9 +190,13 @@ pub fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String>
     git::create_worktree(&request).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn remove_worktree(repo_path: String, worktree_path: String) -> Result<bool, String> {
-    git::remove_worktree(&repo_path, &worktree_path).map_err(|e| e.to_string())?;
+#[tauri::command(async)]
+pub fn remove_worktree(
+    repo_path: String,
+    worktree_path: String,
+    force: bool,
+) -> Result<bool, String> {
+    git::remove_worktree(&repo_path, &worktree_path, force).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -216,6 +221,19 @@ pub fn watch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool,
 #[tauri::command]
 pub fn unwatch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
     state.unwatch_project(&path).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+// Workbench settings commands
+
+#[tauri::command]
+pub fn load_workbench_settings() -> Result<WorkbenchSettings, String> {
+    config::load_workbench_settings().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_workbench_settings(settings: WorkbenchSettings) -> Result<bool, String> {
+    config::save_workbench_settings(&settings).map_err(|e| e.to_string())?;
     Ok(true)
 }
 

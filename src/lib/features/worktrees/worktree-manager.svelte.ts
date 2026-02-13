@@ -1,6 +1,7 @@
 import { ConfirmAction } from '$lib/utils/confirm-action.svelte';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
+import type { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 import type { WorkspaceStore } from '$stores/workspaces.svelte';
 import type { BranchInfo, WorktreeCopyOptions } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
@@ -20,11 +21,18 @@ export class WorktreeManagerStore {
 	private projectStore: ProjectStore;
 	private workspaceStore: WorkspaceStore;
 	private gitStore: GitStore;
+	private workbenchSettings: WorkbenchSettingsStore;
 
-	constructor(projectStore: ProjectStore, workspaceStore: WorkspaceStore, gitStore: GitStore) {
+	constructor(
+		projectStore: ProjectStore,
+		workspaceStore: WorkspaceStore,
+		gitStore: GitStore,
+		workbenchSettings: WorkbenchSettingsStore
+	) {
 		this.projectStore = projectStore;
 		this.workspaceStore = workspaceStore;
 		this.gitStore = gitStore;
+		this.workbenchSettings = workbenchSettings;
 	}
 
 	async add(projectPath: string) {
@@ -48,7 +56,8 @@ export class WorktreeManagerStore {
 					branch,
 					newBranch,
 					path,
-					copyOptions
+					copyOptions,
+					strategy: this.workbenchSettings.worktreeStrategy
 				}
 			});
 			this.dialogOpen = false;
@@ -73,9 +82,9 @@ export class WorktreeManagerStore {
 		this.removal.request({ projectPath, worktreePath });
 	}
 
-	async confirmRemove() {
+	async confirmRemove(force = false) {
 		await this.removal.confirm(async ({ projectPath, worktreePath }) => {
-			await invoke('remove_worktree', { repoPath: projectPath, worktreePath });
+			await invoke('remove_worktree', { repoPath: projectPath, worktreePath, force });
 			const ws = this.workspaceStore.getByWorktreePath(worktreePath);
 			if (ws) this.workspaceStore.close(ws.id);
 			await this.gitStore.refreshGitState(projectPath);

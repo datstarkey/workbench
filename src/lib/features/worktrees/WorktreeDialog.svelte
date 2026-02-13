@@ -5,9 +5,11 @@
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
-	import type { BranchInfo } from '$types/workbench';
-	import type { WorktreeCopyOptions } from '$types/workbench';
+	import type { BranchInfo, WorktreeCopyOptions } from '$types/workbench';
 	import { baseName } from '$lib/utils/path';
+	import { getWorkbenchSettingsStore } from '$stores/context';
+
+	const workbenchSettings = getWorkbenchSettingsStore();
 
 	let {
 		open = $bindable(),
@@ -38,7 +40,13 @@
 
 	let parentDir = $derived(projectPath.replace(/\/?$/, '').replace(/\/[^/]+$/, ''));
 	let projectDirName = $derived(baseName(projectPath));
-	let worktreePath = $derived(branchName ? `${parentDir}/${projectDirName}-${branchName}` : '');
+	let worktreePath = $derived.by(() => {
+		if (!branchName) return '';
+		if (workbenchSettings.worktreeStrategy === 'inside') {
+			return `${projectPath}/.worktrees/${branchName}`;
+		}
+		return `${parentDir}/${projectDirName}-${branchName}`;
+	});
 
 	let localBranches = $derived(branches.filter((b) => !b.isRemote && !b.isCurrent));
 

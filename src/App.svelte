@@ -24,12 +24,14 @@
 		setProjectManager,
 		setProjectStore,
 		setUpdaterStore,
+		setWorkbenchSettingsStore,
 		setWorktreeManager,
 		setWorkspaceStore
 	} from '$stores/context';
 	import { GitHubStore } from '$stores/github.svelte';
 	import { UpdaterStore } from '$stores/updater.svelte';
 	import { GitStore } from '$stores/git.svelte';
+	import { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
 	import { listen } from '@tauri-apps/api/event';
@@ -43,8 +45,11 @@
 	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
+	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
 	setProjectManager(new ProjectManagerStore(projectStore, workspaceStore, gitStore));
-	setWorktreeManager(new WorktreeManagerStore(projectStore, workspaceStore, gitStore));
+	setWorktreeManager(
+		new WorktreeManagerStore(projectStore, workspaceStore, gitStore, workbenchSettingsStore)
+	);
 
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
@@ -98,6 +103,7 @@
 	});
 
 	onMount(async () => {
+		await workbenchSettingsStore.load();
 		await projectStore.load();
 		await workspaceStore.load();
 		workspaceStore.ensureShape();

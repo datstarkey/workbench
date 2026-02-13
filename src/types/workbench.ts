@@ -177,6 +177,14 @@ export interface GitHubBranchStatus {
 	remote: GitHubRemote | null;
 }
 
+// Workbench app settings
+
+export type WorktreeStrategy = 'sibling' | 'inside';
+
+export interface WorkbenchSettings {
+	worktreeStrategy: WorktreeStrategy;
+}
+
 export interface ProjectFormState {
 	name: string;
 	path: string;

@@ -33,11 +33,7 @@
 </script>
 
 <div class="flex shrink-0 items-start border-b border-border/60 bg-muted/30 px-1 py-1">
-	<div
-		class="flex flex-1 flex-wrap items-center gap-0.5"
-		role="tablist"
-		aria-label="Workspaces"
-	>
+	<div class="flex flex-1 flex-wrap items-center gap-0.5" role="tablist" aria-label="Workspaces">
 		{#each workspaceStore.workspaces as workspace (workspace.id)}
 			{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
 			<div
@@ -53,7 +49,7 @@
 				}}
 			>
 				<button
-					class="whitespace-nowrap px-3 py-1.5 text-xs font-medium"
+					class="px-3 py-1.5 text-xs font-medium whitespace-nowrap"
 					type="button"
 					role="tab"
 					aria-selected={isActive}
@@ -112,7 +108,9 @@
 					<Button
 						variant="ghost"
 						size="icon-sm"
-						class="size-7 {githubStore.sidebarOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}"
+						class="size-7 {githubStore.sidebarOpen
+							? 'bg-accent text-foreground'
+							: 'text-muted-foreground hover:text-foreground'}"
 						type="button"
 						onclick={() => githubStore.toggleSidebar()}
 					>

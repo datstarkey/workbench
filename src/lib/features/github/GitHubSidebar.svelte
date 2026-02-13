@@ -36,9 +36,7 @@
 	// Group checks: fail → pending → pass → skipping/cancel
 	let groupedChecks = $derived.by(() => {
 		const order: Record<string, number> = { fail: 0, pending: 1, pass: 2, skipping: 3, cancel: 4 };
-		return [...checks].sort(
-			(a, b) => (order[a.bucket] ?? 5) - (order[b.bucket] ?? 5)
-		);
+		return [...checks].sort((a, b) => (order[a.bucket] ?? 5) - (order[b.bucket] ?? 5));
 	});
 
 	// Trigger fetch when active PR changes

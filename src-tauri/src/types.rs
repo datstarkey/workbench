@@ -169,6 +169,29 @@ pub struct CreateWorktreeRequest {
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_options: Option<WorktreeCopyOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+}
+
+// Workbench app settings
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchSettings {
+    #[serde(default = "default_worktree_strategy")]
+    pub worktree_strategy: String,
+}
+
+fn default_worktree_strategy() -> String {
+    "sibling".to_string()
+}
+
+impl Default for WorkbenchSettings {
+    fn default() -> Self {
+        Self {
+            worktree_strategy: default_worktree_strategy(),
+        }
+    }
 }
 
 // Claude Code settings types

@@ -3,6 +3,7 @@ import { invokeSpy, mockInvoke, clearInvokeMocks } from '../../../test/tauri-moc
 import { WorktreeManagerStore } from './worktree-manager.svelte';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
+import type { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 import type { WorkspaceStore } from '$stores/workspaces.svelte';
 import type { BranchInfo, ProjectConfig, ProjectWorkspace } from '$types/workbench';
 
@@ -25,7 +26,11 @@ function createMocks() {
 		refreshGitState: vi.fn()
 	} as unknown as GitStore;
 
-	return { projectStore, workspaceStore, gitStore };
+	const workbenchSettings = {
+		worktreeStrategy: 'sibling'
+	} as unknown as WorkbenchSettingsStore;
+
+	return { projectStore, workspaceStore, gitStore, workbenchSettings };
 }
 
 describe('WorktreeManagerStore', () => {
@@ -34,7 +39,12 @@ describe('WorktreeManagerStore', () => {
 
 	beforeEach(() => {
 		mocks = createMocks();
-		manager = new WorktreeManagerStore(mocks.projectStore, mocks.workspaceStore, mocks.gitStore);
+		manager = new WorktreeManagerStore(
+			mocks.projectStore,
+			mocks.workspaceStore,
+			mocks.gitStore,
+			mocks.workbenchSettings
+		);
 	});
 
 	afterEach(() => {
@@ -103,7 +113,8 @@ describe('WorktreeManagerStore', () => {
 					branch: 'feature',
 					newBranch: true,
 					path: '/projects/repo-wt',
-					copyOptions: { aiConfig: true, envFiles: false }
+					copyOptions: { aiConfig: true, envFiles: false },
+					strategy: 'sibling'
 				}
 			});
 			expect(manager.dialogOpen).toBe(false);
@@ -192,7 +203,8 @@ describe('WorktreeManagerStore', () => {
 
 			expect(invokeSpy).toHaveBeenCalledWith('remove_worktree', {
 				repoPath: '/projects/repo',
-				worktreePath: '/projects/repo-wt'
+				worktreePath: '/projects/repo-wt',
+				force: false
 			});
 			expect(mocks.workspaceStore.getByWorktreePath).toHaveBeenCalledWith('/projects/repo-wt');
 			expect(mocks.workspaceStore.close).toHaveBeenCalledWith('ws-1');
@@ -209,7 +221,8 @@ describe('WorktreeManagerStore', () => {
 
 			expect(invokeSpy).toHaveBeenCalledWith('remove_worktree', {
 				repoPath: '/projects/repo',
-				worktreePath: '/projects/repo-wt'
+				worktreePath: '/projects/repo-wt',
+				force: false
 			});
 			expect(mocks.workspaceStore.close).not.toHaveBeenCalled();
 		});
