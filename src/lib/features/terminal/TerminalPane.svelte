@@ -111,6 +111,22 @@
 			terminal.loadAddon(fitAddon);
 			terminal.loadAddon(new WebLinksAddon((_event, uri) => open(uri)));
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+				// Always forward Escape directly to PTY. xterm.js may swallow it
+				// (e.g. to clear a selection) which makes it feel unresponsive in TUIs.
+				if (event.key === 'Escape') {
+					if (event.type === 'keydown') {
+						writeTerminal(sessionId, '\x1b');
+					}
+					return false;
+				}
+				// Always forward Ctrl+C as interrupt. xterm.js copies to clipboard
+				// when text is selected; on macOS Cmd+C handles copy instead.
+				if (event.key === 'c' && event.ctrlKey && !event.shiftKey && !event.metaKey) {
+					if (event.type === 'keydown') {
+						writeTerminal(sessionId, '\x03');
+					}
+					return false;
+				}
 				if (
 					event.key === 'Enter' &&
 					event.shiftKey &&
