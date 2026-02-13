@@ -42,7 +42,7 @@
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
 	setClaudeSessionStore(new ClaudeSessionStore(workspaceStore, projectStore));
 	const gitStore = setGitStore(new GitStore());
-	const githubStore = setGitHubStore(new GitHubStore());
+	const githubStore = setGitHubStore(new GitHubStore(workspaceStore, gitStore));
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
 	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());

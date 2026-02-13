@@ -112,6 +112,16 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - `gh run list` returns `databaseId` (not `id`) — use `#[serde(alias = "databaseId")]` for deserialization.
 - `gh pr checks` returns empty string `""` for `completedAt` on pending checks — validate parsed dates before computing durations.
 
+### Svelte 5 reactivity
+
+**`$derived` is king** — use for all computed state. `$derived.by` for complex expressions. Writable `$derived` (Svelte 5.25+) for computed values that can be temporarily overridden.
+
+**`$effect` is an escape hatch** — only for external side effects like network requests, DOM manipulation, and analytics. Per the Svelte docs: "In general, `$effect` is best considered something of an escape hatch — useful for things like analytics and direct DOM manipulation — rather than a tool you should use frequently. In particular, avoid using it to synchronise state."
+
+**Never use `$effect` to sync state.** Don't read reactive values in an effect and write them to other reactive state. Instead, use `$derived` or `$derived.by`. If you need a computed value that can be reassigned (optimistic UI), use writable `$derived` instead of an effect.
+
+**Cross-component reactive state:** Derive in the store (where the data lives), not via effects in components. If multiple components need the same derived value, put the `$derived` on the store class, not in each component.
+
 ## Gotchas
 
 - Rust modules use `anyhow::Result` internally. `commands.rs` converts to `Result<_, String>` for Tauri IPC via `.map_err(|e| e.to_string())`.
@@ -125,3 +135,4 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Store constructors run at import time. Side effects like `listen()` are fine — Tauri event system is available immediately.
 - `ConfirmDialog` delegates close behavior to the bound `ConfirmAction.open` — don't auto-close on confirm (allows async error display + retry).
 - Svelte 5 `$state` with union types: use `$state<'a' | 'b'>('a')` not `let x: 'a' | 'b' = $state('a')` — the latter narrows to the initial value's literal type.
+- `$derived` on class fields is lazy — the callback runs on first read, not at field initialization time. Safe to reference constructor params that are set after field initializers run.

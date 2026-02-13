@@ -7,6 +7,8 @@ import type {
 	GitHubProjectStatus,
 	GitHubRemote
 } from '$types/workbench';
+import type { WorkspaceStore } from './workspaces.svelte';
+import type { GitStore } from './git.svelte';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { load } from '@tauri-apps/plugin-store';
@@ -15,6 +17,9 @@ const FAST_POLL_MS = 15_000;
 const SLOW_POLL_MS = 90_000;
 
 export class GitHubStore {
+	private workspaces: WorkspaceStore;
+	private git: GitStore;
+
 	ghAvailable: boolean | null = $state(null);
 	remoteByProject: Record<string, GitHubRemote | null> = $state({});
 	prsByProject: Record<string, GitHubPR[]> = $state({});
@@ -22,9 +27,43 @@ export class GitHubStore {
 
 	// Sidebar state
 	sidebarOpen: boolean = $state(false);
-	sidebarPrKey: string | null = $state(null);
-	sidebarBranchKey: string | null = $state(null);
+	private _overrideTarget: { projectPath: string; branch: string } | null = $state(null);
+	private _overrideForWorkspaceId: string | null = $state(null);
 	checksByPr: Record<string, GitHubCheckDetail[]> = $state({});
+
+	/** Derived sidebar target: override (valid only for current workspace) or active workspace */
+	readonly sidebarTarget = $derived.by(() => {
+		if (this._overrideTarget && this._overrideForWorkspaceId === this.workspaces.activeWorkspaceId)
+			return this._overrideTarget;
+		const ws = this.workspaces.activeWorkspace;
+		if (!ws) return null;
+		const branch = ws.branch ?? this.git.branchByProject[ws.projectPath] ?? null;
+		if (!branch) return null;
+		return { projectPath: ws.projectPath, branch };
+	});
+
+	/** PR matching the current sidebar target branch */
+	readonly sidebarPr = $derived.by((): GitHubPR | null => {
+		const target = this.sidebarTarget;
+		if (!target) return null;
+		const prs = this.prsByProject[target.projectPath] ?? [];
+		return prs.find((p) => p.headRefName === target.branch) ?? null;
+	});
+
+	/** Branch workflow runs for the current sidebar target */
+	readonly sidebarBranchRuns = $derived.by((): GitHubBranchRuns | null => {
+		const target = this.sidebarTarget;
+		if (!target) return null;
+		return this.branchRunsByProject[target.projectPath]?.[target.branch] ?? null;
+	});
+
+	/** PR checks for the current sidebar PR */
+	readonly sidebarChecks = $derived.by((): GitHubCheckDetail[] => {
+		const target = this.sidebarTarget;
+		const pr = this.sidebarPr;
+		if (!target || !pr) return [];
+		return this.checksByPr[this.prKey(target.projectPath, pr.number)] ?? [];
+	});
 
 	// Not reactive — internal bookkeeping only
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -37,7 +76,10 @@ export class GitHubStore {
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	private pendingChecks = new Set<string>();
 
-	constructor() {
+	constructor(workspaces: WorkspaceStore, git: GitStore) {
+		this.workspaces = workspaces;
+		this.git = git;
+
 		listen<GitChangedEvent>('git:changed', (event) => {
 			this.debouncedRefresh(event.payload.projectPath);
 		});
@@ -171,33 +213,15 @@ export class GitHubStore {
 		return this.checksByPr[this.prKey(projectPath, prNumber)];
 	}
 
-	setSidebarPr(projectPath: string, prNumber: number): void {
-		const key = this.prKey(projectPath, prNumber);
-		if (this.sidebarPrKey === key) return;
-		this.sidebarPrKey = key;
-		this.sidebarBranchKey = null;
-		this.fetchPrChecks(projectPath, prNumber);
-		// Also refresh the project status for badge updates
+	showBranch(projectPath: string, branch: string): void {
+		this._overrideTarget = { projectPath, branch };
+		this._overrideForWorkspaceId = this.workspaces.activeWorkspaceId;
 		this.refreshProject(projectPath);
 	}
 
-	setSidebarBranch(projectPath: string, branch: string): void {
-		const key = `${projectPath}::${branch}`;
-		if (this.sidebarBranchKey === key) return;
-		this.sidebarBranchKey = key;
-		this.sidebarPrKey = null;
-		this.refreshProject(projectPath);
-	}
-
-	clearSidebar(): void {
-		this.sidebarPrKey = null;
-		this.sidebarBranchKey = null;
-		this.stopFastPolling();
-	}
-
-	clearSidebarPr(): void {
-		this.sidebarPrKey = null;
-		this.sidebarBranchKey = null;
+	clearSidebarOverride(): void {
+		this._overrideTarget = null;
+		this._overrideForWorkspaceId = null;
 		this.stopFastPolling();
 	}
 
@@ -229,20 +253,20 @@ export class GitHubStore {
 	}
 
 	private updateFastPolling(): void {
-		let hasPending = false;
-
-		if (this.sidebarPrKey) {
-			const checks = this.checksByPr[this.sidebarPrKey];
-			hasPending = checks?.some((c) => c.bucket === 'pending') ?? false;
-		} else if (this.sidebarBranchKey) {
-			const [projectPath, branch] = this.sidebarBranchKey.split('::');
-			const runs = this.branchRunsByProject[projectPath]?.[branch];
-			hasPending = runs?.status.pending > 0;
-		}
-
-		if (!this.sidebarPrKey && !this.sidebarBranchKey) {
+		const target = this.sidebarTarget;
+		if (!target) {
 			this.stopFastPolling();
 			return;
+		}
+
+		let hasPending = false;
+		const pr = this.sidebarPr;
+		if (pr) {
+			const checks = this.checksByPr[this.prKey(target.projectPath, pr.number)];
+			hasPending = checks?.some((c) => c.bucket === 'pending') ?? false;
+		} else {
+			const runs = this.branchRunsByProject[target.projectPath]?.[target.branch];
+			hasPending = runs?.status.pending > 0;
 		}
 
 		if (hasPending && !this.fastPollIntervalId) {
@@ -267,18 +291,16 @@ export class GitHubStore {
 	}
 
 	private fastPollTick(): void {
-		if (this.sidebarPrKey) {
-			const [projectPath, prNumberStr] = this.sidebarPrKey.split('::');
-			const prNumber = parseInt(prNumberStr, 10);
-			if (!projectPath || isNaN(prNumber)) return;
-			this.fetchPrChecks(projectPath, prNumber);
-			this.refreshProject(projectPath);
-		} else if (this.sidebarBranchKey) {
-			const [projectPath] = this.sidebarBranchKey.split('::');
-			if (projectPath) this.refreshProject(projectPath);
-		} else {
+		const target = this.sidebarTarget;
+		if (!target) {
 			this.stopFastPolling();
+			return;
 		}
+		const pr = this.sidebarPr;
+		if (pr) {
+			this.fetchPrChecks(target.projectPath, pr.number);
+		}
+		this.refreshProject(target.projectPath);
 	}
 
 	/** Call after projects load — checks gh availability, then fetches status per project */
