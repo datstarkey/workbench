@@ -24,6 +24,9 @@ export class ClaudeSessionStore {
 	/** Set of terminal pane IDs currently producing output (clears after QUIET_THRESHOLD_MS) */
 	panesInProgress: SvelteSet<string> = $state(new SvelteSet());
 
+	/** Set of terminal pane IDs where Claude is blocked waiting for user action (permission/question) */
+	panesAwaitingInput: SvelteSet<string> = $state(new SvelteSet());
+
 	/** Cached discovered Claude sessions for the current project */
 	discoveredSessions: DiscoveredClaudeSession[] = $state([]);
 
@@ -63,6 +66,7 @@ export class ClaudeSessionStore {
 						label: t.label,
 						sessionType,
 						needsAttention: aiPaneId ? !this.panesInProgress.has(aiPaneId) : true,
+						awaitingInput: aiPaneId ? this.panesAwaitingInput.has(aiPaneId) : false,
 						worktreePath: ws.worktreePath
 					};
 				});
@@ -222,6 +226,13 @@ export class ClaudeSessionStore {
 		return typeof value === 'string' ? value : '';
 	}
 
+	private isInputRequiredNotification(payload: Record<string, unknown>): boolean {
+		const notificationType = (
+			this.payloadString(payload, 'notification_type') || this.payloadString(payload, 'type')
+		).toLowerCase();
+		return notificationType === 'permission_prompt' || notificationType === 'elicitation_dialog';
+	}
+
 	private isIdlePromptNotification(payload: Record<string, unknown>): boolean {
 		const notificationType = (
 			this.payloadString(payload, 'notification_type') || this.payloadString(payload, 'type')
@@ -245,22 +256,31 @@ export class ClaudeSessionStore {
 		switch (event.hookEventName) {
 			case 'UserPromptSubmit':
 				this.panesInProgress.add(paneId);
+				this.panesAwaitingInput.delete(paneId);
 				break;
 			case 'Stop':
 			case 'SessionStart':
 				this.panesInProgress.delete(paneId);
+				this.panesAwaitingInput.delete(paneId);
 				break;
 			case 'Notification':
-				if (this.isIdlePromptNotification(event.hookPayload)) {
+				if (this.isInputRequiredNotification(event.hookPayload)) {
 					this.panesInProgress.delete(paneId);
+					this.panesAwaitingInput.add(paneId);
+				} else if (this.isIdlePromptNotification(event.hookPayload)) {
+					this.panesInProgress.delete(paneId);
+					this.panesAwaitingInput.delete(paneId);
 				}
 				break;
 			default:
-				if (
-					event.hookEventName?.startsWith('Notification:') &&
-					this.isIdlePromptNotification(event.hookPayload)
-				) {
-					this.panesInProgress.delete(paneId);
+				if (event.hookEventName?.startsWith('Notification:')) {
+					if (this.isInputRequiredNotification(event.hookPayload)) {
+						this.panesInProgress.delete(paneId);
+						this.panesAwaitingInput.add(paneId);
+					} else if (this.isIdlePromptNotification(event.hookPayload)) {
+						this.panesInProgress.delete(paneId);
+						this.panesAwaitingInput.delete(paneId);
+					}
 				}
 				break;
 		}
