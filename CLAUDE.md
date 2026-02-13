@@ -33,6 +33,7 @@ Use **Bun** exclusively — do not introduce npm/yarn/pnpm lockfiles.
 - `git.rs` — Git CLI wrappers: branch info, worktree CRUD, branch listing
 - `paths.rs` — Path helpers and `atomic_write` utility
 - `settings.rs` — Claude Code settings CRUD (user/project scopes), plugin/skill/hook discovery
+- `github.rs` — GitHub CLI wrappers: remote detection, PR listing, workflow runs, check details
 
 ### Frontend IPC
 
@@ -86,7 +87,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 
 - New sessions: `CLAUDE_NEW_SESSION_COMMAND` constant — just `claude` with no flags (CLI assigns session ID)
 - Resume sessions: `claudeResumeCommand(sessionId)` → `claude --resume <uuid>` (validates UUID before shell interpolation)
-- Commands typed into shell (not executed directly) — shell stays alive if CLI fails. Detect errors via terminal data stream, not process exit.
+- Commands typed into shell (not executed directly) — CLI errors don't trigger `terminal:exit`. Detect errors by buffering early terminal output, not process exit.
 - Session data: `~/.claude/projects/<encoded-path>/<session-id>.jsonl` (path encoding: `/` → `-`)
 - JSONL format: JSON objects with `type` ("user"/"assistant"), `message.content[]`, `sessionId`, `timestamp`. First user message = session label.
 - Runtime session/activity updates are event-driven (`claude:hook` and `codex:notify`); JSONL discovery is on-demand for resume/history and label enrichment.
@@ -101,8 +102,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Sidebar nests worktrees under parent project. Git state lives in `GitStore` (`branchByProject`, `worktreesByProject`), accessed via context.
 - `closeAllForProject()` closes main + all worktree workspaces.
 - Worktree location strategy (workbench setting): `"sibling"` creates `<parent>/<repo>-<branch>`, `"inside"` creates `<repo>/.worktrees/<branch>` (auto-adds to `.gitignore`).
-- `WorkbenchSettingsStore` manages `~/.workbench/settings.json` — simpler single-scope store compared to `ClaudeSettingsStore`.
-- `github.rs` — GitHub CLI wrappers: remote detection, PR listing, workflow runs, check details
+- `WorkbenchSettingsStore` manages `~/.workbench/settings.json` — single-scope store (vs multi-scope `ClaudeSettingsStore`).
 
 ### GitHub CI integration
 
@@ -119,7 +119,6 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - `PtyManager` uses per-session `Arc<Mutex<PtySession>>` — outer map lock held only briefly for insert/remove/lookup, never during I/O.
 - Reader threads self-cleanup on EOF: remove session from map, emit `terminal:exit`. `kill()` handles already-cleaned-up sessions.
 - Mutex locks use `.unwrap_or_else(|e| e.into_inner())` to recover from poisoning.
-- PTY startup commands run inside the shell — CLI errors don't trigger `terminal:exit`. Detect errors by buffering early terminal output.
 - `tauri.conf.json` must have `beforeDevCommand` set or `tauri dev` hangs waiting for Vite.
 - `.prettierignore` excludes `.claude/`, `src-tauri/target/`, and `*.rs`.
 - Rust types use `#[serde(rename_all = "camelCase")]` to match frontend field names.
