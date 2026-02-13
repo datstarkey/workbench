@@ -306,7 +306,7 @@
 												{:else if branchStatus?.branchRuns}
 													<CIStatusBadge
 														status={branchStatus.branchRuns.status}
-														onclick={() => githubStore.setSidebarBranch(project.path, branch)}
+														onclick={() => githubStore.showBranch(project.path, branch)}
 													/>
 												{/if}
 											{/if}
@@ -407,8 +407,7 @@
 															{:else if wtBranchStatus?.branchRuns}
 																<CIStatusBadge
 																	status={wtBranchStatus.branchRuns.status}
-																	onclick={() =>
-																		githubStore.setSidebarBranch(project.path, wt.branch)}
+																	onclick={() => githubStore.showBranch(project.path, wt.branch)}
 																/>
 															{/if}
 														</button>

@@ -5,7 +5,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import { getGitHubStore, getGitStore, getWorkspaceStore } from '$stores/context';
+	import { getGitHubStore } from '$stores/context';
 	import type { GitHubCheckDetail } from '$types/workbench';
 	import PRHeader from './PRHeader.svelte';
 	import BranchRunsHeader from './BranchRunsHeader.svelte';
@@ -14,55 +14,13 @@
 
 	let { onClose }: { onClose: () => void } = $props();
 
-	const workspaceStore = getWorkspaceStore();
-	const gitStore = getGitStore();
 	const githubStore = getGitHubStore();
 
-	let activeWorkspace = $derived(
-		workspaceStore.workspaces.find((ws) => ws.id === workspaceStore.activeWorkspaceId)
-	);
-
-	// Resolve project path and branch: prefer sidebarBranchKey, then active workspace
-	let sidebarTarget = $derived.by(() => {
-		// If user clicked a CIStatusBadge, use that
-		if (githubStore.sidebarBranchKey) {
-			const [projectPath, ...branchParts] = githubStore.sidebarBranchKey.split('::');
-			const branch = branchParts.join('::'); // branch names can't contain :: but be safe
-			if (projectPath && branch) return { projectPath, branch };
-		}
-		// If user clicked a PR badge, derive from sidebarPrKey
-		if (githubStore.sidebarPrKey) {
-			const [projectPath, prNumStr] = githubStore.sidebarPrKey.split('::');
-			if (projectPath) {
-				const prs = githubStore.prsByProject[projectPath] ?? [];
-				const pr = prs.find((p) => p.number === parseInt(prNumStr, 10));
-				if (pr) return { projectPath, branch: pr.headRefName };
-			}
-		}
-		// Fall back to active workspace
-		if (!activeWorkspace) return null;
-		const projectPath = activeWorkspace.projectPath;
-		// worktree workspaces have .branch set; main workspaces use gitStore
-		const branch = activeWorkspace.branch ?? gitStore.branchByProject[projectPath] ?? null;
-		if (!branch) return null;
-		return { projectPath, branch };
-	});
-
-	let activeProjectPath = $derived(sidebarTarget?.projectPath ?? null);
-	let activeBranch = $derived(sidebarTarget?.branch ?? null);
-
-	let branchStatus = $derived.by(() => {
-		if (!activeProjectPath || !activeBranch) return undefined;
-		return githubStore.getBranchStatus(activeProjectPath, activeBranch);
-	});
-
-	let activePr = $derived(branchStatus?.pr ?? null);
-	let activeBranchRuns = $derived(branchStatus?.branchRuns ?? null);
-
-	let checks = $derived.by((): GitHubCheckDetail[] => {
-		if (!activeProjectPath || !activePr) return [];
-		return githubStore.getPrChecks(activeProjectPath, activePr.number) ?? [];
-	});
+	let activeProjectPath = $derived(githubStore.sidebarTarget?.projectPath ?? null);
+	let activeBranch = $derived(githubStore.sidebarTarget?.branch ?? null);
+	let activePr = $derived(githubStore.sidebarPr);
+	let activeBranchRuns = $derived(githubStore.sidebarBranchRuns);
+	let checks = $derived(githubStore.sidebarChecks);
 
 	// Convert workflow runs to check details for reuse with CheckItem
 	let runChecks = $derived.by((): GitHubCheckDetail[] => {
@@ -99,20 +57,15 @@
 		return [...runChecks].sort((a, b) => (order[a.bucket] ?? 5) - (order[b.bucket] ?? 5));
 	});
 
-	// Trigger fetch when active PR / branch changes
+	// Trigger data fetch when sidebar target changes (external side effect — network requests)
 	$effect(() => {
-		if (activeProjectPath && activePr) {
-			githubStore.setSidebarPr(activeProjectPath, activePr.number);
-		} else if (activeProjectPath && activeBranch && activeBranchRuns) {
-			githubStore.setSidebarBranch(activeProjectPath, activeBranch);
-		} else if (!githubStore.sidebarBranchKey && !githubStore.sidebarPrKey) {
-			// Only clear if nothing was explicitly set by a badge click
-			githubStore.clearSidebar();
-		}
+		if (activeProjectPath) githubStore.refreshProject(activeProjectPath);
+		if (activeProjectPath && activePr)
+			githubStore.fetchPrChecks(activeProjectPath, activePr.number);
 	});
 
 	onDestroy(() => {
-		githubStore.clearSidebar();
+		githubStore.clearSidebarOverride();
 	});
 </script>
 
