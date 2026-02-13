@@ -109,19 +109,18 @@ export class GitHubStore {
 	private async pollActiveBranches(): Promise<void> {
 		if (this.ghAvailable === false) return;
 
-		// Collect unique projects that have any open PRs
+		// Poll all projects with visible branches — not just those with existing PRs.
+		// This ensures newly created PRs are discovered within one poll cycle.
 		const seen: Record<string, true> = {};
-		const projectsWithOpenPrs = this.activeBranches
+		const uniqueProjects = this.activeBranches
 			.filter(({ projectPath }) => {
 				if (seen[projectPath]) return false;
-				const prs = this.prsByProject[projectPath];
-				if (!prs?.some((p) => p.state === 'OPEN')) return false;
 				seen[projectPath] = true;
 				return true;
 			})
 			.map(({ projectPath }) => projectPath);
 
-		for (const projectPath of projectsWithOpenPrs) {
+		for (const projectPath of uniqueProjects) {
 			await this.fetchProjectStatus(projectPath);
 		}
 	}
