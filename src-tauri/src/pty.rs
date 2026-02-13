@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
@@ -8,7 +9,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::types::{TerminalDataEvent, TerminalExitEvent};
 
-const PTY_READ_BUFFER_SIZE: usize = 8192;
+const PTY_READ_BUFFER_SIZE: usize = 32768;
 const STARTUP_COMMAND_DELAY_MS: u64 = 300;
 
 struct PtySession {
@@ -131,14 +132,19 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.clone(), Arc::clone(&session));
 
-        // Reader thread — emits terminal:data events, then signals cleanup on EOF
-        let sid = session_id.clone();
-        let handle = app_handle.clone();
-        let sessions_for_cleanup = Arc::clone(&self.sessions);
-        let session_for_cleanup = Arc::clone(&session);
+        // Two-thread output pipeline (same approach as Alacritty / Kitty):
+        //   Reader  — drains the PTY as fast as possible (no sleeps, no backpressure)
+        //   Emitter — coalesces output and emits to the frontend at a controlled rate
+        //
+        // During heavy streaming the emitter batches data that accumulated in the
+        // channel while it was busy with the previous emit, naturally reducing the
+        // number of IPC events and freeing the WebView bridge for input writes.
+        // During light activity the emitter fires immediately (no added latency).
 
+        let (data_tx, data_rx) = std::sync::mpsc::channel::<String>();
+
+        // ── Reader thread ────────────────────────────────────────────────
         std::thread::spawn(move || {
-            // Read loop
             let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
             let mut carry = Vec::new();
             loop {
@@ -158,16 +164,12 @@ impl PtyManager {
                         };
 
                         if valid_up_to > 0 {
-                            // Safety: validated this range above
-                            let data =
-                                unsafe { std::str::from_utf8_unchecked(&chunk[..valid_up_to]) };
-                            let _ = handle.emit(
-                                "terminal:data",
-                                TerminalDataEvent {
-                                    session_id: sid.clone(),
-                                    data: data.to_string(),
-                                },
-                            );
+                            let data = unsafe {
+                                std::str::from_utf8_unchecked(&chunk[..valid_up_to])
+                            };
+                            if data_tx.send(data.to_string()).is_err() {
+                                break; // emitter gone
+                            }
                         }
 
                         let remainder = &chunk[valid_up_to..];
@@ -176,8 +178,70 @@ impl PtyManager {
                     Err(_) => break,
                 }
             }
+        });
 
-            // Reader done — remove session from map and emit exit event
+        // ── Emitter thread ───────────────────────────────────────────────
+        let sid = session_id.clone();
+        let handle = app_handle.clone();
+        let sessions_for_cleanup = Arc::clone(&self.sessions);
+        let session_for_cleanup = Arc::clone(&session);
+
+        std::thread::spawn(move || {
+            /// During fast output, yield briefly so the reader can fill the
+            /// channel with more data, reducing the total number of IPC events.
+            const FAST_THRESHOLD: Duration = Duration::from_millis(8);
+            const COALESCE_YIELD: Duration = Duration::from_millis(2);
+
+            let mut batch = String::new();
+            let mut last_emit = Instant::now();
+
+            loop {
+                // Block until the reader pushes data (or closes the channel).
+                match data_rx.recv() {
+                    Ok(data) => batch.push_str(&data),
+                    Err(_) => break, // reader EOF / closed
+                }
+
+                // Drain everything the reader has queued so far.
+                while let Ok(data) = data_rx.try_recv() {
+                    batch.push_str(&data);
+                }
+
+                // If output is flowing fast, yield to let more accumulate.
+                if last_emit.elapsed() < FAST_THRESHOLD {
+                    std::thread::sleep(COALESCE_YIELD);
+                    while let Ok(data) = data_rx.try_recv() {
+                        batch.push_str(&data);
+                    }
+                }
+
+                if !batch.is_empty() {
+                    let _ = handle.emit(
+                        "terminal:data",
+                        TerminalDataEvent {
+                            session_id: sid.clone(),
+                            data: std::mem::take(&mut batch),
+                        },
+                    );
+                    last_emit = Instant::now();
+                }
+            }
+
+            // Flush any remaining data in the channel.
+            while let Ok(data) = data_rx.try_recv() {
+                batch.push_str(&data);
+            }
+            if !batch.is_empty() {
+                let _ = handle.emit(
+                    "terminal:data",
+                    TerminalDataEvent {
+                        session_id: sid.clone(),
+                        data: batch,
+                    },
+                );
+            }
+
+            // Cleanup: remove session from map and emit exit event.
             Self::remove_session(&sessions_for_cleanup, &sid);
 
             let exit_code = session_for_cleanup
@@ -237,6 +301,24 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Send SIGINT to the foreground process (e.g., Claude Code) inside a PTY.
+    /// Finds the shell's child processes and signals them directly, bypassing stdin.
+    pub fn signal_foreground(&self, session_id: &str) -> Result<()> {
+        let session = self
+            .get_session(session_id)
+            .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
+        let sess = session.lock().unwrap_or_else(|e| e.into_inner());
+
+        if let Some(shell_pid) = sess.child.process_id() {
+            for child_pid in get_child_pids(shell_pid as i32) {
+                unsafe {
+                    libc::kill(child_pid, libc::SIGINT);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn kill(&self, session_id: &str, app_handle: &AppHandle) -> Result<()> {
         let session = match Self::remove_session(&self.sessions, session_id) {
             Some(s) => s,
@@ -262,4 +344,34 @@ impl PtyManager {
 
         Ok(())
     }
+}
+
+/// List direct child PIDs of a process.
+#[cfg(target_os = "macos")]
+fn get_child_pids(parent_pid: i32) -> Vec<i32> {
+    extern "C" {
+        fn proc_listchildpids(
+            ppid: libc::pid_t,
+            buffer: *mut libc::c_void,
+            buffersize: libc::c_int,
+        ) -> libc::c_int;
+    }
+
+    let mut buf = [0i32; 128];
+    let bufsize = std::mem::size_of_val(&buf) as libc::c_int;
+    let count = unsafe { proc_listchildpids(parent_pid, buf.as_mut_ptr().cast(), bufsize) };
+    if count <= 0 {
+        return vec![];
+    }
+    buf[..count as usize].to_vec()
+}
+
+#[cfg(target_os = "linux")]
+fn get_child_pids(parent_pid: i32) -> Vec<i32> {
+    let path = format!("/proc/{parent_pid}/task/{parent_pid}/children");
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .collect()
 }
