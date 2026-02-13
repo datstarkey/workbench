@@ -2,7 +2,13 @@ import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { listen } from '@tauri-apps/api/event';
 
-export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'up-to-date' | 'error';
+export type UpdateStatus =
+	| 'idle'
+	| 'checking'
+	| 'available'
+	| 'downloading'
+	| 'up-to-date'
+	| 'error';
 
 export class UpdaterStore {
 	status = $state<UpdateStatus>('idle');

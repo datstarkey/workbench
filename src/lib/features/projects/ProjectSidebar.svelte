@@ -150,7 +150,7 @@
 
 	let dragOverProjectPath = $state<string | null>(null);
 
-	// Collect visible project+branch pairs and fetch GitHub status
+	// Track visible branches for polling — fetching is triggered by initForProjects / git:changed
 	$effect(() => {
 		const branches: Array<{ projectPath: string; branch: string }> = [];
 		for (const project of projectStore.projects) {
