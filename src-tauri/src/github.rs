@@ -12,6 +12,7 @@ fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
     let output = Command::new("gh")
         .args(args)
         .current_dir(cwd)
+        .env("PATH", crate::paths::enriched_path())
         .output()
         .context("Failed to run gh CLI")?;
 
@@ -28,6 +29,7 @@ pub fn is_gh_available() -> bool {
     Command::new("gh")
         .args(["auth", "status"])
         .current_dir(home)
+        .env("PATH", crate::paths::enriched_path())
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)

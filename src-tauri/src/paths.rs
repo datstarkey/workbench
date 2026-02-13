@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -32,6 +33,31 @@ pub fn codex_config_dir() -> PathBuf {
 
 pub fn agents_dir() -> PathBuf {
     home_dir().join(".agents")
+}
+
+/// Build a PATH that includes common CLI tool locations (Homebrew, Nix, etc.).
+/// macOS GUI apps get a minimal PATH that excludes these, so spawned commands
+/// like `gh` fail unless we enrich it.
+pub fn enriched_path() -> OsString {
+    let home = home_dir();
+    let mut dirs: Vec<PathBuf> = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        home.join(".nix-profile/bin"),
+        PathBuf::from("/nix/var/nix/profiles/default/bin"),
+        PathBuf::from("/run/current-system/sw/bin"),
+    ];
+
+    // Prepend to the existing PATH so system defaults are still available
+    if let Some(existing) = std::env::var_os("PATH") {
+        for p in std::env::split_paths(&existing) {
+            if !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        }
+    }
+
+    std::env::join_paths(dirs).unwrap_or_else(|_| OsString::from("/usr/bin:/bin"))
 }
 
 /// Write a script file to disk, creating parent dirs and setting executable
