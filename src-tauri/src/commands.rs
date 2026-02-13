@@ -11,8 +11,8 @@ use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitHubProjectStatus, GitHubRemote, GitInfo, HookScriptInfo, PluginInfo,
-    ProjectConfig, SkillInfo, WorkspaceFile, WorktreeInfo,
+    DiscoveredClaudeSession, GitHubCheckDetail, GitHubProjectStatus, GitHubRemote, GitInfo,
+    HookScriptInfo, PluginInfo, ProjectConfig, SkillInfo, WorkspaceFile, WorktreeInfo,
 };
 
 #[tauri::command]
@@ -234,6 +234,14 @@ pub fn github_get_remote(path: String) -> Result<GitHubRemote, String> {
 #[tauri::command(async)]
 pub fn github_project_status(project_path: String) -> GitHubProjectStatus {
     github::get_project_status(&project_path)
+}
+
+#[tauri::command(async)]
+pub fn github_pr_checks(
+    project_path: String,
+    pr_number: u64,
+) -> Result<Vec<GitHubCheckDetail>, String> {
+    github::list_pr_checks(&project_path, pr_number).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

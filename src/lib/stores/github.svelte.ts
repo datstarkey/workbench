@@ -1,17 +1,27 @@
 import type {
 	GitChangedEvent,
 	GitHubBranchStatus,
+	GitHubCheckDetail,
 	GitHubPR,
 	GitHubProjectStatus,
 	GitHubRemote
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { load } from '@tauri-apps/plugin-store';
+
+const FAST_POLL_MS = 15_000;
+const SLOW_POLL_MS = 90_000;
 
 export class GitHubStore {
 	ghAvailable: boolean | null = $state(null);
 	remoteByProject: Record<string, GitHubRemote | null> = $state({});
 	prsByProject: Record<string, GitHubPR[]> = $state({});
+
+	// Sidebar state
+	sidebarOpen: boolean = $state(false);
+	sidebarPrKey: string | null = $state(null);
+	checksByPr: Record<string, GitHubCheckDetail[]> = $state({});
 
 	// Not reactive — internal bookkeeping only
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -20,6 +30,9 @@ export class GitHubStore {
 	private activeBranches: Array<{ projectPath: string; branch: string }> = [];
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private fastPollIntervalId: ReturnType<typeof setInterval> | null = null;
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	private pendingChecks = new Set<string>();
 
 	constructor() {
 		listen<GitChangedEvent>('git:changed', (event) => {
@@ -28,7 +41,7 @@ export class GitHubStore {
 
 		this.pollIntervalId = setInterval(() => {
 			this.pollActiveBranches();
-		}, 90_000);
+		}, SLOW_POLL_MS);
 	}
 
 	private debouncedRefresh(projectPath: string): void {
@@ -113,6 +126,123 @@ export class GitHubStore {
 		}
 	}
 
+	// --- PR checks / sidebar ---
+
+	private prKey(projectPath: string, prNumber: number): string {
+		return `${projectPath}::${prNumber}`;
+	}
+
+	async fetchPrChecks(projectPath: string, prNumber: number): Promise<void> {
+		const key = this.prKey(projectPath, prNumber);
+		if (this.pendingChecks.has(key)) return;
+		this.pendingChecks.add(key);
+
+		try {
+			const checks = await invoke<GitHubCheckDetail[]>('github_pr_checks', {
+				projectPath,
+				prNumber
+			});
+			this.checksByPr = { ...this.checksByPr, [key]: checks };
+
+			// Manage adaptive polling based on check states
+			this.updateFastPolling();
+		} catch (e) {
+			console.warn('[GitHubStore] Failed to fetch PR checks:', e);
+		} finally {
+			this.pendingChecks.delete(key);
+		}
+	}
+
+	getPrChecks(projectPath: string, prNumber: number): GitHubCheckDetail[] | undefined {
+		return this.checksByPr[this.prKey(projectPath, prNumber)];
+	}
+
+	setSidebarPr(projectPath: string, prNumber: number): void {
+		const key = this.prKey(projectPath, prNumber);
+		if (this.sidebarPrKey === key) return;
+		this.sidebarPrKey = key;
+		this.fetchPrChecks(projectPath, prNumber);
+		// Also refresh the project status for badge updates
+		this.refreshProject(projectPath);
+	}
+
+	clearSidebarPr(): void {
+		this.sidebarPrKey = null;
+		this.stopFastPolling();
+	}
+
+	async toggleSidebar(): Promise<void> {
+		this.sidebarOpen = !this.sidebarOpen;
+		await this.persistSidebarState();
+	}
+
+	async initSidebarState(): Promise<void> {
+		try {
+			const store = await load('ui-state.json');
+			const open = await store.get<boolean>('githubSidebarOpen');
+			if (typeof open === 'boolean') {
+				this.sidebarOpen = open;
+			}
+		} catch {
+			// Ignore — first run, no persisted state
+		}
+	}
+
+	private async persistSidebarState(): Promise<void> {
+		try {
+			const store = await load('ui-state.json');
+			await store.set('githubSidebarOpen', this.sidebarOpen);
+			await store.save();
+		} catch {
+			// Non-critical
+		}
+	}
+
+	private updateFastPolling(): void {
+		if (!this.sidebarPrKey) {
+			this.stopFastPolling();
+			return;
+		}
+
+		const checks = this.checksByPr[this.sidebarPrKey];
+		const hasPending = checks?.some((c) => c.bucket === 'pending');
+
+		if (hasPending && !this.fastPollIntervalId) {
+			this.startFastPolling();
+		} else if (!hasPending && this.fastPollIntervalId) {
+			this.stopFastPolling();
+		}
+	}
+
+	private startFastPolling(): void {
+		this.stopFastPolling();
+		this.fastPollIntervalId = setInterval(() => {
+			this.fastPollTick();
+		}, FAST_POLL_MS);
+	}
+
+	private stopFastPolling(): void {
+		if (this.fastPollIntervalId) {
+			clearInterval(this.fastPollIntervalId);
+			this.fastPollIntervalId = null;
+		}
+	}
+
+	private fastPollTick(): void {
+		if (!this.sidebarPrKey) {
+			this.stopFastPolling();
+			return;
+		}
+
+		const [projectPath, prNumberStr] = this.sidebarPrKey.split('::');
+		const prNumber = parseInt(prNumberStr, 10);
+		if (!projectPath || isNaN(prNumber)) return;
+
+		this.fetchPrChecks(projectPath, prNumber);
+		// Also refresh project status so sidebar badges stay in sync
+		this.refreshProject(projectPath);
+	}
+
 	/** Call after projects load — checks gh availability, then fetches status per project */
 	async initForProjects(projectPaths: string[]): Promise<void> {
 		const available = await this.checkGhAvailable();
@@ -125,6 +255,7 @@ export class GitHubStore {
 		if (this.pollIntervalId) {
 			clearInterval(this.pollIntervalId);
 		}
+		this.stopFastPolling();
 		for (const timer of this.debounceTimers.values()) {
 			clearTimeout(timer);
 		}

@@ -162,6 +162,16 @@ export interface GitHubProjectStatus {
 	prs: GitHubPR[];
 }
 
+export interface GitHubCheckDetail {
+	name: string;
+	bucket: 'pass' | 'fail' | 'pending' | 'skipping' | 'cancel';
+	workflow: string;
+	link: string;
+	startedAt: string | null;
+	completedAt: string | null;
+	description: string;
+}
+
 export interface GitHubBranchStatus {
 	pr: GitHubPR | null;
 	remote: GitHubRemote | null;

@@ -53,17 +53,17 @@ This runs `tauri dev`, which starts the Vite dev server on port 1420 and opens t
 
 ### Commands
 
-| Command                | Description                        |
-| ---------------------- | ---------------------------------- |
-| `bun install`          | Install dependencies               |
-| `bun run dev`          | Start dev server + Tauri window    |
-| `bun run build`        | Build production `.app` and `.dmg` |
-| `bun run check`        | Run `svelte-check` type checking   |
-| `bun run lint`         | Run Prettier + ESLint checks       |
-| `bun run format`       | Auto-format with Prettier          |
-| `bun run test`         | Run all tests (frontend + Rust)    |
-| `bun run test:unit`    | Run frontend unit tests only       |
-| `bun run test:component` | Run frontend component tests only |
+| Command                  | Description                        |
+| ------------------------ | ---------------------------------- |
+| `bun install`            | Install dependencies               |
+| `bun run dev`            | Start dev server + Tauri window    |
+| `bun run build`          | Build production `.app` and `.dmg` |
+| `bun run check`          | Run `svelte-check` type checking   |
+| `bun run lint`           | Run Prettier + ESLint checks       |
+| `bun run format`         | Auto-format with Prettier          |
+| `bun run test`           | Run all tests (frontend + Rust)    |
+| `bun run test:unit`      | Run frontend unit tests only       |
+| `bun run test:component` | Run frontend component tests only  |
 
 Rust tests can be run separately:
 

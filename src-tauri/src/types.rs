@@ -244,6 +244,18 @@ pub struct GitHubProjectStatus {
     pub prs: Vec<GitHubPR>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubCheckDetail {
+    pub name: String,
+    pub bucket: String,
+    pub workflow: String,
+    pub link: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub description: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

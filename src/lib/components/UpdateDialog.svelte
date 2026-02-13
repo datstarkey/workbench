@@ -48,7 +48,7 @@
 
 			{#if updaterStore.body}
 				<div class="max-h-48 overflow-y-auto rounded-md border p-3">
-					<p class="whitespace-pre-wrap text-sm text-muted-foreground">{updaterStore.body}</p>
+					<p class="text-sm whitespace-pre-wrap text-muted-foreground">{updaterStore.body}</p>
 				</div>
 			{/if}
 
@@ -95,7 +95,7 @@
 		{:else if updaterStore.status === 'error'}
 			<div class="flex flex-col items-center gap-3 py-6">
 				<AlertCircleIcon class="size-8 text-destructive" />
-				<p class="text-sm text-center text-muted-foreground">
+				<p class="text-center text-sm text-muted-foreground">
 					{updaterStore.error ?? 'An unknown error occurred.'}
 				</p>
 			</div>

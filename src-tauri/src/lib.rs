@@ -63,6 +63,7 @@ pub fn run() {
             commands::github_is_available,
             commands::github_get_remote,
             commands::github_project_status,
+            commands::github_pr_checks,
             commands::open_url,
         ])
         .run(tauri::generate_context!())
