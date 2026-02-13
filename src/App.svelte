@@ -40,13 +40,9 @@
 
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
-	const claudeSessionStore = setClaudeSessionStore(
-		new ClaudeSessionStore(workspaceStore, projectStore)
-	);
+	setClaudeSessionStore(new ClaudeSessionStore(workspaceStore, projectStore));
 	const gitStore = setGitStore(new GitStore());
-	const githubStore = setGitHubStore(
-		new GitHubStore(workspaceStore, gitStore, claudeSessionStore, projectStore)
-	);
+	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
 	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
@@ -108,7 +104,7 @@
 		});
 	});
 
-	// Sync githubStore.sidebarOpen → pane expand/collapse
+	// Sync githubStore.sidebarOpen → pane expand/collapse (imperative DOM API)
 	$effect(() => {
 		const open = githubStore.sidebarOpen;
 		untrack(() => {

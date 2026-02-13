@@ -41,7 +41,7 @@ All IPC uses `invoke()` from `@tauri-apps/api/core` and `listen()` from `@tauri-
 
 ### Frontend structure
 
-**Stores** (`src/lib/stores/`): Context-based (`createContext` pairs in `context.ts`). Classes with `$state` runes. App.svelte creates instances and sets context; children use `getXxxStore()` getters. Stores can reference each other via constructor params. Context definitions use `type` imports to avoid circular dependencies.
+**Stores** (`src/lib/stores/`): Context-based (`createContext` pairs in `context.ts`). Classes with `$state` runes. App.svelte creates instances and sets context sequentially; children use `getXxxStore()` getters. Stores created later in the sequence can call `getXxxStore()` in field initializers instead of receiving constructor params — avoids argument drilling.
 
 **Features** (`src/lib/features/`):
 
@@ -96,7 +96,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 
 ### Git worktree support
 
-- Workspaces have optional `worktreePath` and `branch`. Main workspaces get `branch` synced from `GitStore` via `syncBranches()` in App.svelte. Worktree workspaces get `branch` set at creation time. When `worktreePath` is set, terminals and Claude sessions use it as cwd.
+- Workspaces have optional `worktreePath` and `branch`. Main workspaces resolve branch from `gitStore.branchByProject` at read time (no sync needed). Worktree workspaces get `branch` set at creation time. When `worktreePath` is set, terminals and Claude sessions use it as cwd.
 - `effectivePath(ws)` returns `ws.worktreePath ?? ws.projectPath` — use everywhere a workspace cwd is needed.
 - Multiple workspaces share the same `projectPath` (one main + N worktrees). `getByProjectPath()` returns only main workspace.
 - Sidebar nests worktrees under parent project. Git state lives in `GitStore` (`branchByProject`, `worktreesByProject`), accessed via context.
@@ -122,6 +122,8 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 
 **Cross-component reactive state:** Derive in the store (where the data lives), not via effects in components. If multiple components need the same derived value, put the `$derived` on the store class, not in each component.
 
+**Cross-store derived state:** Put the `$derived` on the store that owns the concept (e.g., `activeBranches` on `GitHubStore`), not as an `$effect` in a component that reads one store and writes to another.
+
 ## Gotchas
 
 - Rust modules use `anyhow::Result` internally. `commands.rs` converts to `Result<_, String>` for Tauri IPC via `.map_err(|e| e.to_string())`.
@@ -136,3 +138,4 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - `ConfirmDialog` delegates close behavior to the bound `ConfirmAction.open` — don't auto-close on confirm (allows async error display + retry).
 - Svelte 5 `$state` with union types: use `$state<'a' | 'b'>('a')` not `let x: 'a' | 'b' = $state('a')` — the latter narrows to the initial value's literal type.
 - `$derived` on class fields is lazy — the callback runs on first read, not at field initialization time. Safe to reference constructor params that are set after field initializers run.
+- `main` branch has force-push protection. Always use feature branches for multi-step changes; don't amend already-pushed commits to `main`.
