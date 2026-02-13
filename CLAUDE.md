@@ -95,13 +95,22 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 
 ### Git worktree support
 
-- Workspaces have optional `worktreePath` and `branch`. When `worktreePath` is set, terminals and Claude sessions use it as cwd.
+- Workspaces have optional `worktreePath` and `branch`. Main workspaces get `branch` synced from `GitStore` via `syncBranches()` in App.svelte. Worktree workspaces get `branch` set at creation time. When `worktreePath` is set, terminals and Claude sessions use it as cwd.
 - `effectivePath(ws)` returns `ws.worktreePath ?? ws.projectPath` — use everywhere a workspace cwd is needed.
 - Multiple workspaces share the same `projectPath` (one main + N worktrees). `getByProjectPath()` returns only main workspace.
 - Sidebar nests worktrees under parent project. Git state lives in `GitStore` (`branchByProject`, `worktreesByProject`), accessed via context.
 - `closeAllForProject()` closes main + all worktree workspaces.
 - Worktree location strategy (workbench setting): `"sibling"` creates `<parent>/<repo>-<branch>`, `"inside"` creates `<repo>/.worktrees/<branch>` (auto-adds to `.gitignore`).
 - `WorkbenchSettingsStore` manages `~/.workbench/settings.json` — simpler single-scope store compared to `ClaudeSettingsStore`.
+- `github.rs` — GitHub CLI wrappers: remote detection, PR listing, workflow runs, check details
+
+### GitHub CI integration
+
+- `GitHubStore` polls project status (PRs, workflow runs, PR checks) on 90s cycle, 15s fast-poll when pending.
+- Polling is scoped to projects with active Claude/Codex sessions (`activeSessionsByProject`), not all open workspaces.
+- `get_project_status()` batches all data in one IPC call: PRs, workflow runs grouped by branch, and pre-fetched PR checks for open PRs.
+- `gh run list` returns `databaseId` (not `id`) — use `#[serde(alias = "databaseId")]` for deserialization.
+- `gh pr checks` returns empty string `""` for `completedAt` on pending checks — validate parsed dates before computing durations.
 
 ## Gotchas
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +267,8 @@ pub struct GitHubPR {
 pub struct GitHubProjectStatus {
     pub remote: Option<GitHubRemote>,
     pub prs: Vec<GitHubPR>,
+    pub branch_runs: HashMap<String, GitHubBranchRuns>,
+    pub pr_checks: HashMap<u64, Vec<GitHubCheckDetail>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,6 +281,29 @@ pub struct GitHubCheckDetail {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubWorkflowRun {
+    #[serde(alias = "databaseId")]
+    pub id: u64,
+    pub name: String,
+    pub display_title: String,
+    pub head_branch: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub url: String,
+    pub event: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubBranchRuns {
+    pub status: GitHubChecksStatus,
+    pub runs: Vec<GitHubWorkflowRun>,
 }
 
 #[cfg(test)]

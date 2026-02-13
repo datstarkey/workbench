@@ -41,7 +41,9 @@
 		if (!check.startedAt || !check.completedAt) return null;
 		const start = new Date(check.startedAt).getTime();
 		const end = new Date(check.completedAt).getTime();
+		if (isNaN(start) || isNaN(end) || start <= 0 || end <= 0) return null;
 		const seconds = Math.round((end - start) / 1000);
+		if (seconds < 0) return null;
 		if (seconds < 60) return `${seconds}s`;
 		const mins = Math.floor(seconds / 60);
 		const secs = seconds % 60;
