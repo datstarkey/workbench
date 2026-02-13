@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
 use crate::types::{
-    GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubProjectStatus, GitHubRemote,
+    GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubProjectStatus,
+    GitHubRemote, GitHubWorkflowRun,
 };
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
@@ -90,6 +92,102 @@ pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
     }
 }
 
+pub fn list_workflow_runs(path: &str) -> Vec<GitHubWorkflowRun> {
+    let fields =
+        "databaseId,name,displayTitle,headBranch,status,conclusion,url,event,createdAt,updatedAt";
+    let result = gh_output(
+        &["run", "list", "--limit", "200", "--json", fields],
+        path,
+    );
+
+    match result {
+        Ok(json_str) => {
+            if json_str.is_empty() {
+                return vec![];
+            }
+            serde_json::from_str(&json_str).unwrap_or_default()
+        }
+        Err(_) => vec![],
+    }
+}
+
+pub fn group_runs_by_branch(runs: Vec<GitHubWorkflowRun>) -> HashMap<String, GitHubBranchRuns> {
+    let mut by_branch: HashMap<String, Vec<GitHubWorkflowRun>> = HashMap::new();
+    for run in runs {
+        by_branch
+            .entry(run.head_branch.clone())
+            .or_default()
+            .push(run);
+    }
+
+    let mut result = HashMap::new();
+    for (branch, mut branch_runs) in by_branch {
+        // Sort by created_at descending so we can dedup by keeping the latest per workflow
+        branch_runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        // Keep only the latest run per workflow name
+        let mut seen_workflows: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let deduped: Vec<GitHubWorkflowRun> = branch_runs
+            .into_iter()
+            .filter(|r| seen_workflows.insert(r.name.clone()))
+            .collect();
+
+        let status = derive_branch_status(&deduped);
+        result.insert(branch, GitHubBranchRuns {
+            status,
+            runs: deduped,
+        });
+    }
+
+    result
+}
+
+fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
+    if runs.is_empty() {
+        return GitHubChecksStatus {
+            overall: "none".to_string(),
+            total: 0,
+            passing: 0,
+            failing: 0,
+            pending: 0,
+        };
+    }
+
+    let mut passing = 0u32;
+    let mut failing = 0u32;
+    let mut pending = 0u32;
+
+    for run in runs {
+        if run.status == "completed" {
+            match run.conclusion.as_deref() {
+                Some("success") | Some("skipped") | Some("neutral") => passing += 1,
+                Some("failure") | Some("cancelled") | Some("timed_out") => failing += 1,
+                _ => pending += 1,
+            }
+        } else {
+            // queued, in_progress, waiting
+            pending += 1;
+        }
+    }
+
+    let total = passing + failing + pending;
+    let overall = if failing > 0 {
+        "failure"
+    } else if pending > 0 {
+        "pending"
+    } else {
+        "success"
+    };
+
+    GitHubChecksStatus {
+        overall: overall.to_string(),
+        total,
+        passing,
+        failing,
+        pending,
+    }
+}
+
 pub fn get_project_status(path: &str) -> GitHubProjectStatus {
     let remote = get_github_remote(path).ok();
     let prs = if remote.is_some() {
@@ -98,7 +196,29 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
         vec![]
     };
 
-    GitHubProjectStatus { remote, prs }
+    let workflow_runs = if remote.is_some() {
+        list_workflow_runs(path)
+    } else {
+        vec![]
+    };
+    let branch_runs = group_runs_by_branch(workflow_runs);
+
+    // Pre-fetch checks for all open PRs
+    let mut pr_checks: HashMap<u64, Vec<GitHubCheckDetail>> = HashMap::new();
+    for pr in &prs {
+        if pr.state == "OPEN" {
+            if let Ok(checks) = list_pr_checks(path, pr.number) {
+                pr_checks.insert(pr.number, checks);
+            }
+        }
+    }
+
+    GitHubProjectStatus {
+        remote,
+        prs,
+        branch_runs,
+        pr_checks,
+    }
 }
 
 fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {

@@ -160,6 +160,8 @@ export interface GitHubPR {
 export interface GitHubProjectStatus {
 	remote: GitHubRemote | null;
 	prs: GitHubPR[];
+	branchRuns: Record<string, GitHubBranchRuns>;
+	prChecks: Record<number, GitHubCheckDetail[]>;
 }
 
 export interface GitHubCheckDetail {
@@ -172,9 +174,28 @@ export interface GitHubCheckDetail {
 	description: string;
 }
 
+export interface GitHubWorkflowRun {
+	id: number;
+	name: string;
+	displayTitle: string;
+	headBranch: string;
+	status: 'queued' | 'in_progress' | 'completed';
+	conclusion: 'success' | 'failure' | 'cancelled' | 'skipped' | null;
+	url: string;
+	event: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface GitHubBranchRuns {
+	status: GitHubChecksStatus;
+	runs: GitHubWorkflowRun[];
+}
+
 export interface GitHubBranchStatus {
 	pr: GitHubPR | null;
 	remote: GitHubRemote | null;
+	branchRuns: GitHubBranchRuns | null;
 }
 
 export interface ProjectFormState {

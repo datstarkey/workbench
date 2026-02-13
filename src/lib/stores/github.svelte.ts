@@ -1,5 +1,6 @@
 import type {
 	GitChangedEvent,
+	GitHubBranchRuns,
 	GitHubBranchStatus,
 	GitHubCheckDetail,
 	GitHubPR,
@@ -17,10 +18,12 @@ export class GitHubStore {
 	ghAvailable: boolean | null = $state(null);
 	remoteByProject: Record<string, GitHubRemote | null> = $state({});
 	prsByProject: Record<string, GitHubPR[]> = $state({});
+	branchRunsByProject: Record<string, Record<string, GitHubBranchRuns>> = $state({});
 
 	// Sidebar state
 	sidebarOpen: boolean = $state(false);
 	sidebarPrKey: string | null = $state(null);
+	sidebarBranchKey: string | null = $state(null);
 	checksByPr: Record<string, GitHubCheckDetail[]> = $state({});
 
 	// Not reactive — internal bookkeeping only
@@ -78,6 +81,17 @@ export class GitHubStore {
 			});
 			this.remoteByProject = { ...this.remoteByProject, [projectPath]: status.remote };
 			this.prsByProject = { ...this.prsByProject, [projectPath]: status.prs };
+			this.branchRunsByProject = {
+				...this.branchRunsByProject,
+				[projectPath]: status.branchRuns
+			};
+			// Merge pre-fetched PR checks
+			const newChecks = { ...this.checksByPr };
+			for (const [prNum, checks] of Object.entries(status.prChecks)) {
+				newChecks[`${projectPath}::${prNum}`] = checks;
+			}
+			this.checksByPr = newChecks;
+			this.updateFastPolling();
 		} catch (e) {
 			console.warn('[GitHubStore] Failed to fetch project status:', e);
 		} finally {
@@ -90,7 +104,8 @@ export class GitHubStore {
 		if (!prs) return undefined;
 		const pr = prs.find((p) => p.headRefName === branch) ?? null;
 		const remote = this.remoteByProject[projectPath] ?? null;
-		return { pr, remote };
+		const branchRuns = this.branchRunsByProject[projectPath]?.[branch] ?? null;
+		return { pr, remote, branchRuns };
 	}
 
 	getRemoteUrl(projectPath: string): string | null {
@@ -160,13 +175,29 @@ export class GitHubStore {
 		const key = this.prKey(projectPath, prNumber);
 		if (this.sidebarPrKey === key) return;
 		this.sidebarPrKey = key;
+		this.sidebarBranchKey = null;
 		this.fetchPrChecks(projectPath, prNumber);
 		// Also refresh the project status for badge updates
 		this.refreshProject(projectPath);
 	}
 
+	setSidebarBranch(projectPath: string, branch: string): void {
+		const key = `${projectPath}::${branch}`;
+		if (this.sidebarBranchKey === key) return;
+		this.sidebarBranchKey = key;
+		this.sidebarPrKey = null;
+		this.refreshProject(projectPath);
+	}
+
+	clearSidebar(): void {
+		this.sidebarPrKey = null;
+		this.sidebarBranchKey = null;
+		this.stopFastPolling();
+	}
+
 	clearSidebarPr(): void {
 		this.sidebarPrKey = null;
+		this.sidebarBranchKey = null;
 		this.stopFastPolling();
 	}
 
@@ -198,13 +229,21 @@ export class GitHubStore {
 	}
 
 	private updateFastPolling(): void {
-		if (!this.sidebarPrKey) {
+		let hasPending = false;
+
+		if (this.sidebarPrKey) {
+			const checks = this.checksByPr[this.sidebarPrKey];
+			hasPending = checks?.some((c) => c.bucket === 'pending') ?? false;
+		} else if (this.sidebarBranchKey) {
+			const [projectPath, branch] = this.sidebarBranchKey.split('::');
+			const runs = this.branchRunsByProject[projectPath]?.[branch];
+			hasPending = runs?.status.pending > 0;
+		}
+
+		if (!this.sidebarPrKey && !this.sidebarBranchKey) {
 			this.stopFastPolling();
 			return;
 		}
-
-		const checks = this.checksByPr[this.sidebarPrKey];
-		const hasPending = checks?.some((c) => c.bucket === 'pending');
 
 		if (hasPending && !this.fastPollIntervalId) {
 			this.startFastPolling();
@@ -228,18 +267,18 @@ export class GitHubStore {
 	}
 
 	private fastPollTick(): void {
-		if (!this.sidebarPrKey) {
+		if (this.sidebarPrKey) {
+			const [projectPath, prNumberStr] = this.sidebarPrKey.split('::');
+			const prNumber = parseInt(prNumberStr, 10);
+			if (!projectPath || isNaN(prNumber)) return;
+			this.fetchPrChecks(projectPath, prNumber);
+			this.refreshProject(projectPath);
+		} else if (this.sidebarBranchKey) {
+			const [projectPath] = this.sidebarBranchKey.split('::');
+			if (projectPath) this.refreshProject(projectPath);
+		} else {
 			this.stopFastPolling();
-			return;
 		}
-
-		const [projectPath, prNumberStr] = this.sidebarPrKey.split('::');
-		const prNumber = parseInt(prNumberStr, 10);
-		if (!projectPath || isNaN(prNumber)) return;
-
-		this.fetchPrChecks(projectPath, prNumber);
-		// Also refresh project status so sidebar badges stay in sync
-		this.refreshProject(projectPath);
 	}
 
 	/** Call after projects load — checks gh availability, then fetches status per project */

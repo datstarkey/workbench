@@ -39,6 +39,7 @@
 		ProjectTask,
 		WorktreeInfo
 	} from '$types/workbench';
+	import CIStatusBadge from './CIStatusBadge.svelte';
 	import PRStatusBadge from './PRStatusBadge.svelte';
 	import ProjectMenuItems from './ProjectMenuItems.svelte';
 
@@ -150,19 +151,22 @@
 
 	let dragOverProjectPath = $state<string | null>(null);
 
-	// Track visible branches for polling — fetching is triggered by initForProjects / git:changed
+	// Track visible branches for polling — only for projects with active sessions
 	$effect(() => {
+		if (githubStore.ghAvailable === false) return;
+		const sessionsByProject = claudeSessionStore.activeSessionsByProject;
 		const branches: Array<{ projectPath: string; branch: string }> = [];
 		for (const project of projectStore.projects) {
+			const hasSessions = (sessionsByProject[project.path]?.length ?? 0) > 0;
+			if (!hasSessions) continue;
 			const branch = gitStore.branchByProject[project.path];
-			if (branch && githubStore.ghAvailable !== false) {
+			if (branch) {
 				branches.push({ projectPath: project.path, branch });
 				githubStore.fetchProjectStatus(project.path);
 			}
 			for (const wt of worktreesForProject(project.path)) {
-				if (wt.branch && githubStore.ghAvailable !== false) {
+				if (wt.branch) {
 					branches.push({ projectPath: project.path, branch: wt.branch });
-					githubStore.fetchProjectStatus(project.path);
 				}
 			}
 		}
@@ -296,6 +300,11 @@
 														pr={branchStatus.pr}
 														onClickPr={() => openInGitHub(branchStatus.pr!.url)}
 													/>
+												{:else if branchStatus?.branchRuns}
+													<CIStatusBadge
+														status={branchStatus.branchRuns.status}
+														onclick={() => githubStore.setSidebarBranch(project.path, branch)}
+													/>
 												{/if}
 											{/if}
 											{#if hasAttention}
@@ -360,6 +369,7 @@
 											{@const wtSessions = sessionsForWorktree(project.path, wt.path)}
 											{@const wtHasChildren = worktreeHasChildren(project.path, wt.path, tasks)}
 											{@const wtExpanded = expandedWorktrees.has(wt.path)}
+											{@const wtBranchStatus = githubStore.getBranchStatus(project.path, wt.branch)}
 											<div>
 												<ContextMenu.Root>
 													<ContextMenu.Trigger class="w-full">
@@ -384,12 +394,17 @@
 																<GitBranchIcon class="size-3 shrink-0 text-emerald-400" />
 															{/if}
 															<span class="truncate text-xs font-medium">{wt.branch}</span>
-															{#if githubStore.getBranchStatus(project.path, wt.branch)?.pr}
-																{@const wtPr = githubStore.getBranchStatus(
-																	project.path,
-																	wt.branch
-																)!.pr!}
-																<PRStatusBadge pr={wtPr} onClickPr={() => openInGitHub(wtPr.url)} />
+															{#if wtBranchStatus?.pr}
+																<PRStatusBadge
+																	pr={wtBranchStatus.pr}
+																	onClickPr={() => openInGitHub(wtBranchStatus.pr!.url)}
+																/>
+															{:else if wtBranchStatus?.branchRuns}
+																<CIStatusBadge
+																	status={wtBranchStatus.branchRuns.status}
+																	onclick={() =>
+																		githubStore.setSidebarBranch(project.path, wt.branch)}
+																/>
 															{/if}
 														</button>
 													</ContextMenu.Trigger>

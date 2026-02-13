@@ -85,6 +85,12 @@
 		settingsOpen = true;
 	});
 
+	// Sync branch info onto main workspaces whenever git state changes
+	$effect(() => {
+		const branches = gitStore.branchByProject;
+		untrack(() => workspaceStore.syncBranches(branches));
+	});
+
 	// Sync githubStore.sidebarOpen → pane expand/collapse
 	$effect(() => {
 		const open = githubStore.sidebarOpen;
