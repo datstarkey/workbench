@@ -173,24 +173,6 @@ export class WorkspaceStore {
 		this.openInternal(project, { worktreePath, branch });
 	}
 
-	/** Sync branch for main (non-worktree) workspaces from gitStore data. */
-	syncBranches(branchByProject: Record<string, string>) {
-		let changed = false;
-		const updated = this.workspaces.map((ws) => {
-			if (ws.worktreePath) return ws; // worktrees already have branch set
-			const branch = branchByProject[ws.projectPath];
-			if (branch && ws.branch !== branch) {
-				changed = true;
-				return { ...ws, branch };
-			}
-			return ws;
-		});
-		if (changed) {
-			this.workspaces = updated;
-			this.persist();
-		}
-	}
-
 	closeAllForProject(projectPath: string) {
 		const ids = this.getWorkspacesForProject(projectPath).map((w) => w.id);
 		if (ids.length === 0) return;

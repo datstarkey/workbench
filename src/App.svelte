@@ -40,9 +40,13 @@
 
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
-	setClaudeSessionStore(new ClaudeSessionStore(workspaceStore, projectStore));
+	const claudeSessionStore = setClaudeSessionStore(
+		new ClaudeSessionStore(workspaceStore, projectStore)
+	);
 	const gitStore = setGitStore(new GitStore());
-	const githubStore = setGitHubStore(new GitHubStore(workspaceStore, gitStore));
+	const githubStore = setGitHubStore(
+		new GitHubStore(workspaceStore, gitStore, claudeSessionStore, projectStore)
+	);
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
 	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
@@ -90,10 +94,18 @@
 		settingsOpen = true;
 	});
 
-	// Sync branch info onto main workspaces whenever git state changes
+	// Fetch GitHub status when projects gain active sessions (network side effect)
 	$effect(() => {
-		const branches = gitStore.branchByProject;
-		untrack(() => workspaceStore.syncBranches(branches));
+		const branches = githubStore.activeBranches;
+		untrack(() => {
+			const seen = new SvelteSet<string>();
+			for (const { projectPath } of branches) {
+				if (!seen.has(projectPath)) {
+					seen.add(projectPath);
+					githubStore.fetchProjectStatus(projectPath);
+				}
+			}
+		});
 	});
 
 	// Sync githubStore.sidebarOpen → pane expand/collapse

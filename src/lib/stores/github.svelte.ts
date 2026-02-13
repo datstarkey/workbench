@@ -9,6 +9,8 @@ import type {
 } from '$types/workbench';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { GitStore } from './git.svelte';
+import type { ClaudeSessionStore } from './claudeSessions.svelte';
+import type { ProjectStore } from './projects.svelte';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { load } from '@tauri-apps/plugin-store';
@@ -19,6 +21,8 @@ const SLOW_POLL_MS = 90_000;
 export class GitHubStore {
 	private workspaces: WorkspaceStore;
 	private git: GitStore;
+	private sessions: ClaudeSessionStore;
+	private projects: ProjectStore;
 
 	ghAvailable: boolean | null = $state(null);
 	remoteByProject: Record<string, GitHubRemote | null> = $state({});
@@ -65,20 +69,50 @@ export class GitHubStore {
 		return this.checksByPr[this.prKey(target.projectPath, pr.number)] ?? [];
 	});
 
+	/** Derived list of branches with active AI sessions — drives polling */
+	readonly activeBranches = $derived.by(() => {
+		if (this.ghAvailable === false) return [];
+		const sessionsByProject = this.sessions.activeSessionsByProject;
+		const branches: Array<{ projectPath: string; branch: string }> = [];
+		for (const project of this.projects.projects) {
+			const hasSessions = (sessionsByProject[project.path]?.length ?? 0) > 0;
+			if (!hasSessions) continue;
+			const branch = this.git.branchByProject[project.path];
+			if (branch) {
+				branches.push({ projectPath: project.path, branch });
+			}
+			const worktrees = (this.git.worktreesByProject[project.path] ?? []).filter(
+				(wt) => !wt.isMain
+			);
+			for (const wt of worktrees) {
+				if (wt.branch) {
+					branches.push({ projectPath: project.path, branch: wt.branch });
+				}
+			}
+		}
+		return branches;
+	});
+
 	// Not reactive — internal bookkeeping only
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	private pendingProjects = new Set<string>();
 	private pollIntervalId: ReturnType<typeof setInterval> | null = null;
-	private activeBranches: Array<{ projectPath: string; branch: string }> = [];
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private fastPollIntervalId: ReturnType<typeof setInterval> | null = null;
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	private pendingChecks = new Set<string>();
 
-	constructor(workspaces: WorkspaceStore, git: GitStore) {
+	constructor(
+		workspaces: WorkspaceStore,
+		git: GitStore,
+		sessions: ClaudeSessionStore,
+		projects: ProjectStore
+	) {
 		this.workspaces = workspaces;
 		this.git = git;
+		this.sessions = sessions;
+		this.projects = projects;
 
 		listen<GitChangedEvent>('git:changed', (event) => {
 			this.debouncedRefresh(event.payload.projectPath);
@@ -152,10 +186,6 @@ export class GitHubStore {
 
 	getRemoteUrl(projectPath: string): string | null {
 		return this.remoteByProject[projectPath]?.htmlUrl ?? null;
-	}
-
-	setActiveBranches(branches: Array<{ projectPath: string; branch: string }>) {
-		this.activeBranches = branches;
 	}
 
 	async refreshProject(projectPath: string): Promise<void> {
