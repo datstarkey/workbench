@@ -25,10 +25,6 @@ export async function resizeTerminal(
 	return invoke<boolean>('resize_terminal', { sessionId, cols, rows });
 }
 
-export async function signalForeground(sessionId: string): Promise<boolean> {
-	return invoke<boolean>('signal_foreground', { sessionId });
-}
-
 export async function killTerminal(sessionId: string): Promise<boolean> {
 	return invoke<boolean>('kill_terminal', { sessionId });
 }

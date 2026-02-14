@@ -1,24 +1,25 @@
 <script lang="ts">
-	import * as Sheet from '$lib/components/ui/sheet';
-	import * as Tabs from '$lib/components/ui/tabs';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import { Badge } from '$lib/components/ui/badge';
-	import SaveIcon from '@lucide/svelte/icons/save';
-	import LoaderIcon from '@lucide/svelte/icons/loader';
+	import * as Sheet from '$lib/components/ui/sheet';
+	import * as Tabs from '$lib/components/ui/tabs';
 	import { getClaudeSettingsStore, getWorkbenchSettingsStore } from '$stores/context';
 	import type { ScopeGroup } from '$types/claude-settings';
+	import LoaderIcon from '@lucide/svelte/icons/loader';
+	import SaveIcon from '@lucide/svelte/icons/save';
 
-	const claudeSettingsStore = getClaudeSettingsStore();
-	const workbenchSettingsStore = getWorkbenchSettingsStore();
 	import SettingsGeneral from './SettingsGeneral.svelte';
-	import SettingsPlugins from './SettingsPlugins.svelte';
+	import SettingsHooks from './SettingsHooks.svelte';
 	import SettingsMcp from './SettingsMcp.svelte';
 	import SettingsPermissions from './SettingsPermissions.svelte';
-	import SettingsHooks from './SettingsHooks.svelte';
+	import SettingsPlugins from './SettingsPlugins.svelte';
 	import SettingsSandbox from './SettingsSandbox.svelte';
 	import SettingsSkills from './SettingsSkills.svelte';
 	import SettingsWorkbench from './SettingsWorkbench.svelte';
+
+	const claudeSettingsStore = getClaudeSettingsStore();
+	const workbenchSettingsStore = getWorkbenchSettingsStore();
 
 	let {
 		open = $bindable(false),

@@ -7,10 +7,7 @@ import type {
 	GitHubProjectStatus,
 	GitHubRemote
 } from '$types/workbench';
-import type { WorkspaceStore } from './workspaces.svelte';
-import type { GitStore } from './git.svelte';
-import type { ClaudeSessionStore } from './claudeSessions.svelte';
-import type { ProjectStore } from './projects.svelte';
+import { getClaudeSessionStore, getGitStore, getProjectStore, getWorkspaceStore } from './context';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { load } from '@tauri-apps/plugin-store';
@@ -19,10 +16,10 @@ const FAST_POLL_MS = 15_000;
 const SLOW_POLL_MS = 90_000;
 
 export class GitHubStore {
-	private workspaces: WorkspaceStore;
-	private git: GitStore;
-	private sessions: ClaudeSessionStore;
-	private projects: ProjectStore;
+	private workspaces = getWorkspaceStore();
+	private git = getGitStore();
+	private sessions = getClaudeSessionStore();
+	private projects = getProjectStore();
 
 	ghAvailable: boolean | null = $state(null);
 	remoteByProject: Record<string, GitHubRemote | null> = $state({});
@@ -103,17 +100,7 @@ export class GitHubStore {
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	private pendingChecks = new Set<string>();
 
-	constructor(
-		workspaces: WorkspaceStore,
-		git: GitStore,
-		sessions: ClaudeSessionStore,
-		projects: ProjectStore
-	) {
-		this.workspaces = workspaces;
-		this.git = git;
-		this.sessions = sessions;
-		this.projects = projects;
-
+	constructor() {
 		listen<GitChangedEvent>('git:changed', (event) => {
 			this.debouncedRefresh(event.payload.projectPath);
 		});

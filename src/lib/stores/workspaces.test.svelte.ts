@@ -9,6 +9,17 @@ vi.mock('$lib/utils/uid', () => ({
 	uid: () => `uid-${++uidCounter}`
 }));
 
+// Mock context so getGitStore() works outside a component
+vi.mock('./context', () => {
+	const mockGitStore = {
+		watchProject: vi.fn(),
+		unwatchProject: vi.fn()
+	};
+	return {
+		getGitStore: () => mockGitStore
+	};
+});
+
 // Helper factories
 
 function makeProject(overrides: Partial<ProjectConfig> = {}): ProjectConfig {

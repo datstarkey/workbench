@@ -301,24 +301,6 @@ impl PtyManager {
         Ok(())
     }
 
-    /// Send SIGINT to the foreground process (e.g., Claude Code) inside a PTY.
-    /// Finds the shell's child processes and signals them directly, bypassing stdin.
-    pub fn signal_foreground(&self, session_id: &str) -> Result<()> {
-        let session = self
-            .get_session(session_id)
-            .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
-        let sess = session.lock().unwrap_or_else(|e| e.into_inner());
-
-        if let Some(shell_pid) = sess.child.process_id() {
-            for child_pid in get_child_pids(shell_pid as i32) {
-                unsafe {
-                    libc::kill(child_pid, libc::SIGINT);
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub fn kill(&self, session_id: &str, app_handle: &AppHandle) -> Result<()> {
         let session = match Self::remove_session(&self.sessions, session_id) {
             Some(s) => s,
@@ -344,34 +326,4 @@ impl PtyManager {
 
         Ok(())
     }
-}
-
-/// List direct child PIDs of a process.
-#[cfg(target_os = "macos")]
-fn get_child_pids(parent_pid: i32) -> Vec<i32> {
-    extern "C" {
-        fn proc_listchildpids(
-            ppid: libc::pid_t,
-            buffer: *mut libc::c_void,
-            buffersize: libc::c_int,
-        ) -> libc::c_int;
-    }
-
-    let mut buf = [0i32; 128];
-    let bufsize = std::mem::size_of_val(&buf) as libc::c_int;
-    let count = unsafe { proc_listchildpids(parent_pid, buf.as_mut_ptr().cast(), bufsize) };
-    if count <= 0 {
-        return vec![];
-    }
-    buf[..count as usize].to_vec()
-}
-
-#[cfg(target_os = "linux")]
-fn get_child_pids(parent_pid: i32) -> Vec<i32> {
-    let path = format!("/proc/{parent_pid}/task/{parent_pid}/children");
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .split_whitespace()
-        .filter_map(|s| s.parse().ok())
-        .collect()
 }
