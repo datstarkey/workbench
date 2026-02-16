@@ -108,7 +108,7 @@
 		<ClaudeSessionMenu
 			type="claude"
 			onResume={(sessionId, label) =>
-				workspaceStore.resumeClaudeSession(workspace.id, sessionId, label)}
+				claudeSessionStore.resumeSession(workspace.id, sessionId, label)}
 			onOpen={() => claudeSessionStore.discoverSessions(wsCwd)}
 		/>
 
@@ -130,7 +130,7 @@
 		<ClaudeSessionMenu
 			type="codex"
 			onResume={(sessionId, label) =>
-				workspaceStore.resumeAISession(workspace.id, sessionId, label, 'codex')}
+				claudeSessionStore.resumeSession(workspace.id, sessionId, label, 'codex')}
 			onOpen={() => claudeSessionStore.discoverCodexSessions(wsCwd)}
 		/>
 
