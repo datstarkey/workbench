@@ -257,6 +257,16 @@ pub fn github_merge_pr(
     Ok(true)
 }
 
+#[tauri::command(async)]
+pub fn delete_branch(
+    repo_path: String,
+    branch: String,
+    force: bool,
+) -> Result<bool, String> {
+    git::delete_branch(&repo_path, &branch, force).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn open_url(url: String) -> Result<bool, String> {
     github::open_url(&url).map_err(|e| e.to_string())?;

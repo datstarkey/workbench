@@ -69,6 +69,7 @@ pub fn run() {
             commands::github_project_status,
             commands::github_pr_checks,
             commands::github_merge_pr,
+            commands::delete_branch,
             commands::open_url,
             commands::check_claude_integration,
             commands::check_codex_integration,

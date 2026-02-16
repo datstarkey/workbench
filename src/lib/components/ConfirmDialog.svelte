@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 
@@ -10,7 +11,8 @@
 		cancelLabel = 'Cancel',
 		destructive = false,
 		error = '',
-		onConfirm
+		onConfirm,
+		children
 	}: {
 		open: boolean;
 		title?: string;
@@ -20,6 +22,7 @@
 		destructive?: boolean;
 		error?: string;
 		onConfirm: () => void;
+		children?: Snippet;
 	} = $props();
 </script>
 
@@ -31,6 +34,9 @@
 				<Dialog.Description>{description}</Dialog.Description>
 			{/if}
 		</Dialog.Header>
+		{#if children}
+			{@render children()}
+		{/if}
 		{#if error}
 			<p class="text-sm text-destructive">{error}</p>
 		{/if}

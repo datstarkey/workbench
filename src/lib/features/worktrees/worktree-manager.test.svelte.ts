@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { invokeSpy, mockInvoke, clearInvokeMocks } from '../../../test/tauri-mocks';
 import { WorktreeManagerStore } from './worktree-manager.svelte';
+import type { GitHubStore } from '$stores/github.svelte';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
 import type { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
@@ -26,11 +27,15 @@ function createMocks() {
 		refreshGitState: vi.fn()
 	} as unknown as GitStore;
 
+	const githubStore = {
+		prsByProject: {}
+	} as unknown as GitHubStore;
+
 	const workbenchSettings = {
 		worktreeStrategy: 'sibling'
 	} as unknown as WorkbenchSettingsStore;
 
-	return { projectStore, workspaceStore, gitStore, workbenchSettings };
+	return { projectStore, workspaceStore, gitStore, githubStore, workbenchSettings };
 }
 
 describe('WorktreeManagerStore', () => {
@@ -43,6 +48,7 @@ describe('WorktreeManagerStore', () => {
 			mocks.projectStore,
 			mocks.workspaceStore,
 			mocks.gitStore,
+			mocks.githubStore,
 			mocks.workbenchSettings
 		);
 	});
@@ -184,13 +190,36 @@ describe('WorktreeManagerStore', () => {
 
 	describe('remove / confirmRemove', () => {
 		it('remove() opens the removal ConfirmAction', () => {
-			manager.remove('/projects/repo', '/projects/repo-wt');
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
 
 			expect(manager.removal.open).toBe(true);
 			expect(manager.removal.pendingValue).toEqual({
 				projectPath: '/projects/repo',
-				worktreePath: '/projects/repo-wt'
+				worktreePath: '/projects/repo-wt',
+				branch: 'feature',
+				branchHasMergedPr: false
 			});
+		});
+
+		it('remove() auto-ticks deleteBranch when branch has merged PR', () => {
+			mocks.githubStore.prsByProject = {
+				'/projects/repo': [{ headRefName: 'feature', state: 'MERGED' } as never]
+			};
+
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
+
+			expect(manager.deleteBranchOnRemove).toBe(true);
+			expect(manager.removal.pendingValue?.branchHasMergedPr).toBe(true);
+		});
+
+		it('remove() does not auto-tick deleteBranch for open PRs', () => {
+			mocks.githubStore.prsByProject = {
+				'/projects/repo': [{ headRefName: 'feature', state: 'OPEN' } as never]
+			};
+
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
+
+			expect(manager.deleteBranchOnRemove).toBe(false);
 		});
 
 		it('confirmRemove() invokes remove_worktree, closes workspace, and refreshes git', async () => {
@@ -198,7 +227,7 @@ describe('WorktreeManagerStore', () => {
 			vi.mocked(mocks.workspaceStore.getByWorktreePath).mockReturnValue(ws);
 			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
 
-			manager.remove('/projects/repo', '/projects/repo-wt');
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
 			await manager.confirmRemove();
 
 			expect(invokeSpy).toHaveBeenCalledWith('remove_worktree', {
@@ -212,11 +241,38 @@ describe('WorktreeManagerStore', () => {
 			expect(manager.removal.open).toBe(false);
 		});
 
+		it('confirmRemove() also deletes branch when deleteBranchOnRemove is true', async () => {
+			vi.mocked(mocks.workspaceStore.getByWorktreePath).mockReturnValue(undefined);
+			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
+			mockInvoke('delete_branch', () => true);
+
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
+			manager.deleteBranchOnRemove = true;
+			await manager.confirmRemove();
+
+			expect(invokeSpy).toHaveBeenCalledWith('delete_branch', {
+				repoPath: '/projects/repo',
+				branch: 'feature',
+				force: false
+			});
+		});
+
+		it('confirmRemove() skips branch deletion when deleteBranchOnRemove is false', async () => {
+			vi.mocked(mocks.workspaceStore.getByWorktreePath).mockReturnValue(undefined);
+			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
+
+			manager.deleteBranchOnRemove = false;
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
+			await manager.confirmRemove();
+
+			expect(invokeSpy).not.toHaveBeenCalledWith('delete_branch', expect.anything());
+		});
+
 		it('confirmRemove() skips workspace close if no matching workspace', async () => {
 			vi.mocked(mocks.workspaceStore.getByWorktreePath).mockReturnValue(undefined);
 			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
 
-			manager.remove('/projects/repo', '/projects/repo-wt');
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
 			await manager.confirmRemove();
 
 			expect(invokeSpy).toHaveBeenCalledWith('remove_worktree', {
@@ -238,7 +294,7 @@ describe('WorktreeManagerStore', () => {
 				throw new Error('removal failed');
 			});
 
-			manager.remove('/projects/repo', '/projects/repo-wt');
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
 			await manager.confirmRemove();
 
 			expect(manager.removal.error).toBe('Error: removal failed');

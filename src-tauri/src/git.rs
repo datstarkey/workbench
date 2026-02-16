@@ -321,6 +321,12 @@ pub fn remove_worktree(repo_path: &str, worktree_path: &str, force: bool) -> Res
     Ok(())
 }
 
+pub fn delete_branch(repo_path: &str, branch: &str, force: bool) -> Result<()> {
+    let flag = if force { "-D" } else { "-d" };
+    git_output(&["branch", flag, branch], repo_path)?;
+    Ok(())
+}
+
 pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
     let format = "%(refname:short)\t%(objectname:short)\t%(HEAD)\t%(refname:rstrip=0)";
     let output = git_output(&["branch", "-a", &format!("--format={format}")], path)?;

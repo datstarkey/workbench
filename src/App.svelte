@@ -57,7 +57,13 @@
 	setUpdaterStore(new UpdaterStore());
 	setProjectManager(new ProjectManagerStore(projectStore, workspaceStore, gitStore));
 	setWorktreeManager(
-		new WorktreeManagerStore(projectStore, workspaceStore, gitStore, workbenchSettingsStore)
+		new WorktreeManagerStore(
+			projectStore,
+			workspaceStore,
+			gitStore,
+			githubStore,
+			workbenchSettingsStore
+		)
 	);
 	const trelloStore = setTrelloStore(new TrelloStore());
 

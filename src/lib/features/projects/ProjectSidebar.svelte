@@ -413,7 +413,8 @@
 														<ContextMenu.Separator />
 														<ContextMenu.Item
 															class="text-destructive"
-															onclick={() => worktreeManager.remove(project.path, wt.path)}
+															onclick={() =>
+																worktreeManager.remove(project.path, wt.path, wt.branch)}
 														>
 															<Trash2Icon class="size-3.5" />
 															Remove
