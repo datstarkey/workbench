@@ -25,9 +25,6 @@ export class WorktreeManagerStore {
 	_pendingTaskLink: { cardId: string; boardId: string } | null = $state(null);
 	_suggestedBranch = $state('');
 
-	_pendingTaskLink: { cardId: string; boardId: string } | null = $state(null);
-	_suggestedBranch = $state('');
-
 	private projectStore: ProjectStore;
 	private workspaceStore: WorkspaceStore;
 	private gitStore: GitStore;
