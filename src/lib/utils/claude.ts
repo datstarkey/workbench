@@ -30,3 +30,18 @@ export function newSessionCommand(type: SessionType): string {
 export function resumeCommand(type: SessionType, sessionId: string): string {
 	return type === 'codex' ? codexResumeCommand(sessionId) : claudeResumeCommand(sessionId);
 }
+
+function shellSingleQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+function normalizePrompt(prompt: string): string {
+	return prompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
+/** Build an interactive new-session command that submits an initial prompt immediately. */
+export function newSessionCommandWithPrompt(type: SessionType, prompt: string): string {
+	const normalizedPrompt = normalizePrompt(prompt);
+	if (!normalizedPrompt) return newSessionCommand(type);
+	return `${newSessionCommand(type)} ${shellSingleQuote(normalizedPrompt)}`;
+}
