@@ -81,7 +81,9 @@
 	});
 
 	let canMerge = $derived(
-		pr.state === 'OPEN' && !pr.isDraft && checks.every((c) => c.bucket !== 'fail')
+		pr.state === 'OPEN' &&
+			!pr.isDraft &&
+			checks.every((c) => c.bucket !== 'fail' && c.bucket !== 'pending')
 	);
 
 	async function handleMerge() {
