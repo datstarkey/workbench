@@ -4,18 +4,28 @@
 	import GitPullRequestClosedIcon from '@lucide/svelte/icons/git-pull-request-closed';
 	import GitMergeIcon from '@lucide/svelte/icons/git-merge';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import type { GitHubCheckDetail, GitHubPR } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
+	import { invoke } from '@tauri-apps/api/core';
+	import { getGitHubStore } from '$stores/context';
 
 	let {
 		pr,
-		checks
+		checks,
+		projectPath
 	}: {
 		pr: GitHubPR;
 		checks: GitHubCheckDetail[];
+		projectPath: string;
 	} = $props();
+
+	const githubStore = getGitHubStore();
+
+	let merging = $state(false);
+	let mergeError = $state<string | null>(null);
 
 	let PrIcon = $derived.by(() => {
 		if (pr.state === 'MERGED') return GitMergeIcon;
@@ -69,6 +79,23 @@
 		const passing = checks.filter((c) => c.bucket === 'pass').length;
 		return `${passing}/${checks.length} checks passing`;
 	});
+
+	let canMerge = $derived(
+		pr.state === 'OPEN' && !pr.isDraft && checks.every((c) => c.bucket !== 'fail')
+	);
+
+	async function handleMerge() {
+		merging = true;
+		mergeError = null;
+		try {
+			await invoke('github_merge_pr', { projectPath, prNumber: pr.number });
+			githubStore.refreshProject(projectPath);
+		} catch (e) {
+			mergeError = String(e);
+		} finally {
+			merging = false;
+		}
+	}
 </script>
 
 <div class="space-y-2 px-3 py-2">
@@ -91,13 +118,35 @@
 		<p class="text-[11px] text-muted-foreground">{checksSummary}</p>
 	{/if}
 
-	<Button
-		variant="outline"
-		size="sm"
-		class="h-7 w-full gap-1.5 text-xs"
-		onclick={() => openInGitHub(pr.url)}
-	>
-		<ExternalLinkIcon class="size-3" />
-		Open on GitHub
-	</Button>
+	<div class="flex gap-1.5">
+		{#if canMerge}
+			<Button
+				variant="default"
+				size="sm"
+				class="h-7 flex-1 gap-1.5 text-xs"
+				onclick={handleMerge}
+				disabled={merging}
+			>
+				{#if merging}
+					<LoaderIcon class="size-3 animate-spin" />
+				{:else}
+					<GitMergeIcon class="size-3" />
+				{/if}
+				Merge
+			</Button>
+		{/if}
+		<Button
+			variant="outline"
+			size="sm"
+			class="h-7 gap-1.5 text-xs {canMerge ? '' : 'w-full'}"
+			onclick={() => openInGitHub(pr.url)}
+		>
+			<ExternalLinkIcon class="size-3" />
+			Open on GitHub
+		</Button>
+	</div>
+
+	{#if mergeError}
+		<p class="text-[10px] text-destructive">{mergeError}</p>
+	{/if}
 </div>

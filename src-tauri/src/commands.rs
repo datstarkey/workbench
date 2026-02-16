@@ -248,6 +248,15 @@ pub fn github_pr_checks(
     github::list_pr_checks(&project_path, pr_number).map_err(|e| e.to_string())
 }
 
+#[tauri::command(async)]
+pub fn github_merge_pr(
+    project_path: String,
+    pr_number: u64,
+) -> Result<bool, String> {
+    github::merge_pr(&project_path, pr_number).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn open_url(url: String) -> Result<bool, String> {
     github::open_url(&url).map_err(|e| e.to_string())?;
