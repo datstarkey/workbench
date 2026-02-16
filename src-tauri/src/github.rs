@@ -322,6 +322,14 @@ pub fn list_pr_checks(path: &str, pr_number: u64) -> Result<Vec<GitHubCheckDetai
     }
 }
 
+pub fn merge_pr(path: &str, pr_number: u64) -> Result<()> {
+    gh_output(
+        &["pr", "merge", &pr_number.to_string(), "--squash"],
+        path,
+    )?;
+    Ok(())
+}
+
 pub fn open_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {

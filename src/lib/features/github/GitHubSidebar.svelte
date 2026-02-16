@@ -68,7 +68,7 @@
 <div class="flex flex-1 flex-col overflow-hidden">
 	{#if activePr && activeProjectPath}
 		<ScrollArea class="flex-1">
-			<PRHeader pr={activePr} {checks} />
+			<PRHeader pr={activePr} {checks} projectPath={activeProjectPath} />
 
 			{#if checks.length > 0}
 				<Separator />
