@@ -163,10 +163,11 @@
 	) {
 		if (!labelId) return;
 		const base = current ?? defaultAction();
-		if (base.removeLabelIds.includes(labelId)) return;
+		const existing = base.removeLabelIds ?? [];
+		if (existing.includes(labelId)) return;
 		updateBoardAction(boardId, field, {
 			...base,
-			removeLabelIds: [...base.removeLabelIds, labelId]
+			removeLabelIds: [...existing, labelId]
 		});
 	}
 
@@ -179,7 +180,7 @@
 		const base = current ?? defaultAction();
 		updateBoardAction(boardId, field, {
 			...base,
-			removeLabelIds: base.removeLabelIds.filter((id) => id !== labelId)
+			removeLabelIds: (base.removeLabelIds ?? []).filter((id) => id !== labelId)
 		});
 	}
 
