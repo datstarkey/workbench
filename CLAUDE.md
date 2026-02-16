@@ -34,6 +34,8 @@ Use **Bun** exclusively — do not introduce npm/yarn/pnpm lockfiles.
 - `paths.rs` — Path helpers and `atomic_write` utility
 - `settings.rs` — Claude Code settings CRUD (user/project scopes), plugin/skill/hook discovery
 - `github.rs` — GitHub CLI wrappers: remote detection, PR listing, workflow runs, check details
+- `trello/` — Trello API integration: `types.rs` (board/card/config types), `api.rs` (reqwest HTTP calls), `config.rs` (persistence to `~/.workbench/trello/`)
+- `trello_commands.rs` — Trello IPC command handlers
 
 ### Frontend IPC
 
@@ -50,13 +52,15 @@ All IPC uses `invoke()` from `@tauri-apps/api/core` and `listen()` from `@tauri-
 - `terminal/` — Terminal tabs, grid layout, terminal pane (xterm.js)
 - `claude/` — Session resume menu
 - `worktrees/` — Worktree creation dialog, worktree manager
+- `trello/` — Board panel, task cards, quick-add, link dialog
+- `sidebar/` — Tabbed right sidebar (GitHub | Boards)
 
 **Manager stores** (`src/lib/features/*/`): `ProjectManagerStore` and `WorktreeManagerStore` own dialog UI state and multi-step workflows (picker → dialog → validate → save). Data stores handle CRUD; manager stores orchestrate UI flows. Both are in context and use `ConfirmAction<T>` from `$lib/utils/confirm-action.svelte.ts` for confirm-before-delete flows.
 
 **Components** (`src/lib/components/`):
 
 - `ConfirmDialog`, `EmptyState`
-- `settings/` — `SettingsSheet` (Workbench/Claude Code tabs) + per-tab components (`SettingsWorkbench`, `SettingsEmptyState`, `SettingsSelect`, `SettingsToggle`, `EditableStringList`)
+- `settings/` — `SettingsSheet` (Workbench/Claude Code/Integrations tabs) + per-tab components (`SettingsWorkbench`, `SettingsEmptyState`, `SettingsSelect`, `SettingsToggle`, `EditableStringList`, `SettingsTrelloAuth`, `SettingsBoardConfig`)
 - `ui/` — shadcn-svelte primitives
 
 **Utils** (`src/lib/utils/`):
@@ -132,10 +136,17 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Reader threads self-cleanup on EOF: remove session from map, emit `terminal:exit`. `kill()` handles already-cleaned-up sessions.
 - Mutex locks use `.unwrap_or_else(|e| e.into_inner())` to recover from poisoning.
 - `tauri.conf.json` must have `beforeDevCommand` set or `tauri dev` hangs waiting for Vite.
-- `.prettierignore` excludes `.claude/`, `src-tauri/target/`, and `*.rs`.
+- `.prettierignore` excludes `.claude/`, `src-tauri/target/`, `src-tauri/gen/`, and `*.rs`.
 - Rust types use `#[serde(rename_all = "camelCase")]` to match frontend field names.
 - Store constructors run at import time. Side effects like `listen()` are fine — Tauri event system is available immediately.
 - `ConfirmDialog` delegates close behavior to the bound `ConfirmAction.open` — don't auto-close on confirm (allows async error display + retry).
 - Svelte 5 `$state` with union types: use `$state<'a' | 'b'>('a')` not `let x: 'a' | 'b' = $state('a')` — the latter narrows to the initial value's literal type.
 - `$derived` on class fields is lazy — the callback runs on first read, not at field initialization time. Safe to reference constructor params that are set after field initializers run.
+- **Context init order in App.svelte is load-bearing.** Stores that call `getXxxStore()` in field initializers will crash at runtime (`missing_context`) if the dependency hasn't been `setXxxStore()`'d yet. `GitHubStore` depends on `WorkspaceStore`, `GitStore`, `ClaudeSessionStore`, `ProjectStore`. Always verify the full dependency graph before reordering.
+- When making a sync store method async, grep for all callers in `*.test.svelte.ts` — tests that don't `await` the call silently pass without verifying behavior.
+- When gating a code path (e.g., adding approval before session launch), trace **all** callers of the underlying method — sidebar context menus, landing pages, terminal tabs, etc. may bypass the new gate.
+- Dialogs using `bind:open` let X/Escape/outside-click close without resolving pending promises. Use `onOpenChange` to intercept dismissal when the dialog controls async flow.
+- Every frontend `invoke('command_name')` call needs three things: (1) the `async fn` in a `_commands.rs` file, (2) registration in `lib.rs`'s `invoke_handler`, and (3) matching `#[serde(rename_all = "camelCase")]` types. Missing any one silently fails at runtime.
+- Per-project config (like `TrelloProjectConfig`) must be loaded at startup in `App.svelte`'s `onMount`, not only from settings UI. Otherwise features depending on that config (sidebar panels, merge automation) won't work until settings is opened.
+- Dialog pre-fill from props: don't use `$state(prop)` (captures initial value only). Instead, apply prop values in the dialog's `onOpenChange` callback when `isOpen` is true.
 - `main` branch has force-push protection. Always use feature branches for multi-step changes; don't amend already-pushed commits to `main`.
