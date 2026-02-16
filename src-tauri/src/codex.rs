@@ -430,6 +430,33 @@ pub(crate) fn ensure_codex_notify_config(content: &str, script_path: &str) -> (S
     (updated, true)
 }
 
+pub fn check_codex_config_status() -> crate::types::IntegrationStatus {
+    let codex_dir = paths::codex_config_dir();
+    let config_path = codex_dir.join("config.toml");
+    let content = if config_path.exists() {
+        std::fs::read_to_string(&config_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let has_fallback = content.contains("project_doc_fallback_filenames");
+    let script_path = workbench_codex_notify_script_path();
+    let script_exists = script_path.exists();
+    let has_notify = script_exists && content.contains(&script_path.to_string_lossy().to_string());
+
+    let needs_changes = !has_fallback || !has_notify;
+    let description = if needs_changes {
+        "Workbench will update your Codex config (~/.codex/config/config.toml) to add CLAUDE.md as a project doc fallback, install a notify bridge script, and sync Claude skills to Codex agents.".to_string()
+    } else {
+        String::new()
+    };
+
+    crate::types::IntegrationStatus {
+        needs_changes,
+        description,
+    }
+}
+
 /// Ensure Codex config has project_doc_fallback_filenames and skills symlink.
 pub fn ensure_codex_config() -> Result<()> {
     let codex_dir = paths::codex_config_dir();

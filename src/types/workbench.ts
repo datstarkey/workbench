@@ -205,6 +205,13 @@ export type WorktreeStrategy = 'sibling' | 'inside';
 
 export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
+	claudeHooksApproved?: boolean | null;
+	codexConfigApproved?: boolean | null;
+}
+
+export interface IntegrationStatus {
+	needsChanges: boolean;
+	description: string;
 }
 
 export interface ProjectFormState {

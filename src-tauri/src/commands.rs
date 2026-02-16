@@ -12,8 +12,8 @@ use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
     DiscoveredClaudeSession, GitHubCheckDetail, GitHubProjectStatus, GitHubRemote, GitInfo,
-    HookScriptInfo, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile,
-    WorktreeInfo,
+    HookScriptInfo, IntegrationStatus, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings,
+    WorkspaceFile, WorktreeInfo,
 };
 
 #[tauri::command]
@@ -34,20 +34,6 @@ pub fn create_terminal(
     hook_bridge: State<'_, HookBridgeState>,
     app_handle: tauri::AppHandle,
 ) -> Result<CreateTerminalResponse, String> {
-    let startup = request.startup_command.as_deref().map(str::trim_start);
-    let is_claude_start = startup.is_some_and(|cmd| {
-        cmd == "claude" || cmd.starts_with("claude ") || cmd.starts_with("claude\n")
-    });
-    let is_codex_start = startup.is_some_and(|cmd| {
-        cmd == "codex" || cmd.starts_with("codex ") || cmd.starts_with("codex\n")
-    });
-    if is_claude_start {
-        settings::ensure_workbench_hook_integration().map_err(|e| e.to_string())?;
-    }
-    if is_codex_start {
-        codex::ensure_codex_config().map_err(|e| e.to_string())?;
-    }
-
     pty_manager
         .spawn(
             request.id.clone(),
@@ -265,5 +251,29 @@ pub fn github_pr_checks(
 #[tauri::command]
 pub fn open_url(url: String) -> Result<bool, String> {
     github::open_url(&url).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+// Integration check/apply commands
+
+#[tauri::command]
+pub fn check_claude_integration() -> IntegrationStatus {
+    settings::check_workbench_hook_integration()
+}
+
+#[tauri::command]
+pub fn check_codex_integration() -> IntegrationStatus {
+    codex::check_codex_config_status()
+}
+
+#[tauri::command]
+pub fn apply_claude_integration() -> Result<bool, String> {
+    settings::ensure_workbench_hook_integration().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn apply_codex_integration() -> Result<bool, String> {
+    codex::ensure_codex_config().map_err(|e| e.to_string())?;
     Ok(true)
 }
