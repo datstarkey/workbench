@@ -196,7 +196,9 @@ describe('WorkbenchSettingsStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_workbench_settings', {
 				settings: {
 					worktreeStrategy: 'inside',
-					agentActions: store.agentActions
+					agentActions: store.agentActions,
+					claudeHooksApproved: null,
+					codexConfigApproved: null
 				}
 			});
 		});
@@ -436,7 +438,9 @@ describe('WorkbenchSettingsStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_workbench_settings', {
 				settings: {
 					worktreeStrategy: 'inside',
-					agentActions: store.agentActions
+					agentActions: store.agentActions,
+					claudeHooksApproved: null,
+					codexConfigApproved: null
 				}
 			});
 			expect(store.agentActions[0].name).toBe('Review');

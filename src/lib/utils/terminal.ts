@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
 	CreateTerminalRequest,
 	CreateTerminalResponse,
+	IntegrationStatus,
 	TerminalDataEvent,
 	TerminalExitEvent
 } from '$types/workbench';
@@ -39,4 +40,20 @@ export async function onTerminalExit(
 	cb: (payload: TerminalExitEvent) => void
 ): Promise<UnlistenFn> {
 	return listen<TerminalExitEvent>('terminal:exit', (event) => cb(event.payload));
+}
+
+export async function checkClaudeIntegration(): Promise<IntegrationStatus> {
+	return invoke<IntegrationStatus>('check_claude_integration');
+}
+
+export async function checkCodexIntegration(): Promise<IntegrationStatus> {
+	return invoke<IntegrationStatus>('check_codex_integration');
+}
+
+export async function applyClaudeIntegration(): Promise<boolean> {
+	return invoke<boolean>('apply_claude_integration');
+}
+
+export async function applyCodexIntegration(): Promise<boolean> {
+	return invoke<boolean>('apply_codex_integration');
 }

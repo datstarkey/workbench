@@ -260,6 +260,59 @@ fn ensure_event_hooks(
     changed
 }
 
+pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
+    let script_path = workbench_hook_script_path();
+    let script_exists = script_path.exists();
+
+    let settings_path = paths::claude_user_dir().join("settings.json");
+    let settings = if settings_path.exists() {
+        fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let command = script_path.to_string_lossy().to_string();
+    let mut missing_events = Vec::new();
+
+    for event in WORKBENCH_HOOK_EVENTS {
+        let already_present = settings
+            .pointer(&format!("/hooks/{}", event))
+            .and_then(|v| v.as_array())
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry
+                        .get("hooks")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|hooks| {
+                            hooks.iter().any(|hook| {
+                                hook.get("type").and_then(|v| v.as_str()) == Some("command")
+                                    && hook.get("command").and_then(|v| v.as_str())
+                                        == Some(&command)
+                            })
+                        })
+                })
+            });
+        if !already_present {
+            missing_events.push(event);
+        }
+    }
+
+    let needs_changes = !script_exists || !missing_events.is_empty();
+    let description = if needs_changes {
+        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification. This enables session activity tracking.".to_string()
+    } else {
+        String::new()
+    };
+
+    crate::types::IntegrationStatus {
+        needs_changes,
+        description,
+    }
+}
+
 pub fn ensure_workbench_hook_integration() -> Result<()> {
     let script_path = ensure_workbench_hook_script()?;
     let settings_path = paths::claude_user_dir().join("settings.json");

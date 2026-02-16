@@ -4,9 +4,12 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import * as Select from '$lib/components/ui/select';
-	import { getWorkbenchSettingsStore } from '$stores/context';
-	import type { AgentAction, AgentActionTarget, WorktreeStrategy } from '$types/workbench';
+	import { Separator } from '$lib/components/ui/separator';
 	import SettingsSelect from './SettingsSelect.svelte';
+	import SettingsToggle from './SettingsToggle.svelte';
+	import { getWorkbenchSettingsStore } from '$stores/context';
+	import { applyClaudeIntegration, applyCodexIntegration } from '$lib/utils/terminal';
+	import type { AgentAction, AgentActionTarget, WorktreeStrategy } from '$types/workbench';
 
 	const store = getWorkbenchSettingsStore();
 
@@ -57,6 +60,20 @@
 			.filter((tag) => tag.length > 0);
 		store.updateAgentAction(actionId, { tags });
 	}
+
+	async function toggleClaudeHooks(checked: boolean) {
+		if (checked) {
+			await applyClaudeIntegration();
+		}
+		await store.setApproval('claude', checked);
+	}
+
+	async function toggleCodexConfig(checked: boolean) {
+		if (checked) {
+			await applyCodexIntegration();
+		}
+		await store.setApproval('codex', checked);
+	}
 </script>
 
 <div class="space-y-8">
@@ -86,6 +103,31 @@
 			</p>
 		{/if}
 	</div>
+
+	<Separator />
+
+	<div>
+		<h2 class="text-sm font-semibold">Integrations</h2>
+		<p class="mt-1 text-xs text-muted-foreground">
+			Control whether Workbench modifies external AI tool configs.
+		</p>
+	</div>
+
+	<SettingsToggle
+		label="Claude hooks"
+		description="Register session tracking hooks in ~/.claude/settings.json"
+		checked={store.claudeHooksApproved === true}
+		onCheckedChange={toggleClaudeHooks}
+	/>
+
+	<SettingsToggle
+		label="Codex config"
+		description="Configure CLAUDE.md fallback and notify script in ~/.codex/config/config.toml"
+		checked={store.codexConfigApproved === true}
+		onCheckedChange={toggleCodexConfig}
+	/>
+
+	<Separator />
 
 	<div class="space-y-3">
 		<div class="flex items-center justify-between">

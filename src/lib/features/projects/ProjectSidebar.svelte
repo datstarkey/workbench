@@ -467,9 +467,10 @@
 																<ContextMenu.Content class="w-40">
 																	<ContextMenu.Item
 																		onclick={() =>
-																			workspaceStore.restartClaudeByProject(
+																			claudeSessionStore.restartSessionByProject(
 																				project.path,
-																				session.tabId
+																				session.tabId,
+																				session.sessionType
 																			)}
 																	>
 																		<RotateCcwIcon class="size-3.5" />
@@ -538,7 +539,11 @@
 											<ContextMenu.Content class="w-40">
 												<ContextMenu.Item
 													onclick={() =>
-														workspaceStore.restartClaudeByProject(project.path, session.tabId)}
+														claudeSessionStore.restartSessionByProject(
+															project.path,
+															session.tabId,
+															session.sessionType
+														)}
 												>
 													<RotateCcwIcon class="size-3.5" />
 													Restart

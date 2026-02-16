@@ -67,6 +67,10 @@ pub fn run() {
             commands::github_project_status,
             commands::github_pr_checks,
             commands::open_url,
+            commands::check_claude_integration,
+            commands::check_codex_integration,
+            commands::apply_claude_integration,
+            commands::apply_codex_integration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Workbench");
