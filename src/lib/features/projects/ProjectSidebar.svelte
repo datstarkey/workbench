@@ -316,6 +316,9 @@
 													Separator={DropdownMenu.Separator}
 													Group={DropdownMenu.Group}
 													GroupHeading={DropdownMenu.GroupHeading}
+													Sub={DropdownMenu.Sub}
+													SubTrigger={DropdownMenu.SubTrigger}
+													SubContent={DropdownMenu.SubContent}
 												/>
 											</DropdownMenu.Content>
 										</DropdownMenu.Root>
@@ -329,6 +332,9 @@
 										Separator={ContextMenu.Separator}
 										Group={ContextMenu.Group}
 										GroupHeading={ContextMenu.GroupHeading}
+										Sub={ContextMenu.Sub}
+										SubTrigger={ContextMenu.SubTrigger}
+										SubContent={ContextMenu.SubContent}
 									/>
 								</ContextMenu.Content>
 							</ContextMenu.Root>

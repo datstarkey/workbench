@@ -10,7 +10,7 @@ import {
 import { ClaudeSessionStore } from './claudeSessions.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
-import type { DiscoveredClaudeSession } from '$types/workbench';
+import type { AgentAction, DiscoveredClaudeSession } from '$types/workbench';
 
 function createMockWorkspaceStore(workspaces: unknown[] = []) {
 	return {
@@ -311,6 +311,51 @@ describe('ClaudeSessionStore', () => {
 			store.startSessionByProject('/projects/test', 'claude');
 			expect(mockProjectStore.openProject).toHaveBeenCalledWith('/projects/test');
 			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith('/projects/test', 'claude');
+		});
+	});
+
+	describe('startAgentActionByProject', () => {
+		it('opens project and starts a labeled action session by project', () => {
+			const action: AgentAction = {
+				id: 'action-1',
+				name: 'Security Scan',
+				prompt: 'Scan this codebase for security issues',
+				target: 'both',
+				category: 'Security',
+				tags: ['security']
+			};
+
+			store.startAgentActionByProject('/projects/test', action, 'codex');
+
+			expect(mockProjectStore.openProject).toHaveBeenCalledWith('/projects/test');
+			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith('/projects/test', 'codex', {
+				label: 'Security Scan',
+				startupCommand: "codex 'Scan this codebase for security issues'"
+			});
+		});
+	});
+
+	describe('startAgentActionInWorkspace', () => {
+		it('starts a claude session with action label and prompt', () => {
+			const action: AgentAction = {
+				id: 'action-1',
+				name: 'Review PR',
+				prompt: 'Review this PR for regressions',
+				target: 'both',
+				category: 'Code Review',
+				tags: ['review']
+			};
+
+			store.startAgentActionInWorkspace(
+				{ id: 'ws-1', projectPath: '/projects/test' },
+				action,
+				'claude'
+			);
+
+			expect(mockWorkspaceStore.addAISession).toHaveBeenCalledWith('ws-1', 'claude', {
+				label: 'Review PR',
+				startupCommand: "claude 'Review this PR for regressions'"
+			});
 		});
 	});
 

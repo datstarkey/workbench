@@ -203,8 +203,20 @@ export interface GitHubBranchStatus {
 
 export type WorktreeStrategy = 'sibling' | 'inside';
 
+export type AgentActionTarget = 'claude' | 'codex' | 'both';
+
+export interface AgentAction {
+	id: string;
+	name: string;
+	prompt: string;
+	target: AgentActionTarget;
+	category: string;
+	tags: string[];
+}
+
 export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
+	agentActions: AgentAction[];
 }
 
 export interface ProjectFormState {

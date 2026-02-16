@@ -2,8 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { stripAnsi } from '$lib/utils/format';
+import { newSessionCommandWithPrompt } from '$lib/utils/claude';
 import type {
 	ActiveClaudeSession,
+	AgentAction,
 	ClaudeHookEvent,
 	CodexNotifyEvent,
 	DiscoveredClaudeSession,
@@ -127,12 +129,33 @@ export class ClaudeSessionStore {
 		this.workspaces.addAIByProject(projectPath, type);
 	}
 
+	/** Start an agent action for a project (opens project/workspace if needed). */
+	startAgentActionByProject(projectPath: string, action: AgentAction, type: 'claude' | 'codex') {
+		this.projects.openProject(projectPath);
+		this.workspaces.addAIByProject(projectPath, type, {
+			label: action.name,
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt)
+		});
+	}
+
 	/** Start an AI session in a specific workspace */
 	startSessionInWorkspace(
 		ws: { id: string; projectPath: string; worktreePath?: string },
 		type: SessionType = 'claude'
 	) {
 		this.startSession(ws.id, type);
+	}
+
+	/** Start an agent action in a specific workspace with an auto-submitted initial prompt. */
+	startAgentActionInWorkspace(
+		ws: { id: string; projectPath: string; worktreePath?: string },
+		action: AgentAction,
+		type: 'claude' | 'codex'
+	) {
+		this.workspaces.addAISession(ws.id, type, {
+			label: action.name,
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt)
+		});
 	}
 
 	private getAIPaneId(tab: {

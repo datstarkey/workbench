@@ -16,6 +16,11 @@ interface WorkspaceSnapshot {
 	selectedId: string | null;
 }
 
+interface AddAISessionOptions {
+	label?: string;
+	startupCommand?: string;
+}
+
 export class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
 	selectedId: string | null = $state(null);
@@ -303,13 +308,18 @@ export class WorkspaceStore {
 	}
 
 	/** Add a new AI session tab (Claude or Codex) */
-	addAISession(workspaceId: string, type: SessionType = 'claude'): { tabId: string } {
+	addAISession(
+		workspaceId: string,
+		type: SessionType = 'claude',
+		options?: AddAISessionOptions
+	): { tabId: string } {
 		let tabId = '';
 		const labelPrefix = type === 'codex' ? 'Codex' : 'Claude';
 		this.updateWorkspace(workspaceId, (w) => {
 			const count = w.terminalTabs.filter((t) => t.type === type).length;
-			const label = `${labelPrefix} ${count + 1}`;
-			const newTab = this.createAITab(label, '', newSessionCommand(type), type);
+			const label = options?.label?.trim() || `${labelPrefix} ${count + 1}`;
+			const startupCommand = options?.startupCommand?.trim() || newSessionCommand(type);
+			const newTab = this.createAITab(label, '', startupCommand, type);
 			tabId = newTab.id;
 			return {
 				...w,
@@ -492,11 +502,12 @@ export class WorkspaceStore {
 
 	addAIByProject(
 		projectPath: string,
-		type: SessionType = 'claude'
+		type: SessionType = 'claude',
+		options?: AddAISessionOptions
 	): { workspaceId: string; tabId: string } | null {
 		return (
 			this.withMainWorkspace(projectPath, (ws) => {
-				const { tabId } = this.addAISession(ws.id, type);
+				const { tabId } = this.addAISession(ws.id, type, options);
 				return { workspaceId: ws.id, tabId };
 			}) ?? null
 		);
@@ -558,7 +569,13 @@ export class WorkspaceStore {
 					}
 				} else if (isAI && !pane.claudeSessionId) {
 					const cmd = newSessionCommand(pane.type!);
-					if (pane.startupCommand !== cmd) {
+					// Preserve explicit initial prompt invocations (e.g. `claude 'review ...'`).
+					// Safe because we control startupCommand values — they are always built via
+					// newSessionCommand() or agentActionCommand(), so `startsWith(cmd + ' ')` is
+					// a reliable check for whether an initial prompt arg is appended.
+					const current = pane.startupCommand?.trim();
+					const hasPromptArg = current?.startsWith(`${cmd} `) ?? false;
+					if (pane.startupCommand !== cmd && !hasPromptArg) {
 						changed = true;
 						return { ...pane, startupCommand: cmd };
 					}

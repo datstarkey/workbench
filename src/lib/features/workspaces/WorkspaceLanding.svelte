@@ -7,6 +7,7 @@
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import { Button } from '$lib/components/ui/button';
 	import * as ContextMenu from '$lib/components/ui/context-menu';
+	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import { formatSessionDate } from '$lib/utils/format';
 	import { effectivePath } from '$lib/utils/path';
 	import { getClaudeSessionStore, getProjectStore, getWorkspaceStore } from '$stores/context';
@@ -68,6 +69,7 @@
 				<TerminalSquareIcon class="size-4" />
 				New Terminal
 			</Button>
+			<AgentActionsMenu {workspace} showTextButton />
 		</div>
 
 		{#if claudeSessionStore.discoveredSessions.length > 0}
