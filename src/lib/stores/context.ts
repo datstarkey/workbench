@@ -7,6 +7,7 @@ import type { GitStore } from './git.svelte';
 import type { ProjectManagerStore } from '$features/projects/project-manager.svelte';
 import type { GitHubStore } from './github.svelte';
 import type { WorktreeManagerStore } from '$features/worktrees/worktree-manager.svelte';
+import type { TrelloStore } from './trello.svelte';
 import type { UpdaterStore } from './updater.svelte';
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkbenchSettingsStore } from './workbench-settings.svelte';
@@ -23,5 +24,6 @@ export const [getGitHubStore, setGitHubStore] = createContext<GitHubStore>();
 export const [getUpdaterStore, setUpdaterStore] = createContext<UpdaterStore>();
 export const [getWorkbenchSettingsStore, setWorkbenchSettingsStore] =
 	createContext<WorkbenchSettingsStore>();
+export const [getTrelloStore, setTrelloStore] = createContext<TrelloStore>();
 export const [getIntegrationApprovalStore, setIntegrationApprovalStore] =
 	createContext<IntegrationApprovalStore>();

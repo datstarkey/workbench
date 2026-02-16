@@ -11,6 +11,7 @@
 	branches={manager.dialogBranches}
 	projectPath={manager.dialogProjectPath}
 	error={manager.dialogError}
+	suggestedBranch={manager._suggestedBranch}
 	onSave={(branch, newBranch, path, copyOptions) =>
 		manager.create(branch, newBranch, path, copyOptions)}
 />

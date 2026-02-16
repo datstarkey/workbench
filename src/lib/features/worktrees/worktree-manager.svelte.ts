@@ -18,6 +18,9 @@ export class WorktreeManagerStore {
 	dialogError = $state('');
 	readonly removal = new ConfirmAction<WorktreeRemoval>();
 
+	_pendingTaskLink: { cardId: string; boardId: string } | null = $state(null);
+	_suggestedBranch = $state('');
+
 	private projectStore: ProjectStore;
 	private workspaceStore: WorkspaceStore;
 	private gitStore: GitStore;
@@ -39,7 +42,30 @@ export class WorktreeManagerStore {
 		this.dialogProjectPath = projectPath;
 		this.dialogError = '';
 		this.dialogBranches = [];
+		this._pendingTaskLink = null;
+		this._suggestedBranch = '';
 		this.dialogOpen = true;
+
+		try {
+			this.dialogBranches = await invoke<BranchInfo[]>('list_branches', { path: projectPath });
+		} catch (e) {
+			this.dialogError = `Failed to list branches: ${String(e)}`;
+		}
+	}
+
+	async addWithBranch(
+		projectPath: string,
+		suggestedBranch: string,
+		cardId?: string,
+		boardId?: string
+	) {
+		this.dialogProjectPath = projectPath;
+		this.dialogError = '';
+		this.dialogBranches = [];
+		this.dialogOpen = true;
+
+		this._pendingTaskLink = cardId && boardId ? { cardId, boardId } : null;
+		this._suggestedBranch = suggestedBranch;
 
 		try {
 			this.dialogBranches = await invoke<BranchInfo[]>('list_branches', { path: projectPath });
@@ -66,6 +92,19 @@ export class WorktreeManagerStore {
 			const project = this.projectStore.getByPath(this.dialogProjectPath);
 			if (project) {
 				this.workspaceStore.openWorktree(project, createdPath, branch);
+			}
+
+			if (this._pendingTaskLink) {
+				const { getTrelloStore } = await import('$stores/context');
+				const trelloStore = getTrelloStore();
+				trelloStore.linkTaskToBranch(
+					this.dialogProjectPath,
+					this._pendingTaskLink.cardId,
+					this._pendingTaskLink.boardId,
+					branch,
+					createdPath
+				);
+				this._pendingTaskLink = null;
 			}
 		} catch (e) {
 			this.dialogError = String(e);

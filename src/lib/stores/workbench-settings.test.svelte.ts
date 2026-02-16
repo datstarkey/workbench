@@ -11,6 +11,7 @@ vi.mock('$lib/utils/uid', () => ({
 function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSettings {
 	return {
 		worktreeStrategy: 'sibling',
+		trelloEnabled: false,
 		agentActions: [],
 		...overrides
 	};
@@ -196,6 +197,7 @@ describe('WorkbenchSettingsStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_workbench_settings', {
 				settings: {
 					worktreeStrategy: 'inside',
+					trelloEnabled: false,
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null
@@ -438,6 +440,7 @@ describe('WorkbenchSettingsStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_workbench_settings', {
 				settings: {
 					worktreeStrategy: 'inside',
+					trelloEnabled: false,
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null

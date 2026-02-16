@@ -244,6 +244,8 @@ fn default_agent_actions() -> Vec<AgentAction> {
 pub struct WorkbenchSettings {
     #[serde(default = "default_worktree_strategy")]
     pub worktree_strategy: String,
+    #[serde(default)]
+    pub trello_enabled: bool,
     #[serde(default = "default_agent_actions")]
     pub agent_actions: Vec<AgentAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,6 +262,7 @@ impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
             worktree_strategy: default_worktree_strategy(),
+            trello_enabled: false,
             agent_actions: default_agent_actions(),
             claude_hooks_approved: None,
             codex_config_approved: None,

@@ -1,8 +1,6 @@
 <script lang="ts">
 	import GithubIcon from '@lucide/svelte/icons/github';
-	import XIcon from '@lucide/svelte/icons/x';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
-	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { getGitHubStore } from '$stores/context';
@@ -11,8 +9,6 @@
 	import BranchRunsHeader from './BranchRunsHeader.svelte';
 	import CheckItem from './CheckItem.svelte';
 	import { onDestroy } from 'svelte';
-
-	let { onClose }: { onClose: () => void } = $props();
 
 	const githubStore = getGitHubStore();
 
@@ -46,7 +42,7 @@
 		});
 	});
 
-	// Group checks: fail → pending → pass → skipping/cancel
+	// Group checks: fail -> pending -> pass -> skipping/cancel
 	let groupedChecks = $derived.by(() => {
 		const order: Record<string, number> = { fail: 0, pending: 1, pass: 2, skipping: 3, cancel: 4 };
 		return [...checks].sort((a, b) => (order[a.bucket] ?? 5) - (order[b.bucket] ?? 5));
@@ -57,7 +53,7 @@
 		return [...runChecks].sort((a, b) => (order[a.bucket] ?? 5) - (order[b.bucket] ?? 5));
 	});
 
-	// Trigger data fetch when sidebar target changes (external side effect — network requests)
+	// Trigger data fetch when sidebar target changes (external side effect -- network requests)
 	$effect(() => {
 		if (activeProjectPath) githubStore.refreshProject(activeProjectPath);
 		if (activeProjectPath && activePr)
@@ -69,19 +65,7 @@
 	});
 </script>
 
-<div class="flex h-full flex-col border-l border-border/60 bg-background">
-	<!-- Header -->
-	<div class="flex shrink-0 items-center justify-between border-b border-border/60 px-3 py-2">
-		<div class="flex items-center gap-1.5">
-			<GithubIcon class="size-3.5 text-muted-foreground" />
-			<span class="text-xs font-medium">GitHub Actions</span>
-		</div>
-		<Button variant="ghost" size="icon-sm" class="size-6" onclick={onClose}>
-			<XIcon class="size-3" />
-		</Button>
-	</div>
-
-	<!-- Content -->
+<div class="flex flex-1 flex-col overflow-hidden">
 	{#if activePr && activeProjectPath}
 		<ScrollArea class="flex-1">
 			<PRHeader pr={activePr} {checks} />

@@ -11,6 +11,8 @@ mod paths;
 mod pty;
 mod session_utils;
 mod settings;
+mod trello;
+mod trello_commands;
 mod types;
 
 use git_watcher::GitWatcher;
@@ -71,6 +73,20 @@ pub fn run() {
             commands::check_codex_integration,
             commands::apply_claude_integration,
             commands::apply_codex_integration,
+            trello_commands::trello_validate_auth,
+            trello_commands::trello_list_boards,
+            trello_commands::trello_fetch_board_data,
+            trello_commands::trello_list_columns,
+            trello_commands::trello_list_labels,
+            trello_commands::trello_create_card,
+            trello_commands::trello_move_card,
+            trello_commands::trello_add_label,
+            trello_commands::trello_remove_label,
+            trello_commands::trello_load_credentials,
+            trello_commands::trello_save_credentials,
+            trello_commands::trello_disconnect,
+            trello_commands::trello_load_project_config,
+            trello_commands::trello_save_project_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Workbench");

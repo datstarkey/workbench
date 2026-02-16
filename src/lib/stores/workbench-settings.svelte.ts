@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export class WorkbenchSettingsStore {
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
+	trelloEnabled = $state(false);
 	agentActions: AgentAction[] = $state([]);
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
@@ -26,6 +27,7 @@ export class WorkbenchSettingsStore {
 	async load() {
 		const settings = await invoke<WorkbenchSettings>('load_workbench_settings');
 		this.worktreeStrategy = settings.worktreeStrategy;
+		this.trelloEnabled = settings.trelloEnabled;
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
 		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
@@ -47,6 +49,11 @@ export class WorkbenchSettingsStore {
 
 	setWorktreeStrategy(value: WorktreeStrategy) {
 		this.worktreeStrategy = value;
+		this.dirty = true;
+	}
+
+	setTrelloEnabled(value: boolean) {
+		this.trelloEnabled = value;
 		this.dirty = true;
 	}
 
@@ -95,6 +102,7 @@ export class WorkbenchSettingsStore {
 	private toSettings(): WorkbenchSettings {
 		return {
 			worktreeStrategy: this.worktreeStrategy,
+			trelloEnabled: this.trelloEnabled,
 			agentActions: this.agentActions,
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved

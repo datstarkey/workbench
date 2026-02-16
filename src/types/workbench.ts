@@ -216,6 +216,7 @@ export interface AgentAction {
 
 export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
+	trelloEnabled: boolean;
 	agentActions: AgentAction[];
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;

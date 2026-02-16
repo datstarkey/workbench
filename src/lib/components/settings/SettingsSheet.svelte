@@ -16,6 +16,7 @@
 	import SettingsPlugins from './SettingsPlugins.svelte';
 	import SettingsSandbox from './SettingsSandbox.svelte';
 	import SettingsSkills from './SettingsSkills.svelte';
+	import SettingsIntegrations from './SettingsIntegrations.svelte';
 	import SettingsWorkbench from './SettingsWorkbench.svelte';
 
 	const claudeSettingsStore = getClaudeSettingsStore();
@@ -29,7 +30,7 @@
 		projectPath: string | null;
 	} = $props();
 
-	let settingsMode = $state<'workbench' | 'claude'>('workbench');
+	let settingsMode = $state<'workbench' | 'claude' | 'integrations'>('workbench');
 	let activeSection = $state('general');
 
 	const claudeSections = [
@@ -43,7 +44,7 @@
 	];
 
 	let activeStore = $derived(
-		settingsMode === 'workbench' ? workbenchSettingsStore : claudeSettingsStore
+		settingsMode === 'claude' ? claudeSettingsStore : workbenchSettingsStore
 	);
 
 	// Reload when sheet opens or projectPath changes while open
@@ -96,11 +97,12 @@
 			<div class="mt-3">
 				<Tabs.Root
 					value={settingsMode}
-					onValueChange={(v) => (settingsMode = v as 'workbench' | 'claude')}
+					onValueChange={(v) => (settingsMode = v as 'workbench' | 'claude' | 'integrations')}
 				>
 					<Tabs.List class="h-8">
 						<Tabs.Trigger value="workbench" class="text-xs">Workbench</Tabs.Trigger>
 						<Tabs.Trigger value="claude" class="text-xs">Claude Code</Tabs.Trigger>
+						<Tabs.Trigger value="integrations" class="text-xs">Integrations</Tabs.Trigger>
 					</Tabs.List>
 				</Tabs.Root>
 			</div>
@@ -135,7 +137,7 @@
 		</Sheet.Header>
 
 		{#if settingsMode === 'workbench'}
-			<ScrollArea class="flex-1">
+			<ScrollArea class="min-h-0 flex-1">
 				<div class="p-4">
 					{#if !workbenchSettingsStore.loaded}
 						<div class="flex items-center justify-center py-12">
@@ -146,7 +148,7 @@
 					{/if}
 				</div>
 			</ScrollArea>
-		{:else}
+		{:else if settingsMode === 'claude'}
 			<div class="flex min-h-0 flex-1">
 				<!-- Section nav -->
 				<div
@@ -195,6 +197,12 @@
 					</div>
 				</ScrollArea>
 			</div>
+		{:else if settingsMode === 'integrations'}
+			<ScrollArea class="min-h-0 flex-1">
+				<div class="p-4">
+					<SettingsIntegrations {projectPath} />
+				</div>
+			</ScrollArea>
 		{/if}
 	</Sheet.Content>
 </Sheet.Root>
