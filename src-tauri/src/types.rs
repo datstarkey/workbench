@@ -182,6 +182,8 @@ pub struct CreateWorktreeRequest {
 pub struct WorkbenchSettings {
     #[serde(default = "default_worktree_strategy")]
     pub worktree_strategy: String,
+    #[serde(default)]
+    pub trello_enabled: bool,
 }
 
 fn default_worktree_strategy() -> String {
@@ -192,6 +194,7 @@ impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
             worktree_strategy: default_worktree_strategy(),
+            trello_enabled: false,
         }
     }
 }

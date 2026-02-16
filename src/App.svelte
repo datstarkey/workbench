@@ -7,7 +7,7 @@
 	import TerminalGrid from '$features/terminal/TerminalGrid.svelte';
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
 	import WorkspaceLanding from '$features/workspaces/WorkspaceLanding.svelte';
-	import GitHubSidebar from '$features/github/GitHubSidebar.svelte';
+	import RightSidebar from '$features/sidebar/RightSidebar.svelte';
 	import WorkspaceTabs from '$features/workspaces/WorkspaceTabs.svelte';
 	import WorktreeManager from '$features/worktrees/WorktreeManager.svelte';
 	import { WorktreeManagerStore } from '$features/worktrees/worktree-manager.svelte';
@@ -23,12 +23,14 @@
 		setGitStore,
 		setProjectManager,
 		setProjectStore,
+		setTrelloStore,
 		setUpdaterStore,
 		setWorkbenchSettingsStore,
 		setWorktreeManager,
 		setWorkspaceStore
 	} from '$stores/context';
 	import { GitHubStore } from '$stores/github.svelte';
+	import { TrelloStore } from '$stores/trello.svelte';
 	import { UpdaterStore } from '$stores/updater.svelte';
 	import { GitStore } from '$stores/git.svelte';
 	import { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
@@ -50,6 +52,7 @@
 	setWorktreeManager(
 		new WorktreeManagerStore(projectStore, workspaceStore, gitStore, workbenchSettingsStore)
 	);
+	const trelloStore = setTrelloStore(new TrelloStore());
 
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
@@ -94,6 +97,12 @@
 		});
 	});
 
+	// Detect merged PRs and execute Trello merge actions (network side effect)
+	$effect(() => {
+		const prs = githubStore.prsByProject;
+		untrack(() => trelloStore.checkForMergedPrs(prs));
+	});
+
 	onMount(async () => {
 		await workbenchSettingsStore.load();
 		await projectStore.load();
@@ -105,6 +114,10 @@
 		gitStore.refreshAll(projectStore.projects.map((p) => p.path));
 		githubStore.initForProjects(projectStore.projects.map((p) => p.path));
 		githubStore.initSidebarState();
+		await trelloStore.loadCredentials();
+		for (const p of projectStore.projects) {
+			trelloStore.loadProjectConfig(p.path);
+		}
 	});
 </script>
 
@@ -183,7 +196,7 @@
 					onExpand={() => (githubStore.sidebarOpen = true)}
 					class="h-full"
 				>
-					<GitHubSidebar onClose={() => githubStore.toggleSidebar()} />
+					<RightSidebar onClose={() => githubStore.toggleSidebar()} />
 				</Resizable.Pane>
 			{/if}
 		</Resizable.PaneGroup>

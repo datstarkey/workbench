@@ -205,6 +205,7 @@ export type WorktreeStrategy = 'sibling' | 'inside';
 
 export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
+	trelloEnabled: boolean;
 }
 
 export interface ProjectFormState {

@@ -16,12 +16,14 @@
 		branches,
 		projectPath,
 		error,
+		suggestedBranch = '',
 		onSave
 	}: {
 		open: boolean;
 		branches: BranchInfo[];
 		projectPath: string;
 		error: string;
+		suggestedBranch?: string;
 		onSave: (
 			branch: string,
 			newBranch: boolean,
@@ -60,14 +62,23 @@
 
 	function resetState() {
 		mode = 'new';
-		newBranchName = '';
+		newBranchName = suggestedBranch;
 		selectedBranch = '';
 		copyAiConfig = true;
 		copyEnvFiles = true;
 	}
 </script>
 
-<Dialog.Root bind:open onOpenChange={(isOpen) => !isOpen && resetState()}>
+<Dialog.Root
+	bind:open
+	onOpenChange={(isOpen) => {
+		if (isOpen) {
+			newBranchName = suggestedBranch;
+		} else {
+			resetState();
+		}
+	}}
+>
 	<Dialog.Content class="sm:max-w-lg">
 		<Dialog.Header>
 			<Dialog.Title>Create Worktree</Dialog.Title>

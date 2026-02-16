@@ -11,4 +11,5 @@ bun.lockb
 
 # Rust
 /src-tauri/target/
+/src-tauri/gen/
 *.rs
