@@ -38,6 +38,7 @@
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
 	import { listen } from '@tauri-apps/api/event';
+	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
@@ -45,7 +46,7 @@
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
 	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
 	const integrationApprovalStore = setIntegrationApprovalStore(new IntegrationApprovalStore());
-	setClaudeSessionStore(
+	const claudeSessionStore = setClaudeSessionStore(
 		new ClaudeSessionStore(workspaceStore, projectStore, integrationApprovalStore)
 	);
 	const gitStore = setGitStore(new GitStore());
@@ -72,6 +73,12 @@
 
 	listen('menu:open-settings', () => {
 		settingsOpen = true;
+	});
+
+	// Update macOS dock badge with count of sessions awaiting user input
+	$effect(() => {
+		const count = claudeSessionStore.panesAwaitingInput.size;
+		getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
 	});
 
 	// Fetch GitHub status when projects gain active sessions (network side effect)
