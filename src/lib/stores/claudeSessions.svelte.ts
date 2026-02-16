@@ -10,6 +10,7 @@ import type {
 	SessionType,
 	TerminalDataEvent
 } from '$types/workbench';
+import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
 
@@ -49,6 +50,8 @@ export class ClaudeSessionStore {
 	private workspaces: WorkspaceStore;
 	/** Reference to project store for opening projects */
 	private projects: ProjectStore;
+	/** Reference to integration approval store for gating AI sessions */
+	private integrationApproval: IntegrationApprovalStore;
 
 	/** Active Claude sessions grouped by project path */
 	get activeSessionsByProject(): Record<string, ActiveClaudeSession[]> {
@@ -117,22 +120,47 @@ export class ClaudeSessionStore {
 	}
 
 	/** Start a new AI session. Claude session identity is hook-driven. */
-	startSession(workspaceId: string, type: SessionType = 'claude') {
+	async startSession(workspaceId: string, type: SessionType = 'claude') {
+		if (!(await this.integrationApproval.ensureIntegration(type))) return;
 		this.workspaces.addAISession(workspaceId, type);
 	}
 
 	/** Start an AI session for a project (opens project if needed) */
-	startSessionByProject(projectPath: string, type: SessionType = 'claude') {
+	async startSessionByProject(projectPath: string, type: SessionType = 'claude') {
+		if (!(await this.integrationApproval.ensureIntegration(type))) return;
 		this.projects.openProject(projectPath);
 		this.workspaces.addAIByProject(projectPath, type);
 	}
 
 	/** Start an AI session in a specific workspace */
-	startSessionInWorkspace(
+	async startSessionInWorkspace(
 		ws: { id: string; projectPath: string; worktreePath?: string },
 		type: SessionType = 'claude'
 	) {
-		this.startSession(ws.id, type);
+		await this.startSession(ws.id, type);
+	}
+
+	/** Resume an existing AI session, gated through integration approval */
+	async resumeSession(
+		workspaceId: string,
+		sessionId: string,
+		label: string,
+		type: SessionType = 'claude'
+	) {
+		if (!(await this.integrationApproval.ensureIntegration(type))) return;
+		this.workspaces.resumeAISession(workspaceId, sessionId, label, type);
+	}
+
+	/** Restart an AI session, gated through integration approval */
+	async restartSession(workspaceId: string, tabId: string, type: SessionType = 'claude') {
+		if (!(await this.integrationApproval.ensureIntegration(type))) return;
+		this.workspaces.restartAISession(workspaceId, tabId);
+	}
+
+	/** Restart an AI session by project path, gated through integration approval */
+	async restartSessionByProject(projectPath: string, tabId: string, type: SessionType = 'claude') {
+		if (!(await this.integrationApproval.ensureIntegration(type))) return;
+		this.workspaces.restartClaudeByProject(projectPath, tabId);
 	}
 
 	private getAIPaneId(tab: {
@@ -336,9 +364,14 @@ export class ClaudeSessionStore {
 		}
 	}
 
-	constructor(workspaces: WorkspaceStore, projects: ProjectStore) {
+	constructor(
+		workspaces: WorkspaceStore,
+		projects: ProjectStore,
+		integrationApproval: IntegrationApprovalStore
+	) {
 		this.workspaces = workspaces;
 		this.projects = projects;
+		this.integrationApproval = integrationApproval;
 
 		listen<ClaudeHookEvent>('claude:hook', (event) => {
 			this.onClaudeHookEvent(event.payload);

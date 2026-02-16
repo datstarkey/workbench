@@ -1,6 +1,9 @@
 <script lang="ts">
+	import { Separator } from '$lib/components/ui/separator';
 	import SettingsSelect from './SettingsSelect.svelte';
+	import SettingsToggle from './SettingsToggle.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';
+	import { applyClaudeIntegration, applyCodexIntegration } from '$lib/utils/terminal';
 	import type { WorktreeStrategy } from '$types/workbench';
 
 	const store = getWorkbenchSettingsStore();
@@ -9,6 +12,20 @@
 		{ value: 'sibling', label: 'Sibling folder' },
 		{ value: 'inside', label: 'Inside .worktrees/' }
 	];
+
+	async function toggleClaudeHooks(checked: boolean) {
+		if (checked) {
+			await applyClaudeIntegration();
+		}
+		await store.setApproval('claude', checked);
+	}
+
+	async function toggleCodexConfig(checked: boolean) {
+		if (checked) {
+			await applyCodexIntegration();
+		}
+		await store.setApproval('codex', checked);
+	}
 </script>
 
 <div class="space-y-6">
@@ -36,4 +53,27 @@
 			project folder.
 		</p>
 	{/if}
+
+	<Separator />
+
+	<div>
+		<h2 class="text-sm font-semibold">Integrations</h2>
+		<p class="mt-1 text-xs text-muted-foreground">
+			Control whether Workbench modifies external AI tool configs.
+		</p>
+	</div>
+
+	<SettingsToggle
+		label="Claude hooks"
+		description="Register session tracking hooks in ~/.claude/settings.json"
+		checked={store.claudeHooksApproved === true}
+		onCheckedChange={toggleClaudeHooks}
+	/>
+
+	<SettingsToggle
+		label="Codex config"
+		description="Configure CLAUDE.md fallback and notify script in ~/.codex/config/config.toml"
+		checked={store.codexConfigApproved === true}
+		onCheckedChange={toggleCodexConfig}
+	/>
 </div>

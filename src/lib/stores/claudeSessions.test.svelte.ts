@@ -8,6 +8,7 @@ import {
 	listenSpy
 } from '../../test/tauri-mocks';
 import { ClaudeSessionStore } from './claudeSessions.svelte';
+import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
 import type { DiscoveredClaudeSession } from '$types/workbench';
@@ -29,15 +30,27 @@ function createMockProjectStore() {
 	} as unknown as ProjectStore;
 }
 
+function createMockIntegrationApprovalStore() {
+	return {
+		ensureIntegration: vi.fn(() => Promise.resolve(true))
+	} as unknown as IntegrationApprovalStore;
+}
+
 describe('ClaudeSessionStore', () => {
 	let store: ClaudeSessionStore;
 	let mockWorkspaceStore: WorkspaceStore;
 	let mockProjectStore: ProjectStore;
+	let mockIntegrationApprovalStore: IntegrationApprovalStore;
 
 	beforeEach(() => {
 		mockWorkspaceStore = createMockWorkspaceStore();
 		mockProjectStore = createMockProjectStore();
-		store = new ClaudeSessionStore(mockWorkspaceStore, mockProjectStore);
+		mockIntegrationApprovalStore = createMockIntegrationApprovalStore();
+		store = new ClaudeSessionStore(
+			mockWorkspaceStore,
+			mockProjectStore,
+			mockIntegrationApprovalStore
+		);
 	});
 
 	afterEach(() => {
@@ -300,15 +313,15 @@ describe('ClaudeSessionStore', () => {
 	});
 
 	describe('startSession', () => {
-		it('delegates to workspaces.addAISession', () => {
-			store.startSession('ws-1', 'claude');
+		it('delegates to workspaces.addAISession', async () => {
+			await store.startSession('ws-1', 'claude');
 			expect(mockWorkspaceStore.addAISession).toHaveBeenCalledWith('ws-1', 'claude');
 		});
 	});
 
 	describe('startSessionByProject', () => {
-		it('opens project and adds AI session by project', () => {
-			store.startSessionByProject('/projects/test', 'claude');
+		it('opens project and adds AI session by project', async () => {
+			await store.startSessionByProject('/projects/test', 'claude');
 			expect(mockProjectStore.openProject).toHaveBeenCalledWith('/projects/test');
 			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith('/projects/test', 'claude');
 		});

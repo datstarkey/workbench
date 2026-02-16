@@ -85,7 +85,7 @@
 									type="button"
 									class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
 									onclick={() =>
-										workspaceStore.resumeClaudeSession(
+										claudeSessionStore.resumeSession(
 											workspace.id,
 											session.sessionId,
 											session.label
@@ -100,7 +100,7 @@
 							<ContextMenu.Content class="w-40">
 								<ContextMenu.Item
 									onclick={() =>
-										workspaceStore.resumeClaudeSession(
+										claudeSessionStore.resumeSession(
 											workspace.id,
 											session.sessionId,
 											session.label
@@ -139,7 +139,7 @@
 									type="button"
 									class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
 									onclick={() =>
-										workspaceStore.resumeAISession(
+										claudeSessionStore.resumeSession(
 											workspace.id,
 											session.sessionId,
 											session.label,
@@ -155,7 +155,7 @@
 							<ContextMenu.Content class="w-40">
 								<ContextMenu.Item
 									onclick={() =>
-										workspaceStore.resumeAISession(
+										claudeSessionStore.resumeSession(
 											workspace.id,
 											session.sessionId,
 											session.label,

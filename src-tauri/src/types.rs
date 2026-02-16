@@ -184,6 +184,10 @@ pub struct WorkbenchSettings {
     pub worktree_strategy: String,
     #[serde(default)]
     pub trello_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_hooks_approved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_config_approved: Option<bool>,
 }
 
 fn default_worktree_strategy() -> String {
@@ -195,8 +199,19 @@ impl Default for WorkbenchSettings {
         Self {
             worktree_strategy: default_worktree_strategy(),
             trello_enabled: false,
+            claude_hooks_approved: None,
+            codex_config_approved: None,
         }
     }
+}
+
+// Integration status for approval dialog
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrationStatus {
+    pub needs_changes: bool,
+    pub description: String,
 }
 
 // Claude Code settings types

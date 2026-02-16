@@ -1,5 +1,6 @@
 <script lang="ts">
 	import EmptyState from '$components/EmptyState.svelte';
+	import IntegrationApprovalDialog from '$components/IntegrationApprovalDialog.svelte';
 	import SettingsSheet from '$components/settings/SettingsSheet.svelte';
 	import ProjectManager from '$features/projects/ProjectManager.svelte';
 	import { ProjectManagerStore } from '$features/projects/project-manager.svelte';
@@ -16,11 +17,13 @@
 	import UpdateDialog from '$components/UpdateDialog.svelte';
 	import { ClaudeSettingsStore } from '$stores/claude-settings.svelte';
 	import { ClaudeSessionStore } from '$stores/claudeSessions.svelte';
+	import { IntegrationApprovalStore } from '$stores/integration-approval.svelte';
 	import {
 		setClaudeSessionStore,
 		setClaudeSettingsStore,
 		setGitHubStore,
 		setGitStore,
+		setIntegrationApprovalStore,
 		setProjectManager,
 		setProjectStore,
 		setTrelloStore,
@@ -37,17 +40,21 @@
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
 	import { listen } from '@tauri-apps/api/event';
+	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
-	setClaudeSessionStore(new ClaudeSessionStore(workspaceStore, projectStore));
+	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
+	const integrationApprovalStore = setIntegrationApprovalStore(new IntegrationApprovalStore());
+	const claudeSessionStore = setClaudeSessionStore(
+		new ClaudeSessionStore(workspaceStore, projectStore, integrationApprovalStore)
+	);
 	const gitStore = setGitStore(new GitStore());
 	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
-	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
 	setProjectManager(new ProjectManagerStore(projectStore, workspaceStore, gitStore));
 	setWorktreeManager(
 		new WorktreeManagerStore(projectStore, workspaceStore, gitStore, workbenchSettingsStore)
@@ -69,6 +76,12 @@
 
 	listen('menu:open-settings', () => {
 		settingsOpen = true;
+	});
+
+	// Update macOS dock badge with count of sessions awaiting user input
+	$effect(() => {
+		const count = claudeSessionStore.panesAwaitingInput.size;
+		getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
 	});
 
 	// Fetch GitHub status when projects gain active sessions (network side effect)
@@ -206,4 +219,5 @@
 <ProjectManager />
 <WorktreeManager />
 <SettingsSheet bind:open={settingsOpen} projectPath={workspaceStore.activeProjectPath} />
+<IntegrationApprovalDialog />
 <UpdateDialog />
