@@ -4,6 +4,7 @@ import {
 	CODEX_NEW_SESSION_COMMAND,
 	claudeResumeCommand,
 	codexResumeCommand,
+	newSessionCommandWithPrompt,
 	newSessionCommand,
 	resumeCommand
 } from './claude';
@@ -96,5 +97,32 @@ describe('resumeCommand', () => {
 
 	it('propagates validation errors from claudeResumeCommand', () => {
 		expect(() => resumeCommand('claude', 'bad-id')).toThrow('Invalid session ID');
+	});
+});
+
+describe('newSessionCommandWithPrompt', () => {
+	it('returns base command when prompt is blank', () => {
+		expect(newSessionCommandWithPrompt('claude', '   ')).toBe('claude');
+		expect(newSessionCommandWithPrompt('codex', '\n\t')).toBe('codex');
+	});
+
+	it('adds a safely-quoted prompt for claude', () => {
+		expect(newSessionCommandWithPrompt('claude', 'Review this PR for regressions')).toBe(
+			"claude 'Review this PR for regressions'"
+		);
+	});
+
+	it('adds a safely-quoted prompt for codex', () => {
+		expect(newSessionCommandWithPrompt('codex', 'Find DRY violations')).toBe(
+			"codex 'Find DRY violations'"
+		);
+	});
+
+	it('escapes single quotes safely', () => {
+		expect(newSessionCommandWithPrompt('claude', "it's broken")).toBe("claude 'it'\"'\"'s broken'");
+	});
+
+	it('normalizes windows newlines', () => {
+		expect(newSessionCommandWithPrompt('codex', 'line1\r\nline2')).toBe("codex 'line1\nline2'");
 	});
 });

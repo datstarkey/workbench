@@ -179,9 +179,73 @@ pub struct CreateWorktreeRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentAction {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default = "default_agent_action_target")]
+    pub target: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+fn default_agent_action_target() -> String {
+    "both".to_string()
+}
+
+fn default_agent_actions() -> Vec<AgentAction> {
+    vec![
+        AgentAction {
+            id: "builtin-pr-review".to_string(),
+            name: "PR Regression Review".to_string(),
+            prompt: "Review this PR for regressions, weak abstractions, risky changes, and missing tests. Prioritize high-severity findings with file references.".to_string(),
+            target: "both".to_string(),
+            category: "Code Review".to_string(),
+            tags: vec![
+                "review".to_string(),
+                "regressions".to_string(),
+                "tests".to_string(),
+            ],
+        },
+        AgentAction {
+            id: "builtin-dry-optimization".to_string(),
+            name: "DRY + Optimization Audit".to_string(),
+            prompt: "Audit this codebase for DRY principle violations, duplication, and refactoring opportunities. Recommend concrete optimizations with tradeoffs.".to_string(),
+            target: "both".to_string(),
+            category: "Architecture".to_string(),
+            tags: vec![
+                "dry".to_string(),
+                "refactor".to_string(),
+                "performance".to_string(),
+            ],
+        },
+        AgentAction {
+            id: "builtin-security-scan".to_string(),
+            name: "Security Scan".to_string(),
+            prompt: "Review this codebase for security risks including injection paths, auth/authz mistakes, secret handling, dependency risk, and unsafe defaults. Provide prioritized mitigations.".to_string(),
+            target: "both".to_string(),
+            category: "Security".to_string(),
+            tags: vec![
+                "security".to_string(),
+                "auth".to_string(),
+                "dependencies".to_string(),
+            ],
+        },
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkbenchSettings {
     #[serde(default = "default_worktree_strategy")]
     pub worktree_strategy: String,
+    #[serde(default = "default_agent_actions")]
+    pub agent_actions: Vec<AgentAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_hooks_approved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,6 +260,7 @@ impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
             worktree_strategy: default_worktree_strategy(),
+            agent_actions: default_agent_actions(),
             claude_hooks_approved: None,
             codex_config_approved: None,
         }

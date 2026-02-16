@@ -737,6 +737,19 @@ describe('WorkspaceStore', () => {
 			expect(tabId).toBeTruthy();
 			expect(store.workspaces[0].terminalTabs[0].id).toBe(tabId);
 		});
+
+		it('accepts explicit label and startup command options', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+
+			store.addAISession('ws-a', 'claude', {
+				label: 'Review PR',
+				startupCommand: "claude 'Review this PR for regressions'"
+			});
+
+			const tab = store.workspaces[0].terminalTabs[0];
+			expect(tab.label).toBe('Review PR');
+			expect(tab.panes[0].startupCommand).toBe("claude 'Review this PR for regressions'");
+		});
 	});
 
 	describe('addClaudeSession', () => {
@@ -1178,6 +1191,34 @@ describe('WorkspaceStore', () => {
 			store.ensureShape();
 
 			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe('claude');
+		});
+
+		it('preserves AI new session commands that include prompt args', () => {
+			const tab: TerminalTabState = {
+				id: 'tab-1',
+				label: 'Claude 1',
+				split: 'horizontal',
+				type: 'claude',
+				panes: [
+					{
+						id: 'pane-1',
+						type: 'claude',
+						startupCommand: "claude 'Review this PR for regressions'"
+					}
+				]
+			};
+			const ws = makeWorkspace({
+				id: 'ws-a',
+				terminalTabs: [tab],
+				activeTerminalTabId: 'tab-1'
+			});
+			store.workspaces = [ws];
+
+			store.ensureShape();
+
+			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe(
+				"claude 'Review this PR for regressions'"
+			);
 		});
 
 		it('fixes codex resume commands', () => {

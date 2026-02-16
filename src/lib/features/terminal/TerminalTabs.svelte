@@ -9,6 +9,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Tooltip from '$lib/components/ui/tooltip';
+	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import ClaudeSessionMenu from '$features/claude/ClaudeSessionMenu.svelte';
 	import { getClaudeSessionStore, getProjectStore, getWorkspaceStore } from '$stores/context';
 	import { effectivePath } from '$lib/utils/path';
@@ -89,6 +90,8 @@
 			</Tooltip.Trigger>
 			<Tooltip.Content>New Terminal</Tooltip.Content>
 		</Tooltip.Root>
+
+		<AgentActionsMenu {workspace} />
 
 		<Tooltip.Root>
 			<Tooltip.Trigger>

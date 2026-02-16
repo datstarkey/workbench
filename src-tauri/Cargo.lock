@@ -5274,7 +5274,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs",
- "libc",
  "notify",
  "notify-debouncer-mini",
  "portable-pty",
