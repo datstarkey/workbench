@@ -48,7 +48,7 @@ export class TrelloStore {
 	readonly activeBranch = $derived.by((): string | null => {
 		const ws = this.workspaces.activeWorkspace;
 		if (!ws) return null;
-		return ws.branch ?? this.git.branchByProject[ws.projectPath] ?? null;
+		return this.workspaces.resolvedBranch(ws) ?? null;
 	});
 
 	readonly linkedTask = $derived.by((): TaskLink | null => {
