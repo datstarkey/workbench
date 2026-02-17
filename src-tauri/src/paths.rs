@@ -60,6 +60,12 @@ pub fn enriched_path() -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| OsString::from("/usr/bin:/bin"))
 }
 
+/// Encode a project path the same way Claude CLI does: replace `/` with `-`.
+/// Used to derive per-project directory/file names from absolute paths.
+pub fn encode_project_path(project_path: &str) -> String {
+    project_path.replace('/', "-")
+}
+
 /// Write a script file to disk, creating parent dirs and setting executable
 /// permissions. Only writes if the content has changed.
 pub fn ensure_script(path: &Path, body: &str) -> Result<PathBuf> {
@@ -192,6 +198,39 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    // --- encode_project_path ---
+
+    #[test]
+    fn encode_project_path_typical() {
+        assert_eq!(
+            encode_project_path("/Users/jake/project"),
+            "-Users-jake-project"
+        );
+    }
+
+    #[test]
+    fn encode_project_path_empty_string() {
+        assert_eq!(encode_project_path(""), "");
+    }
+
+    #[test]
+    fn encode_project_path_root() {
+        assert_eq!(encode_project_path("/"), "-");
+    }
+
+    #[test]
+    fn encode_project_path_no_slashes() {
+        assert_eq!(encode_project_path("project"), "project");
+    }
+
+    #[test]
+    fn encode_project_path_trailing_slash() {
+        assert_eq!(
+            encode_project_path("/Users/jake/project/"),
+            "-Users-jake-project-"
+        );
+    }
 
     // --- atomic_write ---
 

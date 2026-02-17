@@ -144,36 +144,11 @@ pub fn group_runs_by_branch(runs: Vec<GitHubWorkflowRun>) -> HashMap<String, Git
     result
 }
 
-fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
-    if runs.is_empty() {
-        return GitHubChecksStatus {
-            overall: "none".to_string(),
-            total: 0,
-            passing: 0,
-            failing: 0,
-            pending: 0,
-        };
-    }
-
-    let mut passing = 0u32;
-    let mut failing = 0u32;
-    let mut pending = 0u32;
-
-    for run in runs {
-        if run.status == "completed" {
-            match run.conclusion.as_deref() {
-                Some("success") | Some("skipped") | Some("neutral") => passing += 1,
-                Some("failure") | Some("cancelled") | Some("timed_out") => failing += 1,
-                _ => pending += 1,
-            }
-        } else {
-            // queued, in_progress, waiting
-            pending += 1;
-        }
-    }
-
+fn derive_overall_status(passing: u32, failing: u32, pending: u32) -> GitHubChecksStatus {
     let total = passing + failing + pending;
-    let overall = if failing > 0 {
+    let overall = if total == 0 {
+        "none"
+    } else if failing > 0 {
         "failure"
     } else if pending > 0 {
         "pending"
@@ -188,6 +163,26 @@ fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
         failing,
         pending,
     }
+}
+
+fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
+    let mut passing = 0u32;
+    let mut failing = 0u32;
+    let mut pending = 0u32;
+
+    for run in runs {
+        if run.status == "completed" {
+            match run.conclusion.as_deref() {
+                Some("success") | Some("skipped") | Some("neutral") => passing += 1,
+                Some("failure") | Some("cancelled") | Some("timed_out") => failing += 1,
+                _ => pending += 1,
+            }
+        } else {
+            pending += 1;
+        }
+    }
+
+    derive_overall_status(passing, failing, pending)
 }
 
 pub fn get_project_status(path: &str) -> GitHubProjectStatus {
@@ -243,17 +238,9 @@ fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {
 }
 
 fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus {
-    let empty = GitHubChecksStatus {
-        overall: "none".to_string(),
-        total: 0,
-        passing: 0,
-        failing: 0,
-        pending: 0,
-    };
-
     let arr = match rollup.and_then(|v| v.as_array()) {
         Some(a) if !a.is_empty() => a,
-        _ => return empty,
+        _ => return derive_overall_status(0, 0, 0),
     };
 
     let mut passing = 0u32;
@@ -276,22 +263,7 @@ fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus
         }
     }
 
-    let total = passing + failing + pending;
-    let overall = if failing > 0 {
-        "failure"
-    } else if pending > 0 {
-        "pending"
-    } else {
-        "success"
-    };
-
-    GitHubChecksStatus {
-        overall: overall.to_string(),
-        total,
-        passing,
-        failing,
-        pending,
-    }
+    derive_overall_status(passing, failing, pending)
 }
 
 pub fn list_pr_checks(path: &str, pr_number: u64) -> Result<Vec<GitHubCheckDetail>> {
@@ -413,5 +385,278 @@ mod tests {
     #[test]
     fn parse_non_github_remote_fails() {
         assert!(parse_github_remote("https://gitlab.com/user/repo.git").is_err());
+    }
+
+    // derive_overall_status
+
+    #[test]
+    fn derive_overall_status_all_passing() {
+        let s = derive_overall_status(3, 0, 0);
+        assert_eq!(s.overall, "success");
+        assert_eq!(s.total, 3);
+        assert_eq!(s.passing, 3);
+    }
+
+    #[test]
+    fn derive_overall_status_some_failing() {
+        let s = derive_overall_status(2, 1, 0);
+        assert_eq!(s.overall, "failure");
+        assert_eq!(s.failing, 1);
+    }
+
+    #[test]
+    fn derive_overall_status_some_pending() {
+        let s = derive_overall_status(2, 0, 1);
+        assert_eq!(s.overall, "pending");
+        assert_eq!(s.pending, 1);
+    }
+
+    #[test]
+    fn derive_overall_status_failing_beats_pending() {
+        let s = derive_overall_status(1, 1, 1);
+        assert_eq!(s.overall, "failure");
+    }
+
+    #[test]
+    fn derive_overall_status_none_when_empty() {
+        let s = derive_overall_status(0, 0, 0);
+        assert_eq!(s.overall, "none");
+        assert_eq!(s.total, 0);
+    }
+
+    // derive_branch_status
+
+    fn make_run(status: &str, conclusion: Option<&str>) -> GitHubWorkflowRun {
+        GitHubWorkflowRun {
+            id: 1,
+            name: "CI".to_string(),
+            display_title: "test".to_string(),
+            head_branch: "main".to_string(),
+            status: status.to_string(),
+            conclusion: conclusion.map(String::from),
+            url: String::new(),
+            event: "push".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn derive_branch_status_completed_success() {
+        let runs = vec![make_run("completed", Some("success"))];
+        let s = derive_branch_status(&runs);
+        assert_eq!(s.overall, "success");
+        assert_eq!(s.passing, 1);
+    }
+
+    #[test]
+    fn derive_branch_status_completed_skipped_counts_as_passing() {
+        let runs = vec![make_run("completed", Some("skipped"))];
+        let s = derive_branch_status(&runs);
+        assert_eq!(s.passing, 1);
+    }
+
+    #[test]
+    fn derive_branch_status_completed_failure() {
+        let runs = vec![make_run("completed", Some("failure"))];
+        let s = derive_branch_status(&runs);
+        assert_eq!(s.overall, "failure");
+        assert_eq!(s.failing, 1);
+    }
+
+    #[test]
+    fn derive_branch_status_in_progress_is_pending() {
+        let runs = vec![make_run("in_progress", None)];
+        let s = derive_branch_status(&runs);
+        assert_eq!(s.overall, "pending");
+        assert_eq!(s.pending, 1);
+    }
+
+    #[test]
+    fn derive_branch_status_mixed() {
+        let runs = vec![
+            make_run("completed", Some("success")),
+            make_run("completed", Some("failure")),
+            make_run("in_progress", None),
+        ];
+        let s = derive_branch_status(&runs);
+        assert_eq!(s.overall, "failure");
+        assert_eq!(s.total, 3);
+        assert_eq!(s.passing, 1);
+        assert_eq!(s.failing, 1);
+        assert_eq!(s.pending, 1);
+    }
+
+    #[test]
+    fn derive_branch_status_empty_runs() {
+        let s = derive_branch_status(&[]);
+        assert_eq!(s.overall, "none");
+        assert_eq!(s.total, 0);
+    }
+
+    // parse_checks_rollup
+
+    #[test]
+    fn parse_checks_rollup_none() {
+        let s = parse_checks_rollup(None);
+        assert_eq!(s.overall, "none");
+    }
+
+    #[test]
+    fn parse_checks_rollup_empty_array() {
+        let val = serde_json::json!([]);
+        let s = parse_checks_rollup(Some(&val));
+        assert_eq!(s.overall, "none");
+    }
+
+    #[test]
+    fn parse_checks_rollup_all_success() {
+        let val = serde_json::json!([
+            {"conclusion": "SUCCESS"},
+            {"conclusion": "NEUTRAL"},
+            {"conclusion": "SKIPPED"}
+        ]);
+        let s = parse_checks_rollup(Some(&val));
+        assert_eq!(s.overall, "success");
+        assert_eq!(s.passing, 3);
+    }
+
+    #[test]
+    fn parse_checks_rollup_with_failure() {
+        let val = serde_json::json!([
+            {"conclusion": "SUCCESS"},
+            {"conclusion": "FAILURE"}
+        ]);
+        let s = parse_checks_rollup(Some(&val));
+        assert_eq!(s.overall, "failure");
+        assert_eq!(s.passing, 1);
+        assert_eq!(s.failing, 1);
+    }
+
+    #[test]
+    fn parse_checks_rollup_pending_from_state() {
+        let val = serde_json::json!([
+            {"state": "PENDING"}
+        ]);
+        let s = parse_checks_rollup(Some(&val));
+        assert_eq!(s.overall, "pending");
+        assert_eq!(s.pending, 1);
+    }
+
+    #[test]
+    fn parse_checks_rollup_conclusion_over_state() {
+        // When both conclusion and state are present, conclusion is checked first
+        let val = serde_json::json!([
+            {"conclusion": "SUCCESS", "state": "FAILURE"}
+        ]);
+        let s = parse_checks_rollup(Some(&val));
+        assert_eq!(s.passing, 1);
+    }
+
+    // parse_pr_json
+
+    #[test]
+    fn parse_pr_json_full() {
+        let val = serde_json::json!({
+            "number": 42,
+            "title": "Fix bug",
+            "state": "OPEN",
+            "url": "https://github.com/user/repo/pull/42",
+            "isDraft": false,
+            "headRefName": "fix-bug",
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            "mergeStateStatus": "CLEAN"
+        });
+        let pr = parse_pr_json(&val).unwrap();
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.title, "Fix bug");
+        assert_eq!(pr.state, "OPEN");
+        assert_eq!(pr.head_ref_name, "fix-bug");
+        assert_eq!(pr.review_decision, Some("APPROVED".to_string()));
+        assert_eq!(pr.checks_status.passing, 1);
+        assert_eq!(pr.merge_state_status, Some("CLEAN".to_string()));
+    }
+
+    #[test]
+    fn parse_pr_json_minimal() {
+        let val = serde_json::json!({
+            "number": 1,
+            "title": "",
+            "state": "MERGED",
+            "url": "",
+            "isDraft": true,
+            "headRefName": "main"
+        });
+        let pr = parse_pr_json(&val).unwrap();
+        assert_eq!(pr.number, 1);
+        assert!(pr.is_draft);
+        assert_eq!(pr.review_decision, None);
+        assert_eq!(pr.checks_status.overall, "none");
+        assert_eq!(pr.merge_state_status, None);
+    }
+
+    // group_runs_by_branch
+
+    #[test]
+    fn group_runs_by_branch_groups_and_dedupes() {
+        let runs = vec![
+            GitHubWorkflowRun {
+                id: 1,
+                name: "CI".to_string(),
+                display_title: "old".to_string(),
+                head_branch: "main".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("success".to_string()),
+                url: String::new(),
+                event: "push".to_string(),
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                updated_at: String::new(),
+            },
+            GitHubWorkflowRun {
+                id: 2,
+                name: "CI".to_string(),
+                display_title: "new".to_string(),
+                head_branch: "main".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("failure".to_string()),
+                url: String::new(),
+                event: "push".to_string(),
+                created_at: "2025-01-02T00:00:00Z".to_string(),
+                updated_at: String::new(),
+            },
+            GitHubWorkflowRun {
+                id: 3,
+                name: "Lint".to_string(),
+                display_title: "lint".to_string(),
+                head_branch: "feature".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("success".to_string()),
+                url: String::new(),
+                event: "push".to_string(),
+                created_at: "2025-01-01T00:00:00Z".to_string(),
+                updated_at: String::new(),
+            },
+        ];
+
+        let grouped = group_runs_by_branch(runs);
+        assert_eq!(grouped.len(), 2);
+
+        // "main" should have only the latest CI run (id=2, failure)
+        let main_branch = &grouped["main"];
+        assert_eq!(main_branch.runs.len(), 1);
+        assert_eq!(main_branch.runs[0].id, 2);
+        assert_eq!(main_branch.status.overall, "failure");
+
+        // "feature" should have one run
+        let feature_branch = &grouped["feature"];
+        assert_eq!(feature_branch.runs.len(), 1);
+        assert_eq!(feature_branch.status.overall, "success");
+    }
+
+    #[test]
+    fn group_runs_by_branch_empty() {
+        let grouped = group_runs_by_branch(vec![]);
+        assert!(grouped.is_empty());
     }
 }

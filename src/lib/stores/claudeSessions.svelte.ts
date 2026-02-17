@@ -311,7 +311,7 @@ export class ClaudeSessionStore {
 		if (event.sessionId) {
 			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
 			this.latestClaudeSessionByPane.set(paneId, event.sessionId);
-			void this.syncClaudeLabelFromSession(paneId, event.sessionId);
+			void this.syncLabelFromSession(paneId, event.sessionId, 'claude');
 		}
 
 		switch (event.hookEventName) {
@@ -347,20 +347,28 @@ export class ClaudeSessionStore {
 		}
 	}
 
-	private async syncClaudeLabelFromSession(paneId: string, sessionId: string): Promise<void> {
+	private async syncLabelFromSession(
+		paneId: string,
+		sessionId: string,
+		type: 'claude' | 'codex'
+	): Promise<void> {
 		const fallback = `Session ${sessionId.slice(0, 8)}`;
-		this.workspaces.updateAITabLabelByPaneId(paneId, fallback, 'claude');
+		this.workspaces.updateAITabLabelByPaneId(paneId, fallback, type);
 
-		const ctx = this.workspaces.findAIPaneContext(paneId, 'claude');
+		const ctx = this.workspaces.findAIPaneContext(paneId, type);
 		if (!ctx) return;
 
-		const sessions = await this.discoverSessions(ctx.projectPath);
-		const latestSessionId = this.latestClaudeSessionByPane.get(paneId);
-		if (latestSessionId !== sessionId) return;
+		const latestByPane =
+			type === 'codex' ? this.latestCodexSessionByPane : this.latestClaudeSessionByPane;
+		const sessions =
+			type === 'codex'
+				? await this.discoverCodexSessions(ctx.projectPath)
+				: await this.discoverSessions(ctx.projectPath);
+		if (latestByPane.get(paneId) !== sessionId) return;
 
 		const match = sessions.find((s) => s.sessionId === sessionId);
 		if (match?.label) {
-			this.workspaces.updateAITabLabelByPaneId(paneId, match.label, 'claude');
+			this.workspaces.updateAITabLabelByPaneId(paneId, match.label, type);
 		}
 	}
 
@@ -371,29 +379,12 @@ export class ClaudeSessionStore {
 		if (event.sessionId) {
 			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'codex');
 			this.latestCodexSessionByPane.set(paneId, event.sessionId);
-			void this.syncCodexLabelFromSession(paneId, event.sessionId);
+			void this.syncLabelFromSession(paneId, event.sessionId, 'codex');
 		}
 
 		// Codex notify currently delivers completion/approval style events.
 		if (event.notifyEvent === 'agent-turn-complete') {
 			this.panesInProgress.delete(paneId);
-		}
-	}
-
-	private async syncCodexLabelFromSession(paneId: string, sessionId: string): Promise<void> {
-		const fallback = `Session ${sessionId.slice(0, 8)}`;
-		this.workspaces.updateAITabLabelByPaneId(paneId, fallback, 'codex');
-
-		const ctx = this.workspaces.findAIPaneContext(paneId, 'codex');
-		if (!ctx) return;
-
-		const sessions = await this.discoverCodexSessions(ctx.projectPath);
-		const latestSessionId = this.latestCodexSessionByPane.get(paneId);
-		if (latestSessionId !== sessionId) return;
-
-		const match = sessions.find((s) => s.sessionId === sessionId);
-		if (match?.label) {
-			this.workspaces.updateAITabLabelByPaneId(paneId, match.label, 'codex');
 		}
 	}
 

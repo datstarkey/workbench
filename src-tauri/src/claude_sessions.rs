@@ -7,11 +7,6 @@ use crate::paths;
 use crate::session_utils;
 use crate::types::DiscoveredClaudeSession;
 
-/// Encode a project path the same way Claude CLI does: replace `/` with `-`
-pub(crate) fn encode_project_path(project_path: &str) -> String {
-    project_path.replace('/', "-")
-}
-
 /// Parse a single JSONL session file into a DiscoveredClaudeSession.
 pub(crate) fn parse_session_jsonl(
     path: &std::path::Path,
@@ -76,7 +71,7 @@ pub(crate) fn parse_session_jsonl(
 
 /// Discover Claude CLI sessions by reading ~/.claude/projects/<encoded-path>/*.jsonl
 pub fn discover_claude_sessions(project_path: &str) -> Result<Vec<DiscoveredClaudeSession>> {
-    let encoded = encode_project_path(project_path);
+    let encoded = paths::encode_project_path(project_path);
     let sessions_dir = paths::claude_user_dir().join("projects").join(&encoded);
 
     if !sessions_dir.is_dir() {
@@ -117,39 +112,6 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
-
-    // encode_project_path tests
-
-    #[test]
-    fn encode_project_path_typical() {
-        assert_eq!(
-            encode_project_path("/Users/jake/project"),
-            "-Users-jake-project"
-        );
-    }
-
-    #[test]
-    fn encode_project_path_empty_string() {
-        assert_eq!(encode_project_path(""), "");
-    }
-
-    #[test]
-    fn encode_project_path_root() {
-        assert_eq!(encode_project_path("/"), "-");
-    }
-
-    #[test]
-    fn encode_project_path_no_slashes() {
-        assert_eq!(encode_project_path("project"), "project");
-    }
-
-    #[test]
-    fn encode_project_path_trailing_slash() {
-        assert_eq!(
-            encode_project_path("/Users/jake/project/"),
-            "-Users-jake-project-"
-        );
-    }
 
     // parse_session_jsonl tests
 

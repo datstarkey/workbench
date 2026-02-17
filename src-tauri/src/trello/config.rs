@@ -14,14 +14,10 @@ fn credentials_path() -> PathBuf {
     trello_config_dir().join("credentials.json")
 }
 
-fn encode_project_path(project_path: &str) -> String {
-    project_path.replace('/', "-")
-}
-
 fn project_config_path(project_path: &str) -> PathBuf {
     trello_config_dir()
         .join("projects")
-        .join(format!("{}.json", encode_project_path(project_path)))
+        .join(format!("{}.json", paths::encode_project_path(project_path)))
 }
 
 pub fn load_credentials() -> Result<Option<TrelloCredentials>> {
