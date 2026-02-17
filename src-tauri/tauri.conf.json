@@ -45,9 +45,6 @@
 			"digestAlgorithm": "sha256",
 			"certificateThumbprint": null,
 			"timestampUrl": ""
-		},
-		"nsis": {
-			"installMode": "currentUser"
 		}
 	},
 	"plugins": {

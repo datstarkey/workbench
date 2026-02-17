@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::paths;
 use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
