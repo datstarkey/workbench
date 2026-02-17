@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use crate::paths;
 use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
 
-const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.py";
+#[cfg(not(windows))]
+const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.sh";
+#[cfg(windows)]
+const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.ps1";
 const WORKBENCH_HOOK_EVENTS: [&str; 4] =
     ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
 
@@ -167,44 +170,35 @@ fn workbench_hook_script_path() -> PathBuf {
         .join(WORKBENCH_HOOK_SCRIPT_NAME)
 }
 
+#[cfg(not(windows))]
 fn workbench_hook_script_body() -> &'static str {
-    r#"#!/usr/bin/env python3
-import json
-import os
-import platform
-import socket
-import sys
+    "#!/usr/bin/env bash\n\
+SOCKET=\"${WORKBENCH_HOOK_SOCKET}\"\n\
+PANE_ID=\"${WORKBENCH_PANE_ID}\"\n\
+[[ -z \"$SOCKET\" || -z \"$PANE_ID\" ]] && exit 0\n\
+RAW=$(cat)\n\
+[[ -z \"$RAW\" ]] && exit 0\n\
+HOOK=$(printf '%s' \"$RAW\" | tr -d '\\n\\r')\n\
+IFS=: read -r HOST PORT <<< \"$SOCKET\"\n\
+exec 3<>/dev/tcp/\"$HOST\"/\"$PORT\" 2>/dev/null || exit 0\n\
+printf '{\"pane_id\":\"%s\",\"hook\":%s}\\n' \"$PANE_ID\" \"$HOOK\" >&3\n"
+}
 
-socket_path = os.environ.get("WORKBENCH_HOOK_SOCKET")
-pane_id = os.environ.get("WORKBENCH_PANE_ID")
-if not socket_path or not pane_id:
-    sys.exit(0)
-
-raw = sys.stdin.read()
-if not raw or not raw.strip():
-    sys.exit(0)
-
-try:
-    hook_payload = json.loads(raw)
-except Exception:
-    sys.exit(0)
-
-envelope = {"pane_id": pane_id, "hook": hook_payload}
-
-try:
-    if ":" in socket_path and not socket_path.startswith("/"):
-        host, port = socket_path.rsplit(":", 1)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, int(port)))
-    else:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(socket_path)
-    msg = json.dumps(envelope, separators=(",", ":")) + "\n"
-    sock.sendall(msg.encode("utf-8"))
-    sock.close()
-except Exception:
-    pass
-"#
+#[cfg(windows)]
+fn workbench_hook_script_body() -> &'static str {
+    "$socket = $env:WORKBENCH_HOOK_SOCKET\n\
+$paneId = $env:WORKBENCH_PANE_ID\n\
+if (-not $socket -or -not $paneId) { exit 0 }\n\
+$raw = [Console]::In.ReadToEnd().Trim()\n\
+if ([string]::IsNullOrEmpty($raw)) { exit 0 }\n\
+$hook = $raw -replace '\\s+', ' '\n\
+$msg = [Text.Encoding]::UTF8.GetBytes(\"{`\"pane_id`\":`\"$paneId`\",`\"hook`\":$hook}`n\")\n\
+try {\n\
+    $parts = $socket -split ':'\n\
+    $tcp = [Net.Sockets.TcpClient]::new($parts[0], [int]$parts[1])\n\
+    $tcp.GetStream().Write($msg, 0, $msg.Length)\n\
+    $tcp.Close()\n\
+} catch { }\n"
 }
 
 fn ensure_workbench_hook_script() -> Result<PathBuf> {
@@ -267,11 +261,18 @@ fn ensure_event_hooks(
 }
 
 /// Build the hook command string for a given script path.
-/// On Windows, prefix with `python3` since shebangs don't work.
+/// On Windows, invoke via PowerShell since scripts need an interpreter prefix.
+/// On Unix, the shebang handles execution so the bare path is sufficient.
 fn hook_command_for_script(script_path: &Path) -> String {
-    if cfg!(windows) {
-        format!("python3 {}", script_path.to_string_lossy())
-    } else {
+    #[cfg(windows)]
+    {
+        format!(
+            "powershell.exe -ExecutionPolicy Bypass -File {}",
+            script_path.to_string_lossy()
+        )
+    }
+    #[cfg(not(windows))]
+    {
         script_path.to_string_lossy().to_string()
     }
 }
@@ -456,27 +457,27 @@ mod tests {
 
     #[test]
     fn hook_command_for_script_returns_nonempty() {
-        let path = PathBuf::from("/some/script.py");
+        let path = PathBuf::from("/some/script.sh");
         let cmd = hook_command_for_script(&path);
         assert!(!cmd.is_empty());
-        assert!(cmd.contains("script.py"));
+        assert!(cmd.contains("script.sh"));
     }
 
     #[cfg(windows)]
     #[test]
-    fn hook_command_for_script_windows_prefixes_python() {
-        let path = PathBuf::from("C:\\Users\\test\\.claude\\hooks\\workbench-hook-bridge.py");
+    fn hook_command_for_script_windows_uses_powershell() {
+        let path = PathBuf::from("C:\\Users\\test\\.claude\\hooks\\workbench-hook-bridge.ps1");
         let cmd = hook_command_for_script(&path);
-        assert!(cmd.starts_with("python3 "));
-        assert!(cmd.contains("workbench-hook-bridge.py"));
+        assert!(cmd.starts_with("powershell.exe"));
+        assert!(cmd.contains("workbench-hook-bridge.ps1"));
     }
 
     #[cfg(unix)]
     #[test]
     fn hook_command_for_script_unix_is_bare_path() {
-        let path = PathBuf::from("/home/user/.claude/hooks/workbench-hook-bridge.py");
+        let path = PathBuf::from("/home/user/.claude/hooks/workbench-hook-bridge.sh");
         let cmd = hook_command_for_script(&path);
-        assert_eq!(cmd, "/home/user/.claude/hooks/workbench-hook-bridge.py");
-        assert!(!cmd.starts_with("python3"));
+        assert_eq!(cmd, "/home/user/.claude/hooks/workbench-hook-bridge.sh");
+        assert!(!cmd.starts_with("powershell"));
     }
 }
