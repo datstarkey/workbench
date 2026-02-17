@@ -873,7 +873,7 @@ describe('WorkspaceStore', () => {
 	});
 
 	describe('updateAISessionByPaneId', () => {
-		it('updates session ID by pane ID', () => {
+		it('updates session ID and startupCommand for valid UUID', () => {
 			const tab = makeTab({
 				id: 'tab-1',
 				type: 'claude',
@@ -883,10 +883,48 @@ describe('WorkspaceStore', () => {
 			store.workspaces = [ws];
 			invokeSpy.mockClear();
 
-			store.updateAISessionByPaneId('pane-1', 'new-session-id', 'claude');
+			const validUuid = 'abcd1234-5678-9012-3456-789012345678';
+			store.updateAISessionByPaneId('pane-1', validUuid, 'claude');
 
-			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeSessionId).toBe('new-session-id');
+			const pane = store.workspaces[0].terminalTabs[0].panes[0];
+			expect(pane.claudeSessionId).toBe(validUuid);
+			expect(pane.startupCommand).toBe(`claude --resume ${validUuid}`);
 			expect(invokeSpy).toHaveBeenCalledWith('save_workspaces', expect.any(Object));
+		});
+
+		it('updates session ID without throwing for invalid session ID', () => {
+			const tab = makeTab({
+				id: 'tab-1',
+				type: 'claude',
+				panes: [{ id: 'pane-1', type: 'claude', claudeSessionId: '', startupCommand: 'claude' }]
+			});
+			const ws = makeWorkspace({ id: 'ws-a', terminalTabs: [tab] });
+			store.workspaces = [ws];
+			invokeSpy.mockClear();
+
+			store.updateAISessionByPaneId('pane-1', 'not-a-uuid', 'claude');
+
+			const pane = store.workspaces[0].terminalTabs[0].panes[0];
+			expect(pane.claudeSessionId).toBe('not-a-uuid');
+			expect(pane.startupCommand).toBe('claude');
+			expect(invokeSpy).toHaveBeenCalledWith('save_workspaces', expect.any(Object));
+		});
+
+		it('updates startupCommand for codex session ID', () => {
+			const tab = makeTab({
+				id: 'tab-1',
+				type: 'codex',
+				panes: [{ id: 'pane-1', type: 'codex', claudeSessionId: '' }]
+			});
+			const ws = makeWorkspace({ id: 'ws-a', terminalTabs: [tab] });
+			store.workspaces = [ws];
+			invokeSpy.mockClear();
+
+			store.updateAISessionByPaneId('pane-1', 'any-session-id', 'codex');
+
+			const pane = store.workspaces[0].terminalTabs[0].panes[0];
+			expect(pane.claudeSessionId).toBe('any-session-id');
+			expect(pane.startupCommand).toBe('codex resume any-session-id');
 		});
 
 		it('does not persist when session ID is already the same', () => {

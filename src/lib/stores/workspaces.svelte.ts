@@ -7,7 +7,7 @@ import type {
 	TerminalTabState
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
-import { newSessionCommand, resumeCommand } from '$lib/utils/claude';
+import { newSessionCommand, resumeCommand, tryResumeCommand } from '$lib/utils/claude';
 import { getGitStore } from './context';
 import { uid } from '$lib/utils/uid';
 
@@ -368,7 +368,12 @@ export class WorkspaceStore {
 					if (p.id !== paneId || p.claudeSessionId === sessionId) return p;
 					tabChanged = true;
 					changed = true;
-					return { ...p, claudeSessionId: sessionId };
+					const cmd = tryResumeCommand(type, sessionId);
+					return {
+						...p,
+						claudeSessionId: sessionId,
+						...(cmd && { startupCommand: cmd })
+					};
 				});
 				return tabChanged ? { ...t, panes } : t;
 			})
