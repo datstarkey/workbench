@@ -1,5 +1,6 @@
 mod claude_sessions;
-mod codex;
+mod codex_config;
+mod codex_sessions;
 mod commands;
 mod config;
 mod git;

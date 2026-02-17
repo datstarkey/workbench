@@ -1,7 +1,8 @@
 use tauri::State;
 
 use crate::claude_sessions;
-use crate::codex;
+use crate::codex_config;
+use crate::codex_sessions;
 use crate::config;
 use crate::git;
 use crate::github;
@@ -195,7 +196,7 @@ pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
 pub fn discover_codex_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
-    codex::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
+    codex_sessions::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -309,7 +310,7 @@ pub fn check_claude_integration() -> IntegrationStatus {
 
 #[tauri::command]
 pub fn check_codex_integration() -> IntegrationStatus {
-    codex::check_codex_config_status()
+    codex_config::check_codex_config_status()
 }
 
 #[tauri::command]
@@ -320,6 +321,6 @@ pub fn apply_claude_integration() -> Result<bool, String> {
 
 #[tauri::command]
 pub fn apply_codex_integration() -> Result<bool, String> {
-    codex::ensure_codex_config().map_err(|e| e.to_string())?;
+    codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
     Ok(true)
 }

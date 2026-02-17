@@ -192,8 +192,7 @@ pub fn git_info(path: &str) -> Result<GitInfo> {
     })
 }
 
-pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>> {
-    let output = git_output(&["worktree", "list", "--porcelain"], path)?;
+pub(crate) fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeInfo> {
     let mut worktrees = Vec::new();
     let mut current_path = String::new();
     let mut current_head = String::new();
@@ -237,7 +236,12 @@ pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>> {
         });
     }
 
-    Ok(worktrees)
+    worktrees
+}
+
+pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>> {
+    let output = git_output(&["worktree", "list", "--porcelain"], path)?;
+    Ok(parse_worktree_porcelain(&output))
 }
 
 pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
@@ -472,54 +476,7 @@ mod tests {
         assert!(is_relevant_workspace_ignored_path(".claude/", &opts));
     }
 
-    // --- list_worktrees parser (via WorktreeInfo construction) ---
-
-    /// Simulate the porcelain parsing logic from list_worktrees
-    fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeInfo> {
-        let mut worktrees = Vec::new();
-        let mut current_path = String::new();
-        let mut current_head = String::new();
-        let mut current_branch = String::new();
-        let mut is_bare = false;
-
-        for line in output.lines() {
-            if let Some(p) = line.strip_prefix("worktree ") {
-                current_path = p.to_string();
-                current_head.clear();
-                current_branch.clear();
-                is_bare = false;
-            } else if let Some(h) = line.strip_prefix("HEAD ") {
-                current_head = h.to_string();
-            } else if let Some(b) = line.strip_prefix("branch ") {
-                current_branch = b.strip_prefix("refs/heads/").unwrap_or(b).to_string();
-            } else if line == "bare" {
-                is_bare = true;
-            } else if line.is_empty() && !current_path.is_empty() {
-                if !is_bare {
-                    let is_main = worktrees.is_empty();
-                    worktrees.push(WorktreeInfo {
-                        path: current_path.clone(),
-                        head: current_head.clone(),
-                        branch: current_branch.clone(),
-                        is_main,
-                    });
-                }
-                current_path.clear();
-            }
-        }
-
-        if !current_path.is_empty() && !is_bare {
-            let is_main = worktrees.is_empty();
-            worktrees.push(WorktreeInfo {
-                path: current_path,
-                head: current_head,
-                branch: current_branch,
-                is_main,
-            });
-        }
-
-        worktrees
-    }
+    // --- parse_worktree_porcelain ---
 
     #[test]
     fn parse_worktree_single_main() {

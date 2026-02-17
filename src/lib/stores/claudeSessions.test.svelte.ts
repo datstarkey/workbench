@@ -423,6 +423,192 @@ describe('ClaudeSessionStore', () => {
 		});
 	});
 
+	describe('syncLabelFromSession (via events)', () => {
+		function setupCodexPane() {
+			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
+				{
+					id: 'ws-1',
+					projectPath: '/test',
+					projectName: 'Test',
+					terminalTabs: [
+						{
+							id: 'tab-1',
+							label: 'Codex 1',
+							split: 'horizontal',
+							type: 'codex',
+							panes: [{ id: 'pane-1', type: 'codex' }]
+						}
+					],
+					activeTerminalTabId: 'tab-1'
+				}
+			];
+		}
+
+		it('codex:notify with sessionId sets fallback label then resolves to discovered label', async () => {
+			setupCodexPane();
+
+			const sessions: DiscoveredClaudeSession[] = [
+				{ sessionId: 'codex-sess-1', label: 'Fix auth bug', timestamp: '2025-01-01T00:00:00Z' }
+			];
+			mockInvoke('discover_codex_sessions', () => sessions);
+
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test'
+			});
+
+			emitMockEvent('codex:notify', {
+				paneId: 'pane-1',
+				sessionId: 'codex-sess-1'
+			});
+
+			// Fallback label set synchronously
+			expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
+				'pane-1',
+				'Session codex-se',
+				'codex'
+			);
+
+			// Wait for async discover to complete
+			await vi.waitFor(() => {
+				expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
+					'pane-1',
+					'Fix auth bug',
+					'codex'
+				);
+			});
+		});
+
+		it('claude:hook with sessionId sets fallback then resolves to discovered label', async () => {
+			// Setup a claude pane
+			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
+				{
+					id: 'ws-1',
+					projectPath: '/test',
+					projectName: 'Test',
+					terminalTabs: [
+						{
+							id: 'tab-1',
+							label: 'Claude 1',
+							split: 'horizontal',
+							type: 'claude',
+							panes: [{ id: 'pane-1', type: 'claude' }]
+						}
+					],
+					activeTerminalTabId: 'tab-1'
+				}
+			];
+
+			const sessions: DiscoveredClaudeSession[] = [
+				{
+					sessionId: 'abcd1234-5678-9012-3456-789012345678',
+					label: 'Add feature X',
+					timestamp: '2025-01-01T00:00:00Z'
+				}
+			];
+			mockInvoke('discover_claude_sessions', () => sessions);
+
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test'
+			});
+
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				sessionId: 'abcd1234-5678-9012-3456-789012345678',
+				hookEventName: 'UserPromptSubmit',
+				hookPayload: {}
+			});
+
+			// Fallback label
+			expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
+				'pane-1',
+				'Session abcd1234',
+				'claude'
+			);
+
+			// Wait for resolved label
+			await vi.waitFor(() => {
+				expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
+					'pane-1',
+					'Add feature X',
+					'claude'
+				);
+			});
+		});
+
+		it('stale-session guard: does not update label if session changed before discover returns', async () => {
+			setupCodexPane();
+
+			let resolveDiscover!: (sessions: DiscoveredClaudeSession[]) => void;
+			mockInvoke(
+				'discover_codex_sessions',
+				() =>
+					new Promise<DiscoveredClaudeSession[]>((r) => {
+						resolveDiscover = r;
+					})
+			);
+
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test'
+			});
+
+			// First session event
+			emitMockEvent('codex:notify', {
+				paneId: 'pane-1',
+				sessionId: 'session-old'
+			});
+
+			// Second session event (supersedes the first)
+			emitMockEvent('codex:notify', {
+				paneId: 'pane-1',
+				sessionId: 'session-new'
+			});
+
+			// Now resolve the first discover call — should be ignored because latest is session-new
+			resolveDiscover([
+				{ sessionId: 'session-old', label: 'Stale label', timestamp: '2025-01-01T00:00:00Z' }
+			]);
+			await new Promise((r) => setTimeout(r, 0));
+
+			// The label should NOT have been updated with the stale session's label
+			const labelCalls = (mockWorkspaceStore.updateAITabLabelByPaneId as ReturnType<typeof vi.fn>)
+				.mock.calls;
+			const resolvedLabels = labelCalls
+				.filter((c: unknown[]) => !String(c[1]).startsWith('Session '))
+				.map((c: unknown[]) => c[1]);
+			expect(resolvedLabels).not.toContain('Stale label');
+		});
+
+		it('keeps fallback label when discover returns no matching session', async () => {
+			setupCodexPane();
+
+			mockInvoke('discover_codex_sessions', () => [
+				{
+					sessionId: 'other-session',
+					label: 'Other session',
+					timestamp: '2025-01-01T00:00:00Z'
+				}
+			]);
+
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test'
+			});
+
+			emitMockEvent('codex:notify', {
+				paneId: 'pane-1',
+				sessionId: 'my-session'
+			});
+
+			await new Promise((r) => setTimeout(r, 0));
+
+			// Only the fallback label should have been set, not a resolved one
+			const labelCalls = (mockWorkspaceStore.updateAITabLabelByPaneId as ReturnType<typeof vi.fn>)
+				.mock.calls;
+			const labels = labelCalls.map((c: unknown[]) => c[1]);
+			expect(labels).toContain('Session my-sessi');
+			expect(labels).not.toContain('Other session');
+		});
+	});
+
 	describe('discoverCodexSessions', () => {
 		it('returns sessions and sets discoveredCodexSessions state', async () => {
 			const sessions: DiscoveredClaudeSession[] = [
