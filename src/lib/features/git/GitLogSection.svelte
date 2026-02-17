@@ -79,13 +79,10 @@
 						<span class="shrink-0 font-mono text-[10px] text-muted-foreground"
 							>{entry.shortSha}</span
 						>
-						<span
-							class="min-w-0 flex-1 truncate text-xs text-foreground/80"
-							title={entry.message}>{entry.message}</span
+						<span class="min-w-0 flex-1 truncate text-xs text-foreground/80" title={entry.message}
+							>{entry.message}</span
 						>
-						<span
-							class="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100"
-						>
+						<span class="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100">
 							<Button
 								variant="ghost"
 								size="icon-sm"

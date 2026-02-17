@@ -12,6 +12,7 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
@@ -45,6 +46,7 @@
 	import PRStatusBadge from './PRStatusBadge.svelte';
 	import ProjectMenuItems from './ProjectMenuItems.svelte';
 	import SessionItem from './SessionItem.svelte';
+	import CloneRepoDialog from './CloneRepoDialog.svelte';
 
 	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
@@ -165,6 +167,7 @@
 	}
 
 	let dragOverProjectPath = $state<string | null>(null);
+	let cloneDialogOpen = $state(false);
 </script>
 
 <aside class="flex h-full w-full flex-col overflow-hidden bg-muted/20">
@@ -197,16 +200,32 @@
 
 	{#if !sidebarCollapsed}
 		<div class="shrink-0 space-y-2 p-2">
-			<Button
-				type="button"
-				variant="outline"
-				size="sm"
-				class="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
-				onclick={() => projectManager.add()}
-			>
-				<PlusIcon class="size-3.5" />
-				Add Project
-			</Button>
+			<div class="flex gap-1.5">
+				<Button
+					type="button"
+					variant="outline"
+					size="sm"
+					class="flex-1 justify-start gap-2 text-muted-foreground hover:text-foreground"
+					onclick={() => projectManager.add()}
+				>
+					<PlusIcon class="size-3.5" />
+					Add Project
+				</Button>
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						<Button
+							type="button"
+							variant="outline"
+							size="icon-sm"
+							class="shrink-0 text-muted-foreground hover:text-foreground"
+							onclick={() => (cloneDialogOpen = true)}
+						>
+							<DownloadIcon class="size-3.5" />
+						</Button>
+					</Tooltip.Trigger>
+					<Tooltip.Content side="bottom">Clone from GitHub</Tooltip.Content>
+				</Tooltip.Root>
+			</div>
 			{#if projectStore.projects.length > 0}
 				<div class="relative">
 					<SearchIcon
@@ -614,3 +633,5 @@
 		{/if}
 	</div>
 {/snippet}
+
+<CloneRepoDialog bind:open={cloneDialogOpen} />

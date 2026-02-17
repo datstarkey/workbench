@@ -25,6 +25,7 @@ export class WorkbenchSettingsStore {
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
 	useHappyCoder = $state(false);
+	cloneBaseDir: string | null = $state(null);
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -50,6 +51,7 @@ export class WorkbenchSettingsStore {
 		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
 		this.useHappyCoder = settings.useHappyCoder ?? false;
+		this.cloneBaseDir = settings.cloneBaseDir ?? null;
 		this.loaded = true;
 		this.dirty = false;
 	}
@@ -116,6 +118,11 @@ export class WorkbenchSettingsStore {
 		this.dirty = true;
 	}
 
+	setCloneBaseDir(value: string | null) {
+		this.cloneBaseDir = value;
+		this.dirty = true;
+	}
+
 	addAgentAction() {
 		this.agentActions = [
 			...this.agentActions,
@@ -172,7 +179,8 @@ export class WorkbenchSettingsStore {
 			agentActions: this.agentActions,
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,
-			useHappyCoder: this.useHappyCoder
+			useHappyCoder: this.useHappyCoder,
+			cloneBaseDir: this.cloneBaseDir
 		};
 	}
 
