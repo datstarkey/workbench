@@ -40,7 +40,15 @@ export function tryResumeCommand(type: SessionType, sessionId: string): string |
 	}
 }
 
-function shellSingleQuote(value: string): string {
+const IS_WINDOWS = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+
+/** Quote a string for use in a shell command, handling platform differences. */
+function shellQuote(value: string): string {
+	if (IS_WINDOWS) {
+		// cmd.exe / PowerShell: use double quotes with escaped inner quotes
+		return `"${value.replaceAll('"', '\\"')}"`;
+	}
+	// Unix shells: single-quote with escaped embedded quotes
 	return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
@@ -52,5 +60,5 @@ function normalizePrompt(prompt: string): string {
 export function newSessionCommandWithPrompt(type: SessionType, prompt: string): string {
 	const normalizedPrompt = normalizePrompt(prompt);
 	if (!normalizedPrompt) return newSessionCommand(type);
-	return `${newSessionCommand(type)} ${shellSingleQuote(normalizedPrompt)}`;
+	return `${newSessionCommand(type)} ${shellQuote(normalizedPrompt)}`;
 }

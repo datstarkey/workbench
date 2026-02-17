@@ -16,6 +16,7 @@ fn workbench_codex_notify_script_body() -> &'static str {
     r#"#!/usr/bin/env python3
 import json
 import os
+import platform
 import socket
 import sys
 
@@ -32,8 +33,13 @@ except Exception:
 envelope = {"pane_id": pane_id, "codex": payload}
 
 try:
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(socket_path)
+    if ":" in socket_path and not socket_path.startswith("/"):
+        host, port = socket_path.rsplit(":", 1)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, int(port)))
+    else:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(socket_path)
     msg = json.dumps(envelope, separators=(",", ":")) + "\n"
     sock.sendall(msg.encode("utf-8"))
     sock.close()
