@@ -341,7 +341,7 @@ pub fn update_pr_branch(path: &str, pr_number: u64) -> Result<()> {
 }
 
 pub fn rerun_workflow(path: &str, run_id: u64) -> Result<()> {
-    gh_output(&["run", "rerun", &run_id.to_string()], path)?;
+    gh_output(&["run", "rerun", &run_id.to_string(), "--failed"], path)?;
     Ok(())
 }
 

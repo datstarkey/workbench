@@ -231,13 +231,12 @@
 		</Button>
 	</div>
 
-	{#if mergeError}
-		<p class="text-[10px] text-destructive">{mergeError}</p>
-	{/if}
-	{#if updateError}
-		<p class="text-[10px] text-destructive">{updateError}</p>
-	{/if}
-	{#if readyError}
-		<p class="text-[10px] text-destructive">{readyError}</p>
-	{/if}
+	{#snippet errorMsg(msg: string | null)}
+		{#if msg}
+			<p class="text-[10px] text-destructive">{msg}</p>
+		{/if}
+	{/snippet}
+	{@render errorMsg(mergeError)}
+	{@render errorMsg(updateError)}
+	{@render errorMsg(readyError)}
 </div>

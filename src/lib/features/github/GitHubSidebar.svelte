@@ -12,6 +12,7 @@
 	import CheckItem from './CheckItem.svelte';
 	import { onDestroy } from 'svelte';
 	import { invoke } from '@tauri-apps/api/core';
+	import { toast } from 'svelte-sonner';
 
 	const githubStore = getGitHubStore();
 
@@ -22,7 +23,7 @@
 	let checks = $derived(githubStore.sidebarChecks);
 
 	// Convert workflow runs to check details for reuse with CheckItem
-	type RunCheckDetail = GitHubCheckDetail & { _runId: number };
+	type RunCheckDetail = GitHubCheckDetail & { runId: number };
 	let runChecks = $derived.by((): RunCheckDetail[] => {
 		if (!activeBranchRuns) return [];
 		return activeBranchRuns.runs.map((run) => {
@@ -42,7 +43,7 @@
 				startedAt: run.createdAt,
 				completedAt: run.status === 'completed' ? run.updatedAt : null,
 				description: '',
-				_runId: run.id
+				runId: run.id
 			};
 		});
 	});
@@ -75,7 +76,7 @@
 			await invoke('github_rerun_workflow', { projectPath, runId });
 			await githubStore.refreshProject(projectPath);
 		} catch (e) {
-			console.warn('[GitHubSidebar] Failed to rerun workflow:', e);
+			toast.error(`Failed to rerun workflow: ${e}`);
 		}
 	}
 
@@ -144,7 +145,7 @@
 						<CheckItem
 							{check}
 							onRerun={check.bucket === 'fail'
-								? () => handleRerunWorkflow(activeProjectPath!, check._runId)
+								? () => handleRerunWorkflow(activeProjectPath!, check.runId)
 								: undefined}
 						/>
 					{/each}

@@ -117,17 +117,12 @@
 		});
 	});
 
-	// Show toast notifications when CI checks complete (external side effect -- notification display)
-	$effect(() => {
-		const pending = githubStore.notifications;
-		if (pending.length === 0) return;
-		const items = githubStore.consumeNotifications();
-		for (const n of items) {
-			if (n.bucket === 'pass') {
-				toast.success(`${n.name} passed`);
-			} else {
-				toast.error(`${n.name} failed`);
-			}
+	// Register check completion toast handler (non-reactive callback, no $effect needed)
+	githubStore.onCheckComplete((n) => {
+		if (n.bucket === 'pass') {
+			toast.success(`${n.name} passed`);
+		} else {
+			toast.error(`${n.name} failed`);
 		}
 	});
 

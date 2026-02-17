@@ -120,9 +120,8 @@ export class GitHubStore {
 		return branches;
 	});
 
-	// Notification queue for check completions
-	notifications: Array<{ name: string; bucket: string; projectPath: string; prNumber: number }> =
-		$state([]);
+	// Notification callback — registered by consumer (App.svelte), called directly on transitions
+	private onCheckCompleteCallback: ((notification: CheckNotification) => void) | null = null;
 
 	// Not reactive — internal bookkeeping only
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -252,12 +251,12 @@ export class GitHubStore {
 				prNumber
 			});
 
-			// Detect check transitions for notifications
+			// Detect check transitions and notify via callback
 			const oldBuckets = this.previousCheckBuckets.get(key);
-			if (oldBuckets) {
-				const newNotifications = detectCheckTransitions(oldBuckets, checks, projectPath, prNumber);
-				if (newNotifications.length > 0) {
-					this.notifications = [...this.notifications, ...newNotifications];
+			if (oldBuckets && this.onCheckCompleteCallback) {
+				const transitions = detectCheckTransitions(oldBuckets, checks, projectPath, prNumber);
+				for (const n of transitions) {
+					this.onCheckCompleteCallback(n);
 				}
 			}
 
@@ -275,10 +274,8 @@ export class GitHubStore {
 		}
 	}
 
-	consumeNotifications(): typeof this.notifications {
-		const current = this.notifications;
-		this.notifications = [];
-		return current;
+	onCheckComplete(callback: (notification: CheckNotification) => void): void {
+		this.onCheckCompleteCallback = callback;
 	}
 
 	getPrChecks(projectPath: string, prNumber: number): GitHubCheckDetail[] | undefined {
