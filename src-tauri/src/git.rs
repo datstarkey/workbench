@@ -331,6 +331,22 @@ pub fn delete_branch(repo_path: &str, branch: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn clone_repo(url: &str, dest_path: &str) -> Result<()> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let output = std::process::Command::new("git")
+        .args(["clone", url, dest_path])
+        .current_dir(&home)
+        .output()
+        .context("Failed to run git clone")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!("{stderr}");
+    }
+
+    Ok(())
+}
+
 pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
     let format = "%(refname:short)\t%(objectname:short)\t%(HEAD)\t%(refname:rstrip=0)";
     let output = git_output(&["branch", "-a", &format!("--format={format}")], path)?;

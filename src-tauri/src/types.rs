@@ -252,6 +252,8 @@ pub struct WorkbenchSettings {
     pub claude_hooks_approved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_config_approved: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_base_dir: Option<String>,
 }
 
 fn default_worktree_strategy() -> String {
@@ -266,6 +268,7 @@ impl Default for WorkbenchSettings {
             agent_actions: default_agent_actions(),
             claude_hooks_approved: None,
             codex_config_approved: None,
+            clone_base_dir: None,
         }
     }
 }
@@ -313,6 +316,20 @@ pub struct GitChangedEvent {
 }
 
 // GitHub integration types
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRepo {
+    pub name: String,
+    pub name_with_owner: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub is_private: bool,
+    pub is_fork: bool,
+    /// Web URL, e.g. https://github.com/owner/repo — also works as HTTP clone URL (append .git if needed)
+    pub url: String,
+    pub ssh_url: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -5,7 +5,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Badge } from '$lib/components/ui/badge';
-	import { getGitHubStore } from '$stores/context';
+	import { getGitHubStore, getGitStore, getWorktreeManager } from '$stores/context';
 	import type { GitHubCheckDetail } from '$types/workbench';
 	import PRHeader from './PRHeader.svelte';
 	import BranchRunsHeader from './BranchRunsHeader.svelte';
@@ -15,6 +15,8 @@
 	import { toast } from 'svelte-sonner';
 
 	const githubStore = getGitHubStore();
+	const gitStore = getGitStore();
+	const worktreeManager = getWorktreeManager();
 
 	let activeProjectPath = $derived(githubStore.sidebarTarget?.projectPath ?? null);
 	let activeBranch = $derived(githubStore.sidebarTarget?.branch ?? null);
@@ -71,6 +73,22 @@
 	let groupedChecks = $derived(sortByBucket(checks));
 	let groupedRunChecks = $derived(sortByBucket(runChecks));
 
+	async function handleCheckoutPr() {
+		if (!activeProjectPath || !activePr) return;
+		await invoke('github_checkout_pr', { projectPath: activeProjectPath, prNumber: activePr.number });
+		await gitStore.refreshGitState(activeProjectPath);
+		await githubStore.refreshProject(activeProjectPath);
+	}
+
+	async function handleOpenPrAsWorktree() {
+		if (!activeProjectPath || !activePr) return;
+		await invoke('github_fetch_pr_branch', {
+			projectPath: activeProjectPath,
+			branch: activePr.headRefName
+		});
+		worktreeManager.addWithBranch(activeProjectPath, activePr.headRefName);
+	}
+
 	async function handleRerunWorkflow(projectPath: string, runId: number) {
 		try {
 			await invoke('github_rerun_workflow', { projectPath, runId });
@@ -95,7 +113,13 @@
 <div class="flex flex-1 flex-col overflow-hidden">
 	{#if activePr && activeProjectPath}
 		<ScrollArea class="flex-1">
-			<PRHeader pr={activePr} {checks} projectPath={activeProjectPath} />
+			<PRHeader
+				pr={activePr}
+				{checks}
+				projectPath={activeProjectPath}
+				onCheckout={activePr.state === 'OPEN' ? handleCheckoutPr : undefined}
+				onOpenAsWorktree={activePr.state === 'OPEN' ? handleOpenPrAsWorktree : undefined}
+			/>
 
 			{#if checks.length > 0}
 				<Separator />

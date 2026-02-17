@@ -14,6 +14,7 @@ export class WorkbenchSettingsStore {
 	agentActions: AgentAction[] = $state([]);
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
+	cloneBaseDir: string | null = $state(null);
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -31,6 +32,7 @@ export class WorkbenchSettingsStore {
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
 		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
+		this.cloneBaseDir = settings.cloneBaseDir ?? null;
 		this.loaded = true;
 		this.dirty = false;
 	}
@@ -54,6 +56,11 @@ export class WorkbenchSettingsStore {
 
 	setTrelloEnabled(value: boolean) {
 		this.trelloEnabled = value;
+		this.dirty = true;
+	}
+
+	setCloneBaseDir(value: string | null) {
+		this.cloneBaseDir = value;
 		this.dirty = true;
 	}
 
@@ -105,7 +112,8 @@ export class WorkbenchSettingsStore {
 			trelloEnabled: this.trelloEnabled,
 			agentActions: this.agentActions,
 			claudeHooksApproved: this.claudeHooksApproved,
-			codexConfigApproved: this.codexConfigApproved
+			codexConfigApproved: this.codexConfigApproved,
+			cloneBaseDir: this.cloneBaseDir
 		};
 	}
 

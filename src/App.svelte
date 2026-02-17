@@ -45,6 +45,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { Toaster, toast } from 'svelte-sonner';
 
+	const gitStore = setGitStore(new GitStore());
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
 	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
@@ -52,7 +53,6 @@
 	const claudeSessionStore = setClaudeSessionStore(
 		new ClaudeSessionStore(workspaceStore, projectStore, integrationApprovalStore)
 	);
-	const gitStore = setGitStore(new GitStore());
 	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
