@@ -1,14 +1,17 @@
 <script lang="ts">
 	import GithubIcon from '@lucide/svelte/icons/github';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
+	import GitPullRequestIcon from '@lucide/svelte/icons/git-pull-request';
 	import { Separator } from '$lib/components/ui/separator';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
+	import { Badge } from '$lib/components/ui/badge';
 	import { getGitHubStore } from '$stores/context';
 	import type { GitHubCheckDetail } from '$types/workbench';
 	import PRHeader from './PRHeader.svelte';
 	import BranchRunsHeader from './BranchRunsHeader.svelte';
 	import CheckItem from './CheckItem.svelte';
 	import { onDestroy } from 'svelte';
+	import { invoke } from '@tauri-apps/api/core';
 
 	const githubStore = getGitHubStore();
 
@@ -19,7 +22,8 @@
 	let checks = $derived(githubStore.sidebarChecks);
 
 	// Convert workflow runs to check details for reuse with CheckItem
-	let runChecks = $derived.by((): GitHubCheckDetail[] => {
+	type RunCheckDetail = GitHubCheckDetail & { _runId: number };
+	let runChecks = $derived.by((): RunCheckDetail[] => {
 		if (!activeBranchRuns) return [];
 		return activeBranchRuns.runs.map((run) => {
 			let bucket: GitHubCheckDetail['bucket'];
@@ -37,21 +41,43 @@
 				link: run.url,
 				startedAt: run.createdAt,
 				completedAt: run.status === 'completed' ? run.updatedAt : null,
-				description: ''
+				description: '',
+				_runId: run.id
 			};
 		});
 	});
 
-	// Group checks: fail -> pending -> pass -> skipping/cancel
-	let groupedChecks = $derived.by(() => {
-		const order: Record<string, number> = { fail: 0, pending: 1, pass: 2, skipping: 3, cancel: 4 };
-		return [...checks].sort((a, b) => (order[a.bucket] ?? 5) - (order[b.bucket] ?? 5));
+	// Other open PRs for the active project (feature 4)
+	let otherOpenPrs = $derived.by(() => {
+		if (!activeProjectPath) return [];
+		const prs = githubStore.prsByProject[activeProjectPath] ?? [];
+		const currentBranch = activeBranch;
+		return prs.filter((p) => p.state === 'OPEN' && p.headRefName !== currentBranch);
 	});
 
-	let groupedRunChecks = $derived.by(() => {
-		const order: Record<string, number> = { fail: 0, pending: 1, pass: 2, skipping: 3, cancel: 4 };
-		return [...runChecks].sort((a, b) => (order[a.bucket] ?? 5) - (order[b.bucket] ?? 5));
-	});
+	// Group checks: fail -> pending -> pass -> skipping/cancel
+	const BUCKET_ORDER: Record<string, number> = {
+		fail: 0,
+		pending: 1,
+		pass: 2,
+		skipping: 3,
+		cancel: 4
+	};
+	function sortByBucket<T extends { bucket: string }>(items: T[]): T[] {
+		return [...items].sort((a, b) => (BUCKET_ORDER[a.bucket] ?? 5) - (BUCKET_ORDER[b.bucket] ?? 5));
+	}
+
+	let groupedChecks = $derived(sortByBucket(checks));
+	let groupedRunChecks = $derived(sortByBucket(runChecks));
+
+	async function handleRerunWorkflow(projectPath: string, runId: number) {
+		try {
+			await invoke('github_rerun_workflow', { projectPath, runId });
+			await githubStore.refreshProject(projectPath);
+		} catch (e) {
+			console.warn('[GitHubSidebar] Failed to rerun workflow:', e);
+		}
+	}
 
 	// Trigger data fetch when sidebar target changes (external side effect -- network requests)
 	$effect(() => {
@@ -83,6 +109,25 @@
 					<p class="text-xs text-muted-foreground">Loading checks...</p>
 				</div>
 			{/if}
+
+			{#if otherOpenPrs.length > 0}
+				<Separator />
+				<div class="px-3 py-2">
+					<p class="mb-1.5 text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
+						Other open PRs
+					</p>
+					{#each otherOpenPrs as otherPr (otherPr.number)}
+						<button
+							class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted/50"
+							onclick={() => githubStore.showBranch(activeProjectPath!, otherPr.headRefName)}
+						>
+							<GitPullRequestIcon class="size-3.5 shrink-0 text-green-400" />
+							<span class="min-w-0 flex-1 truncate text-xs">{otherPr.title}</span>
+							<Badge variant="secondary" class="shrink-0 text-[10px]">#{otherPr.number}</Badge>
+						</button>
+					{/each}
+				</div>
+			{/if}
 		</ScrollArea>
 	{:else if activeBranchRuns && activeBranch && activeProjectPath}
 		<ScrollArea class="flex-1">
@@ -96,7 +141,12 @@
 				<Separator />
 				<div class="py-1">
 					{#each groupedRunChecks as check (check.name + check.workflow)}
-						<CheckItem {check} />
+						<CheckItem
+							{check}
+							onRerun={check.bucket === 'fail'
+								? () => handleRerunWorkflow(activeProjectPath!, check._runId)
+								: undefined}
+						/>
 					{/each}
 				</div>
 			{/if}

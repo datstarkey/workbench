@@ -72,7 +72,7 @@ fn parse_github_remote(url: &str) -> Result<GitHubRemote> {
 }
 
 pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
-    let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup";
+    let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup,mergeStateStatus";
     let result = gh_output(
         &["pr", "list", "--state", "all", "--limit", "100", "--json", fields],
         path,
@@ -193,7 +193,10 @@ fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
 pub fn get_project_status(path: &str) -> GitHubProjectStatus {
     let remote = get_github_remote(path).ok();
     let prs = if remote.is_some() {
-        list_project_prs(path).unwrap_or_default()
+        list_project_prs(path).unwrap_or_else(|e| {
+            eprintln!("[github] Failed to list PRs for {path}: {e}");
+            vec![]
+        })
     } else {
         vec![]
     };
@@ -235,6 +238,7 @@ fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {
         head_ref_name: v["headRefName"].as_str().unwrap_or("").to_string(),
         review_decision: v["reviewDecision"].as_str().map(String::from),
         checks_status: checks,
+        merge_state_status: v["mergeStateStatus"].as_str().map(String::from),
     })
 }
 
@@ -320,6 +324,30 @@ pub fn list_pr_checks(path: &str, pr_number: u64) -> Result<Vec<GitHubCheckDetai
             }
         }
     }
+}
+
+pub fn update_pr_branch(path: &str, pr_number: u64) -> Result<()> {
+    let remote = get_github_remote(path)?;
+    gh_output(
+        &[
+            "api",
+            &format!("repos/{}/{}/pulls/{}/update-branch", remote.owner, remote.repo, pr_number),
+            "-X",
+            "PUT",
+        ],
+        path,
+    )?;
+    Ok(())
+}
+
+pub fn rerun_workflow(path: &str, run_id: u64) -> Result<()> {
+    gh_output(&["run", "rerun", &run_id.to_string()], path)?;
+    Ok(())
+}
+
+pub fn mark_pr_ready(path: &str, pr_number: u64) -> Result<()> {
+    gh_output(&["pr", "ready", &pr_number.to_string()], path)?;
+    Ok(())
 }
 
 pub fn merge_pr(path: &str, pr_number: u64) -> Result<()> {

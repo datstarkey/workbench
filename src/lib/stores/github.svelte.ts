@@ -15,6 +15,36 @@ import { load } from '@tauri-apps/plugin-store';
 const FAST_POLL_MS = 15_000;
 const SLOW_POLL_MS = 90_000;
 
+type CheckNotification = { name: string; bucket: string; projectPath: string; prNumber: number };
+
+/** Pure function: detect checks that transitioned from pending → pass/fail */
+function detectCheckTransitions(
+	oldBuckets: Map<string, string>,
+	checks: GitHubCheckDetail[],
+	projectPath: string,
+	prNumber: number
+): CheckNotification[] {
+	const result: CheckNotification[] = [];
+	for (const check of checks) {
+		const checkKey = `${check.name}::${check.workflow}`;
+		const prev = oldBuckets.get(checkKey);
+		if (prev === 'pending' && (check.bucket === 'pass' || check.bucket === 'fail')) {
+			result.push({ name: check.name, bucket: check.bucket, projectPath, prNumber });
+		}
+	}
+	return result;
+}
+
+/** Build a bucket lookup map keyed by name::workflow for matrix job uniqueness */
+function buildBucketMap(checks: GitHubCheckDetail[]): Map<string, string> {
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain utility, not reactive state
+	const map = new Map<string, string>();
+	for (const check of checks) {
+		map.set(`${check.name}::${check.workflow}`, check.bucket);
+	}
+	return map;
+}
+
 export class GitHubStore {
 	private workspaces = getWorkspaceStore();
 	private git = getGitStore();
@@ -90,7 +120,13 @@ export class GitHubStore {
 		return branches;
 	});
 
+	// Notification queue for check completions
+	notifications: Array<{ name: string; bucket: string; projectPath: string; prNumber: number }> =
+		$state([]);
+
 	// Not reactive — internal bookkeeping only
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity
+	private previousCheckBuckets = new Map<string, Map<string, string>>();
 	// eslint-disable-next-line svelte/prefer-svelte-reactivity
 	private pendingProjects = new Set<string>();
 	private pollIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -215,6 +251,19 @@ export class GitHubStore {
 				projectPath,
 				prNumber
 			});
+
+			// Detect check transitions for notifications
+			const oldBuckets = this.previousCheckBuckets.get(key);
+			if (oldBuckets) {
+				const newNotifications = detectCheckTransitions(oldBuckets, checks, projectPath, prNumber);
+				if (newNotifications.length > 0) {
+					this.notifications = [...this.notifications, ...newNotifications];
+				}
+			}
+
+			// Store current buckets for next comparison
+			this.previousCheckBuckets.set(key, buildBucketMap(checks));
+
 			this.checksByPr = { ...this.checksByPr, [key]: checks };
 
 			// Manage adaptive polling based on check states
@@ -224,6 +273,12 @@ export class GitHubStore {
 		} finally {
 			this.pendingChecks.delete(key);
 		}
+	}
+
+	consumeNotifications(): typeof this.notifications {
+		const current = this.notifications;
+		this.notifications = [];
+		return current;
 	}
 
 	getPrChecks(projectPath: string, prNumber: number): GitHubCheckDetail[] | undefined {

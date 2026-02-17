@@ -43,6 +43,7 @@
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { onMount, untrack } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
+	import { Toaster, toast } from 'svelte-sonner';
 
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
@@ -114,6 +115,20 @@
 				githubSidebarPane?.collapse();
 			}
 		});
+	});
+
+	// Show toast notifications when CI checks complete (external side effect -- notification display)
+	$effect(() => {
+		const pending = githubStore.notifications;
+		if (pending.length === 0) return;
+		const items = githubStore.consumeNotifications();
+		for (const n of items) {
+			if (n.bucket === 'pass') {
+				toast.success(`${n.name} passed`);
+			} else {
+				toast.error(`${n.name} failed`);
+			}
+		}
 	});
 
 	// Detect merged PRs and execute Trello merge actions (network side effect)
@@ -227,3 +242,4 @@
 <SettingsSheet bind:open={settingsOpen} projectPath={workspaceStore.activeProjectPath} />
 <IntegrationApprovalDialog />
 <UpdateDialog />
+<Toaster theme="dark" position="bottom-right" />

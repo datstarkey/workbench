@@ -4,6 +4,8 @@
 	import GitPullRequestClosedIcon from '@lucide/svelte/icons/git-pull-request-closed';
 	import GitMergeIcon from '@lucide/svelte/icons/git-merge';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import SendHorizontalIcon from '@lucide/svelte/icons/send-horizontal';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -26,6 +28,10 @@
 
 	let merging = $state(false);
 	let mergeError = $state<string | null>(null);
+	let updating = $state(false);
+	let updateError = $state<string | null>(null);
+	let markingReady = $state(false);
+	let readyError = $state<string | null>(null);
 
 	let PrIcon = $derived.by(() => {
 		if (pr.state === 'MERGED') return GitMergeIcon;
@@ -80,24 +86,65 @@
 		return `${passing}/${checks.length} checks passing`;
 	});
 
+	let mergeStateInfo = $derived.by(() => {
+		switch (pr.mergeStateStatus) {
+			case 'BEHIND':
+				return {
+					label: 'Behind base',
+					variant: 'outline' as const,
+					class: 'border-yellow-600 text-yellow-400'
+				};
+			case 'DIRTY':
+				return { label: 'Has conflicts', variant: 'destructive' as const, class: '' };
+			default:
+				return null;
+		}
+	});
+
 	let canMerge = $derived(
 		pr.state === 'OPEN' &&
 			!pr.isDraft &&
+			pr.mergeStateStatus !== 'DIRTY' &&
 			checks.every((c) => c.bucket !== 'fail' && c.bucket !== 'pending')
 	);
+	let showDraftAction = $derived(pr.isDraft && pr.state === 'OPEN');
+	let showUpdateBranch = $derived(pr.mergeStateStatus === 'BEHIND' && pr.state === 'OPEN');
+	let hasActionButton = $derived(canMerge || showDraftAction || showUpdateBranch);
 
-	async function handleMerge() {
-		merging = true;
-		mergeError = null;
-		try {
-			await invoke('github_merge_pr', { projectPath, prNumber: pr.number });
-			githubStore.refreshProject(projectPath);
-		} catch (e) {
-			mergeError = String(e);
-		} finally {
-			merging = false;
-		}
+	function runPrAction(
+		setLoading: (v: boolean) => void,
+		setError: (v: string | null) => void,
+		command: string
+	) {
+		return async () => {
+			setLoading(true);
+			setError(null);
+			try {
+				await invoke(command, { projectPath, prNumber: pr.number });
+				await githubStore.refreshProject(projectPath);
+			} catch (e) {
+				setError(String(e));
+			} finally {
+				setLoading(false);
+			}
+		};
 	}
+
+	const handleMerge = runPrAction(
+		(v) => (merging = v),
+		(v) => (mergeError = v),
+		'github_merge_pr'
+	);
+	const handleUpdateBranch = runPrAction(
+		(v) => (updating = v),
+		(v) => (updateError = v),
+		'github_update_pr_branch'
+	);
+	const handleMarkReady = runPrAction(
+		(v) => (markingReady = v),
+		(v) => (readyError = v),
+		'github_mark_pr_ready'
+	);
 </script>
 
 <div class="space-y-2 px-3 py-2">
@@ -114,14 +161,34 @@
 		{#if reviewLabel}
 			<Badge variant={reviewBadgeVariant} class="text-[10px]">{reviewLabel}</Badge>
 		{/if}
+		{#if mergeStateInfo}
+			<Badge variant={mergeStateInfo.variant} class="text-[10px] {mergeStateInfo.class}"
+				>{mergeStateInfo.label}</Badge
+			>
+		{/if}
 	</div>
 
 	{#if checksSummary}
 		<p class="text-[11px] text-muted-foreground">{checksSummary}</p>
 	{/if}
 
-	<div class="flex gap-1.5">
-		{#if canMerge}
+	<div class="flex flex-wrap gap-1.5">
+		{#if showDraftAction}
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-7 flex-1 gap-1.5 text-xs"
+				onclick={handleMarkReady}
+				disabled={markingReady}
+			>
+				{#if markingReady}
+					<LoaderIcon class="size-3 animate-spin" />
+				{:else}
+					<SendHorizontalIcon class="size-3" />
+				{/if}
+				Ready for Review
+			</Button>
+		{:else if canMerge}
 			<Button
 				variant="default"
 				size="sm"
@@ -137,10 +204,26 @@
 				Merge
 			</Button>
 		{/if}
+		{#if showUpdateBranch}
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-7 flex-1 gap-1.5 text-xs"
+				onclick={handleUpdateBranch}
+				disabled={updating}
+			>
+				{#if updating}
+					<LoaderIcon class="size-3 animate-spin" />
+				{:else}
+					<RefreshCwIcon class="size-3" />
+				{/if}
+				Update Branch
+			</Button>
+		{/if}
 		<Button
 			variant="outline"
 			size="sm"
-			class="h-7 gap-1.5 text-xs {canMerge ? '' : 'w-full'}"
+			class="h-7 gap-1.5 text-xs {hasActionButton ? '' : 'w-full'}"
 			onclick={() => openInGitHub(pr.url)}
 		>
 			<ExternalLinkIcon class="size-3" />
@@ -150,5 +233,11 @@
 
 	{#if mergeError}
 		<p class="text-[10px] text-destructive">{mergeError}</p>
+	{/if}
+	{#if updateError}
+		<p class="text-[10px] text-destructive">{updateError}</p>
+	{/if}
+	{#if readyError}
+		<p class="text-[10px] text-destructive">{readyError}</p>
 	{/if}
 </div>

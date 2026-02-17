@@ -156,6 +156,7 @@ export interface GitHubPR {
 	headRefName: string;
 	reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
 	checksStatus: GitHubChecksStatus;
+	mergeStateStatus: string | null;
 }
 
 export interface GitHubProjectStatus {

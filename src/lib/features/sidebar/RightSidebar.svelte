@@ -47,9 +47,11 @@
 	</div>
 
 	<!-- Content -->
-	{#if activeTab === 'github'}
-		<GitHubSidebar />
-	{:else}
-		<BoardPanel />
-	{/if}
+	<div class="min-h-0 flex-1">
+		{#if activeTab === 'github'}
+			<GitHubSidebar />
+		{:else}
+			<BoardPanel />
+		{/if}
+	</div>
 </div>

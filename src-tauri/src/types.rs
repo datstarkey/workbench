@@ -343,6 +343,7 @@ pub struct GitHubPR {
     pub head_ref_name: String,
     pub review_decision: Option<String>,
     pub checks_status: GitHubChecksStatus,
+    pub merge_state_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
