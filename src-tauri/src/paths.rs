@@ -15,11 +15,6 @@ pub fn workbench_config_dir() -> PathBuf {
     home_dir().join(".workbench")
 }
 
-#[cfg(unix)]
-pub fn workbench_hook_socket_path() -> PathBuf {
-    workbench_config_dir().join("claude-hooks.sock")
-}
-
 pub fn claude_user_dir() -> PathBuf {
     home_dir().join(".claude")
 }

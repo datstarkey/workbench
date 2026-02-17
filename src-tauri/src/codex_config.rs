@@ -6,46 +6,40 @@ use std::path::PathBuf;
 
 use crate::paths::{self, copy_dir_follow_symlinks, remove_path_if_exists};
 
-const WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME: &str = "workbench-codex-notify-bridge.py";
+#[cfg(not(windows))]
+const WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME: &str = "workbench-codex-notify-bridge.sh";
+#[cfg(windows)]
+const WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME: &str = "workbench-codex-notify-bridge.ps1";
 
 fn workbench_codex_notify_script_path() -> PathBuf {
     paths::codex_config_dir().join(WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME)
 }
 
+#[cfg(not(windows))]
 fn workbench_codex_notify_script_body() -> &'static str {
-    r#"#!/usr/bin/env python3
-import json
-import os
-import platform
-import socket
-import sys
+    "#!/usr/bin/env bash\n\
+SOCKET=\"${WORKBENCH_HOOK_SOCKET}\"\n\
+PANE_ID=\"${WORKBENCH_PANE_ID}\"\n\
+[[ -z \"$SOCKET\" || -z \"$PANE_ID\" || -z \"$1\" ]] && exit 0\n\
+PAYLOAD=$(printf '%s' \"$1\" | tr -d '\\n\\r')\n\
+IFS=: read -r HOST PORT <<< \"$SOCKET\"\n\
+exec 3<>/dev/tcp/\"$HOST\"/\"$PORT\" 2>/dev/null || exit 0\n\
+printf '{\"pane_id\":\"%s\",\"codex\":%s}\\n' \"$PANE_ID\" \"$PAYLOAD\" >&3\n"
+}
 
-socket_path = os.environ.get("WORKBENCH_HOOK_SOCKET")
-pane_id = os.environ.get("WORKBENCH_PANE_ID")
-if not socket_path or not pane_id or len(sys.argv) < 2:
-    sys.exit(0)
-
-try:
-    payload = json.loads(sys.argv[1])
-except Exception:
-    sys.exit(0)
-
-envelope = {"pane_id": pane_id, "codex": payload}
-
-try:
-    if ":" in socket_path and not socket_path.startswith("/"):
-        host, port = socket_path.rsplit(":", 1)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, int(port)))
-    else:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(socket_path)
-    msg = json.dumps(envelope, separators=(",", ":")) + "\n"
-    sock.sendall(msg.encode("utf-8"))
-    sock.close()
-except Exception:
-    pass
-"#
+#[cfg(windows)]
+fn workbench_codex_notify_script_body() -> &'static str {
+    "$socket = $env:WORKBENCH_HOOK_SOCKET\n\
+$paneId = $env:WORKBENCH_PANE_ID\n\
+if (-not $socket -or -not $paneId -or $args.Count -eq 0) { exit 0 }\n\
+$payload = ($args[0] -replace '\\s+', ' ').Trim()\n\
+$msg = [Text.Encoding]::UTF8.GetBytes(\"{`\"pane_id`\":`\"$paneId`\",`\"codex`\":$payload}`n\")\n\
+try {\n\
+    $parts = $socket -split ':'\n\
+    $tcp = [Net.Sockets.TcpClient]::new($parts[0], [int]$parts[1])\n\
+    $tcp.GetStream().Write($msg, 0, $msg.Length)\n\
+    $tcp.Close()\n\
+} catch { }\n"
 }
 
 fn ensure_workbench_codex_notify_script() -> Result<PathBuf> {
@@ -132,7 +126,13 @@ fn sync_claude_skills_into_agents() -> Result<()> {
 
 pub(crate) fn ensure_codex_notify_config(content: &str, script_path: &str) -> (String, bool) {
     let escaped_path = toml_escape_str(script_path);
-    let notify_line = format!("notify = [\"python3\", \"{}\"]", escaped_path);
+    #[cfg(not(windows))]
+    let notify_line = format!("notify = [\"bash\", \"{}\"]", escaped_path);
+    #[cfg(windows)]
+    let notify_line = format!(
+        "notify = [\"powershell.exe\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", \"{}\"]",
+        escaped_path
+    );
 
     if content.contains(script_path) {
         return (content.to_string(), false);
@@ -248,55 +248,72 @@ mod tests {
     // ensure_codex_notify_config
     // -----------------------------------------------------------------------
 
+    #[cfg(not(windows))]
     #[test]
     fn notify_config_empty_content() {
-        let (result, changed) = ensure_codex_notify_config("", "/path/to/script.py");
+        let (result, changed) = ensure_codex_notify_config("", "/path/to/script.sh");
         assert!(changed);
-        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+        assert!(result.contains("notify = [\"bash\", \"/path/to/script.sh\"]"));
         assert!(result.ends_with('\n'));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn notify_config_already_contains_script_path() {
-        let content = "notify = [\"python3\", \"/path/to/script.py\"]\n";
-        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        let content = "notify = [\"bash\", \"/path/to/script.sh\"]\n";
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.sh");
         assert!(!changed);
         assert_eq!(result, content);
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn notify_config_replaces_existing_notify_line() {
         let content = "some_key = true\nnotify = [\"old\", \"command\"]\nother = 1\n";
-        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.sh");
         assert!(changed);
-        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+        assert!(result.contains("notify = [\"bash\", \"/path/to/script.sh\"]"));
         assert!(!result.contains("old"));
         assert!(result.contains("some_key = true"));
         assert!(result.contains("other = 1"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn notify_config_appends_when_no_notify() {
         let content = "some_key = true\nother = 1\n";
-        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.sh");
         assert!(changed);
-        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+        assert!(result.contains("notify = [\"bash\", \"/path/to/script.sh\"]"));
         assert!(result.ends_with('\n'));
     }
 
     #[test]
     fn notify_config_preserves_trailing_newline() {
         let content = "notify = [\"old\"]\n";
-        let (result, _) = ensure_codex_notify_config(content, "/new/script.py");
+        let (result, _) = ensure_codex_notify_config(content, "/new/script.sh");
         assert!(result.ends_with('\n'));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn notify_config_adds_newline_before_appending() {
         let content = "key = value";
-        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.py");
+        let (result, changed) = ensure_codex_notify_config(content, "/path/to/script.sh");
         assert!(changed);
         assert!(result.starts_with("key = value\n"));
-        assert!(result.contains("notify = [\"python3\", \"/path/to/script.py\"]"));
+        assert!(result.contains("notify = [\"bash\", \"/path/to/script.sh\"]"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn notify_config_windows_uses_powershell() {
+        let (result, changed) =
+            ensure_codex_notify_config("", "C:\\Users\\test\\.codex\\script.ps1");
+        assert!(changed);
+        assert!(result.contains("powershell.exe"));
+        assert!(result.contains("-ExecutionPolicy"));
+        assert!(result.contains("Bypass"));
+        assert!(result.contains("script.ps1"));
     }
 }
