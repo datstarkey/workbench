@@ -40,7 +40,7 @@ export function tryResumeCommand(type: SessionType, sessionId: string): string |
 	}
 }
 
-const IS_WINDOWS = navigator.userAgent.includes('Windows');
+const IS_WINDOWS = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
 
 /** Quote a string for use in a shell command, handling platform differences. */
 function shellQuote(value: string): string {
