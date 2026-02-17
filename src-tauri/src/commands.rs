@@ -249,6 +249,33 @@ pub fn github_pr_checks(
 }
 
 #[tauri::command(async)]
+pub fn github_update_pr_branch(
+    project_path: String,
+    pr_number: u64,
+) -> Result<bool, String> {
+    github::update_pr_branch(&project_path, pr_number).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn github_rerun_workflow(
+    project_path: String,
+    run_id: u64,
+) -> Result<bool, String> {
+    github::rerun_workflow(&project_path, run_id).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn github_mark_pr_ready(
+    project_path: String,
+    pr_number: u64,
+) -> Result<bool, String> {
+    github::mark_pr_ready(&project_path, pr_number).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
 pub fn github_merge_pr(
     project_path: String,
     pr_number: u64,

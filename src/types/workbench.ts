@@ -156,6 +156,16 @@ export interface GitHubPR {
 	headRefName: string;
 	reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
 	checksStatus: GitHubChecksStatus;
+	mergeStateStatus:
+		| 'BEHIND'
+		| 'BLOCKED'
+		| 'CLEAN'
+		| 'DIRTY'
+		| 'DRAFT'
+		| 'HAS_HOOKS'
+		| 'UNKNOWN'
+		| 'UNSTABLE'
+		| null;
 }
 
 export interface GitHubProjectStatus {

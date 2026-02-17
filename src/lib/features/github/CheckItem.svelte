@@ -3,13 +3,14 @@
 	import CircleXIcon from '@lucide/svelte/icons/circle-x';
 	import CircleMinusIcon from '@lucide/svelte/icons/circle-minus';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
+	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { GitHubCheckDetail } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
 
-	let { check }: { check: GitHubCheckDetail } = $props();
+	let { check, onRerun }: { check: GitHubCheckDetail; onRerun?: () => void } = $props();
 
 	let StatusIcon = $derived.by(() => {
 		switch (check.bucket) {
@@ -66,10 +67,24 @@
 		{#if check.workflow}
 			<p class="truncate text-[10px] text-muted-foreground">{check.workflow}</p>
 		{/if}
+		{#if check.bucket === 'fail' && check.description}
+			<p class="line-clamp-2 text-[10px] text-red-400/80">{check.description}</p>
+		{/if}
 	</div>
 
 	{#if duration}
 		<span class="shrink-0 text-[10px] text-muted-foreground">{duration}</span>
+	{/if}
+
+	{#if check.bucket === 'fail' && onRerun}
+		<Button
+			variant="ghost"
+			size="icon-sm"
+			class="size-5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+			onclick={onRerun}
+		>
+			<RotateCcwIcon class="size-3" />
+		</Button>
 	{/if}
 
 	{#if check.link}
