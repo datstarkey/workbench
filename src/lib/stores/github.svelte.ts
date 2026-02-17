@@ -38,7 +38,7 @@ export class GitHubStore {
 			return this._overrideTarget;
 		const ws = this.workspaces.activeWorkspace;
 		if (!ws) return null;
-		const branch = ws.branch ?? this.git.branchByProject[ws.projectPath] ?? null;
+		const branch = this.workspaces.resolvedBranch(ws) ?? null;
 		if (!branch) return null;
 		return { projectPath: ws.projectPath, branch };
 	});

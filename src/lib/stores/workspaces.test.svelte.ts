@@ -10,15 +10,14 @@ vi.mock('$lib/utils/uid', () => ({
 }));
 
 // Mock context so getGitStore() works outside a component
-vi.mock('./context', () => {
-	const mockGitStore = {
-		watchProject: vi.fn(),
-		unwatchProject: vi.fn()
-	};
-	return {
-		getGitStore: () => mockGitStore
-	};
-});
+const mockGitStore = {
+	watchProject: vi.fn(),
+	unwatchProject: vi.fn(),
+	branchByProject: {} as Record<string, string>
+};
+vi.mock('./context', () => ({
+	getGitStore: () => mockGitStore
+}));
 
 // Helper factories
 
@@ -52,6 +51,7 @@ describe('WorkspaceStore', () => {
 
 	beforeEach(() => {
 		uidCounter = 0;
+		mockGitStore.branchByProject = {};
 		store = new WorkspaceStore();
 	});
 
@@ -1279,6 +1279,54 @@ describe('WorkspaceStore', () => {
 
 			// Should be the same reference (no reassignment)
 			expect(store.workspaces).toBe(originalRef);
+		});
+	});
+
+	// ─── resolvedBranch ─────────────────────────────────────
+
+	describe('resolvedBranch', () => {
+		it('returns git branch for main workspace', () => {
+			const ws = makeWorkspace({ projectPath: '/a' });
+			store.workspaces = [ws];
+			mockGitStore.branchByProject = { '/a': 'feature-x' };
+
+			expect(store.resolvedBranch(ws)).toBe('feature-x');
+		});
+
+		it('returns worktree fixed branch for worktree workspace', () => {
+			const ws = makeWorkspace({
+				projectPath: '/a',
+				worktreePath: '/a-wt',
+				branch: 'wt-branch'
+			});
+			store.workspaces = [ws];
+			mockGitStore.branchByProject = { '/a': 'main' };
+
+			expect(store.resolvedBranch(ws)).toBe('wt-branch');
+		});
+
+		it('falls back to ws.branch when git branch unavailable for main workspace', () => {
+			const ws = makeWorkspace({ projectPath: '/a', branch: 'stale-branch' });
+			store.workspaces = [ws];
+			mockGitStore.branchByProject = {};
+
+			expect(store.resolvedBranch(ws)).toBe('stale-branch');
+		});
+
+		it('returns undefined when no branch info exists for main workspace', () => {
+			const ws = makeWorkspace({ projectPath: '/a' });
+			store.workspaces = [ws];
+			mockGitStore.branchByProject = {};
+
+			expect(store.resolvedBranch(ws)).toBeUndefined();
+		});
+
+		it('prefers git branch over stale ws.branch for main workspace', () => {
+			const ws = makeWorkspace({ projectPath: '/a', branch: 'old-branch' });
+			store.workspaces = [ws];
+			mockGitStore.branchByProject = { '/a': 'current-branch' };
+
+			expect(store.resolvedBranch(ws)).toBe('current-branch');
 		});
 	});
 

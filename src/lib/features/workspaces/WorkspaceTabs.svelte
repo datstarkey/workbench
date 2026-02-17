@@ -21,12 +21,9 @@
 		if (!activeWorkspace) return null;
 		const repoUrl = githubStore.getRemoteUrl(activeWorkspace.projectPath);
 		if (!repoUrl) return null;
-		if (
-			activeWorkspace.branch &&
-			activeWorkspace.branch !== 'main' &&
-			activeWorkspace.branch !== 'master'
-		) {
-			return branchUrl(repoUrl, activeWorkspace.branch);
+		const branch = workspaceStore.resolvedBranch(activeWorkspace);
+		if (branch && branch !== 'main' && branch !== 'master') {
+			return branchUrl(repoUrl, branch);
 		}
 		return repoUrl;
 	});
@@ -36,6 +33,7 @@
 	<div class="flex flex-1 flex-wrap items-center gap-0.5" role="tablist" aria-label="Workspaces">
 		{#each workspaceStore.workspaces as workspace (workspace.id)}
 			{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
+			{@const branch = workspaceStore.resolvedBranch(workspace)}
 			<div
 				class={`inline-flex items-center rounded-md transition-colors ${isActive ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}`}
 				draggable="true"
@@ -55,8 +53,8 @@
 					aria-selected={isActive}
 					onclick={() => (workspaceStore.selectedId = workspace.id)}
 				>
-					{workspace.projectName}{#if workspace.branch}
-						<span class="ml-1 text-muted-foreground">({workspace.branch})</span>
+					{workspace.projectName}{#if branch}
+						<span class="ml-1 text-muted-foreground">({branch})</span>
 					{/if}
 				</button>
 				<button
