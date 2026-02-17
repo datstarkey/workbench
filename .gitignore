@@ -8,6 +8,7 @@ build/
 
 # Tauri / Rust
 src-tauri/target/
+src-tauri/gen/
 
 # Environment & secrets
 .env
@@ -34,3 +35,4 @@ Library/
 
 # Claude Code local settings (user-specific)
 .claude/settings.local.json
+.worktrees/
