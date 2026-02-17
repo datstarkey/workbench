@@ -12,6 +12,17 @@ use crate::types::{TerminalDataEvent, TerminalExitEvent};
 const PTY_READ_BUFFER_SIZE: usize = 32768;
 const STARTUP_COMMAND_DELAY_MS: u64 = 300;
 
+fn default_shell() -> String {
+    #[cfg(unix)]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".to_string())
+    }
+}
+
 struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -74,30 +85,52 @@ impl PtyManager {
         let pair = pty_system.openpty(size).context("Failed to open PTY")?;
 
         let shell_path = if shell.is_empty() {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
+            default_shell()
         } else {
             shell
         };
 
         let mut cmd = CommandBuilder::new(&shell_path);
+        #[cfg(unix)]
         cmd.arg("-l");
         cmd.cwd(&project_path);
 
-        if let Ok(home) = std::env::var("HOME") {
-            cmd.env("HOME", home);
-        }
         if let Ok(path) = std::env::var("PATH") {
             cmd.env("PATH", path);
         }
-        if let Ok(user) = std::env::var("USER") {
-            cmd.env("USER", user);
+        #[cfg(unix)]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                cmd.env("HOME", home);
+            }
+            if let Ok(user) = std::env::var("USER") {
+                cmd.env("USER", user);
+            }
+            cmd.env("TERM", "xterm-256color");
+            cmd.env("COLORTERM", "truecolor");
+            cmd.env(
+                "LANG",
+                std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
+            );
         }
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        cmd.env(
-            "LANG",
-            std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
-        );
+        #[cfg(windows)]
+        {
+            if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                cmd.env("USERPROFILE", userprofile);
+            }
+            if let Ok(username) = std::env::var("USERNAME") {
+                cmd.env("USERNAME", username);
+            }
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                cmd.env("APPDATA", appdata);
+            }
+            if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+                cmd.env("LOCALAPPDATA", localappdata);
+            }
+            if let Ok(systemroot) = std::env::var("SystemRoot") {
+                cmd.env("SystemRoot", systemroot);
+            }
+        }
         cmd.env("WORKBENCH_PANE_ID", session_id.clone());
         if let Some(socket_path) = hook_socket_path {
             cmd.env("WORKBENCH_HOOK_SOCKET", socket_path);
@@ -325,5 +358,38 @@ impl PtyManager {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_shell_returns_nonempty() {
+        let shell = default_shell();
+        assert!(!shell.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_shell_unix_returns_shell_path() {
+        let shell = default_shell();
+        // Should be a path like /bin/zsh or /bin/bash
+        assert!(
+            shell.starts_with('/') || shell.contains("sh"),
+            "Unexpected Unix shell: {shell}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_shell_windows_returns_known_shell() {
+        let shell = default_shell();
+        let lower = shell.to_lowercase();
+        assert!(
+            lower.contains("cmd") || lower.contains("powershell") || lower.contains("pwsh"),
+            "Unexpected Windows shell: {shell}"
+        );
     }
 }

@@ -35,20 +35,47 @@ pub fn agents_dir() -> PathBuf {
     home_dir().join(".agents")
 }
 
-/// Build a PATH that includes common CLI tool locations (Homebrew, Nix, etc.).
-/// macOS GUI apps get a minimal PATH that excludes these, so spawned commands
-/// like `gh` fail unless we enrich it.
+/// Build a PATH that includes common CLI tool locations.
+/// macOS/Linux GUI apps get a minimal PATH that excludes package manager bins,
+/// so spawned commands like `gh` fail unless we enrich it.
 pub fn enriched_path() -> OsString {
-    let home = home_dir();
-    let mut dirs: Vec<PathBuf> = vec![
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        home.join(".nix-profile/bin"),
-        PathBuf::from("/nix/var/nix/profiles/default/bin"),
-        PathBuf::from("/run/current-system/sw/bin"),
-    ];
+    let mut dirs: Vec<PathBuf> = Vec::new();
 
-    // Prepend to the existing PATH so system defaults are still available
+    #[cfg(target_os = "macos")]
+    {
+        let home = home_dir();
+        dirs.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            home.join(".nix-profile/bin"),
+            PathBuf::from("/nix/var/nix/profiles/default/bin"),
+            PathBuf::from("/run/current-system/sw/bin"),
+        ]);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let home = home_dir();
+        dirs.extend([
+            PathBuf::from("/usr/local/bin"),
+            home.join(".nix-profile/bin"),
+            PathBuf::from("/nix/var/nix/profiles/default/bin"),
+            PathBuf::from("/run/current-system/sw/bin"),
+        ]);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Add common CLI tool install locations on Windows
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            dirs.push(PathBuf::from(&pf).join("GitHub CLI"));
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(&local).join("Programs").join("GitHub CLI"));
+        }
+    }
+
+    // Append the existing PATH so system defaults are still available
     if let Some(existing) = std::env::var_os("PATH") {
         for p in std::env::split_paths(&existing) {
             if !dirs.contains(&p) {
@@ -57,13 +84,21 @@ pub fn enriched_path() -> OsString {
         }
     }
 
-    std::env::join_paths(dirs).unwrap_or_else(|_| OsString::from("/usr/bin:/bin"))
+    #[cfg(not(windows))]
+    let fallback = OsString::from("/usr/bin:/bin");
+    #[cfg(windows)]
+    let fallback = OsString::from("C:\\Windows\\System32;C:\\Windows");
+
+    std::env::join_paths(dirs).unwrap_or(fallback)
 }
 
-/// Encode a project path the same way Claude CLI does: replace `/` with `-`.
-/// Used to derive per-project directory/file names from absolute paths.
+/// Encode a project path for use as a filename-safe identifier.
+/// Replaces path separators and drive letter colons with `-`.
 pub fn encode_project_path(project_path: &str) -> String {
-    project_path.replace('/', "-")
+    project_path
+        .replace('\\', "-")
+        .replace('/', "-")
+        .replace(':', "")
 }
 
 /// Write a script file to disk, creating parent dirs and setting executable
@@ -94,6 +129,14 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
 
     let temp_path = path.with_extension("tmp");
     fs::write(&temp_path, content).context("Failed to write temp file")?;
+
+    // On Windows, rename fails if the target exists and may be locked.
+    // Remove the target first as a workaround.
+    #[cfg(windows)]
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+
     fs::rename(&temp_path, path).context("Failed to rename temp file into place")?;
     Ok(())
 }
@@ -229,6 +272,30 @@ mod tests {
         assert_eq!(
             encode_project_path("/Users/jake/project/"),
             "-Users-jake-project-"
+        );
+    }
+
+    #[test]
+    fn encode_project_path_windows_backslashes() {
+        assert_eq!(
+            encode_project_path("C:\\Users\\jake\\project"),
+            "C-Users-jake-project"
+        );
+    }
+
+    #[test]
+    fn encode_project_path_windows_drive_letter() {
+        assert_eq!(
+            encode_project_path("D:\\repos\\my-app"),
+            "D-repos-my-app"
+        );
+    }
+
+    #[test]
+    fn encode_project_path_mixed_separators() {
+        assert_eq!(
+            encode_project_path("C:\\Users/jake\\project"),
+            "C-Users-jake-project"
         );
     }
 
@@ -443,5 +510,40 @@ mod tests {
         let mtime2 = fs::metadata(&path).unwrap().modified().unwrap();
 
         assert_eq!(mtime1, mtime2);
+    }
+
+    // --- enriched_path ---
+
+    #[test]
+    fn enriched_path_returns_nonempty() {
+        let path = enriched_path();
+        assert!(!path.is_empty());
+    }
+
+    #[test]
+    fn enriched_path_contains_system_path() {
+        // The enriched path should include entries from the system PATH
+        let enriched = enriched_path();
+        let enriched_str = enriched.to_string_lossy();
+        // Should contain at least some path separator
+        #[cfg(unix)]
+        assert!(enriched_str.contains(':'));
+        #[cfg(windows)]
+        assert!(enriched_str.contains(';'));
+    }
+
+    // --- cross-platform atomic_write ---
+
+    #[test]
+    fn test_atomic_write_rapid_overwrites() {
+        // Verify atomic_write handles rapid successive writes (tests the
+        // Windows remove-before-rename path as well as the Unix atomic rename)
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("rapid.json");
+        for i in 0..10 {
+            let content = format!("iteration {}", i);
+            atomic_write(&path, &content).unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
+        }
     }
 }

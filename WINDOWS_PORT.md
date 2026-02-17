@@ -72,6 +72,7 @@ jobs:
 ```
 
 Key differences for the Windows job:
+
 - No `sed -i ''` (macOS syntax) — use platform-agnostic version bumping
 - No `--target universal-apple-darwin` — use default target
 - Signing: Windows code signing uses a certificate (`.pfx`), not Tauri signing keys. Optional but recommended for avoiding SmartScreen warnings
@@ -142,6 +143,7 @@ Also fix the fallback from `/usr/bin:/bin` to `C:\Windows\System32` on Windows.
 `shellSingleQuote()` uses bash-style `'...'` escaping. cmd.exe uses `"..."`, PowerShell uses different escape chars.
 
 Options:
+
 - **Detect shell type** in the frontend (pass shell info from backend) and quote accordingly
 - **Move quoting to backend** where we know the shell
 - **Use `--` separator** and let the CLI handle it (if Claude CLI supports it)
@@ -170,7 +172,7 @@ Fix: Use `lastIndexOf` for both `/` and `\\`, detect separator from the project 
 Add Windows fonts before the macOS-specific ones:
 
 ```typescript
-fontFamily: 'JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace'
+fontFamily: 'JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace';
 ```
 
 ---
@@ -184,11 +186,13 @@ The hook bridge (`src-tauri/src/hook_bridge.rs`) is entirely disabled on non-Uni
 The Unix implementation uses `AF_UNIX` sockets. Two options for Windows:
 
 **Option A: Named Pipes** (`\\.\pipe\workbench-hooks`)
+
 - Native Windows IPC, no port conflicts
 - Requires `windows-sys` or `winapi` crate
 - Python client uses `open(r'\\.\pipe\workbench-hooks', 'r+b')`
 
 **Option B: TCP localhost** (recommended — simpler)
+
 - Bind `127.0.0.1:0` for an ephemeral port
 - Store port in `WORKBENCH_HOOK_SOCKET` as `127.0.0.1:PORT`
 - Python client uses `socket.AF_INET` + `socket.SOCK_STREAM`
@@ -270,6 +274,7 @@ Without signing, Windows shows SmartScreen warnings ("Windows protected your PC"
 ### 5.2 Auto-Updater
 
 The updater is already configured with a signing key and endpoint. For Windows:
+
 - `tauri-action` automatically generates `latest.json` with Windows assets
 - The existing endpoint (`releases/latest/download/latest.json`) works for all platforms
 - No additional config needed — Tauri's updater is cross-platform
@@ -289,6 +294,7 @@ Tauri's NSIS template handles WebView2 detection and installation automatically.
 ### 5.4 Prerequisites for Windows Developers
 
 Document in README:
+
 - **Bun** (package manager)
 - **Rust** (with MSVC toolchain — `rustup default stable-x86_64-pc-windows-msvc`)
 - **Visual Studio Build Tools** (C++ workload — required by Rust on Windows)
@@ -301,26 +307,26 @@ Document in README:
 
 ## Already Cross-Platform (No Changes Needed)
 
-| Component | Why it works |
-|-----------|-------------|
-| `portable-pty` | Supports Windows ConPTY (Win10 1809+) |
-| `notify` crate (file watcher) | Uses `ReadDirectoryChangesW` on Windows |
-| `dirs` crate (home dir) | Returns `USERPROFILE` on Windows |
-| Tauri plugins (dialog, store, shell, updater) | All cross-platform |
-| Menu accelerators | `CmdOrCtrl` maps to Ctrl on Windows |
-| `windows_subsystem = "windows"` attribute | Already in `main.rs` |
-| `baseName()` utility | Already handles backslashes |
-| Git CLI commands | `git` resolves to `git.exe` on Windows |
-| `xterm.js` | Platform-agnostic terminal emulator |
+| Component                                     | Why it works                            |
+| --------------------------------------------- | --------------------------------------- |
+| `portable-pty`                                | Supports Windows ConPTY (Win10 1809+)   |
+| `notify` crate (file watcher)                 | Uses `ReadDirectoryChangesW` on Windows |
+| `dirs` crate (home dir)                       | Returns `USERPROFILE` on Windows        |
+| Tauri plugins (dialog, store, shell, updater) | All cross-platform                      |
+| Menu accelerators                             | `CmdOrCtrl` maps to Ctrl on Windows     |
+| `windows_subsystem = "windows"` attribute     | Already in `main.rs`                    |
+| `baseName()` utility                          | Already handles backslashes             |
+| Git CLI commands                              | `git` resolves to `git.exe` on Windows  |
+| `xterm.js`                                    | Platform-agnostic terminal emulator     |
 
 ---
 
 ## Summary
 
-| Phase | Items | What it enables |
-|-------|-------|----------------|
-| 1 - Build & Launch | PTY defaults, bundle targets, CI/release workflows | App compiles and opens a terminal |
-| 2 - Core Features | Path encoding, PATH enrichment, shell quoting, VS Code, worktrees, fonts | Projects, Claude sessions, GitHub integration |
-| 3 - Hook Bridge | Windows IPC, Python scripts, script execution | Real-time session tracking |
-| 4 - Polish | Atomic write, URL opening, test portability | Reliability, CI green on Windows |
-| 5 - Release | Code signing, updater, WebView2, developer docs | Distribution to users |
+| Phase              | Items                                                                    | What it enables                               |
+| ------------------ | ------------------------------------------------------------------------ | --------------------------------------------- |
+| 1 - Build & Launch | PTY defaults, bundle targets, CI/release workflows                       | App compiles and opens a terminal             |
+| 2 - Core Features  | Path encoding, PATH enrichment, shell quoting, VS Code, worktrees, fonts | Projects, Claude sessions, GitHub integration |
+| 3 - Hook Bridge    | Windows IPC, Python scripts, script execution                            | Real-time session tracking                    |
+| 4 - Polish         | Atomic write, URL opening, test portability                              | Reliability, CI green on Windows              |
+| 5 - Release        | Code signing, updater, WebView2, developer docs                          | Distribution to users                         |

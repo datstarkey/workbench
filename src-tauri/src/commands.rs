@@ -101,7 +101,15 @@ pub fn open_in_vscode(path: String) -> Result<bool, String> {
             .spawn()
             .map_err(|e| e.to_string())?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // VS Code installs `code.cmd` — launching via cmd /c finds it on PATH
+        std::process::Command::new("cmd")
+            .args(["/c", "code", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
     {
         std::process::Command::new("code")
             .arg(&path)
