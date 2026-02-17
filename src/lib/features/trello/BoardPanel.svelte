@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { getTrelloStore } from '$stores/context';
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Separator } from '$lib/components/ui/separator';
 	import BoardEmptyState from './BoardEmptyState.svelte';
 	import BoardSection from './BoardSection.svelte';
@@ -22,14 +21,12 @@
 {#if boards.length === 0}
 	<BoardEmptyState />
 {:else}
-	<ScrollArea class="flex-1">
-		<div class="p-2">
-			{#each boardDataList as boardData, i (boardData.board.id)}
-				{#if i > 0}
-					<Separator class="my-2" />
-				{/if}
-				<BoardSection {boardData} {projectPath} />
-			{/each}
-		</div>
-	</ScrollArea>
+	<div class="p-2">
+		{#each boardDataList as boardData, i (boardData.board.id)}
+			{#if i > 0}
+				<Separator class="my-2" />
+			{/if}
+			<BoardSection {boardData} {projectPath} />
+		{/each}
+	</div>
 {/if}
