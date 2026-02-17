@@ -1,7 +1,10 @@
 <script lang="ts">
+	import CheckIcon from '@lucide/svelte/icons/check';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Input } from '$lib/components/ui/input';
 	import * as Select from '$lib/components/ui/select';
 	import { Separator } from '$lib/components/ui/separator';
@@ -9,9 +12,18 @@
 	import SettingsToggle from './SettingsToggle.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 	import { applyClaudeIntegration, applyCodexIntegration } from '$lib/utils/terminal';
+	import { selectFolder } from '$lib/utils/dialog';
+	import { invoke } from '@tauri-apps/api/core';
+	import { onMount } from 'svelte';
 	import type { AgentAction, AgentActionTarget, WorktreeStrategy } from '$types/workbench';
 
 	const store = getWorkbenchSettingsStore();
+
+	let ghAuthenticated: boolean | null = $state(null);
+
+	onMount(async () => {
+		ghAuthenticated = await invoke<boolean>('github_is_available');
+	});
 
 	const strategyOptions = [
 		{ value: 'sibling', label: 'Sibling folder' },
@@ -61,6 +73,11 @@
 		store.updateAgentAction(actionId, { tags });
 	}
 
+	async function pickCloneDir() {
+		const dir = await selectFolder(store.cloneBaseDir ?? undefined, 'Select Default Clone Directory');
+		if (dir !== null) store.setCloneBaseDir(dir);
+	}
+
 	async function toggleClaudeHooks(checked: boolean) {
 		if (checked) {
 			await applyClaudeIntegration();
@@ -100,6 +117,48 @@
 			<p class="text-xs text-muted-foreground">
 				Worktrees will be created at <code>&lt;parent&gt;/&lt;repo&gt;-&lt;branch&gt;</code> next to the
 				project folder.
+			</p>
+		{/if}
+	</div>
+
+	<Separator />
+
+	<div class="space-y-4">
+		<div class="flex items-center justify-between">
+			<div>
+				<h2 class="text-sm font-semibold">GitHub</h2>
+				<p class="mt-1 text-xs text-muted-foreground">
+					Clone repositories and manage PRs via the GitHub CLI.
+				</p>
+			</div>
+			{#if ghAuthenticated === null}
+				<Badge variant="outline" class="text-[10px] text-muted-foreground">Checking...</Badge>
+			{:else if ghAuthenticated}
+				<Badge variant="outline" class="gap-1 border-green-700 text-[10px] text-green-400">
+					<CheckIcon class="size-2.5" />
+					gh CLI connected
+				</Badge>
+			{:else}
+				<Badge variant="outline" class="gap-1 border-red-700 text-[10px] text-red-400">
+					<XIcon class="size-2.5" />
+					gh CLI not authenticated
+				</Badge>
+			{/if}
+		</div>
+
+		<div class="flex items-center justify-between gap-4">
+			<div class="min-w-0 flex-1">
+				<p class="text-sm font-medium">Default clone directory</p>
+				<p class="mt-0.5 truncate text-xs text-muted-foreground">
+					{store.cloneBaseDir ?? "Not set — you'll be asked each time"}
+				</p>
+			</div>
+			<Button variant="outline" size="sm" onclick={pickCloneDir}>Browse</Button>
+		</div>
+
+		{#if ghAuthenticated === false}
+			<p class="text-[11px] text-muted-foreground">
+				Run <code class="rounded bg-muted px-1 py-0.5">gh auth login</code> in a terminal to connect your GitHub account.
 			</p>
 		{/if}
 	</div>

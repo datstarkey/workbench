@@ -114,6 +114,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Polling is scoped to projects with active Claude/Codex sessions (`activeSessionsByProject`), not all open workspaces.
 - `get_project_status()` batches all data in one IPC call: PRs, workflow runs grouped by branch, and pre-fetched PR checks for open PRs.
 - `gh run list` returns `databaseId` (not `id`) — use `#[serde(alias = "databaseId")]` for deserialization.
+- `gh repo list --json` valid fields include `name,nameWithOwner,description,isPrivate,isFork,url,sshUrl` — `httpCloneUrl` does **not** exist and causes `gh` to exit with an error. The `url` (web URL) also works as an HTTP clone URL.
 - `gh pr checks` returns empty string `""` for `completedAt` on pending checks — validate parsed dates before computing durations.
 
 ### Svelte 5 reactivity
@@ -143,6 +144,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Svelte 5 `$state` with union types: use `$state<'a' | 'b'>('a')` not `let x: 'a' | 'b' = $state('a')` — the latter narrows to the initial value's literal type.
 - `$derived` on class fields is lazy — the callback runs on first read, not at field initialization time. Safe to reference constructor params that are set after field initializers run.
 - **Context init order in App.svelte is load-bearing.** Stores that call `getXxxStore()` in field initializers will crash at runtime (`missing_context`) if the dependency hasn't been `setXxxStore()`'d yet. `GitHubStore` depends on `WorkspaceStore`, `GitStore`, `ClaudeSessionStore`, `ProjectStore`. Always verify the full dependency graph before reordering.
+- Store *methods* that call `getXxxStore()` will crash with `lifecycle_outside_component` when invoked after an `await` (context is no longer active). Move the lookup to a field initializer (`private dep = getDepStore()`) so it's captured at construction time — ensure the dependency is created first in App.svelte.
 - When making a sync store method async, grep for all callers in `*.test.svelte.ts` — tests that don't `await` the call silently pass without verifying behavior.
 - When gating a code path (e.g., adding approval before session launch), trace **all** callers of the underlying method — sidebar context menus, landing pages, terminal tabs, etc. may bypass the new gate.
 - Dialogs using `bind:open` let X/Escape/outside-click close without resolving pending promises. Use `onOpenChange` to intercept dismissal when the dialog controls async flow.
@@ -150,3 +152,4 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Per-project config (like `TrelloProjectConfig`) must be loaded at startup in `App.svelte`'s `onMount`, not only from settings UI. Otherwise features depending on that config (sidebar panels, merge automation) won't work until settings is opened.
 - Dialog pre-fill from props: don't use `$state(prop)` (captures initial value only). Instead, apply prop values in the dialog's `onOpenChange` callback when `isOpen` is true.
 - `main` branch has force-push protection. Always use feature branches for multi-step changes; don't amend already-pushed commits to `main`.
+- `ScrollArea` internal viewport uses `size-full` (`h-full`) — `max-h-N` on the root doesn't constrain it. Use a fixed `h-N` for scroll areas that must stay bounded.

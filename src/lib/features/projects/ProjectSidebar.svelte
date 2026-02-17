@@ -9,6 +9,7 @@
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
@@ -43,6 +44,7 @@
 	import CIStatusBadge from './CIStatusBadge.svelte';
 	import PRStatusBadge from './PRStatusBadge.svelte';
 	import ProjectMenuItems from './ProjectMenuItems.svelte';
+	import CloneRepoDialog from './CloneRepoDialog.svelte';
 
 	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
@@ -153,6 +155,7 @@
 	}
 
 	let dragOverProjectPath = $state<string | null>(null);
+	let cloneDialogOpen = $state(false);
 </script>
 
 <aside class="flex h-full w-full flex-col overflow-hidden bg-muted/20">
@@ -184,17 +187,31 @@
 	</div>
 
 	{#if !sidebarCollapsed}
-		<div class="shrink-0 p-2">
+		<div class="flex shrink-0 gap-1.5 p-2">
 			<Button
 				type="button"
 				variant="outline"
 				size="sm"
-				class="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+				class="flex-1 justify-start gap-2 text-muted-foreground hover:text-foreground"
 				onclick={() => projectManager.add()}
 			>
 				<PlusIcon class="size-3.5" />
 				Add Project
 			</Button>
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					<Button
+						type="button"
+						variant="outline"
+						size="icon-sm"
+						class="shrink-0 text-muted-foreground hover:text-foreground"
+						onclick={() => (cloneDialogOpen = true)}
+					>
+						<DownloadIcon class="size-3.5" />
+					</Button>
+				</Tooltip.Trigger>
+				<Tooltip.Content side="bottom">Clone from GitHub</Tooltip.Content>
+			</Tooltip.Root>
 		</div>
 
 		<ScrollArea class="flex-1">
@@ -627,3 +644,5 @@
 		</div>
 	{/if}
 </aside>
+
+<CloneRepoDialog bind:open={cloneDialogOpen} />

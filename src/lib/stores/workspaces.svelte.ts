@@ -24,6 +24,7 @@ interface AddAISessionOptions {
 export class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
 	selectedId: string | null = $state(null);
+	private git = getGitStore();
 
 	get activeWorkspaceId(): string | null {
 		if (this.selectedId && this.workspaces.some((w) => w.id === this.selectedId)) {
@@ -172,7 +173,7 @@ export class WorkspaceStore {
 		this.selectedId = workspace.id;
 		this.persist();
 
-		if (isNewProject) getGitStore().watchProject(project.path);
+		if (isNewProject) this.git.watchProject(project.path);
 	}
 
 	open(project: ProjectConfig) {
@@ -193,7 +194,7 @@ export class WorkspaceStore {
 			this.selectedId = this.workspaces[0]?.id ?? null;
 		}
 		this.persist();
-		getGitStore().unwatchProject(projectPath);
+		this.git.unwatchProject(projectPath);
 	}
 
 	close(workspaceId: string) {
@@ -211,7 +212,7 @@ export class WorkspaceStore {
 		this.persist();
 
 		if (!this.workspaces.some((w) => w.projectPath === projectPath)) {
-			getGitStore().unwatchProject(projectPath);
+			this.git.unwatchProject(projectPath);
 		}
 	}
 
@@ -607,7 +608,7 @@ export class WorkspaceStore {
 	/** Resolve the current branch for a workspace. Worktrees use their fixed branch; main workspaces derive from git. */
 	resolvedBranch(ws: ProjectWorkspace): string | undefined {
 		if (ws.worktreePath) return ws.branch;
-		return getGitStore().branchByProject[ws.projectPath] ?? ws.branch;
+		return this.git.branchByProject[ws.projectPath] ?? ws.branch;
 	}
 
 	ensureShape() {

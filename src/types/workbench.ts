@@ -133,6 +133,17 @@ export interface GitChangedEvent {
 
 // GitHub types
 
+export interface GitHubRepo {
+	name: string;
+	nameWithOwner: string;
+	description?: string | null;
+	isPrivate: boolean;
+	isFork: boolean;
+	/** Web URL, e.g. https://github.com/owner/repo — also usable as HTTP clone URL */
+	url: string;
+	sshUrl: string;
+}
+
 export interface GitHubRemote {
 	owner: string;
 	repo: string;
@@ -230,6 +241,7 @@ export interface WorkbenchSettings {
 	agentActions: AgentAction[];
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
+	cloneBaseDir?: string | null;
 }
 
 export interface IntegrationStatus {
