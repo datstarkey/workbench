@@ -6,34 +6,14 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  create-release:
     permissions:
       contents: write
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.changelog.outputs.body }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          shared-key: release-universal-apple-darwin
-
-      - name: Install frontend dependencies
-        run: bun install
-
-      - name: Sync version from tag
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          cd src-tauri
-          sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" tauri.conf.json
-          echo "Set tauri.conf.json version to ${VERSION}"
 
       - name: Read changelog
         id: changelog
@@ -57,6 +37,59 @@ jobs:
           draft: true
           prerelease: false
 
+  build:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: '--target universal-apple-darwin'
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            cache-key: release-universal-apple-darwin
+          - os: windows-latest
+            args: ''
+            rust-targets: ''
+            cache-key: release-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.cache-key }}
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Sync version from tag (unix)
+        if: runner.os != 'Windows'
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          cd src-tauri
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" tauri.conf.json
+          echo "Set tauri.conf.json version to ${VERSION}"
+
+      - name: Sync version from tag (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $conf = Get-Content src-tauri/tauri.conf.json -Raw
+          $conf = $conf -replace '"version": ".*?"', "`"version`": `"$version`""
+          Set-Content src-tauri/tauri.conf.json -Value $conf -NoNewline
+          Write-Host "Set tauri.conf.json version to $version"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,13 +98,19 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'Workbench v__VERSION__'
-          releaseBody: '${{ steps.changelog.outputs.body }}'
+          releaseBody: '${{ needs.create-release.outputs.body }}'
           releaseDraft: true
           prerelease: false
           tauriScript: bunx tauri
-          args: '--target universal-apple-darwin'
+          args: ${{ matrix.args }}
 
+  publish:
+    needs: [create-release, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit ${{ github.ref_name }} --draft=false
+        run: gh release edit ${{ github.ref_name }} --draft=false --repo ${{ github.repository }}

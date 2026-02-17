@@ -1,6 +1,8 @@
+use std::io::{BufRead, BufReader, Read};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Clone)]
 pub struct HookBridgeState {
@@ -14,7 +16,12 @@ impl HookBridgeState {
             return unix::start(app_handle);
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            return tcp::start(app_handle);
+        }
+
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = app_handle;
             Self { socket_path: None }
@@ -120,6 +127,42 @@ impl CodexNotifyEvent {
             notify_event,
             cwd,
             codex_payload,
+        }
+    }
+}
+
+/// Process lines from a stream, dispatching hook events to the frontend.
+/// Shared between Unix socket and TCP implementations.
+fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle) {
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => {
+                eprintln!("[HookBridge] Failed to read payload: {e}");
+                break;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let envelope = match serde_json::from_str::<HookBridgeEnvelope>(&line) {
+            Ok(envelope) => envelope,
+            Err(e) => {
+                eprintln!("[HookBridge] Invalid hook payload: {e}");
+                continue;
+            }
+        };
+
+        match envelope {
+            HookBridgeEnvelope::Claude { pane_id, hook } => {
+                let event = ClaudeHookEvent::from_payload(pane_id, hook);
+                let _ = handle.emit("claude:hook", event);
+            }
+            HookBridgeEnvelope::Codex { pane_id, codex } => {
+                let event = CodexNotifyEvent::from_payload(pane_id, codex);
+                let _ = handle.emit("codex:notify", event);
+            }
         }
     }
 }
@@ -293,12 +336,12 @@ mod tests {
 #[cfg(unix)]
 mod unix {
     use std::fs;
-    use std::io::{BufRead, BufReader};
+    use std::io::BufReader;
     use std::os::unix::net::UnixListener;
 
-    use tauri::{AppHandle, Emitter};
+    use tauri::AppHandle;
 
-    use super::{ClaudeHookEvent, CodexNotifyEvent, HookBridgeEnvelope, HookBridgeState};
+    use super::{handle_stream, HookBridgeState};
     use crate::paths;
 
     pub fn start(app_handle: AppHandle) -> HookBridgeState {
@@ -331,43 +374,70 @@ mod unix {
                     }
                 };
 
-                let reader = BufReader::new(stream);
-                for line in reader.lines() {
-                    let line = match line {
-                        Ok(line) => line,
-                        Err(e) => {
-                            eprintln!("[HookBridge] Failed to read socket payload: {e}");
-                            break;
-                        }
-                    };
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-
-                    let envelope = match serde_json::from_str::<HookBridgeEnvelope>(&line) {
-                        Ok(envelope) => envelope,
-                        Err(e) => {
-                            eprintln!("[HookBridge] Invalid hook payload: {e}");
-                            continue;
-                        }
-                    };
-
-                    match envelope {
-                        HookBridgeEnvelope::Claude { pane_id, hook } => {
-                            let event = ClaudeHookEvent::from_payload(pane_id, hook);
-                            let _ = handle.emit("claude:hook", event);
-                        }
-                        HookBridgeEnvelope::Codex { pane_id, codex } => {
-                            let event = CodexNotifyEvent::from_payload(pane_id, codex);
-                            let _ = handle.emit("codex:notify", event);
-                        }
-                    }
-                }
+                let handle = handle.clone();
+                std::thread::spawn(move || {
+                    handle_stream(BufReader::new(stream), &handle);
+                });
             }
         });
 
         HookBridgeState {
             socket_path: Some(socket_path.to_string_lossy().to_string()),
+        }
+    }
+}
+
+/// TCP-based hook bridge for Windows (and usable as fallback on any platform).
+/// Binds to 127.0.0.1:0 (ephemeral port) so there are no port conflicts.
+/// Hook scripts connect via AF_INET instead of AF_UNIX.
+#[cfg(windows)]
+mod tcp {
+    use std::io::BufReader;
+    use std::net::TcpListener;
+
+    use tauri::AppHandle;
+
+    use super::{handle_stream, HookBridgeState};
+
+    pub fn start(app_handle: AppHandle) -> HookBridgeState {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[HookBridge] Failed to bind TCP listener: {e}");
+                return HookBridgeState { socket_path: None };
+            }
+        };
+
+        let addr = match listener.local_addr() {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("[HookBridge] Failed to get listener address: {e}");
+                return HookBridgeState { socket_path: None };
+            }
+        };
+
+        let socket_path = format!("127.0.0.1:{}", addr.port());
+        let handle = app_handle.clone();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let stream = match stream {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("[HookBridge] TCP accept failed: {e}");
+                        continue;
+                    }
+                };
+
+                let handle = handle.clone();
+                std::thread::spawn(move || {
+                    handle_stream(BufReader::new(stream), &handle);
+                });
+            }
+        });
+
+        HookBridgeState {
+            socket_path: Some(socket_path),
         }
     }
 }

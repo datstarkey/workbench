@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::paths;
 use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
@@ -171,6 +171,7 @@ fn workbench_hook_script_body() -> &'static str {
     r#"#!/usr/bin/env python3
 import json
 import os
+import platform
 import socket
 import sys
 
@@ -191,8 +192,13 @@ except Exception:
 envelope = {"pane_id": pane_id, "hook": hook_payload}
 
 try:
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(socket_path)
+    if ":" in socket_path and not socket_path.startswith("/"):
+        host, port = socket_path.rsplit(":", 1)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, int(port)))
+    else:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(socket_path)
     msg = json.dumps(envelope, separators=(",", ":")) + "\n"
     sock.sendall(msg.encode("utf-8"))
     sock.close()
@@ -260,6 +266,16 @@ fn ensure_event_hooks(
     changed
 }
 
+/// Build the hook command string for a given script path.
+/// On Windows, prefix with `python3` since shebangs don't work.
+fn hook_command_for_script(script_path: &Path) -> String {
+    if cfg!(windows) {
+        format!("python3 {}", script_path.to_string_lossy())
+    } else {
+        script_path.to_string_lossy().to_string()
+    }
+}
+
 pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
     let script_path = workbench_hook_script_path();
     let script_exists = script_path.exists();
@@ -274,7 +290,7 @@ pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
         serde_json::json!({})
     };
 
-    let command = script_path.to_string_lossy().to_string();
+    let command = hook_command_for_script(&script_path);
     let mut missing_events = Vec::new();
 
     for event in WORKBENCH_HOOK_EVENTS {
@@ -329,7 +345,7 @@ pub fn ensure_workbench_hook_integration() -> Result<()> {
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     let hooks_obj = ensure_object(hooks_value);
 
-    let command = script_path.to_string_lossy().to_string();
+    let command = hook_command_for_script(&script_path);
     let mut changed = false;
     for event in WORKBENCH_HOOK_EVENTS {
         changed |= ensure_event_hooks(hooks_obj, event, &command);
@@ -365,19 +381,20 @@ mod tests {
 
     #[test]
     fn settings_path_project_with_path() {
-        let path = settings_path("project", Some("/home/user/myproject")).unwrap();
-        assert_eq!(
-            path,
-            PathBuf::from("/home/user/myproject/.claude/settings.json")
-        );
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let path = settings_path("project", Some(project)).unwrap();
+        assert_eq!(path, dir.path().join(".claude").join("settings.json"));
     }
 
     #[test]
     fn settings_path_project_local_with_path() {
-        let path = settings_path("project-local", Some("/home/user/myproject")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let path = settings_path("project-local", Some(project)).unwrap();
         assert_eq!(
             path,
-            PathBuf::from("/home/user/myproject/.claude/settings.local.json")
+            dir.path().join(".claude").join("settings.local.json")
         );
     }
 
@@ -433,5 +450,33 @@ mod tests {
         save_settings("project", Some(project_path), &v2).unwrap();
         let loaded = load_settings("project", Some(project_path)).unwrap();
         assert_eq!(loaded, v2);
+    }
+
+    // --- hook_command_for_script ---
+
+    #[test]
+    fn hook_command_for_script_returns_nonempty() {
+        let path = PathBuf::from("/some/script.py");
+        let cmd = hook_command_for_script(&path);
+        assert!(!cmd.is_empty());
+        assert!(cmd.contains("script.py"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hook_command_for_script_windows_prefixes_python() {
+        let path = PathBuf::from("C:\\Users\\test\\.claude\\hooks\\workbench-hook-bridge.py");
+        let cmd = hook_command_for_script(&path);
+        assert!(cmd.starts_with("python3 "));
+        assert!(cmd.contains("workbench-hook-bridge.py"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_command_for_script_unix_is_bare_path() {
+        let path = PathBuf::from("/home/user/.claude/hooks/workbench-hook-bridge.py");
+        let cmd = hook_command_for_script(&path);
+        assert_eq!(cmd, "/home/user/.claude/hooks/workbench-hook-bridge.py");
+        assert!(!cmd.starts_with("python3"));
     }
 }

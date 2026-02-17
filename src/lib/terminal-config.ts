@@ -29,7 +29,8 @@ export const terminalOptions: ITerminalOptions = {
 	allowTransparency: false,
 	convertEol: false,
 	cursorBlink: true,
-	fontFamily: 'JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace',
+	fontFamily:
+		'JetBrains Mono, Cascadia Mono, Consolas, ui-monospace, SFMono-Regular, Menlo, monospace',
 	fontSize: 13,
 	lineHeight: 1.0,
 	scrollback: 5000,

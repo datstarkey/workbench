@@ -40,14 +40,19 @@
 
 	let branchName = $derived(mode === 'new' ? newBranchName : selectedBranch);
 
-	let parentDir = $derived(projectPath.replace(/\/?$/, '').replace(/\/[^/]+$/, ''));
+	let parentDir = $derived.by(() => {
+		const trimmed = projectPath.replace(/[\\/]$/, '');
+		const lastSep = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+		return lastSep >= 0 ? trimmed.substring(0, lastSep) : trimmed;
+	});
 	let projectDirName = $derived(baseName(projectPath));
+	let sep = $derived(projectPath.includes('\\') ? '\\' : '/');
 	let worktreePath = $derived.by(() => {
 		if (!branchName) return '';
 		if (workbenchSettings.worktreeStrategy === 'inside') {
-			return `${projectPath}/.worktrees/${branchName}`;
+			return `${projectPath}${sep}.worktrees${sep}${branchName}`;
 		}
-		return `${parentDir}/${projectDirName}-${branchName}`;
+		return `${parentDir}${sep}${projectDirName}-${branchName}`;
 	});
 
 	let localBranches = $derived(branches.filter((b) => !b.isRemote && !b.isCurrent));

@@ -347,8 +347,9 @@ pub fn open_url(url: &str) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
+        // Empty title ("") prevents `start` from misinterpreting URLs with special chars
         Command::new("cmd")
-            .args(["/c", "start", url])
+            .args(["/c", "start", "\"\"", url])
             .spawn()
             .context("Failed to open URL")?;
     }
