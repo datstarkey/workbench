@@ -31,6 +31,15 @@ export function resumeCommand(type: SessionType, sessionId: string): string {
 	return type === 'codex' ? codexResumeCommand(sessionId) : claudeResumeCommand(sessionId);
 }
 
+/** Like resumeCommand but returns undefined for invalid session IDs instead of throwing. */
+export function tryResumeCommand(type: SessionType, sessionId: string): string | undefined {
+	try {
+		return resumeCommand(type, sessionId);
+	} catch {
+		return undefined;
+	}
+}
+
 function shellSingleQuote(value: string): string {
 	return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }

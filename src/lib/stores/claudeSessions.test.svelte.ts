@@ -312,6 +312,57 @@ describe('ClaudeSessionStore', () => {
 		});
 	});
 
+	describe('terminal:data events for Claude panes', () => {
+		function setupClaudePane() {
+			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
+				{
+					id: 'ws-1',
+					projectPath: '/test',
+					projectName: 'Test',
+					terminalTabs: [
+						{
+							id: 'tab-1',
+							label: 'Claude 1',
+							split: 'horizontal',
+							type: 'claude',
+							panes: [{ id: 'pane-1', type: 'claude' }]
+						}
+					],
+					activeTerminalTabId: 'tab-1'
+				}
+			];
+		}
+
+		it('clears awaitingInput on non-empty output', () => {
+			setupClaudePane();
+			store.panesAwaitingInput.add('pane-1');
+
+			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: 'Working on it...' });
+
+			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
+			expect(store.panesInProgress.has('pane-1')).toBe(true);
+		});
+
+		it('does not clear awaitingInput on ANSI-only output', () => {
+			setupClaudePane();
+			store.panesAwaitingInput.add('pane-1');
+
+			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: '\x1b[2K\x1b[1G\r' });
+
+			expect(store.panesAwaitingInput.has('pane-1')).toBe(true);
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+		});
+
+		it('does nothing when pane is not awaiting input', () => {
+			setupClaudePane();
+
+			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: 'Some output' });
+
+			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+		});
+	});
+
 	describe('startSession', () => {
 		it('delegates to workspaces.addAISession', async () => {
 			await store.startSession('ws-1', 'claude');

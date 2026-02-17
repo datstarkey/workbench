@@ -242,6 +242,16 @@ export class ClaudeSessionStore {
 		this.lastViewportChangeAt.set(paneId, Date.now());
 	}
 
+	/** Clear awaiting-input state when real output arrives on a Claude pane. */
+	private handleClaudeTerminalData(paneId: string, data: string): void {
+		if (!this.panesAwaitingInput.has(paneId)) return;
+		const plain = stripAnsi(data).replace(/\r/g, '').trim();
+		if (plain.length > 0) {
+			this.panesAwaitingInput.delete(paneId);
+			this.panesInProgress.add(paneId);
+		}
+	}
+
 	private classifyTerminalData(paneId: string, data: string): boolean {
 		const now = Date.now();
 		const plain = stripAnsi(data).replace(/\r/g, '');
@@ -405,7 +415,14 @@ export class ClaudeSessionStore {
 
 		listen<TerminalDataEvent>('terminal:data', (event) => {
 			const paneId = event.payload.sessionId;
-			if (this.paneType(paneId) !== 'codex') return;
+			const paneType = this.paneType(paneId);
+
+			if (paneType === 'claude') {
+				this.handleClaudeTerminalData(paneId, event.payload.data);
+				return;
+			}
+
+			if (paneType !== 'codex') return;
 			if (this.classifyTerminalData(paneId, event.payload.data)) return;
 
 			// Output received — mark as active, reset the debounce
