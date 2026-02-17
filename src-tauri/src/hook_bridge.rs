@@ -11,21 +11,7 @@ pub struct HookBridgeState {
 
 impl HookBridgeState {
     pub fn new(app_handle: AppHandle) -> Self {
-        #[cfg(unix)]
-        {
-            return unix::start(app_handle);
-        }
-
-        #[cfg(windows)]
-        {
-            return tcp::start(app_handle);
-        }
-
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = app_handle;
-            Self { socket_path: None }
-        }
+        tcp::start(app_handle)
     }
 
     pub fn socket_path(&self) -> Option<&str> {
@@ -333,64 +319,9 @@ mod tests {
     }
 }
 
-#[cfg(unix)]
-mod unix {
-    use std::fs;
-    use std::io::BufReader;
-    use std::os::unix::net::UnixListener;
-
-    use tauri::AppHandle;
-
-    use super::{handle_stream, HookBridgeState};
-    use crate::paths;
-
-    pub fn start(app_handle: AppHandle) -> HookBridgeState {
-        let socket_path = paths::workbench_hook_socket_path();
-        if let Err(e) = fs::create_dir_all(paths::workbench_config_dir()) {
-            eprintln!("[HookBridge] Failed to create config directory: {e}");
-            return HookBridgeState { socket_path: None };
-        }
-
-        if socket_path.exists() {
-            let _ = fs::remove_file(&socket_path);
-        }
-
-        let listener = match UnixListener::bind(&socket_path) {
-            Ok(listener) => listener,
-            Err(e) => {
-                eprintln!("[HookBridge] Failed to bind socket: {e}");
-                return HookBridgeState { socket_path: None };
-            }
-        };
-
-        let handle = app_handle.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let stream = match stream {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        eprintln!("[HookBridge] Socket accept failed: {e}");
-                        continue;
-                    }
-                };
-
-                let handle = handle.clone();
-                std::thread::spawn(move || {
-                    handle_stream(BufReader::new(stream), &handle);
-                });
-            }
-        });
-
-        HookBridgeState {
-            socket_path: Some(socket_path.to_string_lossy().to_string()),
-        }
-    }
-}
-
-/// TCP-based hook bridge for Windows (and usable as fallback on any platform).
+/// TCP-based hook bridge for all platforms.
 /// Binds to 127.0.0.1:0 (ephemeral port) so there are no port conflicts.
-/// Hook scripts connect via AF_INET instead of AF_UNIX.
-#[cfg(windows)]
+/// Hook scripts connect via TCP using /dev/tcp (bash) or TcpClient (PowerShell).
 mod tcp {
     use std::io::BufReader;
     use std::net::TcpListener;
