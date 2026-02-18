@@ -207,10 +207,7 @@ try {\n\
 }
 
 fn ensure_workbench_hook_script() -> Result<PathBuf> {
-    paths::ensure_script(
-        &workbench_hook_script_path(),
-        workbench_hook_script_body(),
-    )
+    paths::ensure_script(&workbench_hook_script_path(), workbench_hook_script_body())
 }
 
 fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
@@ -270,20 +267,41 @@ fn ensure_event_hooks(
     changed
 }
 
+fn path_needs_quoting(path: &str) -> bool {
+    path.chars().any(|c| c.is_whitespace() || c == '\'')
+}
+
+#[cfg(not(windows))]
+fn quote_for_sh(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(windows)]
+fn quote_for_powershell(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "''"))
+}
+
 /// Build the hook command string for a given script path.
 /// On Windows, invoke via PowerShell since scripts need an interpreter prefix.
 /// On Unix, the shebang handles execution so the bare path is sufficient.
 fn hook_command_for_script(script_path: &Path) -> String {
+    let path = script_path.to_string_lossy();
     #[cfg(windows)]
     {
-        format!(
-            "powershell.exe -ExecutionPolicy Bypass -File {}",
-            script_path.to_string_lossy()
-        )
+        let file_arg = if path_needs_quoting(&path) {
+            quote_for_powershell(&path)
+        } else {
+            path.to_string()
+        };
+        format!("powershell.exe -ExecutionPolicy Bypass -File {}", file_arg)
     }
     #[cfg(not(windows))]
     {
-        script_path.to_string_lossy().to_string()
+        if path_needs_quoting(&path) {
+            quote_for_sh(&path)
+        } else {
+            path.to_string()
+        }
     }
 }
 
@@ -404,10 +422,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         let path = settings_path("project-local", Some(project)).unwrap();
-        assert_eq!(
-            path,
-            dir.path().join(".claude").join("settings.local.json")
-        );
+        assert_eq!(path, dir.path().join(".claude").join("settings.local.json"));
     }
 
     #[test]
@@ -420,12 +435,10 @@ mod tests {
     fn settings_path_unknown_scope_errors() {
         let result = settings_path("invalid", None);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unknown settings scope")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown settings scope"));
     }
 
     // --- load_settings / save_settings round-trip ---
@@ -490,5 +503,72 @@ mod tests {
         let cmd = hook_command_for_script(&path);
         assert_eq!(cmd, "/home/user/.claude/hooks/workbench-hook-bridge.sh");
         assert!(!cmd.starts_with("powershell"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_command_for_script_unix_quotes_paths_with_spaces() {
+        let path = PathBuf::from("/home/user/My Hooks/workbench-hook-bridge.sh");
+        let cmd = hook_command_for_script(&path);
+        assert_eq!(cmd, "'/home/user/My Hooks/workbench-hook-bridge.sh'");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hook_command_for_script_windows_quotes_paths_with_spaces() {
+        let path = PathBuf::from("C:\\Users\\test user\\.claude\\hooks\\workbench-hook-bridge.ps1");
+        let cmd = hook_command_for_script(&path);
+        assert!(
+            cmd.contains("-File 'C:\\Users\\test user\\.claude\\hooks\\workbench-hook-bridge.ps1'")
+        );
+    }
+
+    // --- ensure_event_hooks ---
+
+    #[test]
+    fn ensure_event_hooks_adds_matcher_entry() {
+        let mut hooks_obj = serde_json::Map::new();
+        let changed =
+            ensure_event_hooks(&mut hooks_obj, "PostToolUse", "/tmp/hook.sh", Some("Bash"));
+        assert!(changed);
+
+        let entries = hooks_obj
+            .get("PostToolUse")
+            .and_then(|v| v.as_array())
+            .expect("PostToolUse array should exist");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].get("matcher").and_then(|v| v.as_str()),
+            Some("Bash")
+        );
+        assert_eq!(
+            entries[0]
+                .pointer("/hooks/0/command")
+                .and_then(|v| v.as_str()),
+            Some("/tmp/hook.sh")
+        );
+    }
+
+    #[test]
+    fn ensure_event_hooks_dedupes_same_matcher_and_command() {
+        let mut hooks_obj = serde_json::Map::new();
+        assert!(ensure_event_hooks(
+            &mut hooks_obj,
+            "PostToolUse",
+            "/tmp/hook.sh",
+            Some("Bash")
+        ));
+        assert!(!ensure_event_hooks(
+            &mut hooks_obj,
+            "PostToolUse",
+            "/tmp/hook.sh",
+            Some("Bash")
+        ));
+
+        let entries = hooks_obj
+            .get("PostToolUse")
+            .and_then(|v| v.as_array())
+            .expect("PostToolUse array should exist");
+        assert_eq!(entries.len(), 1);
     }
 }

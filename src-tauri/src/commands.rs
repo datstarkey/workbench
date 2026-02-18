@@ -6,15 +6,16 @@ use crate::codex_sessions;
 use crate::config;
 use crate::git;
 use crate::github;
+use crate::github_poller::GitHubPoller;
 use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::HookBridgeState;
 use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitHubCheckDetail, GitHubProjectStatus, GitHubRemote, GitInfo,
-    HookScriptInfo, IntegrationStatus, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings,
-    WorkspaceFile, WorktreeInfo,
+    DiscoveredClaudeSession, GitHubProjectStatus, GitHubRemote, GitInfo, HookScriptInfo,
+    IntegrationStatus, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile,
+    WorktreeInfo,
 };
 
 #[tauri::command]
@@ -250,11 +251,21 @@ pub fn github_project_status(project_path: String) -> GitHubProjectStatus {
 }
 
 #[tauri::command(async)]
-pub fn github_pr_checks(
+pub fn github_set_tracked_projects(
+    project_paths: Vec<String>,
+    poller: State<'_, GitHubPoller>,
+) -> Result<bool, String> {
+    poller.set_tracked_projects(project_paths);
+    Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn github_refresh_project(
     project_path: String,
-    pr_number: u64,
-) -> Result<Vec<GitHubCheckDetail>, String> {
-    github::list_pr_checks(&project_path, pr_number).map_err(|e| e.to_string())
+    poller: State<'_, GitHubPoller>,
+) -> Result<bool, String> {
+    poller.request_refresh(project_path);
+    Ok(true)
 }
 
 #[tauri::command(async)]

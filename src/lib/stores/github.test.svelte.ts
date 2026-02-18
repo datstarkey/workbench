@@ -55,12 +55,6 @@ vi.mock('./context', () => ({
 	getProjectStore: () => mockProjectStore
 }));
 
-// --- Pure function tests (exported from module scope) ---
-// We re-export them via a wrapper so we can import and test them directly.
-// Since detectCheckTransitions and buildBucketMap are module-scoped (not exported),
-// we test them indirectly through the store's fetchPrChecks method, or we can
-// test the logic by calling the store methods that use them.
-
 // Helper factories
 
 function makeCheck(overrides: Partial<GitHubCheckDetail> = {}): GitHubCheckDetail {
@@ -137,15 +131,20 @@ describe('GitHubStore', () => {
 	// ─── Constructor ──────────────────────────────────────────
 
 	describe('constructor', () => {
-		it('registers a git:changed listener', () => {
-			expect(listenSpy).toHaveBeenCalledWith('git:changed', expect.any(Function));
+		it('registers a project:refresh-requested listener', () => {
+			expect(listenSpy).toHaveBeenCalledWith('project:refresh-requested', expect.any(Function));
 		});
 
-		it('starts a slow poll interval', () => {
-			// The constructor sets up a setInterval for polling.
-			// We can verify indirectly that a timer was created.
-			// The store should survive construction without errors.
-			expect(store.ghAvailable).toBeNull();
+		it('registers a github:project-status listener', () => {
+			expect(listenSpy).toHaveBeenCalledWith('github:project-status', expect.any(Function));
+		});
+
+		it('registers a github:check-transition listener', () => {
+			expect(listenSpy).toHaveBeenCalledWith('github:check-transition', expect.any(Function));
+		});
+
+		it('does not register legacy git:changed listener', () => {
+			expect(listenSpy).not.toHaveBeenCalledWith('git:changed', expect.any(Function));
 		});
 	});
 
@@ -340,6 +339,7 @@ describe('GitHubStore', () => {
 		});
 
 		it('uses override when set for current workspace', () => {
+			store.ghAvailable = false;
 			mockWorkspaceStore.activeWorkspaceId = 'ws-1';
 			mockWorkspaceStore.activeWorkspace = { id: 'ws-1', projectPath: '/project' };
 			mockWorkspaceStore.resolvedBranch = vi.fn(() => 'main');
@@ -350,6 +350,7 @@ describe('GitHubStore', () => {
 		});
 
 		it('ignores override when workspace changes', () => {
+			store.ghAvailable = false;
 			mockWorkspaceStore.activeWorkspaceId = 'ws-1';
 			mockWorkspaceStore.activeWorkspace = { id: 'ws-1', projectPath: '/project' };
 			mockWorkspaceStore.resolvedBranch = vi.fn(() => 'main');
@@ -438,6 +439,7 @@ describe('GitHubStore', () => {
 
 	describe('clearSidebarOverride', () => {
 		it('clears override target', () => {
+			store.ghAvailable = false;
 			mockWorkspaceStore.activeWorkspaceId = 'ws-1';
 			mockWorkspaceStore.activeWorkspace = { id: 'ws-1', projectPath: '/project' };
 			mockWorkspaceStore.resolvedBranch = vi.fn(() => 'main');
@@ -490,167 +492,37 @@ describe('GitHubStore', () => {
 		});
 	});
 
-	// ─── fetchPrChecks ────────────────────────────────────────
+	// ─── github:check-transition event ────────────────────────
 
-	describe('fetchPrChecks', () => {
-		it('fetches and stores PR checks', async () => {
-			const checks = [makeCheck({ name: 'lint' }), makeCheck({ name: 'test' })];
-			mockInvoke('github_pr_checks', () => checks);
-
-			await store.fetchPrChecks('/project', 42);
-
-			expect(invokeSpy).toHaveBeenCalledWith('github_pr_checks', {
-				projectPath: '/project',
-				prNumber: 42
-			});
-			expect(store.checksByPr['/project::42']).toEqual(checks);
-		});
-
-		it('deduplicates concurrent requests for same PR', async () => {
-			let resolveInvoke: (v: GitHubCheckDetail[]) => void;
-			mockInvoke(
-				'github_pr_checks',
-				() =>
-					new Promise<GitHubCheckDetail[]>((resolve) => {
-						resolveInvoke = resolve;
-					})
-			);
-
-			const p1 = store.fetchPrChecks('/project', 1);
-			const p2 = store.fetchPrChecks('/project', 1);
-
-			resolveInvoke!([makeCheck()]);
-			await Promise.all([p1, p2]);
-
-			const calls = invokeSpy.mock.calls.filter((c) => c[0] === 'github_pr_checks');
-			expect(calls).toHaveLength(1);
-		});
-
-		it('handles fetch failure gracefully', async () => {
-			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-			mockInvoke('github_pr_checks', () => {
-				throw new Error('network error');
-			});
-
-			await store.fetchPrChecks('/project', 1);
-
-			expect(warnSpy).toHaveBeenCalledWith(
-				'[GitHubStore] Failed to fetch PR checks:',
-				expect.any(Error)
-			);
-			warnSpy.mockRestore();
-		});
-
-		it('detects check transitions and calls onCheckComplete callback', async () => {
+	describe('github:check-transition event', () => {
+		it('calls onCheckComplete callback for pass', () => {
 			const callback = vi.fn();
 			store.onCheckComplete(callback);
 
-			// First fetch: pending checks
-			const pendingChecks = [makeCheck({ name: 'CI', workflow: 'build', bucket: 'pending' })];
-			mockInvoke('github_pr_checks', () => pendingChecks);
-			await store.fetchPrChecks('/project', 1);
-
-			// Second fetch: check passed
-			const passedChecks = [makeCheck({ name: 'CI', workflow: 'build', bucket: 'pass' })];
-			clearInvokeMocks();
-			mockInvoke('github_pr_checks', () => passedChecks);
-			await store.fetchPrChecks('/project', 1);
-
-			expect(callback).toHaveBeenCalledWith({
+			emitMockEvent('github:check-transition', {
+				projectPath: '/project',
+				prNumber: 42,
 				name: 'CI',
-				bucket: 'pass',
-				projectPath: '/project',
-				prNumber: 1
+				bucket: 'pass'
 			});
-		});
-
-		it('detects pending-to-fail transitions', async () => {
-			const callback = vi.fn();
-			store.onCheckComplete(callback);
-
-			// First fetch: pending
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'CI', workflow: 'build', bucket: 'pending' })
-			]);
-			await store.fetchPrChecks('/project', 1);
-
-			// Second fetch: failed
-			clearInvokeMocks();
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'CI', workflow: 'build', bucket: 'fail' })
-			]);
-			await store.fetchPrChecks('/project', 1);
 
 			expect(callback).toHaveBeenCalledWith({
+				projectPath: '/project',
+				prNumber: 42,
 				name: 'CI',
-				bucket: 'fail',
-				projectPath: '/project',
-				prNumber: 1
+				bucket: 'pass'
 			});
 		});
 
-		it('does not notify when check stays pending', async () => {
-			const callback = vi.fn();
-			store.onCheckComplete(callback);
-
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'CI', workflow: 'build', bucket: 'pending' })
-			]);
-			await store.fetchPrChecks('/project', 1);
-
-			clearInvokeMocks();
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'CI', workflow: 'build', bucket: 'pending' })
-			]);
-			await store.fetchPrChecks('/project', 1);
-
-			expect(callback).not.toHaveBeenCalled();
-		});
-
-		it('does not notify when check goes from pass to pass', async () => {
-			const callback = vi.fn();
-			store.onCheckComplete(callback);
-
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'CI', workflow: 'build', bucket: 'pass' })
-			]);
-			await store.fetchPrChecks('/project', 1);
-
-			clearInvokeMocks();
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'CI', workflow: 'build', bucket: 'pass' })
-			]);
-			await store.fetchPrChecks('/project', 1);
-
-			expect(callback).not.toHaveBeenCalled();
-		});
-
-		it('tracks multiple checks independently', async () => {
-			const callback = vi.fn();
-			store.onCheckComplete(callback);
-
-			// First fetch: both pending
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'lint', workflow: 'ci', bucket: 'pending' }),
-				makeCheck({ name: 'test', workflow: 'ci', bucket: 'pending' })
-			]);
-			await store.fetchPrChecks('/project', 1);
-
-			// Second fetch: lint passed, test still pending
-			clearInvokeMocks();
-			mockInvoke('github_pr_checks', () => [
-				makeCheck({ name: 'lint', workflow: 'ci', bucket: 'pass' }),
-				makeCheck({ name: 'test', workflow: 'ci', bucket: 'pending' })
-			]);
-			await store.fetchPrChecks('/project', 1);
-
-			expect(callback).toHaveBeenCalledTimes(1);
-			expect(callback).toHaveBeenCalledWith({
-				name: 'lint',
-				bucket: 'pass',
+		it('does nothing when callback is not registered', () => {
+			emitMockEvent('github:check-transition', {
 				projectPath: '/project',
-				prNumber: 1
+				prNumber: 42,
+				name: 'CI',
+				bucket: 'fail'
 			});
+
+			expect(true).toBe(true);
 		});
 	});
 
@@ -727,6 +599,57 @@ describe('GitHubStore', () => {
 		});
 	});
 
+	// ─── trackedProjectPaths / syncTrackedProjects ────────────
+
+	describe('trackedProjectPaths', () => {
+		it('returns unique project paths', () => {
+			mockProjectStore.projects = [{ name: 'test', path: '/project' }];
+			mockSessionStore.activeSessionsByProject = { '/project': ['session-1'] };
+			mockGitStore.branchByProject = { '/project': 'main' };
+			mockGitStore.worktreesByProject = {
+				'/project': [{ branch: 'feature', isMain: false }]
+			};
+
+			expect(store.trackedProjectPaths).toEqual(['/project']);
+		});
+	});
+
+	describe('syncTrackedProjects', () => {
+		it('sends tracked project paths to backend once per fingerprint', async () => {
+			store.ghAvailable = true;
+			mockProjectStore.projects = [{ name: 'test', path: '/project' }];
+			mockSessionStore.activeSessionsByProject = { '/project': ['session-1'] };
+			mockGitStore.branchByProject = { '/project': 'main' };
+
+			await store.syncTrackedProjects();
+			await store.syncTrackedProjects();
+
+			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_set_tracked_projects');
+			expect(calls).toHaveLength(1);
+			expect(calls[0]).toEqual(['github_set_tracked_projects', { projectPaths: ['/project'] }]);
+		});
+	});
+
+	// ─── github:project-status event ──────────────────────────
+
+	describe('github:project-status event', () => {
+		it('applies backend status updates', () => {
+			store.ghAvailable = true;
+			const status = makeProjectStatus({
+				prs: [makePR({ number: 42, headRefName: 'main' })],
+				branchRuns: { main: makeBranchRuns() },
+				prChecks: { 42: [makeCheck({ name: 'CI' })] }
+			});
+
+			emitMockEvent('github:project-status', { projectPath: '/project', status });
+
+			expect(store.remoteByProject['/project']).toEqual(status.remote);
+			expect(store.prsByProject['/project']).toEqual(status.prs);
+			expect(store.branchRunsByProject['/project']).toEqual(status.branchRuns);
+			expect(store.checksByPr['/project::42']).toEqual(status.prChecks[42]);
+		});
+	});
+
 	// ─── refreshProject ───────────────────────────────────────
 
 	describe('refreshProject', () => {
@@ -735,16 +658,15 @@ describe('GitHubStore', () => {
 
 			await store.refreshProject('/project');
 
-			expect(invokeSpy).not.toHaveBeenCalledWith('github_project_status', expect.anything());
+			expect(invokeSpy).not.toHaveBeenCalledWith('github_refresh_project', expect.anything());
 		});
 
-		it('fetches project status when gh is available', async () => {
+		it('requests backend refresh when gh is available', async () => {
 			store.ghAvailable = true;
-			mockInvoke('github_project_status', () => makeProjectStatus());
 
 			await store.refreshProject('/project');
 
-			expect(invokeSpy).toHaveBeenCalledWith('github_project_status', {
+			expect(invokeSpy).toHaveBeenCalledWith('github_refresh_project', {
 				projectPath: '/project'
 			});
 		});
@@ -753,102 +675,89 @@ describe('GitHubStore', () => {
 	// ─── initForProjects ──────────────────────────────────────
 
 	describe('initForProjects', () => {
-		it('checks gh availability then fetches all projects', async () => {
+		it('checks gh availability then configures backend polling', async () => {
 			mockInvoke('github_is_available', () => true);
-			mockInvoke('github_project_status', () => makeProjectStatus());
 
 			await store.initForProjects(['/project-a', '/project-b']);
 
 			expect(invokeSpy).toHaveBeenCalledWith('github_is_available');
-			expect(invokeSpy).toHaveBeenCalledWith('github_project_status', {
+			expect(invokeSpy).toHaveBeenCalledWith('github_set_tracked_projects', {
+				projectPaths: ['/project-a', '/project-b']
+			});
+			expect(invokeSpy).toHaveBeenCalledWith('github_refresh_project', {
 				projectPath: '/project-a'
 			});
-			expect(invokeSpy).toHaveBeenCalledWith('github_project_status', {
+			expect(invokeSpy).toHaveBeenCalledWith('github_refresh_project', {
 				projectPath: '/project-b'
 			});
 		});
 
-		it('skips fetching when gh is not available', async () => {
+		it('skips backend polling when gh is not available', async () => {
 			mockInvoke('github_is_available', () => false);
 
 			await store.initForProjects(['/project']);
 
-			expect(invokeSpy).not.toHaveBeenCalledWith('github_project_status', expect.anything());
+			expect(invokeSpy).not.toHaveBeenCalledWith('github_set_tracked_projects', expect.anything());
 		});
 	});
 
-	// ─── Debounced refresh via git:changed ────────────────────
+	// ─── project:refresh-requested refresh ──────────────────────
 
-	describe('git:changed debounced refresh', () => {
-		it('refreshes project after debounce delay', async () => {
+	describe('project:refresh-requested refresh', () => {
+		it('requests backend refresh immediately', async () => {
 			store.ghAvailable = true;
-			mockInvoke('github_project_status', () => makeProjectStatus());
 
-			emitMockEvent('git:changed', { projectPath: '/project' });
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/project',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
+			});
+			await Promise.resolve();
 
-			// Not called yet (debounce)
-			expect(invokeSpy).not.toHaveBeenCalledWith('github_project_status', expect.anything());
-
-			// Advance past debounce (2000ms)
-			await vi.advanceTimersByTimeAsync(2000);
-
-			expect(invokeSpy).toHaveBeenCalledWith('github_project_status', {
+			expect(invokeSpy).toHaveBeenCalledWith('github_refresh_project', {
 				projectPath: '/project'
 			});
 		});
 
-		it('resets debounce timer on repeated events', async () => {
+		it('requests refresh after successive events', async () => {
 			store.ghAvailable = true;
-			mockInvoke('github_project_status', () => makeProjectStatus());
 
-			emitMockEvent('git:changed', { projectPath: '/project' });
-			await vi.advanceTimersByTimeAsync(1500);
-			emitMockEvent('git:changed', { projectPath: '/project' });
-			await vi.advanceTimersByTimeAsync(1500);
-
-			// Should not have been called yet (timer reset at 1500ms)
-			expect(invokeSpy).not.toHaveBeenCalledWith('github_project_status', expect.anything());
-
-			await vi.advanceTimersByTimeAsync(500);
-
-			expect(invokeSpy).toHaveBeenCalledWith('github_project_status', {
-				projectPath: '/project'
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/project',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
 			});
-		});
-	});
-
-	// ─── Slow polling ─────────────────────────────────────────
-
-	describe('slow polling', () => {
-		it('polls active branches on 90s interval', async () => {
-			store.ghAvailable = true;
-			mockProjectStore.projects = [{ name: 'test', path: '/project' }];
-			mockSessionStore.activeSessionsByProject = { '/project': ['s1'] };
-			mockGitStore.branchByProject = { '/project': 'main' };
-			mockInvoke('github_project_status', () => makeProjectStatus());
-
-			await vi.advanceTimersByTimeAsync(90_000);
-
-			expect(invokeSpy).toHaveBeenCalledWith('github_project_status', {
-				projectPath: '/project'
+			await Promise.resolve();
+			await Promise.resolve();
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/project',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
 			});
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(calls).toHaveLength(2);
 		});
 	});
 
 	// ─── destroy ──────────────────────────────────────────────
 
 	describe('destroy', () => {
-		it('cleans up intervals and timers', () => {
-			// Trigger a debounce timer
-			emitMockEvent('git:changed', { projectPath: '/project' });
+		it('is safe to call', () => {
+			store.ghAvailable = false;
+			// Trigger a refresh and ensure destroy does not throw.
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/project',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
+			});
 
 			// Should not throw
 			store.destroy();
 
-			// After destroy, advancing timers should not trigger any invokes
-			invokeSpy.mockClear();
-			vi.advanceTimersByTime(100_000);
-			expect(invokeSpy).not.toHaveBeenCalledWith('github_project_status', expect.anything());
+			expect(true).toBe(true);
 		});
 	});
 });

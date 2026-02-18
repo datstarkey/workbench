@@ -6,10 +6,12 @@ mod config;
 mod git;
 mod git_watcher;
 mod github;
+mod github_poller;
 mod hook_bridge;
 mod menu;
 mod paths;
 mod pty;
+mod refresh_dispatcher;
 mod session_utils;
 mod settings;
 mod trello;
@@ -17,8 +19,10 @@ mod trello_commands;
 mod types;
 
 use git_watcher::GitWatcher;
+use github_poller::GitHubPoller;
 use hook_bridge::HookBridgeState;
 use pty::PtyManager;
+use refresh_dispatcher::RefreshDispatcher;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(PtyManager::new())
+        .manage(RefreshDispatcher::new())
         .setup(|app| {
             let handle = app.handle().clone();
             menu::build(&handle).expect("failed to build menu");
@@ -37,6 +42,8 @@ pub fn run() {
             app.manage(bridge);
             let git_watcher = GitWatcher::new(handle);
             app.manage(git_watcher);
+            let github_poller = GitHubPoller::new(app.handle().clone());
+            app.manage(github_poller);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -68,7 +75,8 @@ pub fn run() {
             commands::github_is_available,
             commands::github_get_remote,
             commands::github_project_status,
-            commands::github_pr_checks,
+            commands::github_set_tracked_projects,
+            commands::github_refresh_project,
             commands::github_update_pr_branch,
             commands::github_rerun_workflow,
             commands::github_mark_pr_ready,

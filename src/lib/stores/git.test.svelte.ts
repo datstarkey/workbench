@@ -23,14 +23,41 @@ describe('GitStore', () => {
 	});
 
 	describe('constructor', () => {
-		it('registers a git:changed listener', () => {
-			expect(listenSpy).toHaveBeenCalledWith('git:changed', expect.any(Function));
+		it('registers a project:refresh-requested listener', () => {
+			expect(listenSpy).toHaveBeenCalledWith('project:refresh-requested', expect.any(Function));
 		});
 
-		it('calls refreshGitState when git:changed event fires', async () => {
-			const spy = vi.spyOn(store, 'refreshGitState').mockResolvedValue();
-			emitMockEvent('git:changed', { projectPath: '/projects/foo' });
-			expect(spy).toHaveBeenCalledWith('/projects/foo');
+		it('does not register legacy git:changed listener', () => {
+			expect(listenSpy).not.toHaveBeenCalledWith('git:changed', expect.any(Function));
+		});
+	});
+
+	describe('project:refresh-requested refresh', () => {
+		it('refreshes project immediately', () => {
+			const refreshSpy = vi.spyOn(store, 'refreshGitState').mockResolvedValue();
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/projects/repo',
+				source: 'claude-hook',
+				trigger: 'post-tool-use-bash'
+			});
+
+			expect(refreshSpy).toHaveBeenCalledWith('/projects/repo');
+		});
+
+		it('refreshes for each refresh event', () => {
+			const refreshSpy = vi.spyOn(store, 'refreshGitState').mockResolvedValue();
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/projects/repo',
+				source: 'claude-hook',
+				trigger: 'post-tool-use-bash'
+			});
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/projects/repo',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
+			});
+
+			expect(refreshSpy).toHaveBeenCalledTimes(2);
 		});
 	});
 

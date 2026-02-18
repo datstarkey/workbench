@@ -312,6 +312,30 @@ pub struct GitChangedEvent {
     pub project_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRefreshRequestedEvent {
+    pub project_path: String,
+    pub source: String,
+    pub trigger: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubProjectStatusEvent {
+    pub project_path: String,
+    pub status: GitHubProjectStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubCheckTransitionEvent {
+    pub project_path: String,
+    pub pr_number: u64,
+    pub name: String,
+    pub bucket: String,
+}
+
 // GitHub integration types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

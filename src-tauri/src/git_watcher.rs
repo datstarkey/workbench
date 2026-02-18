@@ -5,8 +5,9 @@ use std::sync::Mutex;
 use anyhow::{anyhow, Result};
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind, Debouncer};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
+use crate::refresh_dispatcher::RefreshDispatcher;
 use crate::types::GitChangedEvent;
 
 type FileWatcher = Debouncer<notify::RecommendedWatcher>;
@@ -49,10 +50,18 @@ impl GitWatcher {
                     }
                     if let Some(project_path) = Self::project_path_from_git_path(&event.path) {
                         if emitted.insert(project_path.clone()) {
+                            let project_path_string = project_path.to_string_lossy().to_string();
+                            let dispatcher = handle.state::<RefreshDispatcher>();
+                            dispatcher.request_refresh(
+                                &handle,
+                                project_path_string.clone(),
+                                "git-watcher",
+                                "git-dir-change",
+                            );
                             let _ = handle.emit(
                                 "git:changed",
                                 GitChangedEvent {
-                                    project_path: project_path.to_string_lossy().to_string(),
+                                    project_path: project_path_string,
                                 },
                             );
                         }

@@ -131,6 +131,24 @@ export interface GitChangedEvent {
 	projectPath: string;
 }
 
+export interface ProjectRefreshRequestedEvent {
+	projectPath: string;
+	source: string;
+	trigger: string;
+}
+
+export interface GitHubProjectStatusEvent {
+	projectPath: string;
+	status: GitHubProjectStatus;
+}
+
+export interface GitHubCheckTransitionEvent {
+	projectPath: string;
+	prNumber: number;
+	name: string;
+	bucket: 'pass' | 'fail';
+}
+
 // GitHub types
 
 export interface GitHubRemote {

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,24 @@ fn default_shell() -> String {
     }
 }
 
+fn resolve_repo_root(path: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(path)
+        .env("PATH", crate::paths::enriched_path())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let repo_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if repo_root.is_empty() {
+        None
+    } else {
+        Some(repo_root)
+    }
+}
+
 struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -30,18 +49,21 @@ struct PtySession {
 }
 
 type SessionMap = Arc<Mutex<HashMap<String, Arc<Mutex<PtySession>>>>>;
+type SessionProjectMap = Arc<Mutex<HashMap<String, String>>>;
 
 /// Manages PTY sessions with per-session locking so operations on one terminal
 /// never block another. The outer map lock is only held briefly for
 /// insert/remove/lookup — never during I/O.
 pub struct PtyManager {
     sessions: SessionMap,
+    session_project_paths: SessionProjectMap,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_project_paths: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -62,6 +84,14 @@ impl PtyManager {
             .remove(session_id)
     }
 
+    pub fn project_path_for_session(&self, session_id: &str) -> Option<String> {
+        self.session_project_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()
+    }
+
     pub fn spawn(
         &self,
         session_id: String,
@@ -74,6 +104,7 @@ impl PtyManager {
         app_handle: AppHandle,
     ) -> Result<()> {
         let pty_system = native_pty_system();
+        let resolved_project_path = resolve_repo_root(&project_path).unwrap_or(project_path.clone());
 
         let size = PtySize {
             rows,
@@ -164,6 +195,10 @@ impl PtyManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.clone(), Arc::clone(&session));
+        self.session_project_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.clone(), resolved_project_path);
 
         // Two-thread output pipeline (same approach as Alacritty / Kitty):
         //   Reader  — drains the PTY as fast as possible (no sleeps, no backpressure)
@@ -217,6 +252,7 @@ impl PtyManager {
         let sid = session_id.clone();
         let handle = app_handle.clone();
         let sessions_for_cleanup = Arc::clone(&self.sessions);
+        let session_project_paths_for_cleanup = Arc::clone(&self.session_project_paths);
         let session_for_cleanup = Arc::clone(&session);
 
         std::thread::spawn(move || {
@@ -276,6 +312,10 @@ impl PtyManager {
 
             // Cleanup: remove session from map and emit exit event.
             Self::remove_session(&sessions_for_cleanup, &sid);
+            session_project_paths_for_cleanup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&sid);
 
             let exit_code = session_for_cleanup
                 .lock()
@@ -339,6 +379,10 @@ impl PtyManager {
             Some(s) => s,
             None => return Ok(()), // already cleaned up by reader thread
         };
+        self.session_project_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
 
         let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
         let _ = sess.child.kill();

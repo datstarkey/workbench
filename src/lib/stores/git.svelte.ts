@@ -1,4 +1,4 @@
-import type { ClaudeHookEvent, GitChangedEvent, WorktreeInfo } from '$types/workbench';
+import type { ProjectRefreshRequestedEvent, WorktreeInfo } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -6,39 +6,10 @@ export class GitStore {
 	worktreesByProject: Record<string, WorktreeInfo[]> = $state({});
 	branchByProject: Record<string, string> = $state({});
 
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity
-	private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
 	constructor() {
-		listen<GitChangedEvent>('git:changed', (event) => {
-			this.refreshGitState(event.payload.projectPath);
+		listen<ProjectRefreshRequestedEvent>('project:refresh-requested', (event) => {
+			void this.refreshGitState(event.payload.projectPath);
 		});
-
-		listen<ClaudeHookEvent>('claude:hook', (event) => {
-			if (event.payload.hookEventName !== 'PostToolUse') return;
-			const payload = event.payload.hookPayload;
-			if (payload['tool_name'] !== 'Bash') return;
-			const cmd = (payload['tool_input'] as Record<string, unknown>)?.['command'];
-			if (typeof cmd !== 'string' || !/\bgit\b|\bgh\b/.test(cmd)) return;
-			const cwd = event.payload.cwd;
-			if (!cwd) return;
-			const projectPath = Object.keys(this.branchByProject).find(
-				(p) => cwd === p || cwd.startsWith(p + '/')
-			);
-			if (projectPath) this.debouncedRefreshGitState(projectPath);
-		});
-	}
-
-	private debouncedRefreshGitState(projectPath: string): void {
-		const existing = this.debounceTimers.get(projectPath);
-		if (existing) clearTimeout(existing);
-		this.debounceTimers.set(
-			projectPath,
-			setTimeout(() => {
-				this.debounceTimers.delete(projectPath);
-				this.refreshGitState(projectPath);
-			}, 500)
-		);
 	}
 
 	async fetchGitInfo(projectPath: string) {

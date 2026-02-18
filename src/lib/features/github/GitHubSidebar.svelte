@@ -83,8 +83,6 @@
 	// Trigger data fetch when sidebar target changes (external side effect -- network requests)
 	$effect(() => {
 		if (activeProjectPath) githubStore.refreshProject(activeProjectPath);
-		if (activeProjectPath && activePr)
-			githubStore.fetchPrChecks(activeProjectPath, activePr.number);
 	});
 
 	onDestroy(() => {
