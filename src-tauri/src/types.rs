@@ -59,6 +59,13 @@ pub struct TerminalExitEvent {
     pub signal: Option<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalActivityEvent {
+    pub session_id: String,
+    pub active: bool,
+}
+
 // Workspace persistence types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

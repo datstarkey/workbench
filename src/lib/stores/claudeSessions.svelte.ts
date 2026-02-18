@@ -10,13 +10,13 @@ import type {
 	CodexNotifyEvent,
 	DiscoveredClaudeSession,
 	SessionType,
+	TerminalActivityEvent,
 	TerminalDataEvent
 } from '$types/workbench';
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
 
-const QUIET_THRESHOLD_MS = 1000;
 const SUBMIT_START_FALLBACK_MS = 5000;
 const LOCAL_ECHO_SUPPRESS_MS = 180;
 const LOCAL_ECHO_MAX_CHARS = 4;
@@ -24,7 +24,7 @@ const LOCAL_TYPING_SUPPRESS_MS = 2500;
 const LOCAL_VIEWPORT_SUPPRESS_MS = 700;
 
 export class ClaudeSessionStore {
-	/** Set of terminal pane IDs currently producing output (clears after QUIET_THRESHOLD_MS) */
+	/** Set of terminal pane IDs currently producing output (clears from backend activity events) */
 	panesInProgress: SvelteSet<string> = $state(new SvelteSet());
 
 	/** Set of terminal pane IDs where Claude is blocked waiting for user action (permission/question) */
@@ -36,8 +36,8 @@ export class ClaudeSessionStore {
 	/** Cached discovered Codex sessions for the current project */
 	discoveredCodexSessions: DiscoveredClaudeSession[] = $state([]);
 
-	/** Per-pane debounce timeouts for quiescence detection */
-	private quiesceTimeouts = new SvelteMap<string, ReturnType<typeof setTimeout>>();
+	/** Per-pane fallback timeout if no output arrives after Enter submit */
+	private submitFallbackTimeouts = new SvelteMap<string, ReturnType<typeof setTimeout>>();
 	/** Last timestamp when local user input was sent to a pane */
 	private lastLocalInputAt = new SvelteMap<string, number>();
 	/** Last timestamp when user typed non-submit input (no Enter/newline) */
@@ -217,13 +217,13 @@ export class ClaudeSessionStore {
 		if (isEnterSubmit) {
 			// Start activity immediately on Enter submit. Shift+Enter sends '\n' only and should not trigger.
 			this.panesInProgress.add(paneId);
-			const existing = this.quiesceTimeouts.get(paneId);
+			const existing = this.submitFallbackTimeouts.get(paneId);
 			if (existing) clearTimeout(existing);
-			this.quiesceTimeouts.set(
+			this.submitFallbackTimeouts.set(
 				paneId,
 				setTimeout(() => {
 					this.panesInProgress.delete(paneId);
-					this.quiesceTimeouts.delete(paneId);
+					this.submitFallbackTimeouts.delete(paneId);
 				}, SUBMIT_START_FALLBACK_MS)
 			);
 			this.lastTypingInputAt.delete(paneId);
@@ -385,6 +385,11 @@ export class ClaudeSessionStore {
 		// Codex notify currently delivers completion/approval style events.
 		if (event.notifyEvent === 'agent-turn-complete') {
 			this.panesInProgress.delete(paneId);
+			const fallback = this.submitFallbackTimeouts.get(paneId);
+			if (fallback) {
+				clearTimeout(fallback);
+				this.submitFallbackTimeouts.delete(paneId);
+			}
 		}
 	}
 
@@ -416,18 +421,25 @@ export class ClaudeSessionStore {
 			if (paneType !== 'codex') return;
 			if (this.classifyTerminalData(paneId, event.payload.data)) return;
 
-			// Output received — mark as active, reset the debounce
+			// Output received — mark as active and clear submit fallback.
 			this.panesInProgress.add(paneId);
-			const existing = this.quiesceTimeouts.get(paneId);
-			if (existing) clearTimeout(existing);
+			const fallback = this.submitFallbackTimeouts.get(paneId);
+			if (fallback) {
+				clearTimeout(fallback);
+				this.submitFallbackTimeouts.delete(paneId);
+			}
+		});
 
-			this.quiesceTimeouts.set(
-				paneId,
-				setTimeout(() => {
-					this.panesInProgress.delete(paneId);
-					this.quiesceTimeouts.delete(paneId);
-				}, QUIET_THRESHOLD_MS)
-			);
+		listen<TerminalActivityEvent>('terminal:activity', (event) => {
+			const paneId = event.payload.sessionId;
+			if (event.payload.active) return;
+			if (this.paneType(paneId) !== 'codex') return;
+			this.panesInProgress.delete(paneId);
+			const fallback = this.submitFallbackTimeouts.get(paneId);
+			if (fallback) {
+				clearTimeout(fallback);
+				this.submitFallbackTimeouts.delete(paneId);
+			}
 		});
 	}
 }

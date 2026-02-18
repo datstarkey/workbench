@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::Command;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -8,10 +9,11 @@ use anyhow::{anyhow, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter};
 
-use crate::types::{TerminalDataEvent, TerminalExitEvent};
+use crate::types::{TerminalActivityEvent, TerminalDataEvent, TerminalExitEvent};
 
 const PTY_READ_BUFFER_SIZE: usize = 32768;
 const STARTUP_COMMAND_DELAY_MS: u64 = 300;
+const TERMINAL_QUIET_THRESHOLD_MS: u64 = 1000;
 
 fn default_shell() -> String {
     #[cfg(unix)]
@@ -210,6 +212,55 @@ impl PtyManager {
         // During light activity the emitter fires immediately (no added latency).
 
         let (data_tx, data_rx) = std::sync::mpsc::channel::<String>();
+        let (activity_tx, activity_rx) = std::sync::mpsc::channel::<()>();
+
+        let activity_sid = session_id.clone();
+        let activity_handle = app_handle.clone();
+        std::thread::spawn(move || {
+            let quiet_window = Duration::from_millis(TERMINAL_QUIET_THRESHOLD_MS);
+            let mut active = false;
+
+            loop {
+                match activity_rx.recv_timeout(quiet_window) {
+                    Ok(()) => {
+                        if !active {
+                            let _ = activity_handle.emit(
+                                "terminal:activity",
+                                TerminalActivityEvent {
+                                    session_id: activity_sid.clone(),
+                                    active: true,
+                                },
+                            );
+                            active = true;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if active {
+                            let _ = activity_handle.emit(
+                                "terminal:activity",
+                                TerminalActivityEvent {
+                                    session_id: activity_sid.clone(),
+                                    active: false,
+                                },
+                            );
+                            active = false;
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        if active {
+                            let _ = activity_handle.emit(
+                                "terminal:activity",
+                                TerminalActivityEvent {
+                                    session_id: activity_sid.clone(),
+                                    active: false,
+                                },
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+        });
 
         // ── Reader thread ────────────────────────────────────────────────
         std::thread::spawn(move || {
@@ -285,6 +336,7 @@ impl PtyManager {
                 }
 
                 if !batch.is_empty() {
+                    let _ = activity_tx.send(());
                     let _ = handle.emit(
                         "terminal:data",
                         TerminalDataEvent {
@@ -301,6 +353,7 @@ impl PtyManager {
                 batch.push_str(&data);
             }
             if !batch.is_empty() {
+                let _ = activity_tx.send(());
                 let _ = handle.emit(
                     "terminal:data",
                     TerminalDataEvent {

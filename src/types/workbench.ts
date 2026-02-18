@@ -38,6 +38,11 @@ export interface TerminalExitEvent {
 	signal?: number;
 }
 
+export interface TerminalActivityEvent {
+	sessionId: string;
+	active: boolean;
+}
+
 export interface ClaudeHookEvent {
 	paneId: string;
 	sessionId?: string;
