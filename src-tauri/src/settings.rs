@@ -10,8 +10,13 @@ use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
 const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.sh";
 #[cfg(windows)]
 const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.ps1";
-const WORKBENCH_HOOK_EVENTS: [&str; 4] =
-    ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
+const WORKBENCH_HOOK_EVENTS: &[(&str, Option<&str>)] = &[
+    ("SessionStart", None),
+    ("UserPromptSubmit", None),
+    ("Stop", None),
+    ("Notification", None),
+    ("PostToolUse", Some("Bash")),
+];
 
 pub(crate) fn settings_path(scope: &str, project_path: Option<&str>) -> Result<PathBuf> {
     match scope {
@@ -202,10 +207,7 @@ try {\n\
 }
 
 fn ensure_workbench_hook_script() -> Result<PathBuf> {
-    paths::ensure_script(
-        &workbench_hook_script_path(),
-        workbench_hook_script_body(),
-    )
+    paths::ensure_script(&workbench_hook_script_path(), workbench_hook_script_body())
 }
 
 fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
@@ -215,10 +217,77 @@ fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
     value.as_object_mut().expect("object just initialized")
 }
 
+/// Legacy hook script names from previous Workbench versions that should be cleaned up.
+const LEGACY_HOOK_SCRIPTS: &[&str] = &["workbench-hook-bridge.py"];
+
+fn is_legacy_hook_command(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase().replace('\\', "/");
+    LEGACY_HOOK_SCRIPTS
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .any(|name| normalized.contains(&name))
+}
+
+fn entry_is_legacy_hook(entry: &Value) -> bool {
+    let mut saw_command = false;
+    let mut all_legacy = true;
+
+    if let Some(cmd) = entry.get("command").and_then(|v| v.as_str()) {
+        saw_command = true;
+        if !is_legacy_hook_command(cmd) {
+            all_legacy = false;
+        }
+    }
+
+    if let Some(hooks) = entry.get("hooks").and_then(|v| v.as_array()) {
+        for hook in hooks {
+            let Some(cmd) = hook.get("command").and_then(|v| v.as_str()) else {
+                all_legacy = false;
+                continue;
+            };
+            saw_command = true;
+            if !is_legacy_hook_command(cmd) {
+                all_legacy = false;
+            }
+        }
+    }
+
+    saw_command && all_legacy
+}
+
+/// Remove hook entries from settings that reference legacy Workbench scripts.
+/// Also deletes the legacy script files themselves.
+/// Returns true if any settings entries were removed.
+fn remove_legacy_hooks(hooks_obj: &mut serde_json::Map<String, Value>) -> bool {
+    let hooks_dir = paths::claude_user_dir().join("hooks");
+
+    let mut changed = false;
+
+    for (_event_name, entries) in hooks_obj.iter_mut() {
+        let Some(arr) = entries.as_array_mut() else {
+            continue;
+        };
+        let before = arr.len();
+        arr.retain(|entry| !entry_is_legacy_hook(entry));
+        if arr.len() != before {
+            changed = true;
+        }
+    }
+
+    // Delete legacy script files
+    for name in LEGACY_HOOK_SCRIPTS {
+        let path = hooks_dir.join(name);
+        let _ = fs::remove_file(&path);
+    }
+
+    changed
+}
+
 fn ensure_event_hooks(
     hooks_obj: &mut serde_json::Map<String, Value>,
     event_name: &str,
     command: &str,
+    matcher: Option<&str>,
 ) -> bool {
     let mut changed = false;
 
@@ -234,46 +303,71 @@ fn ensure_event_hooks(
         .expect("event value should be normalized to array");
 
     let already_present = entries.iter().any(|entry| {
-        entry
-            .get("hooks")
-            .and_then(|v| v.as_array())
-            .is_some_and(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook.get("type").and_then(|v| v.as_str()) == Some("command")
-                        && hook.get("command").and_then(|v| v.as_str()) == Some(command)
+        entry.get("matcher").and_then(|v| v.as_str()) == matcher
+            && entry
+                .get("hooks")
+                .and_then(|v| v.as_array())
+                .is_some_and(|hooks| {
+                    hooks.iter().any(|hook| {
+                        hook.get("type").and_then(|v| v.as_str()) == Some("command")
+                            && hook.get("command").and_then(|v| v.as_str()) == Some(command)
+                    })
                 })
-            })
     });
 
     if !already_present {
-        entries.push(serde_json::json!({
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": command
-                }
-            ]
-        }));
+        let entry = if let Some(m) = matcher {
+            serde_json::json!({
+                "matcher": m,
+                "hooks": [{ "type": "command", "command": command }]
+            })
+        } else {
+            serde_json::json!({
+                "hooks": [{ "type": "command", "command": command }]
+            })
+        };
+        entries.push(entry);
         changed = true;
     }
 
     changed
 }
 
+fn path_needs_quoting(path: &str) -> bool {
+    path.chars().any(|c| c.is_whitespace() || c == '\'')
+}
+
+#[cfg(not(windows))]
+fn quote_for_sh(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(windows)]
+fn quote_for_powershell(path: &str) -> String {
+    format!("'{}'", path.replace('\'', "''"))
+}
+
 /// Build the hook command string for a given script path.
 /// On Windows, invoke via PowerShell since scripts need an interpreter prefix.
 /// On Unix, the shebang handles execution so the bare path is sufficient.
 fn hook_command_for_script(script_path: &Path) -> String {
+    let path = script_path.to_string_lossy();
     #[cfg(windows)]
     {
-        format!(
-            "powershell.exe -ExecutionPolicy Bypass -File {}",
-            script_path.to_string_lossy()
-        )
+        let file_arg = if path_needs_quoting(&path) {
+            quote_for_powershell(&path)
+        } else {
+            path.to_string()
+        };
+        format!("powershell.exe -ExecutionPolicy Bypass -File {}", file_arg)
     }
     #[cfg(not(windows))]
     {
-        script_path.to_string_lossy().to_string()
+        if path_needs_quoting(&path) {
+            quote_for_sh(&path)
+        } else {
+            path.to_string()
+        }
     }
 }
 
@@ -294,32 +388,33 @@ pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
     let command = hook_command_for_script(&script_path);
     let mut missing_events = Vec::new();
 
-    for event in WORKBENCH_HOOK_EVENTS {
+    for (event, matcher) in WORKBENCH_HOOK_EVENTS {
         let already_present = settings
             .pointer(&format!("/hooks/{}", event))
             .and_then(|v| v.as_array())
             .is_some_and(|entries| {
                 entries.iter().any(|entry| {
-                    entry
-                        .get("hooks")
-                        .and_then(|v| v.as_array())
-                        .is_some_and(|hooks| {
-                            hooks.iter().any(|hook| {
-                                hook.get("type").and_then(|v| v.as_str()) == Some("command")
-                                    && hook.get("command").and_then(|v| v.as_str())
-                                        == Some(&command)
+                    entry.get("matcher").and_then(|v| v.as_str()) == *matcher
+                        && entry
+                            .get("hooks")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|hooks| {
+                                hooks.iter().any(|hook| {
+                                    hook.get("type").and_then(|v| v.as_str()) == Some("command")
+                                        && hook.get("command").and_then(|v| v.as_str())
+                                            == Some(&command)
+                                })
                             })
-                        })
                 })
             });
         if !already_present {
-            missing_events.push(event);
+            missing_events.push(*event);
         }
     }
 
     let needs_changes = !script_exists || !missing_events.is_empty();
     let description = if needs_changes {
-        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification. This enables session activity tracking.".to_string()
+        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification, and PostToolUse (Bash only). This enables session activity tracking and immediate git/GitHub refresh after git or gh commands.".to_string()
     } else {
         String::new()
     };
@@ -346,10 +441,12 @@ pub fn ensure_workbench_hook_integration() -> Result<()> {
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     let hooks_obj = ensure_object(hooks_value);
 
+    // Remove entries from previous Workbench versions (e.g. the old Python hook script)
+    let mut changed = remove_legacy_hooks(hooks_obj);
+
     let command = hook_command_for_script(&script_path);
-    let mut changed = false;
-    for event in WORKBENCH_HOOK_EVENTS {
-        changed |= ensure_event_hooks(hooks_obj, event, &command);
+    for (event, matcher) in WORKBENCH_HOOK_EVENTS {
+        changed |= ensure_event_hooks(hooks_obj, event, &command, *matcher);
     }
 
     if changed || !settings_path.exists() {
@@ -393,10 +490,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().to_str().unwrap();
         let path = settings_path("project-local", Some(project)).unwrap();
-        assert_eq!(
-            path,
-            dir.path().join(".claude").join("settings.local.json")
-        );
+        assert_eq!(path, dir.path().join(".claude").join("settings.local.json"));
     }
 
     #[test]
@@ -409,12 +503,10 @@ mod tests {
     fn settings_path_unknown_scope_errors() {
         let result = settings_path("invalid", None);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unknown settings scope")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown settings scope"));
     }
 
     // --- load_settings / save_settings round-trip ---
@@ -479,5 +571,187 @@ mod tests {
         let cmd = hook_command_for_script(&path);
         assert_eq!(cmd, "/home/user/.claude/hooks/workbench-hook-bridge.sh");
         assert!(!cmd.starts_with("powershell"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_command_for_script_unix_quotes_paths_with_spaces() {
+        let path = PathBuf::from("/home/user/My Hooks/workbench-hook-bridge.sh");
+        let cmd = hook_command_for_script(&path);
+        assert_eq!(cmd, "'/home/user/My Hooks/workbench-hook-bridge.sh'");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hook_command_for_script_windows_quotes_paths_with_spaces() {
+        let path = PathBuf::from("C:\\Users\\test user\\.claude\\hooks\\workbench-hook-bridge.ps1");
+        let cmd = hook_command_for_script(&path);
+        assert!(
+            cmd.contains("-File 'C:\\Users\\test user\\.claude\\hooks\\workbench-hook-bridge.ps1'")
+        );
+    }
+
+    // --- ensure_event_hooks ---
+
+    #[test]
+    fn ensure_event_hooks_adds_matcher_entry() {
+        let mut hooks_obj = serde_json::Map::new();
+        let changed =
+            ensure_event_hooks(&mut hooks_obj, "PostToolUse", "/tmp/hook.sh", Some("Bash"));
+        assert!(changed);
+
+        let entries = hooks_obj
+            .get("PostToolUse")
+            .and_then(|v| v.as_array())
+            .expect("PostToolUse array should exist");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].get("matcher").and_then(|v| v.as_str()),
+            Some("Bash")
+        );
+        assert_eq!(
+            entries[0]
+                .pointer("/hooks/0/command")
+                .and_then(|v| v.as_str()),
+            Some("/tmp/hook.sh")
+        );
+    }
+
+    #[test]
+    fn ensure_event_hooks_dedupes_same_matcher_and_command() {
+        let mut hooks_obj = serde_json::Map::new();
+        assert!(ensure_event_hooks(
+            &mut hooks_obj,
+            "PostToolUse",
+            "/tmp/hook.sh",
+            Some("Bash")
+        ));
+        assert!(!ensure_event_hooks(
+            &mut hooks_obj,
+            "PostToolUse",
+            "/tmp/hook.sh",
+            Some("Bash")
+        ));
+
+        let entries = hooks_obj
+            .get("PostToolUse")
+            .and_then(|v| v.as_array())
+            .expect("PostToolUse array should exist");
+        assert_eq!(entries.len(), 1);
+    }
+
+    // --- remove_legacy_hooks ---
+
+    #[test]
+    fn is_legacy_hook_command_matches_windows_path_with_mixed_separators() {
+        let cmd = "powershell.exe -ExecutionPolicy Bypass -File C:\\Users\\me\\.claude/hooks/workbench-hook-bridge.py";
+        assert!(is_legacy_hook_command(cmd));
+    }
+
+    #[test]
+    fn remove_legacy_hooks_removes_py_script_entries() {
+        let mut hooks_obj = serde_json::Map::new();
+        let legacy_cmd = hook_command_for_script(
+            &paths::claude_user_dir().join("hooks/workbench-hook-bridge.py"),
+        );
+        let current_cmd = hook_command_for_script(
+            &paths::claude_user_dir().join("hooks/workbench-hook-bridge.sh"),
+        );
+
+        // Add a legacy entry and a current entry to the same event
+        hooks_obj.insert(
+            "SessionStart".to_string(),
+            serde_json::json!([
+                { "hooks": [{ "type": "command", "command": legacy_cmd }] },
+                { "hooks": [{ "type": "command", "command": current_cmd }] }
+            ]),
+        );
+
+        assert!(remove_legacy_hooks(&mut hooks_obj));
+
+        let entries = hooks_obj
+            .get("SessionStart")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]
+                .pointer("/hooks/0/command")
+                .and_then(|v| v.as_str()),
+            Some(current_cmd.as_str())
+        );
+    }
+
+    #[test]
+    fn remove_legacy_hooks_no_change_when_no_legacy() {
+        let mut hooks_obj = serde_json::Map::new();
+        let current_cmd = hook_command_for_script(
+            &paths::claude_user_dir().join("hooks/workbench-hook-bridge.sh"),
+        );
+        hooks_obj.insert(
+            "Stop".to_string(),
+            serde_json::json!([
+                { "hooks": [{ "type": "command", "command": current_cmd }] }
+            ]),
+        );
+
+        assert!(!remove_legacy_hooks(&mut hooks_obj));
+
+        let entries = hooks_obj.get("Stop").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn remove_legacy_hooks_removes_top_level_command_entry() {
+        let mut hooks_obj = serde_json::Map::new();
+        hooks_obj.insert(
+            "SessionStart".to_string(),
+            serde_json::json!([
+                { "command": "python ~/.claude/hooks/workbench-hook-bridge.py" },
+                { "command": "/usr/local/bin/other-hook" }
+            ]),
+        );
+
+        assert!(remove_legacy_hooks(&mut hooks_obj));
+
+        let entries = hooks_obj
+            .get("SessionStart")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].get("command").and_then(|v| v.as_str()),
+            Some("/usr/local/bin/other-hook")
+        );
+    }
+
+    #[test]
+    fn remove_legacy_hooks_preserves_non_workbench_entries() {
+        let mut hooks_obj = serde_json::Map::new();
+        let legacy_cmd = hook_command_for_script(
+            &paths::claude_user_dir().join("hooks/workbench-hook-bridge.py"),
+        );
+
+        hooks_obj.insert(
+            "SessionStart".to_string(),
+            serde_json::json!([
+                { "hooks": [{ "type": "command", "command": legacy_cmd }] },
+                { "hooks": [{ "type": "command", "command": "/usr/local/bin/other-hook" }] }
+            ]),
+        );
+
+        assert!(remove_legacy_hooks(&mut hooks_obj));
+
+        let entries = hooks_obj
+            .get("SessionStart")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]
+                .pointer("/hooks/0/command")
+                .and_then(|v| v.as_str()),
+            Some("/usr/local/bin/other-hook")
+        );
     }
 }

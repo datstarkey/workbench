@@ -27,12 +27,22 @@
 	let addingEvent = $state('');
 	let newCommand = $state('');
 
+	function commandText(entry: HookEntry): string {
+		if (entry.command?.trim()) return entry.command.trim();
+		const nested = entry.hooks?.find(
+			(hook) => hook?.type === 'command' && typeof hook.command === 'string' && hook.command.trim()
+		);
+		return nested?.command?.trim() ?? '';
+	}
+
 	function addHookEntry(event: string) {
 		const cmd = newCommand.trim();
 		if (!cmd) return;
 		const updated = { ...hooks };
 		const entries = [...(updated[event] ?? [])];
-		entries.push({ command: cmd });
+		entries.push({
+			hooks: [{ type: 'command', command: cmd }]
+		});
 		updated[event] = entries;
 		claudeSettingsStore.updateNested('hooks', updated);
 		newCommand = '';
@@ -80,7 +90,9 @@
 						<div
 							class="flex flex-1 items-center gap-2 rounded-md border border-border/60 px-2 py-1"
 						>
-							<code class="flex-1 text-xs">{entry.command}</code>
+							<code class="flex-1 text-xs">
+								{commandText(entry) || '(missing command)'}
+							</code>
 							{#if entry.matcher}
 								<Badge variant="outline" class="text-[10px]">{entry.matcher}</Badge>
 							{/if}

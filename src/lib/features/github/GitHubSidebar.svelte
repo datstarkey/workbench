@@ -83,8 +83,6 @@
 	// Trigger data fetch when sidebar target changes (external side effect -- network requests)
 	$effect(() => {
 		if (activeProjectPath) githubStore.refreshProject(activeProjectPath);
-		if (activeProjectPath && activePr)
-			githubStore.fetchPrChecks(activeProjectPath, activePr.number);
 	});
 
 	onDestroy(() => {
@@ -95,7 +93,7 @@
 <div class="flex flex-1 flex-col overflow-hidden">
 	{#if activePr && activeProjectPath}
 		<ScrollArea class="flex-1">
-			<PRHeader pr={activePr} {checks} projectPath={activeProjectPath} />
+			<PRHeader pr={activePr} projectPath={activeProjectPath} />
 
 			{#if checks.length > 0}
 				<Separator />

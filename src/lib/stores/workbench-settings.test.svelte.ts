@@ -12,6 +12,8 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 	return {
 		worktreeStrategy: 'sibling',
 		trelloEnabled: false,
+		terminalPerformanceMode: 'auto',
+		terminalTelemetryEnabled: false,
 		agentActions: [],
 		...overrides
 	};
@@ -47,12 +49,19 @@ describe('WorkbenchSettingsStore', () => {
 		it('populates agentActions and worktreeStrategy', async () => {
 			const actions = [makeAction({ id: 'a1', name: 'Review' })];
 			mockInvoke('load_workbench_settings', () =>
-				makeSettings({ worktreeStrategy: 'inside', agentActions: actions })
+				makeSettings({
+					worktreeStrategy: 'inside',
+					terminalPerformanceMode: 'always',
+					terminalTelemetryEnabled: true,
+					agentActions: actions
+				})
 			);
 
 			await store.load();
 
 			expect(store.worktreeStrategy).toBe('inside');
+			expect(store.terminalPerformanceMode).toBe('always');
+			expect(store.terminalTelemetryEnabled).toBe(true);
 			expect(store.agentActions).toHaveLength(1);
 			expect(store.agentActions[0].name).toBe('Review');
 		});
@@ -198,6 +207,8 @@ describe('WorkbenchSettingsStore', () => {
 				settings: {
 					worktreeStrategy: 'inside',
 					trelloEnabled: false,
+					terminalPerformanceMode: 'auto',
+					terminalTelemetryEnabled: false,
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null
@@ -441,6 +452,8 @@ describe('WorkbenchSettingsStore', () => {
 				settings: {
 					worktreeStrategy: 'inside',
 					trelloEnabled: false,
+					terminalPerformanceMode: 'auto',
+					terminalTelemetryEnabled: false,
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null
@@ -458,6 +471,22 @@ describe('WorkbenchSettingsStore', () => {
 			store.setWorktreeStrategy('inside');
 
 			expect(store.worktreeStrategy).toBe('inside');
+			expect(store.dirty).toBe(true);
+		});
+	});
+
+	describe('terminal performance settings', () => {
+		it('updates performance mode and marks dirty', () => {
+			store.setTerminalPerformanceMode('always');
+
+			expect(store.terminalPerformanceMode).toBe('always');
+			expect(store.dirty).toBe(true);
+		});
+
+		it('updates telemetry flag and marks dirty', () => {
+			store.setTerminalTelemetryEnabled(true);
+
+			expect(store.terminalTelemetryEnabled).toBe(true);
 			expect(store.dirty).toBe(true);
 		});
 	});

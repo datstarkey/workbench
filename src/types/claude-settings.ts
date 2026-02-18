@@ -90,9 +90,16 @@ export interface McpServerConfig {
 }
 
 export interface HookEntry {
-	command: string;
+	command?: string;
+	hooks?: HookCommand[];
 	matcher?: string;
 	timeout?: number;
+	[key: string]: unknown;
+}
+
+export interface HookCommand {
+	type?: string;
+	command?: string;
 	[key: string]: unknown;
 }
 

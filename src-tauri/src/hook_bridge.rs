@@ -2,7 +2,10 @@ use std::io::{BufRead, BufReader, Read};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::pty::PtyManager;
+use crate::refresh_dispatcher::RefreshDispatcher;
 
 #[derive(Clone)]
 pub struct HookBridgeState {
@@ -117,6 +120,49 @@ impl CodexNotifyEvent {
     }
 }
 
+fn command_mentions_git_or_gh(command: &str) -> bool {
+    command
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| token == "git" || token == "gh")
+}
+
+fn should_emit_project_refresh_for_hook(hook: &Value) -> bool {
+    if hook
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        != Some("PostToolUse")
+    {
+        return false;
+    }
+    if hook.get("tool_name").and_then(|v| v.as_str()) != Some("Bash") {
+        return false;
+    }
+
+    let Some(command) = hook
+        .get("tool_input")
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+    else {
+        return false;
+    };
+
+    command_mentions_git_or_gh(command)
+}
+
+fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
+    if !should_emit_project_refresh_for_hook(hook) {
+        return;
+    }
+
+    let pty_manager = handle.state::<PtyManager>();
+    let Some(project_path) = pty_manager.project_path_for_session(pane_id) else {
+        return;
+    };
+    let dispatcher = handle.state::<RefreshDispatcher>();
+
+    dispatcher.request_refresh(handle, project_path, "claude-hook", "post-tool-use-bash");
+}
+
 /// Process lines from a stream, dispatching hook events to the frontend.
 /// Shared between Unix socket and TCP implementations.
 fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle) {
@@ -142,6 +188,7 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle) {
 
         match envelope {
             HookBridgeEnvelope::Claude { pane_id, hook } => {
+                emit_project_refresh_event(handle, &pane_id, &hook);
                 let event = ClaudeHookEvent::from_payload(pane_id, hook);
                 let _ = handle.emit("claude:hook", event);
             }
@@ -274,6 +321,48 @@ mod tests {
         assert!(event.session_id.is_none());
         assert!(event.notify_event.is_none());
         assert!(event.cwd.is_none());
+    }
+
+    // --- refresh trigger detection ---
+
+    #[test]
+    fn refresh_trigger_post_tool_use_bash_git() {
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "git status" }
+        });
+        assert!(should_emit_project_refresh_for_hook(&payload));
+    }
+
+    #[test]
+    fn refresh_trigger_post_tool_use_bash_gh() {
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "gh pr status" }
+        });
+        assert!(should_emit_project_refresh_for_hook(&payload));
+    }
+
+    #[test]
+    fn refresh_trigger_rejects_non_post_tool_use() {
+        let payload = json!({
+            "hook_event_name": "Notification",
+            "tool_name": "Bash",
+            "tool_input": { "command": "git status" }
+        });
+        assert!(!should_emit_project_refresh_for_hook(&payload));
+    }
+
+    #[test]
+    fn refresh_trigger_rejects_non_git_commands() {
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "echo hello" }
+        });
+        assert!(!should_emit_project_refresh_for_hook(&payload));
     }
 
     // --- HookBridgeEnvelope deserialization ---

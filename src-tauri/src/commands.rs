@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use tauri::State;
 
 use crate::claude_sessions;
@@ -6,15 +8,15 @@ use crate::codex_sessions;
 use crate::config;
 use crate::git;
 use crate::github;
+use crate::github_poller::GitHubPoller;
 use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::HookBridgeState;
 use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitHubCheckDetail, GitHubProjectStatus, GitHubRemote, GitInfo,
-    HookScriptInfo, IntegrationStatus, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings,
-    WorkspaceFile, WorktreeInfo,
+    DiscoveredClaudeSession, GitHubRemote, GitInfo, HookScriptInfo, IntegrationStatus, PluginInfo,
+    ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile, WorktreeInfo,
 };
 
 #[tauri::command]
@@ -120,13 +122,19 @@ pub fn open_in_vscode(path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn load_workspaces() -> Result<WorkspaceFile, String> {
-    config::load_workspaces().map_err(|e| e.to_string())
+pub fn load_workspaces(git_watcher: State<'_, GitWatcher>) -> Result<WorkspaceFile, String> {
+    let snapshot = config::load_workspaces().map_err(|e| e.to_string())?;
+    git_watcher.sync_projects(workspace_project_paths(&snapshot));
+    Ok(snapshot)
 }
 
 #[tauri::command]
-pub fn save_workspaces(snapshot: WorkspaceFile) -> Result<bool, String> {
+pub fn save_workspaces(
+    snapshot: WorkspaceFile,
+    git_watcher: State<'_, GitWatcher>,
+) -> Result<bool, String> {
     config::save_workspaces(&snapshot).map_err(|e| e.to_string())?;
+    git_watcher.sync_projects(workspace_project_paths(&snapshot));
     Ok(true)
 }
 
@@ -207,18 +215,6 @@ pub fn discover_codex_sessions(
     codex_sessions::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn watch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
-    state.watch_project(&path).map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-#[tauri::command]
-pub fn unwatch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
-    state.unwatch_project(&path).map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
 // Workbench settings commands
 
 #[tauri::command]
@@ -245,16 +241,21 @@ pub fn github_get_remote(path: String) -> Result<GitHubRemote, String> {
 }
 
 #[tauri::command(async)]
-pub fn github_project_status(project_path: String) -> GitHubProjectStatus {
-    github::get_project_status(&project_path)
+pub fn github_set_tracked_projects(
+    project_paths: Vec<String>,
+    poller: State<'_, GitHubPoller>,
+) -> Result<bool, String> {
+    poller.set_tracked_projects(project_paths);
+    Ok(true)
 }
 
 #[tauri::command(async)]
-pub fn github_pr_checks(
+pub fn github_refresh_project(
     project_path: String,
-    pr_number: u64,
-) -> Result<Vec<GitHubCheckDetail>, String> {
-    github::list_pr_checks(&project_path, pr_number).map_err(|e| e.to_string())
+    poller: State<'_, GitHubPoller>,
+) -> Result<bool, String> {
+    poller.request_refresh(project_path);
+    Ok(true)
 }
 
 #[tauri::command(async)]
@@ -331,4 +332,66 @@ pub fn apply_claude_integration() -> Result<bool, String> {
 pub fn apply_codex_integration() -> Result<bool, String> {
     codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {
+    snapshot
+        .workspaces
+        .iter()
+        .map(|ws| ws.project_path.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::types::{WorkspaceFile, WorkspaceSnapshot};
+
+    use super::workspace_project_paths;
+
+    fn make_workspace(id: &str, project_path: &str) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            id: id.to_string(),
+            project_path: project_path.to_string(),
+            project_name: format!("project-{id}"),
+            terminal_tabs: vec![],
+            active_terminal_tab_id: String::new(),
+            worktree_path: None,
+            branch: None,
+        }
+    }
+
+    #[test]
+    fn workspace_project_paths_dedupes_project_paths() {
+        let snapshot = WorkspaceFile {
+            workspaces: vec![
+                make_workspace("1", "/repo/a"),
+                make_workspace("2", "/repo/a"),
+                make_workspace("3", "/repo/b"),
+            ],
+            selected_id: Some("1".to_string()),
+        };
+
+        let paths = workspace_project_paths(&snapshot);
+        let path_set: HashSet<String> = paths.into_iter().collect();
+
+        assert_eq!(
+            path_set,
+            HashSet::from(["/repo/a".to_string(), "/repo/b".to_string()])
+        );
+    }
+
+    #[test]
+    fn workspace_project_paths_empty_snapshot_returns_empty_vec() {
+        let snapshot = WorkspaceFile {
+            workspaces: vec![],
+            selected_id: None,
+        };
+
+        let paths = workspace_project_paths(&snapshot);
+        assert!(paths.is_empty());
+    }
 }

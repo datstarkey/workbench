@@ -3,6 +3,7 @@ import type {
 	AgentAction,
 	AgentActionTarget,
 	SessionType,
+	TerminalPerformanceMode,
 	WorkbenchSettings,
 	WorktreeStrategy
 } from '$types/workbench';
@@ -11,6 +12,8 @@ import { invoke } from '@tauri-apps/api/core';
 export class WorkbenchSettingsStore {
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
 	trelloEnabled = $state(false);
+	terminalPerformanceMode: TerminalPerformanceMode = $state('auto');
+	terminalTelemetryEnabled = $state(false);
 	agentActions: AgentAction[] = $state([]);
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
@@ -28,6 +31,8 @@ export class WorkbenchSettingsStore {
 		const settings = await invoke<WorkbenchSettings>('load_workbench_settings');
 		this.worktreeStrategy = settings.worktreeStrategy;
 		this.trelloEnabled = settings.trelloEnabled;
+		this.terminalPerformanceMode = settings.terminalPerformanceMode ?? 'auto';
+		this.terminalTelemetryEnabled = settings.terminalTelemetryEnabled ?? false;
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
 		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
@@ -54,6 +59,16 @@ export class WorkbenchSettingsStore {
 
 	setTrelloEnabled(value: boolean) {
 		this.trelloEnabled = value;
+		this.dirty = true;
+	}
+
+	setTerminalPerformanceMode(value: TerminalPerformanceMode) {
+		this.terminalPerformanceMode = value;
+		this.dirty = true;
+	}
+
+	setTerminalTelemetryEnabled(value: boolean) {
+		this.terminalTelemetryEnabled = value;
 		this.dirty = true;
 	}
 
@@ -103,6 +118,8 @@ export class WorkbenchSettingsStore {
 		return {
 			worktreeStrategy: this.worktreeStrategy,
 			trelloEnabled: this.trelloEnabled,
+			terminalPerformanceMode: this.terminalPerformanceMode,
+			terminalTelemetryEnabled: this.terminalTelemetryEnabled,
 			agentActions: this.agentActions,
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved

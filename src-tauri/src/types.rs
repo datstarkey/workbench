@@ -59,6 +59,13 @@ pub struct TerminalExitEvent {
     pub signal: Option<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalActivityEvent {
+    pub session_id: String,
+    pub active: bool,
+}
+
 // Workspace persistence types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +253,10 @@ pub struct WorkbenchSettings {
     pub worktree_strategy: String,
     #[serde(default)]
     pub trello_enabled: bool,
+    #[serde(default = "default_terminal_performance_mode")]
+    pub terminal_performance_mode: String,
+    #[serde(default)]
+    pub terminal_telemetry_enabled: bool,
     #[serde(default = "default_agent_actions")]
     pub agent_actions: Vec<AgentAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,11 +269,17 @@ fn default_worktree_strategy() -> String {
     "sibling".to_string()
 }
 
+fn default_terminal_performance_mode() -> String {
+    "auto".to_string()
+}
+
 impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
             worktree_strategy: default_worktree_strategy(),
             trello_enabled: false,
+            terminal_performance_mode: default_terminal_performance_mode(),
+            terminal_telemetry_enabled: false,
             agent_actions: default_agent_actions(),
             claude_hooks_approved: None,
             codex_config_approved: None,
@@ -312,6 +329,38 @@ pub struct GitChangedEvent {
     pub project_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRefreshRequestedEvent {
+    pub project_path: String,
+    pub source: String,
+    pub trigger: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubProjectStatusEvent {
+    pub project_path: String,
+    pub status: GitHubProjectStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubCheckTransitionEvent {
+    pub project_path: String,
+    pub pr_number: u64,
+    pub name: String,
+    pub bucket: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrelloMergeActionAppliedEvent {
+    pub project_path: String,
+    pub branch: String,
+    pub card_id: String,
+}
+
 // GitHub integration types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,6 +393,15 @@ pub struct GitHubPR {
     pub review_decision: Option<String>,
     pub checks_status: GitHubChecksStatus,
     pub merge_state_status: Option<String>,
+    pub actions: GitHubPRActions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubPRActions {
+    pub can_merge: bool,
+    pub can_mark_ready: bool,
+    pub can_update_branch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -542,5 +600,20 @@ mod tests {
         let opts = WorktreeCopyOptions::default();
         assert!(opts.ai_config);
         assert!(opts.env_files);
+    }
+
+    #[test]
+    fn workbench_settings_default_terminal_fields() {
+        let settings = WorkbenchSettings::default();
+        assert_eq!(settings.terminal_performance_mode, "auto");
+        assert!(!settings.terminal_telemetry_enabled);
+    }
+
+    #[test]
+    fn workbench_settings_deserialize_defaults_terminal_fields_when_missing() {
+        let json = r#"{"worktreeStrategy":"sibling","trelloEnabled":false,"agentActions":[]}"#;
+        let settings: WorkbenchSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.terminal_performance_mode, "auto");
+        assert!(!settings.terminal_telemetry_enabled);
     }
 }
