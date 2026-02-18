@@ -4,8 +4,8 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use crate::types::{
-    GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubProjectStatus,
-    GitHubRemote, GitHubWorkflowRun,
+    GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubPRActions,
+    GitHubProjectStatus, GitHubRemote, GitHubWorkflowRun,
 };
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
@@ -263,18 +263,45 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
 
 fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {
     let checks = parse_checks_rollup(v.get("statusCheckRollup"));
+    let state = v["state"].as_str().unwrap_or("OPEN").to_string();
+    let is_draft = v["isDraft"].as_bool().unwrap_or(false);
+    let merge_state_status = v["mergeStateStatus"].as_str().map(String::from);
+    let actions = derive_pr_actions(&state, is_draft, merge_state_status.as_deref(), &checks);
 
     Ok(GitHubPR {
         number: v["number"].as_u64().unwrap_or(0),
         title: v["title"].as_str().unwrap_or("").to_string(),
-        state: v["state"].as_str().unwrap_or("OPEN").to_string(),
+        state,
         url: v["url"].as_str().unwrap_or("").to_string(),
-        is_draft: v["isDraft"].as_bool().unwrap_or(false),
+        is_draft,
         head_ref_name: v["headRefName"].as_str().unwrap_or("").to_string(),
         review_decision: v["reviewDecision"].as_str().map(String::from),
         checks_status: checks,
-        merge_state_status: v["mergeStateStatus"].as_str().map(String::from),
+        merge_state_status,
+        actions,
     })
+}
+
+fn derive_pr_actions(
+    state: &str,
+    is_draft: bool,
+    merge_state_status: Option<&str>,
+    checks_status: &GitHubChecksStatus,
+) -> GitHubPRActions {
+    let is_open = state == "OPEN";
+    let can_mark_ready = is_open && is_draft;
+    let can_update_branch = is_open && merge_state_status == Some("BEHIND");
+    let can_merge = is_open
+        && !is_draft
+        && merge_state_status != Some("DIRTY")
+        && checks_status.failing == 0
+        && checks_status.pending == 0;
+
+    GitHubPRActions {
+        can_merge,
+        can_mark_ready,
+        can_update_branch,
+    }
 }
 
 fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus {
@@ -627,6 +654,9 @@ mod tests {
         assert_eq!(pr.review_decision, Some("APPROVED".to_string()));
         assert_eq!(pr.checks_status.passing, 1);
         assert_eq!(pr.merge_state_status, Some("CLEAN".to_string()));
+        assert!(pr.actions.can_merge);
+        assert!(!pr.actions.can_mark_ready);
+        assert!(!pr.actions.can_update_branch);
     }
 
     #[test]
@@ -645,6 +675,47 @@ mod tests {
         assert_eq!(pr.review_decision, None);
         assert_eq!(pr.checks_status.overall, "none");
         assert_eq!(pr.merge_state_status, None);
+        assert!(!pr.actions.can_merge);
+        assert!(!pr.actions.can_mark_ready);
+        assert!(!pr.actions.can_update_branch);
+    }
+
+    #[test]
+    fn parse_pr_json_draft_open_can_mark_ready() {
+        let val = serde_json::json!({
+            "number": 7,
+            "title": "WIP",
+            "state": "OPEN",
+            "url": "https://github.com/user/repo/pull/7",
+            "isDraft": true,
+            "headRefName": "wip-branch",
+            "statusCheckRollup": [{"state": "PENDING"}],
+            "mergeStateStatus": "BEHIND"
+        });
+        let pr = parse_pr_json(&val).unwrap();
+        assert!(!pr.actions.can_merge);
+        assert!(pr.actions.can_mark_ready);
+        assert!(pr.actions.can_update_branch);
+    }
+
+    #[test]
+    fn parse_pr_json_blocks_merge_when_checks_pending_or_failing() {
+        let val = serde_json::json!({
+            "number": 8,
+            "title": "Feature",
+            "state": "OPEN",
+            "url": "https://github.com/user/repo/pull/8",
+            "isDraft": false,
+            "headRefName": "feature",
+            "statusCheckRollup": [
+                {"state": "PENDING"},
+                {"conclusion": "FAILURE"}
+            ],
+            "mergeStateStatus": "CLEAN"
+        });
+        let pr = parse_pr_json(&val).unwrap();
+        assert!(!pr.actions.can_merge);
+        assert!(!pr.actions.can_mark_ready);
     }
 
     // group_runs_by_branch

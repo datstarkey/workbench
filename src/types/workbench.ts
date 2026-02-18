@@ -184,6 +184,13 @@ export interface GitHubPR {
 		| 'UNKNOWN'
 		| 'UNSTABLE'
 		| null;
+	actions: GitHubPRActions;
+}
+
+export interface GitHubPRActions {
+	canMerge: boolean;
+	canMarkReady: boolean;
+	canUpdateBranch: boolean;
 }
 
 export interface GitHubProjectStatus {

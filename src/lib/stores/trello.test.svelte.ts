@@ -270,7 +270,8 @@ describe('TrelloStore', () => {
 				headRefName: 'feat-x',
 				reviewDecision: null,
 				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN'
+				mergeStateStatus: 'CLEAN',
+				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
 			};
 
 			// First call: records initial state
@@ -319,7 +320,8 @@ describe('TrelloStore', () => {
 				headRefName: 'feat-x',
 				reviewDecision: null,
 				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN'
+				mergeStateStatus: 'CLEAN',
+				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
 			};
 
 			store.checkForMergedPrs({ '/proj': [pr] });
@@ -356,7 +358,8 @@ describe('TrelloStore', () => {
 				headRefName: 'feat',
 				reviewDecision: null,
 				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN'
+				mergeStateStatus: 'CLEAN',
+				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
 			};
 
 			// First observation — MERGED but no previous state
@@ -377,7 +380,8 @@ describe('TrelloStore', () => {
 				headRefName: 'feat',
 				reviewDecision: null,
 				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN'
+				mergeStateStatus: 'CLEAN',
+				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
 			};
 
 			// Should not throw

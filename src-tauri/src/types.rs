@@ -368,6 +368,15 @@ pub struct GitHubPR {
     pub review_decision: Option<String>,
     pub checks_status: GitHubChecksStatus,
     pub merge_state_status: Option<String>,
+    pub actions: GitHubPRActions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubPRActions {
+    pub can_merge: bool,
+    pub can_mark_ready: bool,
+    pub can_update_branch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

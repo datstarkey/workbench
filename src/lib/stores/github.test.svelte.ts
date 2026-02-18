@@ -81,6 +81,7 @@ function makePR(overrides: Partial<GitHubPR> = {}): GitHubPR {
 		reviewDecision: null,
 		checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
 		mergeStateStatus: null,
+		actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false },
 		...overrides
 	};
 }
