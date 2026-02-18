@@ -184,48 +184,4 @@ describe('GitStore', () => {
 			expect(spy).not.toHaveBeenCalled();
 		});
 	});
-
-	describe('watchProject', () => {
-		it('invokes watch_project with the path', async () => {
-			await store.watchProject('/projects/foo');
-			expect(invokeSpy).toHaveBeenCalledWith('watch_project', { path: '/projects/foo' });
-		});
-
-		it('warns on failure', async () => {
-			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-			mockInvoke('watch_project', () => {
-				throw new Error('watch failed');
-			});
-
-			await store.watchProject('/projects/bad');
-
-			expect(warnSpy).toHaveBeenCalledWith(
-				'[GitStore] Failed to watch project:',
-				expect.any(Error)
-			);
-			warnSpy.mockRestore();
-		});
-	});
-
-	describe('unwatchProject', () => {
-		it('invokes unwatch_project with the path', async () => {
-			await store.unwatchProject('/projects/foo');
-			expect(invokeSpy).toHaveBeenCalledWith('unwatch_project', { path: '/projects/foo' });
-		});
-
-		it('warns on failure', async () => {
-			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-			mockInvoke('unwatch_project', () => {
-				throw new Error('unwatch failed');
-			});
-
-			await store.unwatchProject('/projects/bad');
-
-			expect(warnSpy).toHaveBeenCalledWith(
-				'[GitStore] Failed to unwatch project:',
-				expect.any(Error)
-			);
-			warnSpy.mockRestore();
-		});
-	});
 });

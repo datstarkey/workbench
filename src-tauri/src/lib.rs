@@ -70,8 +70,6 @@ pub fn run() {
             commands::discover_codex_sessions,
             commands::load_workbench_settings,
             commands::save_workbench_settings,
-            commands::watch_project,
-            commands::unwatch_project,
             commands::github_is_available,
             commands::github_get_remote,
             commands::github_set_tracked_projects,

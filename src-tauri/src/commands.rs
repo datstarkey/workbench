@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use tauri::State;
 
 use crate::claude_sessions;
@@ -120,13 +122,19 @@ pub fn open_in_vscode(path: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn load_workspaces() -> Result<WorkspaceFile, String> {
-    config::load_workspaces().map_err(|e| e.to_string())
+pub fn load_workspaces(git_watcher: State<'_, GitWatcher>) -> Result<WorkspaceFile, String> {
+    let snapshot = config::load_workspaces().map_err(|e| e.to_string())?;
+    git_watcher.sync_projects(workspace_project_paths(&snapshot));
+    Ok(snapshot)
 }
 
 #[tauri::command]
-pub fn save_workspaces(snapshot: WorkspaceFile) -> Result<bool, String> {
+pub fn save_workspaces(
+    snapshot: WorkspaceFile,
+    git_watcher: State<'_, GitWatcher>,
+) -> Result<bool, String> {
     config::save_workspaces(&snapshot).map_err(|e| e.to_string())?;
+    git_watcher.sync_projects(workspace_project_paths(&snapshot));
     Ok(true)
 }
 
@@ -205,18 +213,6 @@ pub fn discover_codex_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
     codex_sessions::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn watch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
-    state.watch_project(&path).map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-#[tauri::command]
-pub fn unwatch_project(path: String, state: State<'_, GitWatcher>) -> Result<bool, String> {
-    state.unwatch_project(&path).map_err(|e| e.to_string())?;
-    Ok(true)
 }
 
 // Workbench settings commands
@@ -336,4 +332,14 @@ pub fn apply_claude_integration() -> Result<bool, String> {
 pub fn apply_codex_integration() -> Result<bool, String> {
     codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {
+    snapshot
+        .workspaces
+        .iter()
+        .map(|ws| ws.project_path.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
 }

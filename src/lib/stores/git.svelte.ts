@@ -40,20 +40,4 @@ export class GitStore {
 	async refreshAll(projectPaths: string[]) {
 		await Promise.all(projectPaths.map((p) => this.refreshGitState(p)));
 	}
-
-	async watchProject(projectPath: string) {
-		try {
-			await invoke('watch_project', { path: projectPath });
-		} catch (e) {
-			console.warn('[GitStore] Failed to watch project:', e);
-		}
-	}
-
-	async unwatchProject(projectPath: string) {
-		try {
-			await invoke('unwatch_project', { path: projectPath });
-		} catch (e) {
-			console.warn('[GitStore] Failed to unwatch project:', e);
-		}
-	}
 }

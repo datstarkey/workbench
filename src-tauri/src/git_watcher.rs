@@ -154,6 +154,29 @@ impl GitWatcher {
         Ok(())
     }
 
+    pub fn sync_projects(&self, project_paths: Vec<String>) {
+        let desired = normalize_project_paths(project_paths);
+        let current = self
+            .watched_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
+        for path in desired.difference(&current) {
+            let project_path = path.to_string_lossy().to_string();
+            if let Err(err) = self.watch_project(&project_path) {
+                eprintln!("[GitWatcher] Failed to watch {project_path}: {err}");
+            }
+        }
+
+        for path in current.difference(&desired) {
+            let project_path = path.to_string_lossy().to_string();
+            if let Err(err) = self.unwatch_project(&project_path) {
+                eprintln!("[GitWatcher] Failed to unwatch {project_path}: {err}");
+            }
+        }
+    }
+
     pub fn unwatch_project(&self, project_path: &str) -> Result<()> {
         let path = PathBuf::from(project_path);
         let git_dir = match Self::resolve_git_dir(&path) {
@@ -179,5 +202,36 @@ impl GitWatcher {
         }
 
         Ok(())
+    }
+}
+
+fn normalize_project_paths(project_paths: Vec<String>) -> HashSet<PathBuf> {
+    project_paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::normalize_project_paths;
+
+    #[test]
+    fn normalize_project_paths_trims_dedupes_and_ignores_empty() {
+        let set = normalize_project_paths(vec![
+            "/repo/a".to_string(),
+            " /repo/a ".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "/repo/b".to_string(),
+        ]);
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&PathBuf::from("/repo/a")));
+        assert!(set.contains(&PathBuf::from("/repo/b")));
     }
 }

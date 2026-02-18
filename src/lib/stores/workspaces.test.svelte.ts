@@ -11,8 +11,6 @@ vi.mock('$lib/utils/uid', () => ({
 
 // Mock context so getGitStore() works outside a component
 const mockGitStore = {
-	watchProject: vi.fn(),
-	unwatchProject: vi.fn(),
 	branchByProject: {} as Record<string, string>
 };
 vi.mock('./context', () => ({
