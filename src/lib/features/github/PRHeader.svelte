@@ -9,18 +9,16 @@
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import type { GitHubCheckDetail, GitHubPR } from '$types/workbench';
+	import type { GitHubPR } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
 	import { invoke } from '@tauri-apps/api/core';
 	import { getGitHubStore } from '$stores/context';
 
 	let {
 		pr,
-		checks,
 		projectPath
 	}: {
 		pr: GitHubPR;
-		checks: GitHubCheckDetail[];
 		projectPath: string;
 	} = $props();
 
@@ -81,9 +79,8 @@
 	});
 
 	let checksSummary = $derived.by(() => {
-		if (checks.length === 0) return null;
-		const passing = checks.filter((c) => c.bucket === 'pass').length;
-		return `${passing}/${checks.length} checks passing`;
+		if (pr.checksStatus.total === 0) return null;
+		return `${pr.checksStatus.passing}/${pr.checksStatus.total} checks passing`;
 	});
 
 	let mergeStateInfo = $derived.by(() => {
@@ -101,14 +98,9 @@
 		}
 	});
 
-	let canMerge = $derived(
-		pr.state === 'OPEN' &&
-			!pr.isDraft &&
-			pr.mergeStateStatus !== 'DIRTY' &&
-			checks.every((c) => c.bucket !== 'fail' && c.bucket !== 'pending')
-	);
-	let showDraftAction = $derived(pr.isDraft && pr.state === 'OPEN');
-	let showUpdateBranch = $derived(pr.mergeStateStatus === 'BEHIND' && pr.state === 'OPEN');
+	let canMerge = $derived(pr.actions.canMerge);
+	let showDraftAction = $derived(pr.actions.canMarkReady);
+	let showUpdateBranch = $derived(pr.actions.canUpdateBranch);
 	let hasActionButton = $derived(canMerge || showDraftAction || showUpdateBranch);
 
 	function runPrAction(

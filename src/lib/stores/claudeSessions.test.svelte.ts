@@ -59,8 +59,8 @@ describe('ClaudeSessionStore', () => {
 	});
 
 	describe('constructor', () => {
-		it('registers 3 event listeners', () => {
-			expect(listenSpy).toHaveBeenCalledTimes(3);
+		it('registers 4 event listeners', () => {
+			expect(listenSpy).toHaveBeenCalledTimes(4);
 		});
 
 		it('registers a claude:hook listener', () => {
@@ -73,6 +73,10 @@ describe('ClaudeSessionStore', () => {
 
 		it('registers a terminal:data listener', () => {
 			expect(listenSpy).toHaveBeenCalledWith('terminal:data', expect.any(Function));
+		});
+
+		it('registers a terminal:activity listener', () => {
+			expect(listenSpy).toHaveBeenCalledWith('terminal:activity', expect.any(Function));
 		});
 	});
 
@@ -360,6 +364,46 @@ describe('ClaudeSessionStore', () => {
 
 			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
 			expect(store.panesInProgress.has('pane-1')).toBe(false);
+		});
+	});
+
+	describe('terminal:activity events for Codex panes', () => {
+		function setupCodexPane() {
+			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
+				{
+					id: 'ws-1',
+					projectPath: '/test',
+					projectName: 'Test',
+					terminalTabs: [
+						{
+							id: 'tab-1',
+							label: 'Codex 1',
+							split: 'horizontal',
+							type: 'codex',
+							panes: [{ id: 'pane-1', type: 'codex' }]
+						}
+					],
+					activeTerminalTabId: 'tab-1'
+				}
+			];
+		}
+
+		it('clears panesInProgress on inactive event', () => {
+			setupCodexPane();
+			store.panesInProgress.add('pane-1');
+
+			emitMockEvent('terminal:activity', { sessionId: 'pane-1', active: false });
+
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+		});
+
+		it('ignores active events', () => {
+			setupCodexPane();
+			store.panesInProgress.add('pane-1');
+
+			emitMockEvent('terminal:activity', { sessionId: 'pane-1', active: true });
+
+			expect(store.panesInProgress.has('pane-1')).toBe(true);
 		});
 	});
 

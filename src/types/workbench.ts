@@ -38,6 +38,11 @@ export interface TerminalExitEvent {
 	signal?: number;
 }
 
+export interface TerminalActivityEvent {
+	sessionId: string;
+	active: boolean;
+}
+
 export interface ClaudeHookEvent {
 	paneId: string;
 	sessionId?: string;
@@ -131,6 +136,30 @@ export interface GitChangedEvent {
 	projectPath: string;
 }
 
+export interface ProjectRefreshRequestedEvent {
+	projectPath: string;
+	source: string;
+	trigger: string;
+}
+
+export interface GitHubProjectStatusEvent {
+	projectPath: string;
+	status: GitHubProjectStatus;
+}
+
+export interface GitHubCheckTransitionEvent {
+	projectPath: string;
+	prNumber: number;
+	name: string;
+	bucket: 'pass' | 'fail';
+}
+
+export interface TrelloMergeActionAppliedEvent {
+	projectPath: string;
+	branch: string;
+	cardId: string;
+}
+
 // GitHub types
 
 export interface GitHubRemote {
@@ -166,6 +195,13 @@ export interface GitHubPR {
 		| 'UNKNOWN'
 		| 'UNSTABLE'
 		| null;
+	actions: GitHubPRActions;
+}
+
+export interface GitHubPRActions {
+	canMerge: boolean;
+	canMarkReady: boolean;
+	canUpdateBranch: boolean;
 }
 
 export interface GitHubProjectStatus {
@@ -212,6 +248,7 @@ export interface GitHubBranchStatus {
 // Workbench app settings
 
 export type WorktreeStrategy = 'sibling' | 'inside';
+export type TerminalPerformanceMode = 'auto' | 'always';
 
 export type AgentActionTarget = 'claude' | 'codex' | 'both';
 
@@ -227,6 +264,8 @@ export interface AgentAction {
 export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
 	trelloEnabled: boolean;
+	terminalPerformanceMode: TerminalPerformanceMode;
+	terminalTelemetryEnabled: boolean;
 	agentActions: AgentAction[];
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;

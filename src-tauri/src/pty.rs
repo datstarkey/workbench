@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::process::Command;
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -7,10 +9,19 @@ use anyhow::{anyhow, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter};
 
-use crate::types::{TerminalDataEvent, TerminalExitEvent};
+use crate::types::{TerminalActivityEvent, TerminalDataEvent, TerminalExitEvent};
 
 const PTY_READ_BUFFER_SIZE: usize = 32768;
 const STARTUP_COMMAND_DELAY_MS: u64 = 300;
+const TERMINAL_QUIET_THRESHOLD_MS: u64 = 1000;
+const PTY_DATA_CHANNEL_CAPACITY: usize = 256;
+
+#[derive(Clone, Copy)]
+enum ActivitySignal {
+    Data,
+    Timeout,
+    Disconnected,
+}
 
 fn default_shell() -> String {
     #[cfg(unix)]
@@ -23,6 +34,56 @@ fn default_shell() -> String {
     }
 }
 
+fn update_activity_state(
+    session_id: &str,
+    active: bool,
+    signal: ActivitySignal,
+) -> (bool, Option<TerminalActivityEvent>) {
+    match (active, signal) {
+        (false, ActivitySignal::Data) => (
+            true,
+            Some(TerminalActivityEvent {
+                session_id: session_id.to_string(),
+                active: true,
+            }),
+        ),
+        (true, ActivitySignal::Timeout) | (true, ActivitySignal::Disconnected) => (
+            false,
+            Some(TerminalActivityEvent {
+                session_id: session_id.to_string(),
+                active: false,
+            }),
+        ),
+        _ => (active, None),
+    }
+}
+
+fn resolve_repo_root(path: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(path)
+        .env("PATH", crate::paths::enriched_path())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let repo_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if repo_root.is_empty() {
+        None
+    } else {
+        Some(repo_root)
+    }
+}
+
+fn send_output_chunk(tx: &SyncSender<String>, data: String) -> bool {
+    match tx.try_send(data) {
+        Ok(()) => true,
+        Err(TrySendError::Full(data)) => tx.send(data).is_ok(),
+        Err(TrySendError::Disconnected(_)) => false,
+    }
+}
+
 struct PtySession {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
@@ -30,18 +91,21 @@ struct PtySession {
 }
 
 type SessionMap = Arc<Mutex<HashMap<String, Arc<Mutex<PtySession>>>>>;
+type SessionProjectMap = Arc<Mutex<HashMap<String, String>>>;
 
 /// Manages PTY sessions with per-session locking so operations on one terminal
 /// never block another. The outer map lock is only held briefly for
 /// insert/remove/lookup — never during I/O.
 pub struct PtyManager {
     sessions: SessionMap,
+    session_project_paths: SessionProjectMap,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_project_paths: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -62,6 +126,14 @@ impl PtyManager {
             .remove(session_id)
     }
 
+    pub fn project_path_for_session(&self, session_id: &str) -> Option<String> {
+        self.session_project_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned()
+    }
+
     pub fn spawn(
         &self,
         session_id: String,
@@ -74,6 +146,7 @@ impl PtyManager {
         app_handle: AppHandle,
     ) -> Result<()> {
         let pty_system = native_pty_system();
+        let resolved_project_path = resolve_repo_root(&project_path).unwrap_or(project_path.clone());
 
         let size = PtySize {
             rows,
@@ -164,6 +237,10 @@ impl PtyManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.clone(), Arc::clone(&session));
+        self.session_project_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.clone(), resolved_project_path);
 
         // Two-thread output pipeline (same approach as Alacritty / Kitty):
         //   Reader  — drains the PTY as fast as possible (no sleeps, no backpressure)
@@ -174,7 +251,33 @@ impl PtyManager {
         // number of IPC events and freeing the WebView bridge for input writes.
         // During light activity the emitter fires immediately (no added latency).
 
-        let (data_tx, data_rx) = std::sync::mpsc::channel::<String>();
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<String>(PTY_DATA_CHANNEL_CAPACITY);
+        let (activity_tx, activity_rx) = std::sync::mpsc::channel::<()>();
+
+        let activity_sid = session_id.clone();
+        let activity_handle = app_handle.clone();
+        std::thread::spawn(move || {
+            let quiet_window = Duration::from_millis(TERMINAL_QUIET_THRESHOLD_MS);
+            let mut active = false;
+
+            loop {
+                let signal = match activity_rx.recv_timeout(quiet_window) {
+                    Ok(()) => ActivitySignal::Data,
+                    Err(RecvTimeoutError::Timeout) => ActivitySignal::Timeout,
+                    Err(RecvTimeoutError::Disconnected) => ActivitySignal::Disconnected,
+                };
+
+                let (next_active, event) = update_activity_state(&activity_sid, active, signal);
+                if let Some(payload) = event {
+                    let _ = activity_handle.emit("terminal:activity", payload);
+                }
+                active = next_active;
+
+                if matches!(signal, ActivitySignal::Disconnected) {
+                    break;
+                }
+            }
+        });
 
         // ── Reader thread ────────────────────────────────────────────────
         std::thread::spawn(move || {
@@ -200,7 +303,7 @@ impl PtyManager {
                             let data = unsafe {
                                 std::str::from_utf8_unchecked(&chunk[..valid_up_to])
                             };
-                            if data_tx.send(data.to_string()).is_err() {
+                            if !send_output_chunk(&data_tx, data.to_string()) {
                                 break; // emitter gone
                             }
                         }
@@ -217,6 +320,7 @@ impl PtyManager {
         let sid = session_id.clone();
         let handle = app_handle.clone();
         let sessions_for_cleanup = Arc::clone(&self.sessions);
+        let session_project_paths_for_cleanup = Arc::clone(&self.session_project_paths);
         let session_for_cleanup = Arc::clone(&session);
 
         std::thread::spawn(move || {
@@ -249,6 +353,7 @@ impl PtyManager {
                 }
 
                 if !batch.is_empty() {
+                    let _ = activity_tx.send(());
                     let _ = handle.emit(
                         "terminal:data",
                         TerminalDataEvent {
@@ -265,6 +370,7 @@ impl PtyManager {
                 batch.push_str(&data);
             }
             if !batch.is_empty() {
+                let _ = activity_tx.send(());
                 let _ = handle.emit(
                     "terminal:data",
                     TerminalDataEvent {
@@ -276,6 +382,10 @@ impl PtyManager {
 
             // Cleanup: remove session from map and emit exit event.
             Self::remove_session(&sessions_for_cleanup, &sid);
+            session_project_paths_for_cleanup
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&sid);
 
             let exit_code = session_for_cleanup
                 .lock()
@@ -339,6 +449,10 @@ impl PtyManager {
             Some(s) => s,
             None => return Ok(()), // already cleaned up by reader thread
         };
+        self.session_project_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
 
         let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
         let _ = sess.child.kill();
@@ -380,6 +494,71 @@ mod tests {
             shell.starts_with('/') || shell.contains("sh"),
             "Unexpected Unix shell: {shell}"
         );
+    }
+
+    #[test]
+    fn update_activity_state_emits_active_on_first_data() {
+        let (active, event) = update_activity_state("pane-1", false, ActivitySignal::Data);
+        assert!(active);
+        assert!(event.is_some());
+        let payload = event.unwrap();
+        assert_eq!(payload.session_id, "pane-1");
+        assert!(payload.active);
+    }
+
+    #[test]
+    fn update_activity_state_emits_inactive_on_timeout_when_active() {
+        let (active, event) = update_activity_state("pane-1", true, ActivitySignal::Timeout);
+        assert!(!active);
+        assert!(event.is_some());
+        let payload = event.unwrap();
+        assert_eq!(payload.session_id, "pane-1");
+        assert!(!payload.active);
+    }
+
+    #[test]
+    fn update_activity_state_noop_when_already_inactive_and_timeout() {
+        let (active, event) = update_activity_state("pane-1", false, ActivitySignal::Timeout);
+        assert!(!active);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn update_activity_state_noop_when_already_active_and_data() {
+        let (active, event) = update_activity_state("pane-1", true, ActivitySignal::Data);
+        assert!(active);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn update_activity_state_emits_inactive_on_disconnect_when_active() {
+        let (active, event) = update_activity_state("pane-1", true, ActivitySignal::Disconnected);
+        assert!(!active);
+        assert!(event.is_some());
+        assert!(!event.unwrap().active);
+    }
+
+    #[test]
+    fn send_output_chunk_returns_false_when_receiver_dropped() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
+        drop(rx);
+        assert!(!send_output_chunk(&tx, "data".to_string()));
+    }
+
+    #[test]
+    fn send_output_chunk_blocks_to_preserve_data_when_channel_full() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
+        tx.send("first".to_string()).unwrap();
+
+        let sender = tx.clone();
+        let handle = std::thread::spawn(move || send_output_chunk(&sender, "second".to_string()));
+
+        let first = rx.recv().unwrap();
+        assert_eq!(first, "first");
+        let result = handle.join().unwrap();
+        assert!(result);
+        let second = rx.recv().unwrap();
+        assert_eq!(second, "second");
     }
 
     #[cfg(windows)]

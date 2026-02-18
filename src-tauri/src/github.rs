@@ -4,8 +4,8 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use crate::types::{
-    GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubProjectStatus,
-    GitHubRemote, GitHubWorkflowRun,
+    GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubPRActions,
+    GitHubProjectStatus, GitHubRemote, GitHubWorkflowRun,
 };
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
@@ -41,29 +41,8 @@ pub fn get_github_remote(path: &str) -> Result<GitHubRemote> {
 }
 
 fn parse_github_remote(url: &str) -> Result<GitHubRemote> {
-    let (owner, repo) = if let Some(rest) = url.strip_prefix("git@github.com:") {
-        let rest = rest.trim_end_matches(".git");
-        let parts: Vec<&str> = rest.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            bail!("Cannot parse SSH remote: {url}");
-        }
-        (parts[0].to_string(), parts[1].to_string())
-    } else if url.contains("github.com/") {
-        let after = url
-            .split("github.com/")
-            .nth(1)
-            .context("Cannot parse HTTPS remote")?;
-        let after = after.trim_end_matches(".git");
-        let parts: Vec<&str> = after.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            bail!("Cannot parse HTTPS remote: {url}");
-        }
-        (parts[0].to_string(), parts[1].to_string())
-    } else {
-        bail!("Not a GitHub remote: {url}");
-    };
-
-    let html_url = format!("https://github.com/{owner}/{repo}");
+    let (host, owner, repo) = parse_github_remote_parts(url)?;
+    let html_url = format!("https://{host}/{owner}/{repo}");
     Ok(GitHubRemote {
         owner,
         repo,
@@ -71,10 +50,70 @@ fn parse_github_remote(url: &str) -> Result<GitHubRemote> {
     })
 }
 
+fn parse_github_remote_parts(url: &str) -> Result<(String, String, String)> {
+    if let Some((prefix, rest)) = url.split_once(':') {
+        if let Some(host) = prefix.split('@').nth(1) {
+            if !is_supported_github_host(host) {
+                bail!("Not a GitHub remote: {url}");
+            }
+            let rest = rest.trim_end_matches(".git");
+            let parts: Vec<&str> = rest.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                bail!("Cannot parse SSH remote: {url}");
+            }
+            return Ok((host.to_string(), parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+
+    if let Ok(parsed) = reqwest::Url::parse(url) {
+        let Some(host) = parsed.host_str() else {
+            bail!("Cannot parse remote host: {url}");
+        };
+        if !is_supported_github_host(host) {
+            bail!("Not a GitHub remote: {url}");
+        }
+        let segments: Vec<&str> = parsed
+            .path_segments()
+            .map(|s| s.filter(|p| !p.is_empty()).collect())
+            .unwrap_or_default();
+        if segments.len() < 2 {
+            bail!("Cannot parse HTTPS remote: {url}");
+        }
+        let owner = segments[0].to_string();
+        let repo = segments[1].trim_end_matches(".git").to_string();
+        return Ok((host.to_string(), owner, repo));
+    }
+
+    bail!("Cannot parse remote: {url}");
+}
+
+fn is_supported_github_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("github.com") {
+        return true;
+    }
+    let host = host.to_ascii_lowercase();
+    if host.starts_with("github.") || host.ends_with(".github.com") || host.contains(".github.") {
+        return true;
+    }
+    if let Ok(gh_host) = std::env::var("GH_HOST") {
+        if host.eq_ignore_ascii_case(&gh_host) {
+            return true;
+        }
+    }
+    if let Ok(github_host) = std::env::var("GITHUB_HOST") {
+        if host.eq_ignore_ascii_case(&github_host) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
     let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup,mergeStateStatus";
     let result = gh_output(
-        &["pr", "list", "--state", "all", "--limit", "100", "--json", fields],
+        &[
+            "pr", "list", "--state", "all", "--limit", "100", "--json", fields,
+        ],
         path,
     );
 
@@ -97,10 +136,7 @@ pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
 pub fn list_workflow_runs(path: &str) -> Vec<GitHubWorkflowRun> {
     let fields =
         "databaseId,name,displayTitle,headBranch,status,conclusion,url,event,createdAt,updatedAt";
-    let result = gh_output(
-        &["run", "list", "--limit", "200", "--json", fields],
-        path,
-    );
+    let result = gh_output(&["run", "list", "--limit", "200", "--json", fields], path);
 
     match result {
         Ok(json_str) => {
@@ -128,17 +164,21 @@ pub fn group_runs_by_branch(runs: Vec<GitHubWorkflowRun>) -> HashMap<String, Git
         branch_runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
         // Keep only the latest run per workflow name
-        let mut seen_workflows: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_workflows: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let deduped: Vec<GitHubWorkflowRun> = branch_runs
             .into_iter()
             .filter(|r| seen_workflows.insert(r.name.clone()))
             .collect();
 
         let status = derive_branch_status(&deduped);
-        result.insert(branch, GitHubBranchRuns {
-            status,
-            runs: deduped,
-        });
+        result.insert(
+            branch,
+            GitHubBranchRuns {
+                status,
+                runs: deduped,
+            },
+        );
     }
 
     result
@@ -223,18 +263,45 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
 
 fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {
     let checks = parse_checks_rollup(v.get("statusCheckRollup"));
+    let state = v["state"].as_str().unwrap_or("OPEN").to_string();
+    let is_draft = v["isDraft"].as_bool().unwrap_or(false);
+    let merge_state_status = v["mergeStateStatus"].as_str().map(String::from);
+    let actions = derive_pr_actions(&state, is_draft, merge_state_status.as_deref(), &checks);
 
     Ok(GitHubPR {
         number: v["number"].as_u64().unwrap_or(0),
         title: v["title"].as_str().unwrap_or("").to_string(),
-        state: v["state"].as_str().unwrap_or("OPEN").to_string(),
+        state,
         url: v["url"].as_str().unwrap_or("").to_string(),
-        is_draft: v["isDraft"].as_bool().unwrap_or(false),
+        is_draft,
         head_ref_name: v["headRefName"].as_str().unwrap_or("").to_string(),
         review_decision: v["reviewDecision"].as_str().map(String::from),
         checks_status: checks,
-        merge_state_status: v["mergeStateStatus"].as_str().map(String::from),
+        merge_state_status,
+        actions,
     })
+}
+
+fn derive_pr_actions(
+    state: &str,
+    is_draft: bool,
+    merge_state_status: Option<&str>,
+    checks_status: &GitHubChecksStatus,
+) -> GitHubPRActions {
+    let is_open = state == "OPEN";
+    let can_mark_ready = is_open && is_draft;
+    let can_update_branch = is_open && merge_state_status == Some("BEHIND");
+    let can_merge = is_open
+        && !is_draft
+        && merge_state_status != Some("DIRTY")
+        && checks_status.failing == 0
+        && checks_status.pending == 0;
+
+    GitHubPRActions {
+        can_merge,
+        can_mark_ready,
+        can_update_branch,
+    }
 }
 
 fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus {
@@ -269,13 +336,7 @@ fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus
 pub fn list_pr_checks(path: &str, pr_number: u64) -> Result<Vec<GitHubCheckDetail>> {
     let fields = "name,bucket,completedAt,startedAt,link,workflow,description";
     let result = gh_output(
-        &[
-            "pr",
-            "checks",
-            &pr_number.to_string(),
-            "--json",
-            fields,
-        ],
+        &["pr", "checks", &pr_number.to_string(), "--json", fields],
         path,
     );
 
@@ -303,7 +364,10 @@ pub fn update_pr_branch(path: &str, pr_number: u64) -> Result<()> {
     gh_output(
         &[
             "api",
-            &format!("repos/{}/{}/pulls/{}/update-branch", remote.owner, remote.repo, pr_number),
+            &format!(
+                "repos/{}/{}/pulls/{}/update-branch",
+                remote.owner, remote.repo, pr_number
+            ),
             "-X",
             "PUT",
         ],
@@ -323,10 +387,7 @@ pub fn mark_pr_ready(path: &str, pr_number: u64) -> Result<()> {
 }
 
 pub fn merge_pr(path: &str, pr_number: u64) -> Result<()> {
-    gh_output(
-        &["pr", "merge", &pr_number.to_string(), "--squash"],
-        path,
-    )?;
+    gh_output(&["pr", "merge", &pr_number.to_string(), "--squash"], path)?;
     Ok(())
 }
 
@@ -381,6 +442,22 @@ mod tests {
         let remote = parse_github_remote("https://github.com/user/repo").unwrap();
         assert_eq!(remote.owner, "user");
         assert_eq!(remote.repo, "repo");
+    }
+
+    #[test]
+    fn parse_enterprise_https_remote() {
+        let remote = parse_github_remote("https://github.mycompany.com/user/repo.git").unwrap();
+        assert_eq!(remote.owner, "user");
+        assert_eq!(remote.repo, "repo");
+        assert_eq!(remote.html_url, "https://github.mycompany.com/user/repo");
+    }
+
+    #[test]
+    fn parse_enterprise_ssh_remote() {
+        let remote = parse_github_remote("git@github.mycompany.com:user/repo.git").unwrap();
+        assert_eq!(remote.owner, "user");
+        assert_eq!(remote.repo, "repo");
+        assert_eq!(remote.html_url, "https://github.mycompany.com/user/repo");
     }
 
     #[test]
@@ -577,6 +654,9 @@ mod tests {
         assert_eq!(pr.review_decision, Some("APPROVED".to_string()));
         assert_eq!(pr.checks_status.passing, 1);
         assert_eq!(pr.merge_state_status, Some("CLEAN".to_string()));
+        assert!(pr.actions.can_merge);
+        assert!(!pr.actions.can_mark_ready);
+        assert!(!pr.actions.can_update_branch);
     }
 
     #[test]
@@ -595,6 +675,47 @@ mod tests {
         assert_eq!(pr.review_decision, None);
         assert_eq!(pr.checks_status.overall, "none");
         assert_eq!(pr.merge_state_status, None);
+        assert!(!pr.actions.can_merge);
+        assert!(!pr.actions.can_mark_ready);
+        assert!(!pr.actions.can_update_branch);
+    }
+
+    #[test]
+    fn parse_pr_json_draft_open_can_mark_ready() {
+        let val = serde_json::json!({
+            "number": 7,
+            "title": "WIP",
+            "state": "OPEN",
+            "url": "https://github.com/user/repo/pull/7",
+            "isDraft": true,
+            "headRefName": "wip-branch",
+            "statusCheckRollup": [{"state": "PENDING"}],
+            "mergeStateStatus": "BEHIND"
+        });
+        let pr = parse_pr_json(&val).unwrap();
+        assert!(!pr.actions.can_merge);
+        assert!(pr.actions.can_mark_ready);
+        assert!(pr.actions.can_update_branch);
+    }
+
+    #[test]
+    fn parse_pr_json_blocks_merge_when_checks_pending_or_failing() {
+        let val = serde_json::json!({
+            "number": 8,
+            "title": "Feature",
+            "state": "OPEN",
+            "url": "https://github.com/user/repo/pull/8",
+            "isDraft": false,
+            "headRefName": "feature",
+            "statusCheckRollup": [
+                {"state": "PENDING"},
+                {"conclusion": "FAILURE"}
+            ],
+            "mergeStateStatus": "CLEAN"
+        });
+        let pr = parse_pr_json(&val).unwrap();
+        assert!(!pr.actions.can_merge);
+        assert!(!pr.actions.can_mark_ready);
     }
 
     // group_runs_by_branch

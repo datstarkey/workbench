@@ -5,8 +5,9 @@ use std::sync::Mutex;
 use anyhow::{anyhow, Result};
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind, Debouncer};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
+use crate::refresh_dispatcher::RefreshDispatcher;
 use crate::types::GitChangedEvent;
 
 type FileWatcher = Debouncer<notify::RecommendedWatcher>;
@@ -49,10 +50,18 @@ impl GitWatcher {
                     }
                     if let Some(project_path) = Self::project_path_from_git_path(&event.path) {
                         if emitted.insert(project_path.clone()) {
+                            let project_path_string = project_path.to_string_lossy().to_string();
+                            let dispatcher = handle.state::<RefreshDispatcher>();
+                            dispatcher.request_refresh(
+                                &handle,
+                                project_path_string.clone(),
+                                "git-watcher",
+                                "git-dir-change",
+                            );
                             let _ = handle.emit(
                                 "git:changed",
                                 GitChangedEvent {
-                                    project_path: project_path.to_string_lossy().to_string(),
+                                    project_path: project_path_string,
                                 },
                             );
                         }
@@ -145,6 +154,30 @@ impl GitWatcher {
         Ok(())
     }
 
+    pub fn sync_projects(&self, project_paths: Vec<String>) {
+        let desired = normalize_project_paths(project_paths);
+        let current = self
+            .watched_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let (to_watch, to_unwatch) = watch_diff(&current, &desired);
+
+        for path in to_watch {
+            let project_path = path.to_string_lossy().to_string();
+            if let Err(err) = self.watch_project(&project_path) {
+                eprintln!("[GitWatcher] Failed to watch {project_path}: {err}");
+            }
+        }
+
+        for path in to_unwatch {
+            let project_path = path.to_string_lossy().to_string();
+            if let Err(err) = self.unwatch_project(&project_path) {
+                eprintln!("[GitWatcher] Failed to unwatch {project_path}: {err}");
+            }
+        }
+    }
+
     pub fn unwatch_project(&self, project_path: &str) -> Result<()> {
         let path = PathBuf::from(project_path);
         let git_dir = match Self::resolve_git_dir(&path) {
@@ -170,5 +203,72 @@ impl GitWatcher {
         }
 
         Ok(())
+    }
+}
+
+fn normalize_project_paths(project_paths: Vec<String>) -> HashSet<PathBuf> {
+    project_paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn watch_diff(current: &HashSet<PathBuf>, desired: &HashSet<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    (
+        desired.difference(current).cloned().collect(),
+        current.difference(desired).cloned().collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    use super::{normalize_project_paths, watch_diff};
+
+    #[test]
+    fn normalize_project_paths_trims_dedupes_and_ignores_empty() {
+        let set = normalize_project_paths(vec![
+            "/repo/a".to_string(),
+            " /repo/a ".to_string(),
+            "".to_string(),
+            "   ".to_string(),
+            "/repo/b".to_string(),
+        ]);
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&PathBuf::from("/repo/a")));
+        assert!(set.contains(&PathBuf::from("/repo/b")));
+    }
+
+    #[test]
+    fn watch_diff_returns_added_and_removed_paths() {
+        let current = HashSet::from([PathBuf::from("/repo/a"), PathBuf::from("/repo/b")]);
+        let desired = HashSet::from([PathBuf::from("/repo/b"), PathBuf::from("/repo/c")]);
+
+        let (to_watch, to_unwatch) = watch_diff(&current, &desired);
+
+        assert_eq!(
+            to_watch.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([PathBuf::from("/repo/c")])
+        );
+        assert_eq!(
+            to_unwatch.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([PathBuf::from("/repo/a")])
+        );
+    }
+
+    #[test]
+    fn watch_diff_noop_when_sets_match() {
+        let current = HashSet::from([PathBuf::from("/repo/a")]);
+        let desired = HashSet::from([PathBuf::from("/repo/a")]);
+
+        let (to_watch, to_unwatch) = watch_diff(&current, &desired);
+
+        assert!(to_watch.is_empty());
+        assert!(to_unwatch.is_empty());
     }
 }

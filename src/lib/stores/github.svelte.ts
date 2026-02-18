@@ -1,10 +1,12 @@
 import type {
-	GitChangedEvent,
 	GitHubBranchRuns,
 	GitHubBranchStatus,
 	GitHubCheckDetail,
+	GitHubCheckTransitionEvent,
 	GitHubPR,
 	GitHubProjectStatus,
+	GitHubProjectStatusEvent,
+	ProjectRefreshRequestedEvent,
 	GitHubRemote
 } from '$types/workbench';
 import { getClaudeSessionStore, getGitStore, getProjectStore, getWorkspaceStore } from './context';
@@ -12,38 +14,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { load } from '@tauri-apps/plugin-store';
 
-const FAST_POLL_MS = 15_000;
-const SLOW_POLL_MS = 90_000;
-
-type CheckNotification = { name: string; bucket: string; projectPath: string; prNumber: number };
-
-/** Pure function: detect checks that transitioned from pending → pass/fail */
-function detectCheckTransitions(
-	oldBuckets: Map<string, string>,
-	checks: GitHubCheckDetail[],
-	projectPath: string,
-	prNumber: number
-): CheckNotification[] {
-	const result: CheckNotification[] = [];
-	for (const check of checks) {
-		const checkKey = `${check.name}::${check.workflow}`;
-		const prev = oldBuckets.get(checkKey);
-		if (prev === 'pending' && (check.bucket === 'pass' || check.bucket === 'fail')) {
-			result.push({ name: check.name, bucket: check.bucket, projectPath, prNumber });
-		}
-	}
-	return result;
-}
-
-/** Build a bucket lookup map keyed by name::workflow for matrix job uniqueness */
-function buildBucketMap(checks: GitHubCheckDetail[]): Map<string, string> {
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain utility, not reactive state
-	const map = new Map<string, string>();
-	for (const check of checks) {
-		map.set(`${check.name}::${check.workflow}`, check.bucket);
-	}
-	return map;
-}
+type CheckNotification = {
+	name: string;
+	bucket: 'pass' | 'fail';
+	projectPath: string;
+	prNumber: number;
+};
 
 export class GitHubStore {
 	private workspaces = getWorkspaceStore();
@@ -96,7 +72,7 @@ export class GitHubStore {
 		return this.checksByPr[this.prKey(target.projectPath, pr.number)] ?? [];
 	});
 
-	/** Derived list of branches with active AI sessions — drives polling */
+	/** Derived list of branches with active AI sessions */
 	readonly activeBranches = $derived.by(() => {
 		if (this.ghAvailable === false) return [];
 		const sessionsByProject = this.sessions.activeSessionsByProject;
@@ -120,41 +96,38 @@ export class GitHubStore {
 		return branches;
 	});
 
+	readonly trackedProjectPaths = $derived.by(() => {
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain utility set for dedupe
+		const seen = new Set<string>();
+		for (const { projectPath } of this.activeBranches) {
+			seen.add(projectPath);
+		}
+		return Array.from(seen);
+	});
+
 	// Notification callback — registered by consumer (App.svelte), called directly on transitions
 	private onCheckCompleteCallback: ((notification: CheckNotification) => void) | null = null;
 
 	// Not reactive — internal bookkeeping only
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity
-	private previousCheckBuckets = new Map<string, Map<string, string>>();
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity
-	private pendingProjects = new Set<string>();
-	private pollIntervalId: ReturnType<typeof setInterval> | null = null;
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity
-	private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	private fastPollIntervalId: ReturnType<typeof setInterval> | null = null;
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity
-	private pendingChecks = new Set<string>();
+	private trackedProjectsFingerprint = '';
 
 	constructor() {
-		listen<GitChangedEvent>('git:changed', (event) => {
-			this.debouncedRefresh(event.payload.projectPath);
+		listen<ProjectRefreshRequestedEvent>('project:refresh-requested', (event) => {
+			void this.refreshProject(event.payload.projectPath);
 		});
-
-		this.pollIntervalId = setInterval(() => {
-			this.pollActiveBranches();
-		}, SLOW_POLL_MS);
-	}
-
-	private debouncedRefresh(projectPath: string): void {
-		const existing = this.debounceTimers.get(projectPath);
-		if (existing) clearTimeout(existing);
-		this.debounceTimers.set(
-			projectPath,
-			setTimeout(() => {
-				this.debounceTimers.delete(projectPath);
-				this.refreshProject(projectPath);
-			}, 2_000)
-		);
+		listen<GitHubProjectStatusEvent>('github:project-status', (event) => {
+			this.applyProjectStatus(event.payload.projectPath, event.payload.status);
+		});
+		listen<GitHubCheckTransitionEvent>('github:check-transition', (event) => {
+			const callback = this.onCheckCompleteCallback;
+			if (!callback) return;
+			callback({
+				name: event.payload.name,
+				bucket: event.payload.bucket,
+				projectPath: event.payload.projectPath,
+				prNumber: event.payload.prNumber
+			});
+		});
 	}
 
 	async checkGhAvailable(): Promise<boolean> {
@@ -166,34 +139,6 @@ export class GitHubStore {
 		} catch {
 			this.ghAvailable = false;
 			return false;
-		}
-	}
-
-	async fetchProjectStatus(projectPath: string): Promise<void> {
-		if (this.pendingProjects.has(projectPath)) return;
-		this.pendingProjects.add(projectPath);
-
-		try {
-			const status = await invoke<GitHubProjectStatus>('github_project_status', {
-				projectPath
-			});
-			this.remoteByProject = { ...this.remoteByProject, [projectPath]: status.remote };
-			this.prsByProject = { ...this.prsByProject, [projectPath]: status.prs };
-			this.branchRunsByProject = {
-				...this.branchRunsByProject,
-				[projectPath]: status.branchRuns
-			};
-			// Merge pre-fetched PR checks
-			const newChecks = { ...this.checksByPr };
-			for (const [prNum, checks] of Object.entries(status.prChecks)) {
-				newChecks[`${projectPath}::${prNum}`] = checks;
-			}
-			this.checksByPr = newChecks;
-			this.updateFastPolling();
-		} catch (e) {
-			console.warn('[GitHubStore] Failed to fetch project status:', e);
-		} finally {
-			this.pendingProjects.delete(projectPath);
 		}
 	}
 
@@ -211,26 +156,56 @@ export class GitHubStore {
 	}
 
 	async refreshProject(projectPath: string): Promise<void> {
-		if (this.ghAvailable === false) return;
-		await this.fetchProjectStatus(projectPath);
+		if (this.ghAvailable !== true) return;
+		try {
+			await invoke('github_refresh_project', { projectPath });
+		} catch (e) {
+			console.warn('[GitHubStore] Failed to request project refresh:', e);
+		}
 	}
 
-	private async pollActiveBranches(): Promise<void> {
+	private applyProjectStatus(projectPath: string, status: GitHubProjectStatus): void {
 		if (this.ghAvailable === false) return;
+		this.remoteByProject = { ...this.remoteByProject, [projectPath]: status.remote };
+		this.prsByProject = { ...this.prsByProject, [projectPath]: status.prs };
+		this.branchRunsByProject = {
+			...this.branchRunsByProject,
+			[projectPath]: status.branchRuns
+		};
 
-		// Poll all projects with visible branches — not just those with existing PRs.
-		// This ensures newly created PRs are discovered within one poll cycle.
-		const seen: Record<string, true> = {};
-		const uniqueProjects = this.activeBranches
-			.filter(({ projectPath }) => {
-				if (seen[projectPath]) return false;
-				seen[projectPath] = true;
-				return true;
-			})
-			.map(({ projectPath }) => projectPath);
+		const prefix = `${projectPath}::`;
+		const nextChecksByPr = { ...this.checksByPr };
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain utility set for key tracking
+		const incomingKeys = new Set<string>();
 
-		for (const projectPath of uniqueProjects) {
-			await this.fetchProjectStatus(projectPath);
+		for (const [prNum, checks] of Object.entries(status.prChecks)) {
+			const prNumber = Number(prNum);
+			if (!Number.isFinite(prNumber)) continue;
+			const key = this.prKey(projectPath, prNumber);
+			incomingKeys.add(key);
+			nextChecksByPr[key] = checks;
+		}
+
+		for (const key of Object.keys(nextChecksByPr)) {
+			if (key.startsWith(prefix) && !incomingKeys.has(key)) {
+				delete nextChecksByPr[key];
+			}
+		}
+
+		this.checksByPr = nextChecksByPr;
+	}
+
+	async syncTrackedProjects(): Promise<void> {
+		if (this.ghAvailable !== true) return;
+		const projectPaths = this.trackedProjectPaths.slice().sort();
+		const fingerprint = projectPaths.join('\n');
+		if (fingerprint === this.trackedProjectsFingerprint) return;
+		this.trackedProjectsFingerprint = fingerprint;
+
+		try {
+			await invoke('github_set_tracked_projects', { projectPaths });
+		} catch (e) {
+			console.warn('[GitHubStore] Failed to sync tracked projects:', e);
 		}
 	}
 
@@ -238,40 +213,6 @@ export class GitHubStore {
 
 	private prKey(projectPath: string, prNumber: number): string {
 		return `${projectPath}::${prNumber}`;
-	}
-
-	async fetchPrChecks(projectPath: string, prNumber: number): Promise<void> {
-		const key = this.prKey(projectPath, prNumber);
-		if (this.pendingChecks.has(key)) return;
-		this.pendingChecks.add(key);
-
-		try {
-			const checks = await invoke<GitHubCheckDetail[]>('github_pr_checks', {
-				projectPath,
-				prNumber
-			});
-
-			// Detect check transitions and notify via callback
-			const oldBuckets = this.previousCheckBuckets.get(key);
-			if (oldBuckets && this.onCheckCompleteCallback) {
-				const transitions = detectCheckTransitions(oldBuckets, checks, projectPath, prNumber);
-				for (const n of transitions) {
-					this.onCheckCompleteCallback(n);
-				}
-			}
-
-			// Store current buckets for next comparison
-			this.previousCheckBuckets.set(key, buildBucketMap(checks));
-
-			this.checksByPr = { ...this.checksByPr, [key]: checks };
-
-			// Manage adaptive polling based on check states
-			this.updateFastPolling();
-		} catch (e) {
-			console.warn('[GitHubStore] Failed to fetch PR checks:', e);
-		} finally {
-			this.pendingChecks.delete(key);
-		}
 	}
 
 	onCheckComplete(callback: (notification: CheckNotification) => void): void {
@@ -285,13 +226,12 @@ export class GitHubStore {
 	showBranch(projectPath: string, branch: string): void {
 		this._overrideTarget = { projectPath, branch };
 		this._overrideForWorkspaceId = this.workspaces.activeWorkspaceId;
-		this.refreshProject(projectPath);
+		void this.refreshProject(projectPath);
 	}
 
 	clearSidebarOverride(): void {
 		this._overrideTarget = null;
 		this._overrideForWorkspaceId = null;
-		this.stopFastPolling();
 	}
 
 	async toggleSidebar(): Promise<void> {
@@ -321,72 +261,15 @@ export class GitHubStore {
 		}
 	}
 
-	private updateFastPolling(): void {
-		const target = this.sidebarTarget;
-		if (!target) {
-			this.stopFastPolling();
-			return;
-		}
-
-		let hasPending = false;
-		const pr = this.sidebarPr;
-		if (pr) {
-			const checks = this.checksByPr[this.prKey(target.projectPath, pr.number)];
-			hasPending = checks?.some((c) => c.bucket === 'pending') ?? false;
-		} else {
-			const runs = this.branchRunsByProject[target.projectPath]?.[target.branch];
-			hasPending = runs?.status.pending > 0;
-		}
-
-		if (hasPending && !this.fastPollIntervalId) {
-			this.startFastPolling();
-		} else if (!hasPending && this.fastPollIntervalId) {
-			this.stopFastPolling();
-		}
-	}
-
-	private startFastPolling(): void {
-		this.stopFastPolling();
-		this.fastPollIntervalId = setInterval(() => {
-			this.fastPollTick();
-		}, FAST_POLL_MS);
-	}
-
-	private stopFastPolling(): void {
-		if (this.fastPollIntervalId) {
-			clearInterval(this.fastPollIntervalId);
-			this.fastPollIntervalId = null;
-		}
-	}
-
-	private fastPollTick(): void {
-		const target = this.sidebarTarget;
-		if (!target) {
-			this.stopFastPolling();
-			return;
-		}
-		const pr = this.sidebarPr;
-		if (pr) {
-			this.fetchPrChecks(target.projectPath, pr.number);
-		}
-		this.refreshProject(target.projectPath);
-	}
-
 	/** Call after projects load — checks gh availability, then fetches status per project */
 	async initForProjects(projectPaths: string[]): Promise<void> {
 		const available = await this.checkGhAvailable();
 		if (!available) return;
 
-		await Promise.all(projectPaths.map((p) => this.fetchProjectStatus(p)));
+		await invoke('github_set_tracked_projects', { projectPaths });
+		this.trackedProjectsFingerprint = projectPaths.slice().sort().join('\n');
+		await Promise.all(projectPaths.map((p) => this.refreshProject(p)));
 	}
 
-	destroy() {
-		if (this.pollIntervalId) {
-			clearInterval(this.pollIntervalId);
-		}
-		this.stopFastPolling();
-		for (const timer of this.debounceTimers.values()) {
-			clearTimeout(timer);
-		}
-	}
+	destroy() {}
 }

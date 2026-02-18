@@ -42,7 +42,6 @@
 	import { listen } from '@tauri-apps/api/event';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { onMount, untrack } from 'svelte';
-	import { SvelteSet } from 'svelte/reactivity';
 	import { Toaster, toast } from 'svelte-sonner';
 
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
@@ -91,18 +90,9 @@
 		getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
 	});
 
-	// Fetch GitHub status when projects gain active sessions (network side effect)
+	// Sync tracked projects for backend GitHub polling
 	$effect(() => {
-		const branches = githubStore.activeBranches;
-		untrack(() => {
-			const seen = new SvelteSet<string>();
-			for (const { projectPath } of branches) {
-				if (!seen.has(projectPath)) {
-					seen.add(projectPath);
-					githubStore.fetchProjectStatus(projectPath);
-				}
-			}
-		});
+		void githubStore.syncTrackedProjects();
 	});
 
 	// Sync githubStore.sidebarOpen → pane expand/collapse (imperative DOM API)
@@ -124,12 +114,6 @@
 		} else {
 			toast.error(`${n.name} failed`);
 		}
-	});
-
-	// Detect merged PRs and execute Trello merge actions (network side effect)
-	$effect(() => {
-		const prs = githubStore.prsByProject;
-		untrack(() => trelloStore.checkForMergedPrs(prs));
 	});
 
 	onMount(async () => {

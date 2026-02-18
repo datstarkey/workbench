@@ -8,9 +8,10 @@ import type {
 	TrelloCredentials,
 	TrelloProjectConfig
 } from '$types/trello';
-import type { GitHubPR } from '$types/workbench';
-import { getWorkspaceStore, getGitStore, getGitHubStore } from './context';
+import type { TrelloMergeActionAppliedEvent } from '$types/workbench';
+import { getWorkspaceStore } from './context';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export class TrelloStore {
 	// --- State ---
@@ -24,11 +25,12 @@ export class TrelloStore {
 
 	// Private refs to other stores
 	private workspaces = getWorkspaceStore();
-	private git = getGitStore();
-	private github = getGitHubStore();
 
-	// Track previous PR states for merge detection
-	private prevPrStates: Record<string, string> = {};
+	constructor() {
+		listen<TrelloMergeActionAppliedEvent>('trello:merge-action-applied', (event) => {
+			void this.refreshAllBoards(event.payload.projectPath);
+		});
+	}
 
 	// --- Derived ---
 	readonly activeProjectPath = $derived(this.workspaces.activeWorkspace?.projectPath ?? null);
@@ -205,30 +207,6 @@ export class TrelloStore {
 			taskLinks: config.taskLinks.filter((t) => t.cardId !== cardId)
 		};
 		this.saveProjectConfig(projectPath, updated);
-	}
-
-	/** Detect merged PRs and execute merge actions (move card, add labels) */
-	checkForMergedPrs(prsByProject: Record<string, GitHubPR[]>): void {
-		for (const [projectPath, prs] of Object.entries(prsByProject)) {
-			const config = this.configByProject[projectPath];
-			if (!config) continue;
-
-			for (const pr of prs) {
-				const key = `${projectPath}::${pr.headRefName}`;
-				const prevState = this.prevPrStates[key];
-				this.prevPrStates[key] = pr.state;
-
-				// Detect OPEN -> MERGED transition
-				if (prevState && prevState !== 'MERGED' && pr.state === 'MERGED') {
-					const link = config.taskLinks.find((t) => t.branch === pr.headRefName);
-					if (!link) continue;
-					const board = config.boards.find((b) => b.boardId === link.boardId);
-					if (!board?.mergeAction) continue;
-
-					this.executeBoardAction(link.cardId, board.mergeAction, projectPath);
-				}
-			}
-		}
 	}
 
 	private async executeBoardAction(

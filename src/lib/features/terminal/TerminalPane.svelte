@@ -3,6 +3,7 @@
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
+	import { WebglAddon } from '@xterm/addon-webgl';
 	import { open } from '@tauri-apps/plugin-shell';
 	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
@@ -12,11 +13,11 @@
 		writeTerminal,
 		resizeTerminal,
 		killTerminal,
-		onTerminalData,
-		onTerminalExit
+		onSessionTerminalData,
+		onSessionTerminalExit
 	} from '$lib/utils/terminal';
 	import { stripAnsi } from '$lib/utils/format';
-	import { getClaudeSessionStore } from '$stores/context';
+	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
 		sessionId,
@@ -35,16 +36,41 @@
 	let container: HTMLDivElement;
 	let terminal: Terminal | null = null;
 	let fitAddon: FitAddon | null = null;
+	let webglAddon: WebglAddon | null = null;
+	let webLinksLoaded = false;
 	let unlistenData: (() => void) | null = null;
 	let unlistenExit: (() => void) | null = null;
 	let resizeObserver: ResizeObserver | null = null;
+	let intersectionObserver: IntersectionObserver | null = null;
 	let exited = false;
 	let terminalError = $state('');
 	let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 	let removeVisibilityListener: (() => void) | null = null;
 	let lastCols = 0;
 	let lastRows = 0;
+	let outputQueue = '';
+	let outputFlushRaf: number | null = null;
+	let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
+	let documentVisible = $state(document.visibilityState === 'visible');
+	let terminalInView = $state(true);
+	let perfLogInterval: ReturnType<typeof setInterval> | null = null;
 	const claudeSessionStore = getClaudeSessionStore();
+	const workbenchSettingsStore = getWorkbenchSettingsStore();
+
+	const OFFSCREEN_FLUSH_INTERVAL_MS = 80;
+	const PERF_LOG_INTERVAL_MS = 10000;
+	const SCROLLBACK_NORMAL = terminalOptions.scrollback ?? 5000;
+	const SCROLLBACK_PERFORMANCE = 2000;
+
+	let outputEventsSinceLog = 0;
+	let outputBytesSinceLog = 0;
+	let outputFlushesSinceLog = 0;
+	let outputFlushMsSinceLog = 0;
+	let maxQueueBytesSinceLog = 0;
+	let inputEventsSinceLog = 0;
+	let inputLatencySamplesSinceLog = 0;
+	let inputLatencyTotalMsSinceLog = 0;
+	let pendingInputAtMs: number | null = null;
 
 	// Buffer early output to detect Claude CLI errors for auto-retry
 	let earlyOutput = '';
@@ -83,7 +109,8 @@
 
 	function canFitTerminal(): boolean {
 		if (!terminal || !fitAddon || !container) return false;
-		if (document.visibilityState !== 'visible') return false;
+		if (!active || !terminalInView) return false;
+		if (!documentVisible) return false;
 		const { width, height } = container.getBoundingClientRect();
 		return width > 0 && height > 0;
 	}
@@ -91,6 +118,97 @@
 	function fitTerminal() {
 		if (!canFitTerminal()) return;
 		fitAddon!.fit();
+	}
+
+	function clearFlushSchedule() {
+		if (outputFlushRaf !== null) {
+			cancelAnimationFrame(outputFlushRaf);
+			outputFlushRaf = null;
+		}
+		if (outputFlushTimer) {
+			clearTimeout(outputFlushTimer);
+			outputFlushTimer = null;
+		}
+	}
+
+	function inPerformanceMode(): boolean {
+		if (!active || !documentVisible || !terminalInView) return true;
+		return workbenchSettingsStore.terminalPerformanceMode === 'always';
+	}
+
+	function ensureWebLinksAddon() {
+		if (!terminal || webLinksLoaded) return;
+		terminal.loadAddon(new WebLinksAddon((_event, uri) => open(uri)));
+		webLinksLoaded = true;
+	}
+
+	function logPerfSnapshotIfEnabled() {
+		if (!workbenchSettingsStore.terminalTelemetryEnabled) return;
+		const avgFlushMs =
+			outputFlushesSinceLog > 0 ? outputFlushMsSinceLog / outputFlushesSinceLog : 0;
+		const avgInputLatencyMs =
+			inputLatencySamplesSinceLog > 0
+				? inputLatencyTotalMsSinceLog / inputLatencySamplesSinceLog
+				: 0;
+
+		console.info('[TerminalPerf]', {
+			sessionId,
+			performanceMode: inPerformanceMode(),
+			outputEvents: outputEventsSinceLog,
+			outputBytes: outputBytesSinceLog,
+			outputFlushes: outputFlushesSinceLog,
+			avgFlushMs: Number(avgFlushMs.toFixed(2)),
+			maxQueueBytes: maxQueueBytesSinceLog,
+			inputEvents: inputEventsSinceLog,
+			avgInputLatencyMs: Number(avgInputLatencyMs.toFixed(2))
+		});
+
+		outputEventsSinceLog = 0;
+		outputBytesSinceLog = 0;
+		outputFlushesSinceLog = 0;
+		outputFlushMsSinceLog = 0;
+		maxQueueBytesSinceLog = 0;
+		inputEventsSinceLog = 0;
+		inputLatencySamplesSinceLog = 0;
+		inputLatencyTotalMsSinceLog = 0;
+	}
+
+	function flushOutputQueue() {
+		clearFlushSchedule();
+		if (!terminal || outputQueue.length === 0) return;
+		const batched = outputQueue;
+		outputQueue = '';
+		const start = performance.now();
+		terminal.write(batched);
+		outputFlushesSinceLog += 1;
+		outputFlushMsSinceLog += performance.now() - start;
+		detectClaudeRetry(batched);
+	}
+
+	function scheduleOutputFlush() {
+		if (outputQueue.length === 0) return;
+		if (inPerformanceMode()) {
+			if (outputFlushTimer) return;
+			outputFlushTimer = setTimeout(flushOutputQueue, OFFSCREEN_FLUSH_INTERVAL_MS);
+			return;
+		}
+		if (outputFlushRaf !== null) return;
+		outputFlushRaf = requestAnimationFrame(flushOutputQueue);
+	}
+
+	function queueTerminalOutput(data: string) {
+		outputEventsSinceLog += 1;
+		outputBytesSinceLog += data.length;
+		outputQueue += data;
+		if (outputQueue.length > maxQueueBytesSinceLog) {
+			maxQueueBytesSinceLog = outputQueue.length;
+		}
+		if (pendingInputAtMs !== null && data.length > 0) {
+			inputLatencySamplesSinceLog += 1;
+			inputLatencyTotalMsSinceLog += performance.now() - pendingInputAtMs;
+			pendingInputAtMs = null;
+		}
+		scheduleOutputFlush();
 	}
 
 	$effect(() => {
@@ -101,15 +219,45 @@
 		}
 	});
 
+	$effect(() => {
+		void active;
+		void documentVisible;
+		void terminalInView;
+		void workbenchSettingsStore.terminalPerformanceMode;
+		const performanceMode = inPerformanceMode();
+		if (terminal) {
+			terminal.options.scrollback = performanceMode ? SCROLLBACK_PERFORMANCE : SCROLLBACK_NORMAL;
+			if (!performanceMode) ensureWebLinksAddon();
+		}
+		clearFlushSchedule();
+		if (outputQueue.length === 0) return;
+		scheduleOutputFlush();
+	});
+
 	onMount(async () => {
 		try {
 			// Wait for fonts to load so cell measurements are accurate
 			await document.fonts.ready;
 
-			terminal = new Terminal(terminalOptions);
+			terminal = new Terminal({
+				...terminalOptions,
+				scrollback: inPerformanceMode() ? SCROLLBACK_PERFORMANCE : SCROLLBACK_NORMAL
+			});
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
-			terminal.loadAddon(new WebLinksAddon((_event, uri) => open(uri)));
+			try {
+				webglAddon = new WebglAddon();
+				webglAddon.onContextLoss(() => {
+					webglAddon?.dispose();
+					webglAddon = null;
+				});
+				terminal.loadAddon(webglAddon);
+			} catch (error) {
+				console.warn('[TerminalPane] WebGL addon unavailable, using default renderer:', error);
+			}
+			if (!inPerformanceMode()) {
+				ensureWebLinksAddon();
+			}
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
 				// Always forward Escape directly to PTY. xterm.js may swallow it
 				// (e.g. to clear a selection) which makes it feel unresponsive in TUIs.
@@ -167,21 +315,18 @@
 
 			terminal.onData((data: string) => {
 				claudeSessionStore.noteLocalInput(sessionId, data);
+				inputEventsSinceLog += 1;
+				pendingInputAtMs = performance.now();
 				writeTerminal(sessionId, data);
 			});
 
-			unlistenData = await onTerminalData((event) => {
-				if (event.sessionId === sessionId && terminal) {
-					terminal.write(event.data);
-					detectClaudeRetry(event.data);
-				}
+			unlistenData = await onSessionTerminalData(sessionId, (event) => {
+				queueTerminalOutput(event.data);
 			});
 
-			unlistenExit = await onTerminalExit((event) => {
-				if (event.sessionId === sessionId && terminal) {
-					exited = true;
-					terminal.writeln(`\r\n[process exited: ${event.exitCode}]`);
-				}
+			unlistenExit = await onSessionTerminalExit(sessionId, (event) => {
+				exited = true;
+				terminal?.writeln(`\r\n[process exited: ${event.exitCode}]`);
 			});
 
 			// Fit before creating PTY so it starts with the correct size.
@@ -205,9 +350,21 @@
 				debouncedFit();
 			});
 			resizeObserver.observe(container);
+			intersectionObserver = new IntersectionObserver(
+				(entries) => {
+					const entry = entries[0];
+					terminalInView = Boolean(entry?.isIntersecting && entry.intersectionRatio > 0);
+					if (!active || !documentVisible || !terminalInView) return;
+					claudeSessionStore.noteLocalViewportChange(sessionId);
+					requestAnimationFrame(() => fitTerminal());
+				},
+				{ threshold: 0.01 }
+			);
+			intersectionObserver.observe(container);
 
 			const onVisibilityChange = () => {
-				if (!active || document.visibilityState !== 'visible') return;
+				documentVisible = document.visibilityState === 'visible';
+				if (!active || !documentVisible || !terminalInView) return;
 				claudeSessionStore.noteLocalViewportChange(sessionId);
 				requestAnimationFrame(() => fitTerminal());
 			};
@@ -215,6 +372,7 @@
 			removeVisibilityListener = () => {
 				document.removeEventListener('visibilitychange', onVisibilityChange);
 			};
+			perfLogInterval = setInterval(logPerfSnapshotIfEnabled, PERF_LOG_INTERVAL_MS);
 		} catch (error) {
 			terminalError = `Failed to start terminal: ${String(error)}`;
 		}
@@ -222,10 +380,14 @@
 
 	onDestroy(() => {
 		if (resizeTimeout) clearTimeout(resizeTimeout);
+		clearFlushSchedule();
+		if (perfLogInterval) clearInterval(perfLogInterval);
 		removeVisibilityListener?.();
 		unlistenData?.();
 		unlistenExit?.();
 		resizeObserver?.disconnect();
+		intersectionObserver?.disconnect();
+		webglAddon?.dispose();
 		terminal?.dispose();
 		if (!exited) {
 			void killTerminal(sessionId);

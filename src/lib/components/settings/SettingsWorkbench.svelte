@@ -9,13 +9,22 @@
 	import SettingsToggle from './SettingsToggle.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 	import { applyClaudeIntegration, applyCodexIntegration } from '$lib/utils/terminal';
-	import type { AgentAction, AgentActionTarget, WorktreeStrategy } from '$types/workbench';
+	import type {
+		AgentAction,
+		AgentActionTarget,
+		TerminalPerformanceMode,
+		WorktreeStrategy
+	} from '$types/workbench';
 
 	const store = getWorkbenchSettingsStore();
 
 	const strategyOptions = [
 		{ value: 'sibling', label: 'Sibling folder' },
 		{ value: 'inside', label: 'Inside .worktrees/' }
+	];
+	const perfModeOptions = [
+		{ value: 'auto', label: 'Auto (offscreen only)' },
+		{ value: 'always', label: 'Always prioritize throughput' }
 	];
 
 	const targetOptions = [
@@ -102,6 +111,32 @@
 				project folder.
 			</p>
 		{/if}
+	</div>
+
+	<Separator />
+
+	<div class="space-y-6">
+		<div>
+			<h2 class="text-sm font-semibold">Terminal Performance</h2>
+			<p class="mt-1 text-xs text-muted-foreground">
+				Tune xterm responsiveness. Offscreen panes always run in performance mode.
+			</p>
+		</div>
+
+		<SettingsSelect
+			label="Performance mode"
+			description="Auto optimizes only hidden/background panes. Always optimizes all panes."
+			options={perfModeOptions}
+			value={store.terminalPerformanceMode}
+			onValueChange={(v) => store.setTerminalPerformanceMode(v as TerminalPerformanceMode)}
+		/>
+
+		<SettingsToggle
+			label="Terminal telemetry"
+			description="Log terminal throughput and latency metrics in developer console."
+			checked={store.terminalTelemetryEnabled}
+			onCheckedChange={(checked) => store.setTerminalTelemetryEnabled(checked)}
+		/>
 	</div>
 
 	<Separator />
