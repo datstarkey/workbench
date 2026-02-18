@@ -10,8 +10,13 @@ use crate::types::{HookScriptInfo, PluginInfo, SkillInfo};
 const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.sh";
 #[cfg(windows)]
 const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.ps1";
-const WORKBENCH_HOOK_EVENTS: [&str; 4] =
-    ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
+const WORKBENCH_HOOK_EVENTS: &[(&str, Option<&str>)] = &[
+    ("SessionStart", None),
+    ("UserPromptSubmit", None),
+    ("Stop", None),
+    ("Notification", None),
+    ("PostToolUse", Some("Bash")),
+];
 
 pub(crate) fn settings_path(scope: &str, project_path: Option<&str>) -> Result<PathBuf> {
     match scope {
@@ -219,6 +224,7 @@ fn ensure_event_hooks(
     hooks_obj: &mut serde_json::Map<String, Value>,
     event_name: &str,
     command: &str,
+    matcher: Option<&str>,
 ) -> bool {
     let mut changed = false;
 
@@ -234,26 +240,30 @@ fn ensure_event_hooks(
         .expect("event value should be normalized to array");
 
     let already_present = entries.iter().any(|entry| {
-        entry
-            .get("hooks")
-            .and_then(|v| v.as_array())
-            .is_some_and(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook.get("type").and_then(|v| v.as_str()) == Some("command")
-                        && hook.get("command").and_then(|v| v.as_str()) == Some(command)
+        entry.get("matcher").and_then(|v| v.as_str()) == matcher
+            && entry
+                .get("hooks")
+                .and_then(|v| v.as_array())
+                .is_some_and(|hooks| {
+                    hooks.iter().any(|hook| {
+                        hook.get("type").and_then(|v| v.as_str()) == Some("command")
+                            && hook.get("command").and_then(|v| v.as_str()) == Some(command)
+                    })
                 })
-            })
     });
 
     if !already_present {
-        entries.push(serde_json::json!({
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": command
-                }
-            ]
-        }));
+        let entry = if let Some(m) = matcher {
+            serde_json::json!({
+                "matcher": m,
+                "hooks": [{ "type": "command", "command": command }]
+            })
+        } else {
+            serde_json::json!({
+                "hooks": [{ "type": "command", "command": command }]
+            })
+        };
+        entries.push(entry);
         changed = true;
     }
 
@@ -294,32 +304,33 @@ pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
     let command = hook_command_for_script(&script_path);
     let mut missing_events = Vec::new();
 
-    for event in WORKBENCH_HOOK_EVENTS {
+    for (event, matcher) in WORKBENCH_HOOK_EVENTS {
         let already_present = settings
             .pointer(&format!("/hooks/{}", event))
             .and_then(|v| v.as_array())
             .is_some_and(|entries| {
                 entries.iter().any(|entry| {
-                    entry
-                        .get("hooks")
-                        .and_then(|v| v.as_array())
-                        .is_some_and(|hooks| {
-                            hooks.iter().any(|hook| {
-                                hook.get("type").and_then(|v| v.as_str()) == Some("command")
-                                    && hook.get("command").and_then(|v| v.as_str())
-                                        == Some(&command)
+                    entry.get("matcher").and_then(|v| v.as_str()) == *matcher
+                        && entry
+                            .get("hooks")
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|hooks| {
+                                hooks.iter().any(|hook| {
+                                    hook.get("type").and_then(|v| v.as_str()) == Some("command")
+                                        && hook.get("command").and_then(|v| v.as_str())
+                                            == Some(&command)
+                                })
                             })
-                        })
                 })
             });
         if !already_present {
-            missing_events.push(event);
+            missing_events.push(*event);
         }
     }
 
     let needs_changes = !script_exists || !missing_events.is_empty();
     let description = if needs_changes {
-        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification. This enables session activity tracking.".to_string()
+        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification, and PostToolUse (Bash only). This enables session activity tracking and immediate git/GitHub refresh after git or gh commands.".to_string()
     } else {
         String::new()
     };
@@ -348,8 +359,8 @@ pub fn ensure_workbench_hook_integration() -> Result<()> {
 
     let command = hook_command_for_script(&script_path);
     let mut changed = false;
-    for event in WORKBENCH_HOOK_EVENTS {
-        changed |= ensure_event_hooks(hooks_obj, event, &command);
+    for (event, matcher) in WORKBENCH_HOOK_EVENTS {
+        changed |= ensure_event_hooks(hooks_obj, event, &command, *matcher);
     }
 
     if changed || !settings_path.exists() {

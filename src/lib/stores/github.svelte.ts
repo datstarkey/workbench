@@ -1,4 +1,5 @@
 import type {
+	ClaudeHookEvent,
 	GitChangedEvent,
 	GitHubBranchRuns,
 	GitHubBranchStatus,
@@ -138,6 +139,20 @@ export class GitHubStore {
 	constructor() {
 		listen<GitChangedEvent>('git:changed', (event) => {
 			this.debouncedRefresh(event.payload.projectPath);
+		});
+
+		listen<ClaudeHookEvent>('claude:hook', (event) => {
+			if (event.payload.hookEventName !== 'PostToolUse') return;
+			const payload = event.payload.hookPayload;
+			if (payload['tool_name'] !== 'Bash') return;
+			const cmd = (payload['tool_input'] as Record<string, unknown>)?.['command'];
+			if (typeof cmd !== 'string' || !/\bgit\b|\bgh\b/.test(cmd)) return;
+			const cwd = event.payload.cwd;
+			if (!cwd) return;
+			const projectPath = this.projects.projects
+				.map((p) => p.path)
+				.find((p) => cwd === p || cwd.startsWith(p + '/'));
+			if (projectPath) this.debouncedRefresh(projectPath);
 		});
 
 		this.pollIntervalId = setInterval(() => {
