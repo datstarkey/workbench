@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { invokeSpy, mockInvoke, clearInvokeMocks } from '../../test/tauri-mocks';
+import {
+	invokeSpy,
+	mockInvoke,
+	clearInvokeMocks,
+	emitMockEvent,
+	clearListeners,
+	listenSpy
+} from '../../test/tauri-mocks';
 import { TrelloStore } from './trello.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { GitStore } from './git.svelte';
 import type { GitHubStore } from './github.svelte';
 import type { BoardConfig, TrelloBoardData } from '$types/trello';
-import type { GitHubPR } from '$types/workbench';
 
 // Mock stores
 const mockWorkspaceStore = {
@@ -33,6 +39,7 @@ describe('TrelloStore', () => {
 
 	afterEach(() => {
 		clearInvokeMocks();
+		clearListeners();
 	});
 
 	// --- Credential lifecycle ---
@@ -236,157 +243,19 @@ describe('TrelloStore', () => {
 		});
 	});
 
-	// --- Merge detection ---
+	describe('trello:merge-action-applied events', () => {
+		it('registers a trello merge action listener', () => {
+			expect(listenSpy).toHaveBeenCalledWith('trello:merge-action-applied', expect.any(Function));
+		});
 
-	describe('checkForMergedPrs', () => {
-		it('executes merge action on OPEN -> MERGED transition', async () => {
-			const mergeAction = {
-				moveToColumnId: 'col-done',
-				addLabelIds: ['label-shipped'],
-				removeLabelIds: []
-			};
-			store.configByProject = {
-				'/proj': {
-					boards: [
-						{
-							boardId: 'board-1',
-							boardName: 'B',
-							hiddenColumns: [],
-							mergeAction
-						}
-					],
-					taskLinks: [
-						{ cardId: 'card-1', boardId: 'board-1', branch: 'feat-x', projectPath: '/proj' }
-					]
-				}
-			};
-
-			const pr: GitHubPR = {
-				number: 1,
-				title: 'PR',
-				state: 'OPEN',
-				url: '',
-				isDraft: false,
-				headRefName: 'feat-x',
-				reviewDecision: null,
-				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN',
-				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
-			};
-
-			// First call: records initial state
-			store.checkForMergedPrs({ '/proj': [pr] });
-			expect(invokeSpy).not.toHaveBeenCalledWith('trello_move_card', expect.anything());
-
-			// Second call: OPEN -> MERGED
-			invokeSpy.mockClear();
-			const mergedPr: GitHubPR = { ...pr, state: 'MERGED' };
-			store.checkForMergedPrs({ '/proj': [mergedPr] });
-
-			// executeBoardAction is async (fire-and-forget), flush microtasks
-			await new Promise((r) => setTimeout(r, 0));
-
-			expect(invokeSpy).toHaveBeenCalledWith('trello_move_card', {
-				cardId: 'card-1',
-				targetListId: 'col-done'
+		it('refreshes board data when merge action is applied', () => {
+			const refreshSpy = vi.spyOn(store, 'refreshAllBoards').mockResolvedValue();
+			emitMockEvent('trello:merge-action-applied', {
+				projectPath: '/proj',
+				branch: 'feature/x',
+				cardId: 'card-1'
 			});
-			expect(invokeSpy).toHaveBeenCalledWith('trello_add_label', {
-				cardId: 'card-1',
-				labelId: 'label-shipped'
-			});
-		});
-
-		it('does not trigger action when no task link exists', () => {
-			store.configByProject = {
-				'/proj': {
-					boards: [
-						{
-							boardId: 'board-1',
-							boardName: 'B',
-							hiddenColumns: [],
-							mergeAction: { moveToColumnId: 'col-done', addLabelIds: [], removeLabelIds: [] }
-						}
-					],
-					taskLinks: [] // no links
-				}
-			};
-
-			const pr: GitHubPR = {
-				number: 1,
-				title: 'PR',
-				state: 'OPEN',
-				url: '',
-				isDraft: false,
-				headRefName: 'feat-x',
-				reviewDecision: null,
-				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN',
-				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
-			};
-
-			store.checkForMergedPrs({ '/proj': [pr] });
-			const mergedPr: GitHubPR = { ...pr, state: 'MERGED' };
-			invokeSpy.mockClear();
-			store.checkForMergedPrs({ '/proj': [mergedPr] });
-
-			expect(invokeSpy).not.toHaveBeenCalledWith('trello_move_card', expect.anything());
-		});
-
-		it('does not trigger on first observation (no previous state)', () => {
-			store.configByProject = {
-				'/proj': {
-					boards: [
-						{
-							boardId: 'board-1',
-							boardName: 'B',
-							hiddenColumns: [],
-							mergeAction: { moveToColumnId: 'done', addLabelIds: [], removeLabelIds: [] }
-						}
-					],
-					taskLinks: [
-						{ cardId: 'card-1', boardId: 'board-1', branch: 'feat', projectPath: '/proj' }
-					]
-				}
-			};
-
-			const pr: GitHubPR = {
-				number: 1,
-				title: 'PR',
-				state: 'MERGED',
-				url: '',
-				isDraft: false,
-				headRefName: 'feat',
-				reviewDecision: null,
-				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN',
-				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
-			};
-
-			// First observation — MERGED but no previous state
-			store.checkForMergedPrs({ '/proj': [pr] });
-
-			expect(invokeSpy).not.toHaveBeenCalledWith('trello_move_card', expect.anything());
-		});
-
-		it('skips projects without config', () => {
-			store.configByProject = {};
-
-			const pr: GitHubPR = {
-				number: 1,
-				title: 'PR',
-				state: 'OPEN',
-				url: '',
-				isDraft: false,
-				headRefName: 'feat',
-				reviewDecision: null,
-				checksStatus: { overall: 'success', total: 1, passing: 1, failing: 0, pending: 0 },
-				mergeStateStatus: 'CLEAN',
-				actions: { canMerge: true, canMarkReady: false, canUpdateBranch: false }
-			};
-
-			// Should not throw
-			store.checkForMergedPrs({ '/proj': [pr] });
-			expect(invokeSpy).not.toHaveBeenCalled();
+			expect(refreshSpy).toHaveBeenCalledWith('/proj');
 		});
 	});
 

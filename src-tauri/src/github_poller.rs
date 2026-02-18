@@ -6,8 +6,10 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::github;
+use crate::trello_automation;
 use crate::types::{
     GitHubCheckDetail, GitHubCheckTransitionEvent, GitHubProjectStatus, GitHubProjectStatusEvent,
+    TrelloMergeActionAppliedEvent,
 };
 
 const FAST_POLL_INTERVAL: Duration = Duration::from_secs(15);
@@ -24,6 +26,7 @@ struct PollProjectState {
 struct PollerState {
     projects: HashMap<String, PollProjectState>,
     previous_check_buckets: HashMap<String, HashMap<String, String>>,
+    previous_pr_states: HashMap<String, String>,
 }
 
 pub struct GitHubPoller {
@@ -37,6 +40,7 @@ impl GitHubPoller {
             state: Arc::new(Mutex::new(PollerState {
                 projects: HashMap::new(),
                 previous_check_buckets: HashMap::new(),
+                previous_pr_states: HashMap::new(),
             })),
             stop: Arc::new(AtomicBool::new(false)),
         };
@@ -70,6 +74,9 @@ impl GitHubPoller {
         let active_prefixes: Vec<String> = state.projects.keys().map(|path| format!("{path}::")).collect();
         state
             .previous_check_buckets
+            .retain(|key, _| active_prefixes.iter().any(|prefix| key.starts_with(prefix)));
+        state
+            .previous_pr_states
             .retain(|key, _| active_prefixes.iter().any(|prefix| key.starts_with(prefix)));
     }
 
@@ -105,6 +112,11 @@ impl GitHubPoller {
                     };
                     let transitions =
                         detect_check_transitions_and_update(&state, project_path.as_str(), &status);
+                    let merged_branches = detect_merged_pr_transitions_and_update(
+                        &state,
+                        project_path.as_str(),
+                        &status,
+                    );
 
                     let _ = app_handle.emit(
                         "github:project-status",
@@ -115,6 +127,27 @@ impl GitHubPoller {
                     );
                     for transition in transitions {
                         let _ = app_handle.emit("github:check-transition", transition);
+                    }
+                    for branch in merged_branches {
+                        match trello_automation::apply_merge_action_for_branch(&project_path, &branch) {
+                            Ok(Some(card_id)) => {
+                                let _ = app_handle.emit(
+                                    "trello:merge-action-applied",
+                                    TrelloMergeActionAppliedEvent {
+                                        project_path: project_path.clone(),
+                                        branch,
+                                        card_id,
+                                    },
+                                );
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                eprintln!(
+                                    "[GitHubPoller] Failed Trello merge action for {} ({}): {}",
+                                    project_path, branch, err
+                                );
+                            }
+                        }
                     }
 
                     let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -168,6 +201,33 @@ fn status_has_pending(status: &GitHubProjectStatus) -> bool {
         .values()
         .flatten()
         .any(|check| check.bucket == "pending")
+}
+
+fn detect_merged_pr_transitions_and_update(
+    state: &Arc<Mutex<PollerState>>,
+    project_path: &str,
+    status: &GitHubProjectStatus,
+) -> Vec<String> {
+    let mut merged_branches = Vec::new();
+    let prefix = format!("{project_path}::");
+    let mut seen_keys = HashSet::new();
+    let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+
+    for pr in &status.prs {
+        let key = pr_key(project_path, pr.number);
+        seen_keys.insert(key.clone());
+        let previous = guard.previous_pr_states.insert(key, pr.state.clone());
+        if matches!(previous.as_deref(), Some(state) if state != "MERGED") && pr.state == "MERGED"
+        {
+            merged_branches.push(pr.head_ref_name.clone());
+        }
+    }
+
+    guard
+        .previous_pr_states
+        .retain(|key, _| !key.starts_with(&prefix) || seen_keys.contains(key));
+
+    merged_branches
 }
 
 fn detect_check_transitions_and_update(
@@ -249,9 +309,16 @@ fn pr_key(project_path: &str, pr_number: u64) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
-    use super::{build_bucket_map, check_transitions_for_pr, status_has_pending};
-    use crate::types::{GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubProjectStatus};
+    use super::{
+        build_bucket_map, check_transitions_for_pr, detect_merged_pr_transitions_and_update,
+        status_has_pending, PollProjectState, PollerState,
+    };
+    use crate::types::{
+        GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPRActions, GitHubPR,
+        GitHubProjectStatus,
+    };
 
     fn checks_status(pending: u32) -> GitHubChecksStatus {
         GitHubChecksStatus {
@@ -260,6 +327,25 @@ mod tests {
             passing: if pending > 0 { 0 } else { 1 },
             failing: 0,
             pending,
+        }
+    }
+
+    fn make_pr(number: u64, branch: &str, state: &str) -> GitHubPR {
+        GitHubPR {
+            number,
+            title: format!("PR {number}"),
+            state: state.to_string(),
+            url: String::new(),
+            is_draft: false,
+            head_ref_name: branch.to_string(),
+            review_decision: None,
+            checks_status: checks_status(0),
+            merge_state_status: Some("CLEAN".to_string()),
+            actions: GitHubPRActions {
+                can_merge: true,
+                can_mark_ready: false,
+                can_update_branch: false,
+            },
         }
     }
 
@@ -357,6 +443,38 @@ mod tests {
 
         let transitions = check_transitions_for_pr(&old, &checks, "/repo", 1);
         assert!(transitions.is_empty());
+    }
+
+    #[test]
+    fn merged_pr_transition_detects_open_to_merged_once() {
+        let state = Arc::new(Mutex::new(PollerState {
+            projects: HashMap::<String, PollProjectState>::new(),
+            previous_check_buckets: HashMap::new(),
+            previous_pr_states: HashMap::new(),
+        }));
+        let project_path = "/repo";
+
+        let open_status = GitHubProjectStatus {
+            remote: None,
+            prs: vec![make_pr(42, "feature/x", "OPEN")],
+            branch_runs: HashMap::new(),
+            pr_checks: HashMap::new(),
+        };
+        let merged_status = GitHubProjectStatus {
+            remote: None,
+            prs: vec![make_pr(42, "feature/x", "MERGED")],
+            branch_runs: HashMap::new(),
+            pr_checks: HashMap::new(),
+        };
+
+        let first = detect_merged_pr_transitions_and_update(&state, project_path, &open_status);
+        assert!(first.is_empty());
+
+        let second = detect_merged_pr_transitions_and_update(&state, project_path, &merged_status);
+        assert_eq!(second, vec!["feature/x".to_string()]);
+
+        let third = detect_merged_pr_transitions_and_update(&state, project_path, &merged_status);
+        assert!(third.is_empty());
     }
 
     #[test]

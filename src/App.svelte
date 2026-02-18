@@ -116,12 +116,6 @@
 		}
 	});
 
-	// Detect merged PRs and execute Trello merge actions (network side effect)
-	$effect(() => {
-		const prs = githubStore.prsByProject;
-		untrack(() => trelloStore.checkForMergedPrs(prs));
-	});
-
 	onMount(async () => {
 		await workbenchSettingsStore.load();
 		await projectStore.load();

@@ -336,6 +336,14 @@ pub struct GitHubCheckTransitionEvent {
     pub bucket: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrelloMergeActionAppliedEvent {
+    pub project_path: String,
+    pub branch: String,
+    pub card_id: String,
+}
+
 // GitHub integration types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

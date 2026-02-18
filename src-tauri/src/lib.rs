@@ -16,6 +16,7 @@ mod session_utils;
 mod settings;
 mod trello;
 mod trello_commands;
+mod trello_automation;
 mod types;
 
 use git_watcher::GitWatcher;

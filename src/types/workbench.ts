@@ -149,6 +149,12 @@ export interface GitHubCheckTransitionEvent {
 	bucket: 'pass' | 'fail';
 }
 
+export interface TrelloMergeActionAppliedEvent {
+	projectPath: string;
+	branch: string;
+	cardId: string;
+}
+
 // GitHub types
 
 export interface GitHubRemote {
