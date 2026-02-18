@@ -128,26 +128,12 @@ impl GitHubPoller {
                     for transition in transitions {
                         let _ = app_handle.emit("github:check-transition", transition);
                     }
-                    for branch in merged_branches {
-                        match trello_automation::apply_merge_action_for_branch(&project_path, &branch) {
-                            Ok(Some(card_id)) => {
-                                let _ = app_handle.emit(
-                                    "trello:merge-action-applied",
-                                    TrelloMergeActionAppliedEvent {
-                                        project_path: project_path.clone(),
-                                        branch,
-                                        card_id,
-                                    },
-                                );
-                            }
-                            Ok(None) => {}
-                            Err(err) => {
-                                eprintln!(
-                                    "[GitHubPoller] Failed Trello merge action for {} ({}): {}",
-                                    project_path, branch, err
-                                );
-                            }
-                        }
+                    for merge_event in apply_trello_merge_actions(
+                        &project_path,
+                        merged_branches,
+                        trello_automation::apply_merge_action_for_branch,
+                    ) {
+                        let _ = app_handle.emit("trello:merge-action-applied", merge_event);
                     }
 
                     let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -228,6 +214,35 @@ fn detect_merged_pr_transitions_and_update(
         .retain(|key, _| !key.starts_with(&prefix) || seen_keys.contains(key));
 
     merged_branches
+}
+
+fn apply_trello_merge_actions<F, E>(
+    project_path: &str,
+    merged_branches: Vec<String>,
+    mut apply_action: F,
+) -> Vec<TrelloMergeActionAppliedEvent>
+where
+    F: FnMut(&str, &str) -> Result<Option<String>, E>,
+    E: std::fmt::Display,
+{
+    let mut events = Vec::new();
+    for branch in merged_branches {
+        match apply_action(project_path, &branch) {
+            Ok(Some(card_id)) => events.push(TrelloMergeActionAppliedEvent {
+                project_path: project_path.to_string(),
+                branch,
+                card_id,
+            }),
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!(
+                    "[GitHubPoller] Failed Trello merge action for {} ({}): {}",
+                    project_path, branch, err
+                );
+            }
+        }
+    }
+    events
 }
 
 fn detect_check_transitions_and_update(
@@ -312,8 +327,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        build_bucket_map, check_transitions_for_pr, detect_merged_pr_transitions_and_update,
-        status_has_pending, PollProjectState, PollerState,
+        apply_trello_merge_actions, build_bucket_map, check_transitions_for_pr,
+        detect_merged_pr_transitions_and_update, status_has_pending, PollProjectState, PollerState,
     };
     use crate::types::{
         GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPRActions, GitHubPR,
@@ -475,6 +490,37 @@ mod tests {
 
         let third = detect_merged_pr_transitions_and_update(&state, project_path, &merged_status);
         assert!(third.is_empty());
+    }
+
+    #[test]
+    fn apply_trello_merge_actions_emits_only_successful_events() {
+        let events = apply_trello_merge_actions(
+            "/repo",
+            vec!["feature/a".to_string(), "feature/b".to_string(), "feature/c".to_string()],
+            |_project_path, branch| -> Result<Option<String>, String> {
+                match branch {
+                    "feature/a" => Ok(Some("card-1".to_string())),
+                    "feature/b" => Ok(None),
+                    _ => Err("boom".to_string()),
+                }
+            },
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].project_path, "/repo");
+        assert_eq!(events[0].branch, "feature/a");
+        assert_eq!(events[0].card_id, "card-1");
+    }
+
+    #[test]
+    fn apply_trello_merge_actions_handles_empty_branches() {
+        let events = apply_trello_merge_actions(
+            "/repo",
+            vec![],
+            |_project_path, _branch| -> Result<Option<String>, String> { Ok(None) },
+        );
+
+        assert!(events.is_empty());
     }
 
     #[test]

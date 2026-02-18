@@ -343,3 +343,55 @@ fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {
         .into_iter()
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::types::{WorkspaceFile, WorkspaceSnapshot};
+
+    use super::workspace_project_paths;
+
+    fn make_workspace(id: &str, project_path: &str) -> WorkspaceSnapshot {
+        WorkspaceSnapshot {
+            id: id.to_string(),
+            project_path: project_path.to_string(),
+            project_name: format!("project-{id}"),
+            terminal_tabs: vec![],
+            active_terminal_tab_id: String::new(),
+            worktree_path: None,
+            branch: None,
+        }
+    }
+
+    #[test]
+    fn workspace_project_paths_dedupes_project_paths() {
+        let snapshot = WorkspaceFile {
+            workspaces: vec![
+                make_workspace("1", "/repo/a"),
+                make_workspace("2", "/repo/a"),
+                make_workspace("3", "/repo/b"),
+            ],
+            selected_id: Some("1".to_string()),
+        };
+
+        let paths = workspace_project_paths(&snapshot);
+        let path_set: HashSet<String> = paths.into_iter().collect();
+
+        assert_eq!(
+            path_set,
+            HashSet::from(["/repo/a".to_string(), "/repo/b".to_string()])
+        );
+    }
+
+    #[test]
+    fn workspace_project_paths_empty_snapshot_returns_empty_vec() {
+        let snapshot = WorkspaceFile {
+            workspaces: vec![],
+            selected_id: None,
+        };
+
+        let paths = workspace_project_paths(&snapshot);
+        assert!(paths.is_empty());
+    }
+}

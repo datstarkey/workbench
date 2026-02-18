@@ -161,15 +161,16 @@ impl GitWatcher {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
+        let (to_watch, to_unwatch) = watch_diff(&current, &desired);
 
-        for path in desired.difference(&current) {
+        for path in to_watch {
             let project_path = path.to_string_lossy().to_string();
             if let Err(err) = self.watch_project(&project_path) {
                 eprintln!("[GitWatcher] Failed to watch {project_path}: {err}");
             }
         }
 
-        for path in current.difference(&desired) {
+        for path in to_unwatch {
             let project_path = path.to_string_lossy().to_string();
             if let Err(err) = self.unwatch_project(&project_path) {
                 eprintln!("[GitWatcher] Failed to unwatch {project_path}: {err}");
@@ -214,11 +215,19 @@ fn normalize_project_paths(project_paths: Vec<String>) -> HashSet<PathBuf> {
         .collect()
 }
 
+fn watch_diff(current: &HashSet<PathBuf>, desired: &HashSet<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    (
+        desired.difference(current).cloned().collect(),
+        current.difference(desired).cloned().collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::path::PathBuf;
 
-    use super::normalize_project_paths;
+    use super::{normalize_project_paths, watch_diff};
 
     #[test]
     fn normalize_project_paths_trims_dedupes_and_ignores_empty() {
@@ -233,5 +242,33 @@ mod tests {
         assert_eq!(set.len(), 2);
         assert!(set.contains(&PathBuf::from("/repo/a")));
         assert!(set.contains(&PathBuf::from("/repo/b")));
+    }
+
+    #[test]
+    fn watch_diff_returns_added_and_removed_paths() {
+        let current = HashSet::from([PathBuf::from("/repo/a"), PathBuf::from("/repo/b")]);
+        let desired = HashSet::from([PathBuf::from("/repo/b"), PathBuf::from("/repo/c")]);
+
+        let (to_watch, to_unwatch) = watch_diff(&current, &desired);
+
+        assert_eq!(
+            to_watch.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([PathBuf::from("/repo/c")])
+        );
+        assert_eq!(
+            to_unwatch.into_iter().collect::<HashSet<_>>(),
+            HashSet::from([PathBuf::from("/repo/a")])
+        );
+    }
+
+    #[test]
+    fn watch_diff_noop_when_sets_match() {
+        let current = HashSet::from([PathBuf::from("/repo/a")]);
+        let desired = HashSet::from([PathBuf::from("/repo/a")]);
+
+        let (to_watch, to_unwatch) = watch_diff(&current, &desired);
+
+        assert!(to_watch.is_empty());
+        assert!(to_unwatch.is_empty());
     }
 }

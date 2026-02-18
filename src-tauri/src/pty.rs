@@ -15,6 +15,13 @@ const PTY_READ_BUFFER_SIZE: usize = 32768;
 const STARTUP_COMMAND_DELAY_MS: u64 = 300;
 const TERMINAL_QUIET_THRESHOLD_MS: u64 = 1000;
 
+#[derive(Clone, Copy)]
+enum ActivitySignal {
+    Data,
+    Timeout,
+    Disconnected,
+}
+
 fn default_shell() -> String {
     #[cfg(unix)]
     {
@@ -23,6 +30,30 @@ fn default_shell() -> String {
     #[cfg(windows)]
     {
         std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".to_string())
+    }
+}
+
+fn update_activity_state(
+    session_id: &str,
+    active: bool,
+    signal: ActivitySignal,
+) -> (bool, Option<TerminalActivityEvent>) {
+    match (active, signal) {
+        (false, ActivitySignal::Data) => (
+            true,
+            Some(TerminalActivityEvent {
+                session_id: session_id.to_string(),
+                active: true,
+            }),
+        ),
+        (true, ActivitySignal::Timeout) | (true, ActivitySignal::Disconnected) => (
+            false,
+            Some(TerminalActivityEvent {
+                session_id: session_id.to_string(),
+                active: false,
+            }),
+        ),
+        _ => (active, None),
     }
 }
 
@@ -221,43 +252,20 @@ impl PtyManager {
             let mut active = false;
 
             loop {
-                match activity_rx.recv_timeout(quiet_window) {
-                    Ok(()) => {
-                        if !active {
-                            let _ = activity_handle.emit(
-                                "terminal:activity",
-                                TerminalActivityEvent {
-                                    session_id: activity_sid.clone(),
-                                    active: true,
-                                },
-                            );
-                            active = true;
-                        }
-                    }
-                    Err(RecvTimeoutError::Timeout) => {
-                        if active {
-                            let _ = activity_handle.emit(
-                                "terminal:activity",
-                                TerminalActivityEvent {
-                                    session_id: activity_sid.clone(),
-                                    active: false,
-                                },
-                            );
-                            active = false;
-                        }
-                    }
-                    Err(RecvTimeoutError::Disconnected) => {
-                        if active {
-                            let _ = activity_handle.emit(
-                                "terminal:activity",
-                                TerminalActivityEvent {
-                                    session_id: activity_sid.clone(),
-                                    active: false,
-                                },
-                            );
-                        }
-                        break;
-                    }
+                let signal = match activity_rx.recv_timeout(quiet_window) {
+                    Ok(()) => ActivitySignal::Data,
+                    Err(RecvTimeoutError::Timeout) => ActivitySignal::Timeout,
+                    Err(RecvTimeoutError::Disconnected) => ActivitySignal::Disconnected,
+                };
+
+                let (next_active, event) = update_activity_state(&activity_sid, active, signal);
+                if let Some(payload) = event {
+                    let _ = activity_handle.emit("terminal:activity", payload);
+                }
+                active = next_active;
+
+                if matches!(signal, ActivitySignal::Disconnected) {
+                    break;
                 }
             }
         });
@@ -477,6 +485,48 @@ mod tests {
             shell.starts_with('/') || shell.contains("sh"),
             "Unexpected Unix shell: {shell}"
         );
+    }
+
+    #[test]
+    fn update_activity_state_emits_active_on_first_data() {
+        let (active, event) = update_activity_state("pane-1", false, ActivitySignal::Data);
+        assert!(active);
+        assert!(event.is_some());
+        let payload = event.unwrap();
+        assert_eq!(payload.session_id, "pane-1");
+        assert!(payload.active);
+    }
+
+    #[test]
+    fn update_activity_state_emits_inactive_on_timeout_when_active() {
+        let (active, event) = update_activity_state("pane-1", true, ActivitySignal::Timeout);
+        assert!(!active);
+        assert!(event.is_some());
+        let payload = event.unwrap();
+        assert_eq!(payload.session_id, "pane-1");
+        assert!(!payload.active);
+    }
+
+    #[test]
+    fn update_activity_state_noop_when_already_inactive_and_timeout() {
+        let (active, event) = update_activity_state("pane-1", false, ActivitySignal::Timeout);
+        assert!(!active);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn update_activity_state_noop_when_already_active_and_data() {
+        let (active, event) = update_activity_state("pane-1", true, ActivitySignal::Data);
+        assert!(active);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn update_activity_state_emits_inactive_on_disconnect_when_active() {
+        let (active, event) = update_activity_state("pane-1", true, ActivitySignal::Disconnected);
+        assert!(!active);
+        assert!(event.is_some());
+        assert!(!event.unwrap().active);
     }
 
     #[cfg(windows)]
