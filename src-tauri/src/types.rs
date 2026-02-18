@@ -253,6 +253,10 @@ pub struct WorkbenchSettings {
     pub worktree_strategy: String,
     #[serde(default)]
     pub trello_enabled: bool,
+    #[serde(default = "default_terminal_performance_mode")]
+    pub terminal_performance_mode: String,
+    #[serde(default)]
+    pub terminal_telemetry_enabled: bool,
     #[serde(default = "default_agent_actions")]
     pub agent_actions: Vec<AgentAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,11 +269,17 @@ fn default_worktree_strategy() -> String {
     "sibling".to_string()
 }
 
+fn default_terminal_performance_mode() -> String {
+    "auto".to_string()
+}
+
 impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
             worktree_strategy: default_worktree_strategy(),
             trello_enabled: false,
+            terminal_performance_mode: default_terminal_performance_mode(),
+            terminal_telemetry_enabled: false,
             agent_actions: default_agent_actions(),
             claude_hooks_approved: None,
             codex_config_approved: None,
@@ -590,5 +600,20 @@ mod tests {
         let opts = WorktreeCopyOptions::default();
         assert!(opts.ai_config);
         assert!(opts.env_files);
+    }
+
+    #[test]
+    fn workbench_settings_default_terminal_fields() {
+        let settings = WorkbenchSettings::default();
+        assert_eq!(settings.terminal_performance_mode, "auto");
+        assert!(!settings.terminal_telemetry_enabled);
+    }
+
+    #[test]
+    fn workbench_settings_deserialize_defaults_terminal_fields_when_missing() {
+        let json = r#"{"worktreeStrategy":"sibling","trelloEnabled":false,"agentActions":[]}"#;
+        let settings: WorkbenchSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.terminal_performance_mode, "auto");
+        assert!(!settings.terminal_telemetry_enabled);
     }
 }

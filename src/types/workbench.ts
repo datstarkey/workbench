@@ -248,6 +248,7 @@ export interface GitHubBranchStatus {
 // Workbench app settings
 
 export type WorktreeStrategy = 'sibling' | 'inside';
+export type TerminalPerformanceMode = 'auto' | 'always';
 
 export type AgentActionTarget = 'claude' | 'codex' | 'both';
 
@@ -263,6 +264,8 @@ export interface AgentAction {
 export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
 	trelloEnabled: boolean;
+	terminalPerformanceMode: TerminalPerformanceMode;
+	terminalTelemetryEnabled: boolean;
 	agentActions: AgentAction[];
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;

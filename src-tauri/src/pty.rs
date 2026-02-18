@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::Command;
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,7 @@ use crate::types::{TerminalActivityEvent, TerminalDataEvent, TerminalExitEvent};
 const PTY_READ_BUFFER_SIZE: usize = 32768;
 const STARTUP_COMMAND_DELAY_MS: u64 = 300;
 const TERMINAL_QUIET_THRESHOLD_MS: u64 = 1000;
+const PTY_DATA_CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Clone, Copy)]
 enum ActivitySignal {
@@ -72,6 +73,14 @@ fn resolve_repo_root(path: &str) -> Option<String> {
         None
     } else {
         Some(repo_root)
+    }
+}
+
+fn send_output_chunk(tx: &SyncSender<String>, data: String) -> bool {
+    match tx.try_send(data) {
+        Ok(()) => true,
+        Err(TrySendError::Full(data)) => tx.send(data).is_ok(),
+        Err(TrySendError::Disconnected(_)) => false,
     }
 }
 
@@ -242,7 +251,7 @@ impl PtyManager {
         // number of IPC events and freeing the WebView bridge for input writes.
         // During light activity the emitter fires immediately (no added latency).
 
-        let (data_tx, data_rx) = std::sync::mpsc::channel::<String>();
+        let (data_tx, data_rx) = std::sync::mpsc::sync_channel::<String>(PTY_DATA_CHANNEL_CAPACITY);
         let (activity_tx, activity_rx) = std::sync::mpsc::channel::<()>();
 
         let activity_sid = session_id.clone();
@@ -294,7 +303,7 @@ impl PtyManager {
                             let data = unsafe {
                                 std::str::from_utf8_unchecked(&chunk[..valid_up_to])
                             };
-                            if data_tx.send(data.to_string()).is_err() {
+                            if !send_output_chunk(&data_tx, data.to_string()) {
                                 break; // emitter gone
                             }
                         }
@@ -527,6 +536,29 @@ mod tests {
         assert!(!active);
         assert!(event.is_some());
         assert!(!event.unwrap().active);
+    }
+
+    #[test]
+    fn send_output_chunk_returns_false_when_receiver_dropped() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
+        drop(rx);
+        assert!(!send_output_chunk(&tx, "data".to_string()));
+    }
+
+    #[test]
+    fn send_output_chunk_blocks_to_preserve_data_when_channel_full() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1);
+        tx.send("first".to_string()).unwrap();
+
+        let sender = tx.clone();
+        let handle = std::thread::spawn(move || send_output_chunk(&sender, "second".to_string()));
+
+        let first = rx.recv().unwrap();
+        assert_eq!(first, "first");
+        let result = handle.join().unwrap();
+        assert!(result);
+        let second = rx.recv().unwrap();
+        assert_eq!(second, "second");
     }
 
     #[cfg(windows)]

@@ -12,6 +12,7 @@
 		"check": "svelte-check --tsconfig ./tsconfig.json",
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
+		"bench:terminal": "bash scripts/terminal-bench.sh",
 		"test": "svelte-check --tsconfig ./tsconfig.json && vitest run",
 		"test:watch": "vitest",
 		"test:unit": "vitest run --project unit",
