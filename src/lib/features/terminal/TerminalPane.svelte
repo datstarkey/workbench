@@ -3,6 +3,7 @@
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
+	import { WebglAddon } from '@xterm/addon-webgl';
 	import { open } from '@tauri-apps/plugin-shell';
 	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
@@ -12,8 +13,8 @@
 		writeTerminal,
 		resizeTerminal,
 		killTerminal,
-		onTerminalData,
-		onTerminalExit
+		onSessionTerminalData,
+		onSessionTerminalExit
 	} from '$lib/utils/terminal';
 	import { stripAnsi } from '$lib/utils/format';
 	import { getClaudeSessionStore } from '$stores/context';
@@ -35,6 +36,7 @@
 	let container: HTMLDivElement;
 	let terminal: Terminal | null = null;
 	let fitAddon: FitAddon | null = null;
+	let webglAddon: WebglAddon | null = null;
 	let unlistenData: (() => void) | null = null;
 	let unlistenExit: (() => void) | null = null;
 	let resizeObserver: ResizeObserver | null = null;
@@ -44,6 +46,8 @@
 	let removeVisibilityListener: (() => void) | null = null;
 	let lastCols = 0;
 	let lastRows = 0;
+	let outputQueue = '';
+	let outputFlushRaf: number | null = null;
 	const claudeSessionStore = getClaudeSessionStore();
 
 	// Buffer early output to detect Claude CLI errors for auto-retry
@@ -93,6 +97,21 @@
 		fitAddon!.fit();
 	}
 
+	function flushOutputQueue() {
+		outputFlushRaf = null;
+		if (!terminal || outputQueue.length === 0) return;
+		const batched = outputQueue;
+		outputQueue = '';
+		terminal.write(batched);
+		detectClaudeRetry(batched);
+	}
+
+	function queueTerminalOutput(data: string) {
+		outputQueue += data;
+		if (outputFlushRaf !== null) return;
+		outputFlushRaf = requestAnimationFrame(flushOutputQueue);
+	}
+
 	$effect(() => {
 		if (active && fitAddon && terminal) {
 			requestAnimationFrame(() => {
@@ -109,6 +128,16 @@
 			terminal = new Terminal(terminalOptions);
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
+			try {
+				webglAddon = new WebglAddon();
+				webglAddon.onContextLoss(() => {
+					webglAddon?.dispose();
+					webglAddon = null;
+				});
+				terminal.loadAddon(webglAddon);
+			} catch (error) {
+				console.warn('[TerminalPane] WebGL addon unavailable, using default renderer:', error);
+			}
 			terminal.loadAddon(new WebLinksAddon((_event, uri) => open(uri)));
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
 				// Always forward Escape directly to PTY. xterm.js may swallow it
@@ -170,18 +199,13 @@
 				writeTerminal(sessionId, data);
 			});
 
-			unlistenData = await onTerminalData((event) => {
-				if (event.sessionId === sessionId && terminal) {
-					terminal.write(event.data);
-					detectClaudeRetry(event.data);
-				}
+			unlistenData = await onSessionTerminalData(sessionId, (event) => {
+				queueTerminalOutput(event.data);
 			});
 
-			unlistenExit = await onTerminalExit((event) => {
-				if (event.sessionId === sessionId && terminal) {
-					exited = true;
-					terminal.writeln(`\r\n[process exited: ${event.exitCode}]`);
-				}
+			unlistenExit = await onSessionTerminalExit(sessionId, (event) => {
+				exited = true;
+				terminal?.writeln(`\r\n[process exited: ${event.exitCode}]`);
 			});
 
 			// Fit before creating PTY so it starts with the correct size.
@@ -222,10 +246,12 @@
 
 	onDestroy(() => {
 		if (resizeTimeout) clearTimeout(resizeTimeout);
+		if (outputFlushRaf !== null) cancelAnimationFrame(outputFlushRaf);
 		removeVisibilityListener?.();
 		unlistenData?.();
 		unlistenExit?.();
 		resizeObserver?.disconnect();
+		webglAddon?.dispose();
 		terminal?.dispose();
 		if (!exited) {
 			void killTerminal(sessionId);

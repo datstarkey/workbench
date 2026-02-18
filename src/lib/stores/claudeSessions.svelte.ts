@@ -82,6 +82,18 @@ export class ClaudeSessionStore {
 		}, {});
 	}
 
+	readonly paneTypeById = $derived.by((): Record<string, SessionType> => {
+		const result: Record<string, SessionType> = {};
+		for (const ws of this.workspaces.workspaces) {
+			for (const tab of ws.terminalTabs) {
+				if (tab.type !== 'claude' && tab.type !== 'codex') continue;
+				const paneId = this.getAIPaneId(tab);
+				if (paneId) result[paneId] = tab.type;
+			}
+		}
+		return result;
+	});
+
 	/** Read Claude CLI session files from ~/.claude/projects/ */
 	async discoverSessions(projectPath: string): Promise<DiscoveredClaudeSession[]> {
 		try {
@@ -198,14 +210,7 @@ export class ClaudeSessionStore {
 	}
 
 	paneType(paneId: string): SessionType | null {
-		for (const ws of this.workspaces.workspaces) {
-			for (const tab of ws.terminalTabs) {
-				if (this.getAIPaneId(tab) === paneId && (tab.type === 'claude' || tab.type === 'codex')) {
-					return tab.type;
-				}
-			}
-		}
-		return null;
+		return this.paneTypeById[paneId] ?? null;
 	}
 
 	/** Mark that local keyboard input was sent for a pane (used to suppress echoed characters). */

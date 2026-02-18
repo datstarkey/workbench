@@ -8,6 +8,39 @@ import type {
 	TerminalExitEvent
 } from '$types/workbench';
 
+type DataCallback = (payload: TerminalDataEvent) => void;
+type ExitCallback = (payload: TerminalExitEvent) => void;
+
+const dataSessionListeners = new Map<string, Set<DataCallback>>();
+const exitSessionListeners = new Map<string, Set<ExitCallback>>();
+const dataGlobalListeners = new Set<DataCallback>();
+const exitGlobalListeners = new Set<ExitCallback>();
+
+let dataListenerReady: Promise<void> | null = null;
+let exitListenerReady: Promise<void> | null = null;
+
+async function ensureDataListener(): Promise<void> {
+	if (dataListenerReady) return dataListenerReady;
+	dataListenerReady = listen<TerminalDataEvent>('terminal:data', (event) => {
+		for (const cb of dataGlobalListeners) cb(event.payload);
+		const sessionListeners = dataSessionListeners.get(event.payload.sessionId);
+		if (!sessionListeners) return;
+		for (const cb of sessionListeners) cb(event.payload);
+	}).then(() => undefined);
+	return dataListenerReady;
+}
+
+async function ensureExitListener(): Promise<void> {
+	if (exitListenerReady) return exitListenerReady;
+	exitListenerReady = listen<TerminalExitEvent>('terminal:exit', (event) => {
+		for (const cb of exitGlobalListeners) cb(event.payload);
+		const sessionListeners = exitSessionListeners.get(event.payload.sessionId);
+		if (!sessionListeners) return;
+		for (const cb of sessionListeners) cb(event.payload);
+	}).then(() => undefined);
+	return exitListenerReady;
+}
+
 export async function createTerminal(
 	request: CreateTerminalRequest
 ): Promise<CreateTerminalResponse> {
@@ -33,13 +66,59 @@ export async function killTerminal(sessionId: string): Promise<boolean> {
 export async function onTerminalData(
 	cb: (payload: TerminalDataEvent) => void
 ): Promise<UnlistenFn> {
-	return listen<TerminalDataEvent>('terminal:data', (event) => cb(event.payload));
+	await ensureDataListener();
+	dataGlobalListeners.add(cb);
+	return () => {
+		dataGlobalListeners.delete(cb);
+	};
+}
+
+export async function onSessionTerminalData(
+	sessionId: string,
+	cb: (payload: TerminalDataEvent) => void
+): Promise<UnlistenFn> {
+	await ensureDataListener();
+	let listeners = dataSessionListeners.get(sessionId);
+	if (!listeners) {
+		listeners = new Set<DataCallback>();
+		dataSessionListeners.set(sessionId, listeners);
+	}
+	listeners.add(cb);
+	return () => {
+		const current = dataSessionListeners.get(sessionId);
+		if (!current) return;
+		current.delete(cb);
+		if (current.size === 0) dataSessionListeners.delete(sessionId);
+	};
 }
 
 export async function onTerminalExit(
 	cb: (payload: TerminalExitEvent) => void
 ): Promise<UnlistenFn> {
-	return listen<TerminalExitEvent>('terminal:exit', (event) => cb(event.payload));
+	await ensureExitListener();
+	exitGlobalListeners.add(cb);
+	return () => {
+		exitGlobalListeners.delete(cb);
+	};
+}
+
+export async function onSessionTerminalExit(
+	sessionId: string,
+	cb: (payload: TerminalExitEvent) => void
+): Promise<UnlistenFn> {
+	await ensureExitListener();
+	let listeners = exitSessionListeners.get(sessionId);
+	if (!listeners) {
+		listeners = new Set<ExitCallback>();
+		exitSessionListeners.set(sessionId, listeners);
+	}
+	listeners.add(cb);
+	return () => {
+		const current = exitSessionListeners.get(sessionId);
+		if (!current) return;
+		current.delete(cb);
+		if (current.size === 0) exitSessionListeners.delete(sessionId);
+	};
 }
 
 export async function checkClaudeIntegration(): Promise<IntegrationStatus> {
