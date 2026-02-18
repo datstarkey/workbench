@@ -13,9 +13,8 @@ use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitHubProjectStatus, GitHubRemote, GitInfo, HookScriptInfo,
-    IntegrationStatus, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile,
-    WorktreeInfo,
+    DiscoveredClaudeSession, GitHubRemote, GitInfo, HookScriptInfo, IntegrationStatus, PluginInfo,
+    ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile, WorktreeInfo,
 };
 
 #[tauri::command]
@@ -243,11 +242,6 @@ pub fn github_is_available() -> bool {
 #[tauri::command(async)]
 pub fn github_get_remote(path: String) -> Result<GitHubRemote, String> {
     github::get_github_remote(&path).map_err(|e| e.to_string())
-}
-
-#[tauri::command(async)]
-pub fn github_project_status(project_path: String) -> GitHubProjectStatus {
-    github::get_project_status(&project_path)
 }
 
 #[tauri::command(async)]

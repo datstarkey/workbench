@@ -109,8 +109,6 @@ export class GitHubStore {
 	private onCheckCompleteCallback: ((notification: CheckNotification) => void) | null = null;
 
 	// Not reactive — internal bookkeeping only
-	// eslint-disable-next-line svelte/prefer-svelte-reactivity
-	private pendingProjects = new Set<string>();
 	private trackedProjectsFingerprint = '';
 
 	constructor() {
@@ -141,22 +139,6 @@ export class GitHubStore {
 		} catch {
 			this.ghAvailable = false;
 			return false;
-		}
-	}
-
-	async fetchProjectStatus(projectPath: string): Promise<void> {
-		if (this.pendingProjects.has(projectPath)) return;
-		this.pendingProjects.add(projectPath);
-
-		try {
-			const status = await invoke<GitHubProjectStatus>('github_project_status', {
-				projectPath
-			});
-			this.applyProjectStatus(projectPath, status);
-		} catch (e) {
-			console.warn('[GitHubStore] Failed to fetch project status:', e);
-		} finally {
-			this.pendingProjects.delete(projectPath);
 		}
 	}
 

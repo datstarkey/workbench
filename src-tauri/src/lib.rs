@@ -74,7 +74,6 @@ pub fn run() {
             commands::unwatch_project,
             commands::github_is_available,
             commands::github_get_remote,
-            commands::github_project_status,
             commands::github_set_tracked_projects,
             commands::github_refresh_project,
             commands::github_update_pr_branch,

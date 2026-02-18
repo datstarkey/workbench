@@ -184,82 +184,6 @@ describe('GitHubStore', () => {
 		});
 	});
 
-	// ─── fetchProjectStatus ───────────────────────────────────
-
-	describe('fetchProjectStatus', () => {
-		it('fetches and stores project status', async () => {
-			const status = makeProjectStatus({
-				prs: [makePR({ number: 42, headRefName: 'main' })],
-				branchRuns: { main: makeBranchRuns() },
-				prChecks: { 42: [makeCheck()] }
-			});
-			mockInvoke('github_project_status', () => status);
-
-			await store.fetchProjectStatus('/my/project');
-
-			expect(invokeSpy).toHaveBeenCalledWith('github_project_status', {
-				projectPath: '/my/project'
-			});
-			expect(store.remoteByProject['/my/project']).toEqual(status.remote);
-			expect(store.prsByProject['/my/project']).toEqual(status.prs);
-			expect(store.branchRunsByProject['/my/project']).toEqual(status.branchRuns);
-			expect(store.checksByPr['/my/project::42']).toEqual([makeCheck()]);
-		});
-
-		it('deduplicates concurrent requests for the same project', async () => {
-			let resolveInvoke: (v: GitHubProjectStatus) => void;
-			mockInvoke(
-				'github_project_status',
-				() =>
-					new Promise<GitHubProjectStatus>((resolve) => {
-						resolveInvoke = resolve;
-					})
-			);
-
-			const p1 = store.fetchProjectStatus('/project');
-			const p2 = store.fetchProjectStatus('/project');
-
-			resolveInvoke!(makeProjectStatus());
-			await Promise.all([p1, p2]);
-
-			// Only one invoke call despite two fetchProjectStatus calls
-			const calls = invokeSpy.mock.calls.filter((c) => c[0] === 'github_project_status');
-			expect(calls).toHaveLength(1);
-		});
-
-		it('handles fetch failure gracefully', async () => {
-			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-			mockInvoke('github_project_status', () => {
-				throw new Error('network error');
-			});
-
-			await store.fetchProjectStatus('/project');
-
-			expect(warnSpy).toHaveBeenCalledWith(
-				'[GitHubStore] Failed to fetch project status:',
-				expect.any(Error)
-			);
-			expect(store.prsByProject['/project']).toBeUndefined();
-			warnSpy.mockRestore();
-		});
-
-		it('allows retry after failure', async () => {
-			mockInvoke('github_project_status', () => {
-				throw new Error('fail');
-			});
-			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-			await store.fetchProjectStatus('/project');
-			warnSpy.mockRestore();
-
-			// Now succeed
-			clearInvokeMocks();
-			mockInvoke('github_project_status', () => makeProjectStatus({ prs: [makePR()] }));
-			await store.fetchProjectStatus('/project');
-
-			expect(store.prsByProject['/project']).toHaveLength(1);
-		});
-	});
-
 	// ─── getBranchStatus ──────────────────────────────────────
 
 	describe('getBranchStatus', () => {
@@ -426,7 +350,6 @@ describe('GitHubStore', () => {
 	describe('showBranch', () => {
 		it('sets override target and refreshes project', () => {
 			mockWorkspaceStore.activeWorkspaceId = 'ws-1';
-			mockInvoke('github_project_status', () => makeProjectStatus());
 
 			store.showBranch('/project', 'feature');
 
