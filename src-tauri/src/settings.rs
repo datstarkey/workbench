@@ -220,18 +220,46 @@ fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
 /// Legacy hook script names from previous Workbench versions that should be cleaned up.
 const LEGACY_HOOK_SCRIPTS: &[&str] = &["workbench-hook-bridge.py"];
 
+fn is_legacy_hook_command(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase().replace('\\', "/");
+    LEGACY_HOOK_SCRIPTS
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .any(|name| normalized.contains(&name))
+}
+
+fn entry_is_legacy_hook(entry: &Value) -> bool {
+    let mut saw_command = false;
+    let mut all_legacy = true;
+
+    if let Some(cmd) = entry.get("command").and_then(|v| v.as_str()) {
+        saw_command = true;
+        if !is_legacy_hook_command(cmd) {
+            all_legacy = false;
+        }
+    }
+
+    if let Some(hooks) = entry.get("hooks").and_then(|v| v.as_array()) {
+        for hook in hooks {
+            let Some(cmd) = hook.get("command").and_then(|v| v.as_str()) else {
+                all_legacy = false;
+                continue;
+            };
+            saw_command = true;
+            if !is_legacy_hook_command(cmd) {
+                all_legacy = false;
+            }
+        }
+    }
+
+    saw_command && all_legacy
+}
+
 /// Remove hook entries from settings that reference legacy Workbench scripts.
 /// Also deletes the legacy script files themselves.
 /// Returns true if any settings entries were removed.
 fn remove_legacy_hooks(hooks_obj: &mut serde_json::Map<String, Value>) -> bool {
     let hooks_dir = paths::claude_user_dir().join("hooks");
-    let legacy_commands: Vec<String> = LEGACY_HOOK_SCRIPTS
-        .iter()
-        .map(|name| {
-            let path = hooks_dir.join(name);
-            hook_command_for_script(&path)
-        })
-        .collect();
 
     let mut changed = false;
 
@@ -240,19 +268,7 @@ fn remove_legacy_hooks(hooks_obj: &mut serde_json::Map<String, Value>) -> bool {
             continue;
         };
         let before = arr.len();
-        arr.retain(|entry| {
-            let dominated_by_legacy = entry
-                .get("hooks")
-                .and_then(|v| v.as_array())
-                .is_some_and(|hooks| {
-                    hooks.iter().all(|hook| {
-                        hook.get("command")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|cmd| legacy_commands.iter().any(|lc| lc == cmd))
-                    })
-                });
-            !dominated_by_legacy
-        });
+        arr.retain(|entry| !entry_is_legacy_hook(entry));
         if arr.len() != before {
             changed = true;
         }
@@ -627,10 +643,17 @@ mod tests {
     // --- remove_legacy_hooks ---
 
     #[test]
+    fn is_legacy_hook_command_matches_windows_path_with_mixed_separators() {
+        let cmd = "powershell.exe -ExecutionPolicy Bypass -File C:\\Users\\me\\.claude/hooks/workbench-hook-bridge.py";
+        assert!(is_legacy_hook_command(cmd));
+    }
+
+    #[test]
     fn remove_legacy_hooks_removes_py_script_entries() {
         let mut hooks_obj = serde_json::Map::new();
-        let legacy_cmd =
-            hook_command_for_script(&paths::claude_user_dir().join("hooks/workbench-hook-bridge.py"));
+        let legacy_cmd = hook_command_for_script(
+            &paths::claude_user_dir().join("hooks/workbench-hook-bridge.py"),
+        );
         let current_cmd = hook_command_for_script(
             &paths::claude_user_dir().join("hooks/workbench-hook-bridge.sh"),
         );
@@ -674,18 +697,40 @@ mod tests {
 
         assert!(!remove_legacy_hooks(&mut hooks_obj));
 
+        let entries = hooks_obj.get("Stop").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn remove_legacy_hooks_removes_top_level_command_entry() {
+        let mut hooks_obj = serde_json::Map::new();
+        hooks_obj.insert(
+            "SessionStart".to_string(),
+            serde_json::json!([
+                { "command": "python ~/.claude/hooks/workbench-hook-bridge.py" },
+                { "command": "/usr/local/bin/other-hook" }
+            ]),
+        );
+
+        assert!(remove_legacy_hooks(&mut hooks_obj));
+
         let entries = hooks_obj
-            .get("Stop")
+            .get("SessionStart")
             .and_then(|v| v.as_array())
             .unwrap();
         assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].get("command").and_then(|v| v.as_str()),
+            Some("/usr/local/bin/other-hook")
+        );
     }
 
     #[test]
     fn remove_legacy_hooks_preserves_non_workbench_entries() {
         let mut hooks_obj = serde_json::Map::new();
-        let legacy_cmd =
-            hook_command_for_script(&paths::claude_user_dir().join("hooks/workbench-hook-bridge.py"));
+        let legacy_cmd = hook_command_for_script(
+            &paths::claude_user_dir().join("hooks/workbench-hook-bridge.py"),
+        );
 
         hooks_obj.insert(
             "SessionStart".to_string(),
