@@ -13,6 +13,7 @@
 		AgentAction,
 		AgentActionTarget,
 		TerminalPerformanceMode,
+		WorktreeStartPoint,
 		WorktreeStrategy
 	} from '$types/workbench';
 
@@ -21,6 +22,10 @@
 	const strategyOptions = [
 		{ value: 'sibling', label: 'Sibling folder' },
 		{ value: 'inside', label: 'Inside .worktrees/' }
+	];
+	const startPointOptions = [
+		{ value: 'auto', label: 'Auto (origin default branch)' },
+		{ value: 'current', label: 'Current branch' }
 	];
 	const perfModeOptions = [
 		{ value: 'auto', label: 'Auto (offscreen only)' },
@@ -111,6 +116,21 @@
 				project folder.
 			</p>
 		{/if}
+
+		<SettingsToggle
+			label="Fetch before creating worktree"
+			description="Run git fetch before creating a new branch to ensure it starts from the latest remote state."
+			checked={store.worktreeFetchBeforeCreate}
+			onCheckedChange={(checked) => store.setWorktreeFetchBeforeCreate(checked)}
+		/>
+
+		<SettingsSelect
+			label="Branch new worktrees from"
+			description="Start point for new worktree branches."
+			options={startPointOptions}
+			value={store.worktreeStartPoint}
+			onValueChange={(v) => store.setWorktreeStartPoint(v as WorktreeStartPoint)}
+		/>
 	</div>
 
 	<Separator />
