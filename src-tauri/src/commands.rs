@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::claude_sessions;
 use crate::codex_config;
@@ -13,6 +13,7 @@ use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::HookBridgeState;
 use crate::pty::PtyManager;
 use crate::settings;
+use crate::types::GitHubProjectStatusEvent;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
     DiscoveredClaudeSession, GitHubRemote, GitInfo, HookScriptInfo, IntegrationStatus, PluginInfo,
@@ -249,6 +250,17 @@ pub fn github_set_tracked_projects(
     Ok(true)
 }
 
+fn emit_github_status(app_handle: &AppHandle, project_path: &str) {
+    let status = github::get_project_status(project_path);
+    let _ = app_handle.emit(
+        "github:project-status",
+        GitHubProjectStatusEvent {
+            project_path: project_path.to_string(),
+            status,
+        },
+    );
+}
+
 #[tauri::command(async)]
 pub fn github_refresh_project(
     project_path: String,
@@ -262,8 +274,10 @@ pub fn github_refresh_project(
 pub fn github_update_pr_branch(
     project_path: String,
     pr_number: u64,
+    app_handle: AppHandle,
 ) -> Result<bool, String> {
     github::update_pr_branch(&project_path, pr_number).map_err(|e| e.to_string())?;
+    emit_github_status(&app_handle, &project_path);
     Ok(true)
 }
 
@@ -280,8 +294,10 @@ pub fn github_rerun_workflow(
 pub fn github_mark_pr_ready(
     project_path: String,
     pr_number: u64,
+    app_handle: AppHandle,
 ) -> Result<bool, String> {
     github::mark_pr_ready(&project_path, pr_number).map_err(|e| e.to_string())?;
+    emit_github_status(&app_handle, &project_path);
     Ok(true)
 }
 
@@ -289,8 +305,10 @@ pub fn github_mark_pr_ready(
 pub fn github_merge_pr(
     project_path: String,
     pr_number: u64,
+    app_handle: AppHandle,
 ) -> Result<bool, String> {
     github::merge_pr(&project_path, pr_number).map_err(|e| e.to_string())?;
+    emit_github_status(&app_handle, &project_path);
     Ok(true)
 }
 
