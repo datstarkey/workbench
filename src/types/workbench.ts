@@ -127,6 +127,40 @@ export interface BranchInfo {
 	isRemote: boolean;
 }
 
+export interface GitFileStatus {
+	path: string;
+	status: string;
+	staged: boolean;
+	unstaged: boolean;
+}
+
+export interface GitStatusResult {
+	branch: string;
+	files: GitFileStatus[];
+	ahead: number;
+	behind: number;
+	hasUpstream: boolean;
+}
+
+export interface GitLogEntry {
+	sha: string;
+	shortSha: string;
+	message: string;
+	author: string;
+	date: string;
+}
+
+export interface GitStashEntry {
+	index: number;
+	message: string;
+	date: string;
+}
+
+export interface GitCommitResult {
+	sha: string;
+	message: string;
+}
+
 export interface WorktreeCopyOptions {
 	aiConfig: boolean;
 	envFiles: boolean;
@@ -264,6 +298,7 @@ export interface AgentAction {
 export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
 	trelloEnabled: boolean;
+	gitSidebarEnabled: boolean;
 	terminalPerformanceMode: TerminalPerformanceMode;
 	terminalTelemetryEnabled: boolean;
 	agentActions: AgentAction[];

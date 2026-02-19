@@ -21,7 +21,6 @@ export class TrelloStore {
 	boardDataCache: Record<string, TrelloBoardData> = $state({});
 	availableBoards: TrelloBoard[] = $state([]);
 	loading = $state(false);
-	sidebarTab: 'github' | 'boards' = $state<'github' | 'boards'>('github');
 
 	// Private refs to other stores
 	private workspaces = getWorkspaceStore();
@@ -69,10 +68,6 @@ export class TrelloStore {
 	});
 
 	// --- Methods ---
-
-	setSidebarTab(tab: 'github' | 'boards'): void {
-		this.sidebarTab = tab;
-	}
 
 	async loadCredentials(): Promise<void> {
 		try {

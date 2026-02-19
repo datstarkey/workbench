@@ -26,6 +26,7 @@
 		setIntegrationApprovalStore,
 		setProjectManager,
 		setProjectStore,
+		setSidebarStore,
 		setTrelloStore,
 		setUpdaterStore,
 		setWorkbenchSettingsStore,
@@ -36,6 +37,7 @@
 	import { TrelloStore } from '$stores/trello.svelte';
 	import { UpdaterStore } from '$stores/updater.svelte';
 	import { GitStore } from '$stores/git.svelte';
+	import { SidebarStore } from '$stores/sidebar.svelte';
 	import { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
@@ -66,6 +68,7 @@
 		)
 	);
 	const trelloStore = setTrelloStore(new TrelloStore());
+	setSidebarStore(new SidebarStore());
 
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
