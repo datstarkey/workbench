@@ -224,6 +224,10 @@ pub struct CreateWorktreeRequest {
     pub copy_options: Option<WorktreeCopyOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_point: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fetch_before_create: Option<bool>,
 }
 
 // Workbench app settings
@@ -309,6 +313,10 @@ pub struct WorkbenchSettings {
     pub codex_config_approved: Option<bool>,
     #[serde(default)]
     pub git_sidebar_enabled: bool,
+    #[serde(default = "default_true")]
+    pub worktree_fetch_before_create: bool,
+    #[serde(default = "default_worktree_start_point")]
+    pub worktree_start_point: String,
 }
 
 fn default_worktree_strategy() -> String {
@@ -316,6 +324,14 @@ fn default_worktree_strategy() -> String {
 }
 
 fn default_terminal_performance_mode() -> String {
+    "auto".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_worktree_start_point() -> String {
     "auto".to_string()
 }
 
@@ -330,6 +346,8 @@ impl Default for WorkbenchSettings {
             claude_hooks_approved: None,
             codex_config_approved: None,
             git_sidebar_enabled: false,
+            worktree_fetch_before_create: true,
+            worktree_start_point: default_worktree_start_point(),
         }
     }
 }

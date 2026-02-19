@@ -11,6 +11,8 @@ vi.mock('$lib/utils/uid', () => ({
 function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSettings {
 	return {
 		worktreeStrategy: 'sibling',
+		worktreeFetchBeforeCreate: true,
+		worktreeStartPoint: 'auto',
 		trelloEnabled: false,
 		gitSidebarEnabled: false,
 		terminalPerformanceMode: 'auto',
@@ -207,6 +209,8 @@ describe('WorkbenchSettingsStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_workbench_settings', {
 				settings: {
 					worktreeStrategy: 'inside',
+					worktreeFetchBeforeCreate: true,
+					worktreeStartPoint: 'auto',
 					trelloEnabled: false,
 					gitSidebarEnabled: false,
 					terminalPerformanceMode: 'auto',
@@ -453,6 +457,8 @@ describe('WorkbenchSettingsStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_workbench_settings', {
 				settings: {
 					worktreeStrategy: 'inside',
+					worktreeFetchBeforeCreate: true,
+					worktreeStartPoint: 'auto',
 					trelloEnabled: false,
 					gitSidebarEnabled: false,
 					terminalPerformanceMode: 'auto',

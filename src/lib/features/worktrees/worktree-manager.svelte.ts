@@ -90,7 +90,11 @@ export class WorktreeManagerStore {
 					newBranch,
 					path,
 					copyOptions,
-					strategy: this.workbenchSettings.worktreeStrategy
+					strategy: this.workbenchSettings.worktreeStrategy,
+					startPoint: newBranch ? this.workbenchSettings.worktreeStartPoint : undefined,
+					fetchBeforeCreate: newBranch
+						? this.workbenchSettings.worktreeFetchBeforeCreate
+						: undefined
 				}
 			});
 			this.dialogOpen = false;

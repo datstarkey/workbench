@@ -5,12 +5,15 @@ import type {
 	SessionType,
 	TerminalPerformanceMode,
 	WorkbenchSettings,
+	WorktreeStartPoint,
 	WorktreeStrategy
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 
 export class WorkbenchSettingsStore {
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
+	worktreeFetchBeforeCreate = $state(true);
+	worktreeStartPoint: WorktreeStartPoint = $state('auto');
 	trelloEnabled = $state(false);
 	gitSidebarEnabled = $state(false);
 	terminalPerformanceMode: TerminalPerformanceMode = $state('auto');
@@ -31,6 +34,8 @@ export class WorkbenchSettingsStore {
 	async load() {
 		const settings = await invoke<WorkbenchSettings>('load_workbench_settings');
 		this.worktreeStrategy = settings.worktreeStrategy;
+		this.worktreeFetchBeforeCreate = settings.worktreeFetchBeforeCreate ?? true;
+		this.worktreeStartPoint = settings.worktreeStartPoint ?? 'auto';
 		this.trelloEnabled = settings.trelloEnabled;
 		this.gitSidebarEnabled = settings.gitSidebarEnabled ?? false;
 		this.terminalPerformanceMode = settings.terminalPerformanceMode ?? 'auto';
@@ -56,6 +61,16 @@ export class WorkbenchSettingsStore {
 
 	setWorktreeStrategy(value: WorktreeStrategy) {
 		this.worktreeStrategy = value;
+		this.dirty = true;
+	}
+
+	setWorktreeFetchBeforeCreate(value: boolean) {
+		this.worktreeFetchBeforeCreate = value;
+		this.dirty = true;
+	}
+
+	setWorktreeStartPoint(value: WorktreeStartPoint) {
+		this.worktreeStartPoint = value;
 		this.dirty = true;
 	}
 
@@ -124,6 +139,8 @@ export class WorkbenchSettingsStore {
 	private toSettings(): WorkbenchSettings {
 		return {
 			worktreeStrategy: this.worktreeStrategy,
+			worktreeFetchBeforeCreate: this.worktreeFetchBeforeCreate,
+			worktreeStartPoint: this.worktreeStartPoint,
 			trelloEnabled: this.trelloEnabled,
 			gitSidebarEnabled: this.gitSidebarEnabled,
 			terminalPerformanceMode: this.terminalPerformanceMode,

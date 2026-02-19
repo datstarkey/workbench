@@ -243,6 +243,29 @@ pub(crate) fn parse_worktree_porcelain(output: &str) -> Vec<WorktreeInfo> {
     worktrees
 }
 
+pub fn get_default_branch(repo_path: &str) -> Result<String> {
+    // Try symbolic-ref for origin/HEAD
+    if let Ok(output) = git_output(&["symbolic-ref", "refs/remotes/origin/HEAD"], repo_path) {
+        // Output is like "refs/remotes/origin/main"
+        if let Some(branch) = output.strip_prefix("refs/remotes/origin/") {
+            return Ok(branch.to_string());
+        }
+    }
+
+    // Fallback: check if origin/main exists
+    if git_output(&["rev-parse", "--verify", "origin/main"], repo_path).is_ok() {
+        return Ok("main".to_string());
+    }
+
+    // Fallback: check if origin/master exists
+    if git_output(&["rev-parse", "--verify", "origin/master"], repo_path).is_ok() {
+        return Ok("master".to_string());
+    }
+
+    // Final fallback
+    Ok("main".to_string())
+}
+
 pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>> {
     let output = git_output(&["worktree", "list", "--porcelain"], path)?;
     Ok(parse_worktree_porcelain(&output))
@@ -271,8 +294,34 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
             .to_string()
     };
 
+    // For new branches: optionally fetch first, then branch from a start point
+    let resolved_start_point = if request.new_branch {
+        if request.fetch_before_create != Some(false) {
+            let _ = git_output(&["fetch"], &request.repo_path);
+        }
+
+        match request.start_point.as_deref() {
+            Some("current") | Some("") => None,
+            Some(sp) => Some(sp.to_string()),
+            None => {
+                // Auto-detect: origin/<default_branch>
+                let default_branch = get_default_branch(&request.repo_path)
+                    .unwrap_or_else(|_| "main".to_string());
+                let origin_ref = format!("origin/{default_branch}");
+                // Only use origin ref if it actually exists
+                if git_output(&["rev-parse", "--verify", &origin_ref], &request.repo_path).is_ok() {
+                    Some(origin_ref)
+                } else {
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
     // git worktree add syntax:
-    //   new branch:      git worktree add -b <branch> <path>
+    //   new branch:      git worktree add -b <branch> <path> [<start-point>]
     //   existing branch:  git worktree add <path> <branch>
     let mut args = vec!["worktree", "add"];
     if request.new_branch {
@@ -281,6 +330,9 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
     args.push(&worktree_path);
     if !request.new_branch {
         args.push(&request.branch);
+    }
+    if let Some(ref sp) = resolved_start_point {
+        args.push(sp);
     }
 
     git_output(&args, &request.repo_path)?;
