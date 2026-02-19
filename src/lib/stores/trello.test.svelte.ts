@@ -354,16 +354,4 @@ describe('TrelloStore', () => {
 			expect(store.activeBoardData).toEqual([boardData]);
 		});
 	});
-
-	// --- Sidebar tab ---
-
-	describe('setSidebarTab', () => {
-		it('updates sidebarTab state', () => {
-			expect(store.sidebarTab).toBe('github');
-
-			store.setSidebarTab('boards');
-
-			expect(store.sidebarTab).toBe('boards');
-		});
-	});
 });

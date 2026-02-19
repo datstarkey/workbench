@@ -12,6 +12,7 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 	return {
 		worktreeStrategy: 'sibling',
 		trelloEnabled: false,
+		gitSidebarEnabled: false,
 		terminalPerformanceMode: 'auto',
 		terminalTelemetryEnabled: false,
 		agentActions: [],
@@ -207,6 +208,7 @@ describe('WorkbenchSettingsStore', () => {
 				settings: {
 					worktreeStrategy: 'inside',
 					trelloEnabled: false,
+					gitSidebarEnabled: false,
 					terminalPerformanceMode: 'auto',
 					terminalTelemetryEnabled: false,
 					agentActions: store.agentActions,
@@ -452,6 +454,7 @@ describe('WorkbenchSettingsStore', () => {
 				settings: {
 					worktreeStrategy: 'inside',
 					trelloEnabled: false,
+					gitSidebarEnabled: false,
 					terminalPerformanceMode: 'auto',
 					terminalTelemetryEnabled: false,
 					agentActions: store.agentActions,

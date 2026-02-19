@@ -134,19 +134,21 @@ fn should_emit_project_refresh_for_hook(hook: &Value) -> bool {
     {
         return false;
     }
-    if hook.get("tool_name").and_then(|v| v.as_str()) != Some("Bash") {
-        return false;
+
+    match hook.get("tool_name").and_then(|v| v.as_str()) {
+        Some("Write" | "Edit" | "NotebookEdit") => true,
+        Some("Bash") => {
+            let Some(command) = hook
+                .get("tool_input")
+                .and_then(|v| v.get("command"))
+                .and_then(|v| v.as_str())
+            else {
+                return false;
+            };
+            command_mentions_git_or_gh(command)
+        }
+        _ => false,
     }
-
-    let Some(command) = hook
-        .get("tool_input")
-        .and_then(|v| v.get("command"))
-        .and_then(|v| v.as_str())
-    else {
-        return false;
-    };
-
-    command_mentions_git_or_gh(command)
 }
 
 fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
@@ -160,7 +162,14 @@ fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
     };
     let dispatcher = handle.state::<RefreshDispatcher>();
 
-    dispatcher.request_refresh(handle, project_path, "claude-hook", "post-tool-use-bash");
+    let trigger = match hook.get("tool_name").and_then(|v| v.as_str()) {
+        Some("Write") => "post-tool-use-write",
+        Some("Edit") => "post-tool-use-edit",
+        Some("NotebookEdit") => "post-tool-use-notebook-edit",
+        _ => "post-tool-use-bash",
+    };
+
+    dispatcher.request_refresh(handle, project_path, "claude-hook", trigger);
 }
 
 /// Process lines from a stream, dispatching hook events to the frontend.
@@ -346,6 +355,36 @@ mod tests {
     }
 
     #[test]
+    fn refresh_trigger_post_tool_use_write() {
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Write",
+            "tool_input": { "file_path": "/repo/src/main.rs", "content": "fn main() {}" }
+        });
+        assert!(should_emit_project_refresh_for_hook(&payload));
+    }
+
+    #[test]
+    fn refresh_trigger_post_tool_use_edit() {
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Edit",
+            "tool_input": { "file_path": "/repo/src/main.rs", "old_string": "a", "new_string": "b" }
+        });
+        assert!(should_emit_project_refresh_for_hook(&payload));
+    }
+
+    #[test]
+    fn refresh_trigger_post_tool_use_notebook_edit() {
+        let payload = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "NotebookEdit",
+            "tool_input": { "notebook_path": "/repo/notebook.ipynb" }
+        });
+        assert!(should_emit_project_refresh_for_hook(&payload));
+    }
+
+    #[test]
     fn refresh_trigger_rejects_non_post_tool_use() {
         let payload = json!({
             "hook_event_name": "Notification",
@@ -353,6 +392,18 @@ mod tests {
             "tool_input": { "command": "git status" }
         });
         assert!(!should_emit_project_refresh_for_hook(&payload));
+    }
+
+    #[test]
+    fn refresh_trigger_rejects_read_only_tools() {
+        for tool in &["Read", "Grep", "Glob", "WebSearch"] {
+            let payload = json!({
+                "hook_event_name": "PostToolUse",
+                "tool_name": tool,
+                "tool_input": {}
+            });
+            assert!(!should_emit_project_refresh_for_hook(&payload), "should reject {tool}");
+        }
     }
 
     #[test]

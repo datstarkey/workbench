@@ -154,6 +154,50 @@ pub struct BranchInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GitFileStatus {
+    pub path: String,
+    pub status: String,
+    pub staged: bool,
+    pub unstaged: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusResult {
+    pub branch: String,
+    pub files: Vec<GitFileStatus>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub has_upstream: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitLogEntry {
+    pub sha: String,
+    pub short_sha: String,
+    pub message: String,
+    pub author: String,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStashEntry {
+    pub index: u32,
+    pub message: String,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitResult {
+    pub sha: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorktreeCopyOptions {
     pub ai_config: bool,
     pub env_files: bool,
@@ -263,6 +307,8 @@ pub struct WorkbenchSettings {
     pub claude_hooks_approved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_config_approved: Option<bool>,
+    #[serde(default)]
+    pub git_sidebar_enabled: bool,
 }
 
 fn default_worktree_strategy() -> String {
@@ -283,6 +329,7 @@ impl Default for WorkbenchSettings {
             agent_actions: default_agent_actions(),
             claude_hooks_approved: None,
             codex_config_approved: None,
+            git_sidebar_enabled: false,
         }
     }
 }

@@ -4,6 +4,7 @@ mod codex_sessions;
 mod commands;
 mod config;
 mod git;
+mod git_commands;
 mod git_watcher;
 mod github;
 mod github_poller;
@@ -85,6 +86,20 @@ pub fn run() {
             commands::check_codex_integration,
             commands::apply_claude_integration,
             commands::apply_codex_integration,
+            git_commands::git_status,
+            git_commands::git_log,
+            git_commands::git_stage,
+            git_commands::git_unstage,
+            git_commands::git_commit,
+            git_commands::git_checkout_branch,
+            git_commands::git_stash_list,
+            git_commands::git_stash_push,
+            git_commands::git_stash_pop,
+            git_commands::git_stash_drop,
+            git_commands::git_discard_file,
+            git_commands::git_fetch,
+            git_commands::git_pull,
+            git_commands::git_push,
             trello_commands::trello_validate_auth,
             trello_commands::trello_list_boards,
             trello_commands::trello_fetch_board_data,
