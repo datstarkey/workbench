@@ -12,7 +12,6 @@
 	import type { GitHubPR } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
 	import { invoke } from '@tauri-apps/api/core';
-	import { getGitHubStore } from '$stores/context';
 
 	let {
 		pr,
@@ -21,8 +20,6 @@
 		pr: GitHubPR;
 		projectPath: string;
 	} = $props();
-
-	const githubStore = getGitHubStore();
 
 	let merging = $state(false);
 	let mergeError = $state<string | null>(null);
@@ -113,7 +110,6 @@
 			setError(null);
 			try {
 				await invoke(command, { projectPath, prNumber: pr.number });
-				await githubStore.refreshProject(projectPath);
 			} catch (e) {
 				setError(String(e));
 			} finally {
