@@ -6,7 +6,10 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use crate::paths::{copy_dir_skip_symlinks, copy_file};
-use crate::types::{BranchInfo, CreateWorktreeRequest, GitInfo, WorktreeCopyOptions, WorktreeInfo};
+use crate::types::{
+    BranchInfo, CreateWorktreeRequest, GitCommitResult, GitFileStatus, GitInfo, GitLogEntry,
+    GitStashEntry, GitStatusResult, WorktreeCopyOptions, WorktreeInfo,
+};
 
 pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {
     let output = Command::new("git")
@@ -363,6 +366,212 @@ pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
     Ok(branches)
 }
 
+// --- Git sidebar operations ---
+
+pub(crate) fn parse_porcelain_status(output: &str) -> Vec<GitFileStatus> {
+    let mut files = Vec::new();
+    for line in output.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let x = line.as_bytes()[0];
+        let y = line.as_bytes()[1];
+        let path = line[3..].to_string();
+
+        let staged = x != b' ' && x != b'?';
+        let unstaged = y != b' ' && y != b'?';
+
+        let status = match (x, y) {
+            (b'?', b'?') => "untracked".to_string(),
+            (b'!', b'!') => "ignored".to_string(),
+            (b'A', _) | (_, b'A') if x != b'D' && y != b'D' => "added".to_string(),
+            (b'D', _) | (_, b'D') => "deleted".to_string(),
+            (b'R', _) => "renamed".to_string(),
+            (b'C', _) => "copied".to_string(),
+            _ => "modified".to_string(),
+        };
+
+        files.push(GitFileStatus {
+            path,
+            status,
+            staged,
+            unstaged,
+        });
+    }
+    files
+}
+
+pub fn git_status(path: &str) -> Result<GitStatusResult> {
+    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"], path)
+        .unwrap_or_else(|_| "HEAD".to_string());
+
+    let porcelain = git_output(&["status", "--porcelain=v1"], path)?;
+    let files = parse_porcelain_status(&porcelain);
+
+    // ahead/behind — may fail if there's no upstream
+    let (ahead, behind, has_upstream) = match git_output(
+        &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+        path,
+    ) {
+        Ok(output) => {
+            let parts: Vec<&str> = output.split_whitespace().collect();
+            if parts.len() == 2 {
+                let behind_count = parts[0].parse::<u32>().unwrap_or(0);
+                let ahead_count = parts[1].parse::<u32>().unwrap_or(0);
+                (ahead_count, behind_count, true)
+            } else {
+                (0, 0, true)
+            }
+        }
+        Err(_) => (0, 0, false),
+    };
+
+    Ok(GitStatusResult {
+        branch,
+        files,
+        ahead,
+        behind,
+        has_upstream,
+    })
+}
+
+pub fn git_log(path: &str, max_count: u32) -> Result<Vec<GitLogEntry>> {
+    let format = "%H%x00%h%x00%s%x00%an%x00%aI";
+    let count_arg = format!("-{}", max_count);
+    let output = git_output(
+        &["log", &format!("--format={format}"), &count_arg],
+        path,
+    )?;
+
+    let mut entries = Vec::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.splitn(5, '\0').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        entries.push(GitLogEntry {
+            sha: parts[0].to_string(),
+            short_sha: parts[1].to_string(),
+            message: parts[2].to_string(),
+            author: parts[3].to_string(),
+            date: parts[4].to_string(),
+        });
+    }
+    Ok(entries)
+}
+
+pub fn git_stage(path: &str, files: &[String]) -> Result<()> {
+    let mut args: Vec<&str> = vec!["add", "--"];
+    for f in files {
+        args.push(f.as_str());
+    }
+    git_output(&args, path)?;
+    Ok(())
+}
+
+pub fn git_unstage(path: &str, files: &[String]) -> Result<()> {
+    let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
+    for f in files {
+        args.push(f.as_str());
+    }
+    git_output(&args, path)?;
+    Ok(())
+}
+
+pub fn git_commit(path: &str, message: &str) -> Result<GitCommitResult> {
+    git_output(&["commit", "-m", message], path)?;
+    let sha = git_output(&["rev-parse", "--short", "HEAD"], path)?;
+    Ok(GitCommitResult {
+        sha,
+        message: message.to_string(),
+    })
+}
+
+pub fn git_checkout(path: &str, branch: &str) -> Result<()> {
+    git_output(&["checkout", branch], path)?;
+    Ok(())
+}
+
+pub fn git_stash_list(path: &str) -> Result<Vec<GitStashEntry>> {
+    let output = git_output(
+        &["stash", "list", "--format=%gd%x00%gs%x00%aI"],
+        path,
+    );
+
+    // Empty stash list returns an error from git_output because there's no output
+    let output = match output {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut entries = Vec::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.splitn(3, '\0').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        // parts[0] is like "stash@{0}"
+        let index = parts[0]
+            .strip_prefix("stash@{")
+            .and_then(|s| s.strip_suffix('}'))
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+
+        entries.push(GitStashEntry {
+            index,
+            message: parts[1].to_string(),
+            date: parts[2].to_string(),
+        });
+    }
+    Ok(entries)
+}
+
+pub fn git_stash_push(path: &str, message: Option<&str>) -> Result<()> {
+    let mut args = vec!["stash", "push"];
+    if let Some(msg) = message {
+        args.extend_from_slice(&["-m", msg]);
+    }
+    git_output(&args, path)?;
+    Ok(())
+}
+
+pub fn git_stash_pop(path: &str, index: u32) -> Result<()> {
+    let stash_ref = format!("stash@{{{index}}}");
+    git_output(&["stash", "pop", &stash_ref], path)?;
+    Ok(())
+}
+
+pub fn git_stash_drop(path: &str, index: u32) -> Result<()> {
+    let stash_ref = format!("stash@{{{index}}}");
+    git_output(&["stash", "drop", &stash_ref], path)?;
+    Ok(())
+}
+
+pub fn git_discard_file(path: &str, file: &str) -> Result<()> {
+    git_output(&["checkout", "--", file], path)?;
+    Ok(())
+}
+
+pub fn git_fetch(path: &str) -> Result<()> {
+    git_output(&["fetch"], path)?;
+    Ok(())
+}
+
+pub fn git_pull(path: &str) -> Result<()> {
+    git_output(&["pull"], path)?;
+    Ok(())
+}
+
+pub fn git_push(path: &str, set_upstream: bool) -> Result<()> {
+    if set_upstream {
+        let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"], path)?;
+        git_output(&["push", "-u", "origin", &branch], path)?;
+    } else {
+        git_output(&["push"], path)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +740,111 @@ branch refs/heads/dev
         let result = parse_worktree_porcelain(output);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path, "/home/user/repo");
+    }
+
+    // --- parse_porcelain_status ---
+
+    #[test]
+    fn porcelain_status_modified_unstaged() {
+        let output = " M src/main.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, "src/main.rs");
+        assert_eq!(result[0].status, "modified");
+        assert!(!result[0].staged);
+        assert!(result[0].unstaged);
+    }
+
+    #[test]
+    fn porcelain_status_modified_staged() {
+        let output = "M  src/main.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "modified");
+        assert!(result[0].staged);
+        assert!(!result[0].unstaged);
+    }
+
+    #[test]
+    fn porcelain_status_modified_both() {
+        let output = "MM src/main.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "modified");
+        assert!(result[0].staged);
+        assert!(result[0].unstaged);
+    }
+
+    #[test]
+    fn porcelain_status_added() {
+        let output = "A  new_file.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "added");
+        assert!(result[0].staged);
+    }
+
+    #[test]
+    fn porcelain_status_deleted() {
+        let output = "D  old_file.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "deleted");
+        assert!(result[0].staged);
+    }
+
+    #[test]
+    fn porcelain_status_deleted_unstaged() {
+        let output = " D old_file.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "deleted");
+        assert!(!result[0].staged);
+        assert!(result[0].unstaged);
+    }
+
+    #[test]
+    fn porcelain_status_renamed() {
+        let output = "R  old.rs -> new.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "renamed");
+        assert_eq!(result[0].path, "old.rs -> new.rs");
+    }
+
+    #[test]
+    fn porcelain_status_untracked() {
+        let output = "?? untracked.txt\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "untracked");
+        assert_eq!(result[0].path, "untracked.txt");
+        assert!(!result[0].staged);
+        assert!(!result[0].unstaged);
+    }
+
+    #[test]
+    fn porcelain_status_multiple_files() {
+        let output = " M file1.rs\nA  file2.rs\n?? file3.rs\nD  file4.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0].status, "modified");
+        assert_eq!(result[1].status, "added");
+        assert_eq!(result[2].status, "untracked");
+        assert_eq!(result[3].status, "deleted");
+    }
+
+    #[test]
+    fn porcelain_status_empty_output() {
+        let result = parse_porcelain_status("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn porcelain_status_copied() {
+        let output = "C  src.rs -> dst.rs\n";
+        let result = parse_porcelain_status(output);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].status, "copied");
     }
 }

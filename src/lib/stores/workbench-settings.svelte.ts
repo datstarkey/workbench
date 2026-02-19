@@ -12,6 +12,7 @@ import { invoke } from '@tauri-apps/api/core';
 export class WorkbenchSettingsStore {
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
 	trelloEnabled = $state(false);
+	gitSidebarEnabled = $state(false);
 	terminalPerformanceMode: TerminalPerformanceMode = $state('auto');
 	terminalTelemetryEnabled = $state(false);
 	agentActions: AgentAction[] = $state([]);
@@ -31,6 +32,7 @@ export class WorkbenchSettingsStore {
 		const settings = await invoke<WorkbenchSettings>('load_workbench_settings');
 		this.worktreeStrategy = settings.worktreeStrategy;
 		this.trelloEnabled = settings.trelloEnabled;
+		this.gitSidebarEnabled = settings.gitSidebarEnabled ?? false;
 		this.terminalPerformanceMode = settings.terminalPerformanceMode ?? 'auto';
 		this.terminalTelemetryEnabled = settings.terminalTelemetryEnabled ?? false;
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
@@ -59,6 +61,11 @@ export class WorkbenchSettingsStore {
 
 	setTrelloEnabled(value: boolean) {
 		this.trelloEnabled = value;
+		this.dirty = true;
+	}
+
+	setGitSidebarEnabled(value: boolean) {
+		this.gitSidebarEnabled = value;
 		this.dirty = true;
 	}
 
@@ -118,6 +125,7 @@ export class WorkbenchSettingsStore {
 		return {
 			worktreeStrategy: this.worktreeStrategy,
 			trelloEnabled: this.trelloEnabled,
+			gitSidebarEnabled: this.gitSidebarEnabled,
 			terminalPerformanceMode: this.terminalPerformanceMode,
 			terminalTelemetryEnabled: this.terminalTelemetryEnabled,
 			agentActions: this.agentActions,

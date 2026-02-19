@@ -16,6 +16,7 @@
 	import SettingsPlugins from './SettingsPlugins.svelte';
 	import SettingsSandbox from './SettingsSandbox.svelte';
 	import SettingsSkills from './SettingsSkills.svelte';
+	import SettingsGit from './SettingsGit.svelte';
 	import SettingsIntegrations from './SettingsIntegrations.svelte';
 	import SettingsWorkbench from './SettingsWorkbench.svelte';
 
@@ -30,7 +31,7 @@
 		projectPath: string | null;
 	} = $props();
 
-	let settingsMode = $state<'workbench' | 'claude' | 'integrations'>('workbench');
+	let settingsMode = $state<'workbench' | 'claude' | 'integrations' | 'git'>('workbench');
 	let activeSection = $state('general');
 
 	const claudeSections = [
@@ -97,12 +98,14 @@
 			<div class="mt-3">
 				<Tabs.Root
 					value={settingsMode}
-					onValueChange={(v) => (settingsMode = v as 'workbench' | 'claude' | 'integrations')}
+					onValueChange={(v) =>
+						(settingsMode = v as 'workbench' | 'claude' | 'integrations' | 'git')}
 				>
 					<Tabs.List class="h-8">
 						<Tabs.Trigger value="workbench" class="text-xs">Workbench</Tabs.Trigger>
 						<Tabs.Trigger value="claude" class="text-xs">Claude Code</Tabs.Trigger>
 						<Tabs.Trigger value="integrations" class="text-xs">Integrations</Tabs.Trigger>
+						<Tabs.Trigger value="git" class="text-xs">Git</Tabs.Trigger>
 					</Tabs.List>
 				</Tabs.Root>
 			</div>
@@ -201,6 +204,12 @@
 			<ScrollArea class="min-h-0 flex-1">
 				<div class="p-4">
 					<SettingsIntegrations {projectPath} />
+				</div>
+			</ScrollArea>
+		{:else if settingsMode === 'git'}
+			<ScrollArea class="min-h-0 flex-1">
+				<div class="p-4">
+					<SettingsGit />
 				</div>
 			</ScrollArea>
 		{/if}

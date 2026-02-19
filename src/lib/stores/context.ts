@@ -10,6 +10,7 @@ import type { WorktreeManagerStore } from '$features/worktrees/worktree-manager.
 import type { TrelloStore } from './trello.svelte';
 import type { UpdaterStore } from './updater.svelte';
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
+import type { SidebarStore } from './sidebar.svelte';
 import type { WorkbenchSettingsStore } from './workbench-settings.svelte';
 
 export const [getProjectStore, setProjectStore] = createContext<ProjectStore>();
@@ -27,3 +28,4 @@ export const [getWorkbenchSettingsStore, setWorkbenchSettingsStore] =
 export const [getTrelloStore, setTrelloStore] = createContext<TrelloStore>();
 export const [getIntegrationApprovalStore, setIntegrationApprovalStore] =
 	createContext<IntegrationApprovalStore>();
+export const [getSidebarStore, setSidebarStore] = createContext<SidebarStore>();
