@@ -9,15 +9,15 @@
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import SaveIcon from '@lucide/svelte/icons/save';
 
+	import SettingsAgentActions from './SettingsAgentActions.svelte';
 	import SettingsGeneral from './SettingsGeneral.svelte';
 	import SettingsHooks from './SettingsHooks.svelte';
+	import SettingsIntegrations from './SettingsIntegrations.svelte';
 	import SettingsMcp from './SettingsMcp.svelte';
 	import SettingsPermissions from './SettingsPermissions.svelte';
 	import SettingsPlugins from './SettingsPlugins.svelte';
 	import SettingsSandbox from './SettingsSandbox.svelte';
 	import SettingsSkills from './SettingsSkills.svelte';
-	import SettingsGit from './SettingsGit.svelte';
-	import SettingsIntegrations from './SettingsIntegrations.svelte';
 	import SettingsWorkbench from './SettingsWorkbench.svelte';
 
 	const claudeSettingsStore = getClaudeSettingsStore();
@@ -31,8 +31,15 @@
 		projectPath: string | null;
 	} = $props();
 
-	let settingsMode = $state<'workbench' | 'claude' | 'integrations' | 'git'>('workbench');
+	type SettingsTab = 'general' | 'claude' | 'trello' | 'agent-actions';
+
+	let selectedTab = $state<SettingsTab>('general');
 	let activeSection = $state('general');
+
+	// Falls back to 'general' if Trello tab is selected but feature is disabled
+	let settingsMode = $derived<SettingsTab>(
+		selectedTab === 'trello' && !workbenchSettingsStore.trelloEnabled ? 'general' : selectedTab
+	);
 
 	const claudeSections = [
 		{ id: 'general', label: 'General' },
@@ -96,16 +103,14 @@
 
 			<!-- Mode toggle -->
 			<div class="mt-3">
-				<Tabs.Root
-					value={settingsMode}
-					onValueChange={(v) =>
-						(settingsMode = v as 'workbench' | 'claude' | 'integrations' | 'git')}
-				>
+				<Tabs.Root value={settingsMode} onValueChange={(v) => (selectedTab = v as SettingsTab)}>
 					<Tabs.List class="h-8">
-						<Tabs.Trigger value="workbench" class="text-xs">Workbench</Tabs.Trigger>
+						<Tabs.Trigger value="general" class="text-xs">General</Tabs.Trigger>
 						<Tabs.Trigger value="claude" class="text-xs">Claude Code</Tabs.Trigger>
-						<Tabs.Trigger value="integrations" class="text-xs">Integrations</Tabs.Trigger>
-						<Tabs.Trigger value="git" class="text-xs">Git</Tabs.Trigger>
+						{#if workbenchSettingsStore.trelloEnabled}
+							<Tabs.Trigger value="trello" class="text-xs">Trello</Tabs.Trigger>
+						{/if}
+						<Tabs.Trigger value="agent-actions" class="text-xs">Agent Actions</Tabs.Trigger>
 					</Tabs.List>
 				</Tabs.Root>
 			</div>
@@ -139,7 +144,7 @@
 			{/if}
 		</Sheet.Header>
 
-		{#if settingsMode === 'workbench'}
+		{#if settingsMode === 'general'}
 			<ScrollArea class="min-h-0 flex-1">
 				<div class="p-4">
 					{#if !workbenchSettingsStore.loaded}
@@ -200,16 +205,22 @@
 					</div>
 				</ScrollArea>
 			</div>
-		{:else if settingsMode === 'integrations'}
+		{:else if settingsMode === 'trello'}
 			<ScrollArea class="min-h-0 flex-1">
 				<div class="p-4">
 					<SettingsIntegrations {projectPath} />
 				</div>
 			</ScrollArea>
-		{:else if settingsMode === 'git'}
+		{:else if settingsMode === 'agent-actions'}
 			<ScrollArea class="min-h-0 flex-1">
 				<div class="p-4">
-					<SettingsGit />
+					{#if !workbenchSettingsStore.loaded}
+						<div class="flex items-center justify-center py-12">
+							<LoaderIcon class="size-5 animate-spin text-muted-foreground" />
+						</div>
+					{:else}
+						<SettingsAgentActions />
+					{/if}
 				</div>
 			</ScrollArea>
 		{/if}
