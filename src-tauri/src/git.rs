@@ -302,8 +302,7 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
 
         match request.start_point.as_deref() {
             Some("current") | Some("") => None,
-            Some(sp) => Some(sp.to_string()),
-            None => {
+            Some("auto") | None => {
                 // Auto-detect: origin/<default_branch>
                 let default_branch = get_default_branch(&request.repo_path)
                     .unwrap_or_else(|_| "main".to_string());
@@ -315,6 +314,7 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
                     None
                 }
             }
+            Some(sp) => Some(sp.to_string()),
         }
     } else {
         None

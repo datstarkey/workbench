@@ -14,6 +14,7 @@ export class WorkbenchSettingsStore {
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
 	worktreeFetchBeforeCreate = $state(true);
 	worktreeStartPoint: WorktreeStartPoint = $state('auto');
+	worktreeCustomBranch = $state('');
 	trelloEnabled = $state(false);
 	gitSidebarEnabled = $state(false);
 	terminalPerformanceMode: TerminalPerformanceMode = $state('auto');
@@ -36,6 +37,7 @@ export class WorkbenchSettingsStore {
 		this.worktreeStrategy = settings.worktreeStrategy;
 		this.worktreeFetchBeforeCreate = settings.worktreeFetchBeforeCreate ?? true;
 		this.worktreeStartPoint = settings.worktreeStartPoint ?? 'auto';
+		this.worktreeCustomBranch = settings.worktreeCustomBranch ?? '';
 		this.trelloEnabled = settings.trelloEnabled;
 		this.gitSidebarEnabled = settings.gitSidebarEnabled ?? false;
 		this.terminalPerformanceMode = settings.terminalPerformanceMode ?? 'auto';
@@ -71,6 +73,11 @@ export class WorkbenchSettingsStore {
 
 	setWorktreeStartPoint(value: WorktreeStartPoint) {
 		this.worktreeStartPoint = value;
+		this.dirty = true;
+	}
+
+	setWorktreeCustomBranch(value: string) {
+		this.worktreeCustomBranch = value;
 		this.dirty = true;
 	}
 
@@ -141,6 +148,7 @@ export class WorkbenchSettingsStore {
 			worktreeStrategy: this.worktreeStrategy,
 			worktreeFetchBeforeCreate: this.worktreeFetchBeforeCreate,
 			worktreeStartPoint: this.worktreeStartPoint,
+			worktreeCustomBranch: this.worktreeCustomBranch,
 			trelloEnabled: this.trelloEnabled,
 			gitSidebarEnabled: this.gitSidebarEnabled,
 			terminalPerformanceMode: this.terminalPerformanceMode,
