@@ -282,7 +282,7 @@ export interface GitHubBranchStatus {
 // Workbench app settings
 
 export type WorktreeStrategy = 'sibling' | 'inside';
-export type WorktreeStartPoint = 'auto' | 'current';
+export type WorktreeStartPoint = 'auto' | 'current' | 'custom';
 export type TerminalPerformanceMode = 'auto' | 'always';
 
 export type AgentActionTarget = 'claude' | 'codex' | 'both';
@@ -300,6 +300,7 @@ export interface WorkbenchSettings {
 	worktreeStrategy: WorktreeStrategy;
 	worktreeFetchBeforeCreate: boolean;
 	worktreeStartPoint: WorktreeStartPoint;
+	worktreeCustomBranch: string;
 	trelloEnabled: boolean;
 	gitSidebarEnabled: boolean;
 	terminalPerformanceMode: TerminalPerformanceMode;

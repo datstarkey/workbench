@@ -25,7 +25,8 @@
 	];
 	const startPointOptions = [
 		{ value: 'auto', label: 'Auto (origin default branch)' },
-		{ value: 'current', label: 'Current branch' }
+		{ value: 'current', label: 'Current branch' },
+		{ value: 'custom', label: 'Custom branch' }
 	];
 	const perfModeOptions = [
 		{ value: 'auto', label: 'Auto (offscreen only)' },
@@ -131,6 +132,21 @@
 			value={store.worktreeStartPoint}
 			onValueChange={(v) => store.setWorktreeStartPoint(v as WorktreeStartPoint)}
 		/>
+
+		{#if store.worktreeStartPoint === 'custom'}
+			<div class="grid gap-1.5">
+				<label class="text-sm font-medium" for="custom-branch-input">Custom branch</label>
+				<Input
+					id="custom-branch-input"
+					placeholder="e.g. develop, staging, origin/main"
+					value={store.worktreeCustomBranch}
+					oninput={(e) => store.setWorktreeCustomBranch(e.currentTarget.value)}
+				/>
+				<p class="text-xs text-muted-foreground">
+					Branch or ref to use as the start point. Prefix with <code>origin/</code> to use a remote branch.
+				</p>
+			</div>
+		{/if}
 	</div>
 
 	<Separator />

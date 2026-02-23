@@ -317,6 +317,8 @@ pub struct WorkbenchSettings {
     pub worktree_fetch_before_create: bool,
     #[serde(default = "default_worktree_start_point")]
     pub worktree_start_point: String,
+    #[serde(default)]
+    pub worktree_custom_branch: String,
 }
 
 fn default_worktree_strategy() -> String {
@@ -348,6 +350,7 @@ impl Default for WorkbenchSettings {
             git_sidebar_enabled: false,
             worktree_fetch_before_create: true,
             worktree_start_point: default_worktree_start_point(),
+            worktree_custom_branch: String::new(),
         }
     }
 }
