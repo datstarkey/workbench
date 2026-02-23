@@ -81,6 +81,19 @@ export class WorktreeManagerStore {
 		}
 	}
 
+	private resolveStartPoint(): string | undefined {
+		switch (this.workbenchSettings.worktreeStartPoint) {
+			case 'auto':
+				return undefined; // Let Rust auto-detect origin default branch
+			case 'current':
+				return 'current';
+			case 'custom': {
+				const branch = this.workbenchSettings.worktreeCustomBranch.trim();
+				return branch || undefined; // Fall back to auto if empty
+			}
+		}
+	}
+
 	async create(branch: string, newBranch: boolean, path: string, copyOptions: WorktreeCopyOptions) {
 		try {
 			const createdPath = await invoke<string>('create_worktree', {
@@ -91,7 +104,7 @@ export class WorktreeManagerStore {
 					path,
 					copyOptions,
 					strategy: this.workbenchSettings.worktreeStrategy,
-					startPoint: newBranch ? this.workbenchSettings.worktreeStartPoint : undefined,
+					startPoint: newBranch ? this.resolveStartPoint() : undefined,
 					fetchBeforeCreate: newBranch
 						? this.workbenchSettings.worktreeFetchBeforeCreate
 						: undefined
