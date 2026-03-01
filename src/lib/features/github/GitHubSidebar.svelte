@@ -82,7 +82,9 @@
 
 	// Trigger data fetch when sidebar target changes (external side effect -- network requests)
 	$effect(() => {
-		if (activeProjectPath) githubStore.refreshProject(activeProjectPath);
+		if (!activeProjectPath) return;
+		if (Date.now() - (githubStore.lastRefreshedAt[activeProjectPath] ?? 0) < 2000) return;
+		githubStore.refreshProject(activeProjectPath);
 	});
 
 	onDestroy(() => {

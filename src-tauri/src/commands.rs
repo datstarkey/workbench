@@ -264,9 +264,11 @@ fn emit_github_status(app_handle: &AppHandle, project_path: &str) {
 #[tauri::command(async)]
 pub fn github_refresh_project(
     project_path: String,
+    app_handle: AppHandle,
     poller: State<'_, GitHubPoller>,
 ) -> Result<bool, String> {
-    poller.request_refresh(project_path);
+    emit_github_status(&app_handle, &project_path);
+    poller.defer_project(&project_path);
     Ok(true)
 }
 
