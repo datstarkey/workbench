@@ -359,7 +359,10 @@ fn hook_command_for_script(script_path: &Path) -> String {
         } else {
             path.to_string()
         };
-        format!("powershell.exe -ExecutionPolicy Bypass -File {}", file_arg)
+        format!(
+            "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File {}",
+            file_arg
+        )
     }
     #[cfg(not(windows))]
     {
