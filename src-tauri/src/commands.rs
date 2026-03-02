@@ -10,7 +10,7 @@ use crate::git;
 use crate::github;
 use crate::github_poller::GitHubPoller;
 use crate::git_watcher::GitWatcher;
-use crate::hook_bridge::HookBridgeState;
+use crate::hook_bridge::{HookBridgeState, HookLogEntry};
 use crate::pty::PtyManager;
 use crate::settings;
 use crate::types::GitHubProjectStatusEvent;
@@ -264,9 +264,11 @@ fn emit_github_status(app_handle: &AppHandle, project_path: &str) {
 #[tauri::command(async)]
 pub fn github_refresh_project(
     project_path: String,
+    app_handle: AppHandle,
     poller: State<'_, GitHubPoller>,
 ) -> Result<bool, String> {
-    poller.request_refresh(project_path);
+    emit_github_status(&app_handle, &project_path);
+    poller.defer_project(&project_path);
     Ok(true)
 }
 
@@ -350,6 +352,21 @@ pub fn apply_claude_integration() -> Result<bool, String> {
 pub fn apply_codex_integration() -> Result<bool, String> {
     codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+// Hook bridge log commands
+
+#[tauri::command]
+pub fn get_hook_logs(hook_bridge: State<'_, HookBridgeState>) -> Result<Vec<HookLogEntry>, String> {
+    Ok(hook_bridge.get_logs())
+}
+
+#[tauri::command]
+pub fn clear_hook_logs(
+    hook_bridge: State<'_, HookBridgeState>,
+) -> Result<(), String> {
+    hook_bridge.clear_logs();
+    Ok(())
 }
 
 fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {

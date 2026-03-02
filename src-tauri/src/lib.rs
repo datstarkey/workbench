@@ -86,6 +86,8 @@ pub fn run() {
             commands::check_codex_integration,
             commands::apply_claude_integration,
             commands::apply_codex_integration,
+            commands::get_hook_logs,
+            commands::clear_hook_logs,
             git_commands::git_status,
             git_commands::git_log,
             git_commands::git_stage,

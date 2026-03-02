@@ -16,6 +16,11 @@ export class GitStore {
 	logByProject: Record<string, GitLogEntry[]> = $state({});
 	stashByProject: Record<string, GitStashEntry[]> = $state({});
 
+	// Non-reactive concurrency/staleness bookkeeping
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- internal bookkeeping only
+	private refreshInFlight = new Set<string>();
+	lastRefreshedAt: Record<string, number> = {};
+
 	constructor() {
 		listen<ProjectRefreshRequestedEvent>('project:refresh-requested', (event) => {
 			void this.refreshGitState(event.payload.projectPath);
@@ -167,13 +172,20 @@ export class GitStore {
 	}
 
 	async refreshGitState(projectPath: string) {
-		await Promise.all([
-			this.fetchGitInfo(projectPath),
-			this.fetchWorktrees(projectPath),
-			this.fetchStatus(projectPath),
-			this.fetchLog(projectPath),
-			this.fetchStashes(projectPath)
-		]);
+		if (this.refreshInFlight.has(projectPath)) return;
+		this.refreshInFlight.add(projectPath);
+		try {
+			await Promise.all([
+				this.fetchGitInfo(projectPath),
+				this.fetchWorktrees(projectPath),
+				this.fetchStatus(projectPath),
+				this.fetchLog(projectPath),
+				this.fetchStashes(projectPath)
+			]);
+			this.lastRefreshedAt[projectPath] = Date.now();
+		} finally {
+			this.refreshInFlight.delete(projectPath);
+		}
 	}
 
 	async refreshAll(projectPaths: string[]) {

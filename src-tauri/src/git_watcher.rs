@@ -28,7 +28,7 @@ impl GitWatcher {
     }
 
     fn create_debouncer(app_handle: AppHandle) -> Option<FileWatcher> {
-        let timeout = std::time::Duration::from_millis(500);
+        let timeout = std::time::Duration::from_millis(50);
         let handle = app_handle.clone();
 
         let debouncer = new_debouncer(
@@ -150,6 +150,12 @@ impl GitWatcher {
             watcher.watcher().watch(&refs, RecursiveMode::Recursive)?;
         }
 
+        // Watch .git/index for staging changes
+        let index = git_dir.join("index");
+        if index.exists() {
+            watcher.watcher().watch(&index, RecursiveMode::NonRecursive)?;
+        }
+
         watched.insert(path);
         Ok(())
     }
@@ -199,6 +205,10 @@ impl GitWatcher {
             let refs = git_dir.join("refs");
             if refs.exists() {
                 let _ = watcher.watcher().unwatch(&refs);
+            }
+            let index = git_dir.join("index");
+            if index.exists() {
+                let _ = watcher.watcher().unwatch(&index);
             }
         }
 

@@ -80,19 +80,13 @@ impl GitHubPoller {
             .retain(|key, _| active_prefixes.iter().any(|prefix| key.starts_with(prefix)));
     }
 
-    pub fn request_refresh(&self, project_path: String) {
-        let project_path = project_path.trim().to_string();
-        if project_path.is_empty() {
-            return;
-        }
-
-        let now = Instant::now();
+    /// Push a project's next poll time to `now + SLOW_POLL_INTERVAL`.
+    /// Call after an explicit refresh so the poller doesn't double-fetch.
+    pub fn defer_project(&self, project_path: &str) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = state.projects.entry(project_path).or_insert(PollProjectState {
-            next_poll_at: now,
-            persistent: false,
-        });
-        entry.next_poll_at = now;
+        if let Some(project) = state.projects.get_mut(project_path) {
+            project.next_poll_at = Instant::now() + SLOW_POLL_INTERVAL;
+        }
     }
 
     fn start_worker(&self, app_handle: AppHandle) {

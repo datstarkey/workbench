@@ -315,6 +315,16 @@ export interface IntegrationStatus {
 	description: string;
 }
 
+export interface HookLogEntry {
+	timestamp: string;
+	level: 'event' | 'error';
+	eventName?: string;
+	paneId?: string;
+	source?: string;
+	summary: string;
+	toolName?: string;
+}
+
 export interface ProjectFormState {
 	name: string;
 	path: string;
