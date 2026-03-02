@@ -62,11 +62,15 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install WebView2 Runtime
+      - name: Build tests
+        run: cargo test --no-run
+        working-directory: src-tauri
+
+      - name: Copy WebView2Loader.dll to deps
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "$env:TEMP\MicrosoftEdgeWebview2Setup.exe"
-          Start-Process -FilePath "$env:TEMP\MicrosoftEdgeWebview2Setup.exe" -ArgumentList "/silent /install" -Wait
+          Get-ChildItem -Path "src-tauri\target\debug\build" -Recurse -Filter "WebView2Loader.dll" |
+            ForEach-Object { Copy-Item $_.FullName "src-tauri\target\debug\deps\" }
 
       - name: Run Rust tests
         run: cargo test
