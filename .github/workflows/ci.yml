@@ -66,56 +66,19 @@ jobs:
         run: cargo test --no-run
         working-directory: src-tauri
 
-      - name: Diagnose DLL dependencies
+      - name: Copy native DLLs to deps
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Path "target\debug\deps" -Filter "workbench_lib-*.exe" | Select-Object -First 1
-          Write-Host "Test binary: $($exe.FullName)"
-
-          # Check for any native DLLs in build tree
-          Write-Host "`n=== Native DLLs in build tree ==="
-          Get-ChildItem -Path "target\debug\build" -Recurse -Filter "*.dll" | ForEach-Object {
-            Write-Host "  $($_.FullName)"
+          # Copy the x64 WebView2Loader.dll next to the test binaries
+          $dll = Get-ChildItem -Path "src-tauri\target\debug\build" -Recurse -Filter "WebView2Loader.dll" |
+            Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName "src-tauri\target\debug\deps\"
+            Write-Host "Copied $($dll.FullName) to deps"
+          } else {
+            Write-Host "WARNING: WebView2Loader.dll not found in build tree"
           }
-
-          # Check deps directory
-          Write-Host "`n=== DLLs in deps directory ==="
-          Get-ChildItem -Path "target\debug\deps" -Filter "*.dll" | ForEach-Object {
-            Write-Host "  $($_.Name)"
-          }
-
-          # Use dumpbin to find imported DLLs
-          Write-Host "`n=== DLL imports (dumpbin) ==="
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath 2>$null
-          if ($vsPath) {
-            $dumpbin = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Recurse -Filter "dumpbin.exe" |
-              Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
-            if ($dumpbin) {
-              & $dumpbin.FullName /dependents $exe.FullName 2>&1 | Select-String "\.dll" | ForEach-Object { Write-Host "  $_" }
-            } else {
-              Write-Host "  dumpbin not found"
-            }
-          }
-
-          # Try running the binary and check event log for details
-          Write-Host "`n=== Attempting to run test binary ==="
-          $proc = Start-Process -FilePath $exe.FullName -ArgumentList "--list" -Wait -PassThru -NoNewWindow 2>$null
-          Write-Host "Exit code: 0x$($proc.ExitCode.ToString('X'))"
-
-          Write-Host "`n=== Recent SideBySide / Application errors ==="
-          Get-WinEvent -FilterHashtable @{LogName='Application';Level=2} -MaxEvents 10 -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host "  $($_.TimeCreated): $($_.Message.Substring(0, [Math]::Min(200, $_.Message.Length)))" }
-        working-directory: src-tauri
-        continue-on-error: true
 
       - name: Run Rust tests
-        shell: pwsh
-        run: |
-          # Add all native build output dirs to PATH as fallback
-          $dllDirs = Get-ChildItem -Path "target\debug\build" -Recurse -Filter "*.dll" |
-            ForEach-Object { $_.DirectoryName } | Sort-Object -Unique
-          foreach ($dir in $dllDirs) {
-            $env:PATH = "$dir;$env:PATH"
-          }
-          cargo test
+        run: cargo test
         working-directory: src-tauri
