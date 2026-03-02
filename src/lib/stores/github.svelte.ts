@@ -272,6 +272,4 @@ export class GitHubStore {
 		this.trackedProjectsFingerprint = projectPaths.slice().sort().join('\n');
 		await Promise.all(projectPaths.map((p) => this.refreshProject(p)));
 	}
-
-	destroy() {}
 }

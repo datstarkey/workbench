@@ -45,34 +45,19 @@ export class WorktreeManagerStore {
 		this.workbenchSettings = workbenchSettings;
 	}
 
-	async add(projectPath: string) {
-		this.dialogProjectPath = projectPath;
-		this.dialogError = '';
-		this.dialogBranches = [];
-		this._pendingTaskLink = null;
-		this._suggestedBranch = '';
-		this.dialogOpen = true;
-
-		try {
-			this.dialogBranches = await invoke<BranchInfo[]>('list_branches', { path: projectPath });
-		} catch (e) {
-			this.dialogError = `Failed to list branches: ${String(e)}`;
-		}
-	}
-
-	async addWithBranch(
+	async add(
 		projectPath: string,
-		suggestedBranch: string,
-		cardId?: string,
-		boardId?: string
+		options?: { suggestedBranch?: string; cardId?: string; boardId?: string }
 	) {
 		this.dialogProjectPath = projectPath;
 		this.dialogError = '';
 		this.dialogBranches = [];
+		this._pendingTaskLink =
+			options?.cardId && options?.boardId
+				? { cardId: options.cardId, boardId: options.boardId }
+				: null;
+		this._suggestedBranch = options?.suggestedBranch ?? '';
 		this.dialogOpen = true;
-
-		this._pendingTaskLink = cardId && boardId ? { cardId, boardId } : null;
-		this._suggestedBranch = suggestedBranch;
 
 		try {
 			this.dialogBranches = await invoke<BranchInfo[]>('list_branches', { path: projectPath });

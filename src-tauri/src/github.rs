@@ -243,15 +243,22 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
     };
     let branch_runs = group_runs_by_branch(workflow_runs);
 
-    // Pre-fetch checks for all open PRs
-    let mut pr_checks: HashMap<u64, Vec<GitHubCheckDetail>> = HashMap::new();
-    for pr in &prs {
-        if pr.state == "OPEN" {
-            if let Ok(checks) = list_pr_checks(path, pr.number) {
-                pr_checks.insert(pr.number, checks);
-            }
-        }
-    }
+    // Pre-fetch checks for all open PRs in parallel
+    let pr_checks: HashMap<u64, Vec<GitHubCheckDetail>> = std::thread::scope(|s| {
+        let handles: Vec<_> = prs
+            .iter()
+            .filter(|pr| pr.state == "OPEN")
+            .map(|pr| {
+                let path = path;
+                s.spawn(move || (pr.number, list_pr_checks(path, pr.number)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter_map(|(num, result)| result.ok().map(|checks| (num, checks)))
+            .collect()
+    });
 
     GitHubProjectStatus {
         remote,

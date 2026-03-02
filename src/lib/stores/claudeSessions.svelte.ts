@@ -56,7 +56,7 @@ export class ClaudeSessionStore {
 	private integrationApproval: IntegrationApprovalStore;
 
 	/** Active Claude sessions grouped by project path */
-	get activeSessionsByProject(): Record<string, ActiveClaudeSession[]> {
+	readonly activeSessionsByProject = $derived.by((): Record<string, ActiveClaudeSession[]> => {
 		return this.workspaces.workspaces.reduce<Record<string, ActiveClaudeSession[]>>((acc, ws) => {
 			const sessions = ws.terminalTabs
 				.filter((t) => t.type === 'claude' || t.type === 'codex')
@@ -80,7 +80,7 @@ export class ClaudeSessionStore {
 			}
 			return acc;
 		}, {});
-	}
+	});
 
 	readonly paneTypeById = $derived.by((): Record<string, SessionType> => {
 		const result: Record<string, SessionType> = {};
@@ -292,6 +292,24 @@ export class ClaudeSessionStore {
 		return typeof value === 'string' ? value : '';
 	}
 
+	private clearSubmitFallback(paneId: string): void {
+		const fallback = this.submitFallbackTimeouts.get(paneId);
+		if (fallback) {
+			clearTimeout(fallback);
+			this.submitFallbackTimeouts.delete(paneId);
+		}
+	}
+
+	private applyNotification(paneId: string, payload: Record<string, unknown>): void {
+		if (this.isInputRequiredNotification(payload)) {
+			this.panesInProgress.delete(paneId);
+			this.panesAwaitingInput.add(paneId);
+		} else if (this.isIdlePromptNotification(payload)) {
+			this.panesInProgress.delete(paneId);
+			this.panesAwaitingInput.delete(paneId);
+		}
+	}
+
 	private isInputRequiredNotification(payload: Record<string, unknown>): boolean {
 		const notificationType = (
 			this.payloadString(payload, 'notification_type') || this.payloadString(payload, 'type')
@@ -329,24 +347,12 @@ export class ClaudeSessionStore {
 				this.panesInProgress.delete(paneId);
 				this.panesAwaitingInput.delete(paneId);
 				break;
-			case 'Notification':
-				if (this.isInputRequiredNotification(event.hookPayload)) {
-					this.panesInProgress.delete(paneId);
-					this.panesAwaitingInput.add(paneId);
-				} else if (this.isIdlePromptNotification(event.hookPayload)) {
-					this.panesInProgress.delete(paneId);
-					this.panesAwaitingInput.delete(paneId);
-				}
-				break;
 			default:
-				if (event.hookEventName?.startsWith('Notification:')) {
-					if (this.isInputRequiredNotification(event.hookPayload)) {
-						this.panesInProgress.delete(paneId);
-						this.panesAwaitingInput.add(paneId);
-					} else if (this.isIdlePromptNotification(event.hookPayload)) {
-						this.panesInProgress.delete(paneId);
-						this.panesAwaitingInput.delete(paneId);
-					}
+				if (
+					event.hookEventName === 'Notification' ||
+					event.hookEventName?.startsWith('Notification:')
+				) {
+					this.applyNotification(paneId, event.hookPayload);
 				}
 				break;
 		}
@@ -390,11 +396,7 @@ export class ClaudeSessionStore {
 		// Codex notify currently delivers completion/approval style events.
 		if (event.notifyEvent === 'agent-turn-complete') {
 			this.panesInProgress.delete(paneId);
-			const fallback = this.submitFallbackTimeouts.get(paneId);
-			if (fallback) {
-				clearTimeout(fallback);
-				this.submitFallbackTimeouts.delete(paneId);
-			}
+			this.clearSubmitFallback(paneId);
 		}
 	}
 
@@ -428,11 +430,7 @@ export class ClaudeSessionStore {
 
 			// Output received — mark as active and clear submit fallback.
 			this.panesInProgress.add(paneId);
-			const fallback = this.submitFallbackTimeouts.get(paneId);
-			if (fallback) {
-				clearTimeout(fallback);
-				this.submitFallbackTimeouts.delete(paneId);
-			}
+			this.clearSubmitFallback(paneId);
 		});
 
 		listen<TerminalActivityEvent>('terminal:activity', (event) => {
@@ -440,11 +438,7 @@ export class ClaudeSessionStore {
 			if (event.payload.active) return;
 			if (this.paneType(paneId) !== 'codex') return;
 			this.panesInProgress.delete(paneId);
-			const fallback = this.submitFallbackTimeouts.get(paneId);
-			if (fallback) {
-				clearTimeout(fallback);
-				this.submitFallbackTimeouts.delete(paneId);
-			}
+			this.clearSubmitFallback(paneId);
 		});
 	}
 }

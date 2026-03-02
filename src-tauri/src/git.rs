@@ -180,14 +180,29 @@ fn copy_workspace_files_to_worktree(
 }
 
 pub fn git_info(path: &str) -> Result<GitInfo> {
-    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"], path)?;
-    let repo_root = git_output(&["rev-parse", "--show-toplevel"], path)?;
-
+    let output = git_output(
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+        path,
+    )?;
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.len() < 4 {
+        bail!(
+            "Unexpected git rev-parse output: expected 4 lines, got {}",
+            lines.len()
+        );
+    }
+    let branch = lines[0].to_string();
+    let repo_root = lines[1].to_string();
     // A directory is a worktree (not the main working tree) if its git common dir
     // differs from its git dir.
-    let git_dir = git_output(&["rev-parse", "--git-dir"], path)?;
-    let common_dir = git_output(&["rev-parse", "--git-common-dir"], path)?;
-    let is_worktree = git_dir != common_dir;
+    let is_worktree = lines[2] != lines[3];
 
     Ok(GitInfo {
         branch,

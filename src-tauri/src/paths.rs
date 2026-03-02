@@ -4,6 +4,7 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 
@@ -34,58 +35,65 @@ pub fn agents_dir() -> PathBuf {
 /// Build a PATH that includes common CLI tool locations.
 /// macOS/Linux GUI apps get a minimal PATH that excludes package manager bins,
 /// so spawned commands like `gh` fail unless we enrich it.
+/// The result is cached for the lifetime of the process since PATH doesn't change.
+static ENRICHED_PATH: OnceLock<OsString> = OnceLock::new();
+
 pub fn enriched_path() -> OsString {
-    let mut dirs: Vec<PathBuf> = Vec::new();
+    ENRICHED_PATH
+        .get_or_init(|| {
+            let mut dirs: Vec<PathBuf> = Vec::new();
 
-    #[cfg(target_os = "macos")]
-    {
-        let home = home_dir();
-        dirs.extend([
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-            home.join(".nix-profile/bin"),
-            PathBuf::from("/nix/var/nix/profiles/default/bin"),
-            PathBuf::from("/run/current-system/sw/bin"),
-        ]);
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let home = home_dir();
-        dirs.extend([
-            PathBuf::from("/usr/local/bin"),
-            home.join(".nix-profile/bin"),
-            PathBuf::from("/nix/var/nix/profiles/default/bin"),
-            PathBuf::from("/run/current-system/sw/bin"),
-        ]);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // Add common CLI tool install locations on Windows
-        if let Ok(pf) = std::env::var("ProgramFiles") {
-            dirs.push(PathBuf::from(&pf).join("GitHub CLI"));
-        }
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            dirs.push(PathBuf::from(&local).join("Programs").join("GitHub CLI"));
-        }
-    }
-
-    // Append the existing PATH so system defaults are still available
-    if let Some(existing) = std::env::var_os("PATH") {
-        for p in std::env::split_paths(&existing) {
-            if !dirs.contains(&p) {
-                dirs.push(p);
+            #[cfg(target_os = "macos")]
+            {
+                let home = home_dir();
+                dirs.extend([
+                    PathBuf::from("/opt/homebrew/bin"),
+                    PathBuf::from("/usr/local/bin"),
+                    home.join(".nix-profile/bin"),
+                    PathBuf::from("/nix/var/nix/profiles/default/bin"),
+                    PathBuf::from("/run/current-system/sw/bin"),
+                ]);
             }
-        }
-    }
 
-    #[cfg(not(windows))]
-    let fallback = OsString::from("/usr/bin:/bin");
-    #[cfg(windows)]
-    let fallback = OsString::from("C:\\Windows\\System32;C:\\Windows");
+            #[cfg(target_os = "linux")]
+            {
+                let home = home_dir();
+                dirs.extend([
+                    PathBuf::from("/usr/local/bin"),
+                    home.join(".nix-profile/bin"),
+                    PathBuf::from("/nix/var/nix/profiles/default/bin"),
+                    PathBuf::from("/run/current-system/sw/bin"),
+                ]);
+            }
 
-    std::env::join_paths(dirs).unwrap_or(fallback)
+            #[cfg(target_os = "windows")]
+            {
+                // Add common CLI tool install locations on Windows
+                if let Ok(pf) = std::env::var("ProgramFiles") {
+                    dirs.push(PathBuf::from(&pf).join("GitHub CLI"));
+                }
+                if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                    dirs.push(PathBuf::from(&local).join("Programs").join("GitHub CLI"));
+                }
+            }
+
+            // Append the existing PATH so system defaults are still available
+            if let Some(existing) = std::env::var_os("PATH") {
+                for p in std::env::split_paths(&existing) {
+                    if !dirs.contains(&p) {
+                        dirs.push(p);
+                    }
+                }
+            }
+
+            #[cfg(not(windows))]
+            let fallback = OsString::from("/usr/bin:/bin");
+            #[cfg(windows)]
+            let fallback = OsString::from("C:\\Windows\\System32;C:\\Windows");
+
+            std::env::join_paths(dirs).unwrap_or(fallback)
+        })
+        .clone()
 }
 
 /// Encode a project path for use as a filename-safe identifier.
