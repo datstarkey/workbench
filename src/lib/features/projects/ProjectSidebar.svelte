@@ -9,15 +9,12 @@
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PlusIcon from '@lucide/svelte/icons/plus';
-	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import CirclePauseIcon from '@lucide/svelte/icons/circle-pause';
-	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
-	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 	import * as ContextMenu from '$lib/components/ui/context-menu';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -43,6 +40,7 @@
 	import CIStatusBadge from './CIStatusBadge.svelte';
 	import PRStatusBadge from './PRStatusBadge.svelte';
 	import ProjectMenuItems from './ProjectMenuItems.svelte';
+	import SessionItem from './SessionItem.svelte';
 
 	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
@@ -63,23 +61,11 @@
 	} = $props();
 
 	const expandedProjects = new SvelteSet<string>();
-
-	function toggleExpanded(path: string) {
-		if (expandedProjects.has(path)) {
-			expandedProjects.delete(path);
-		} else {
-			expandedProjects.add(path);
-		}
-	}
-
 	const expandedWorktrees = new SvelteSet<string>();
 
-	function toggleWorktreeExpanded(worktreePath: string) {
-		if (expandedWorktrees.has(worktreePath)) {
-			expandedWorktrees.delete(worktreePath);
-		} else {
-			expandedWorktrees.add(worktreePath);
-		}
+	function toggleSet<T>(set: SvelteSet<T>, value: T) {
+		if (set.has(value)) set.delete(value);
+		else set.add(value);
 	}
 
 	function allSessionsForProject(projectPath: string): ActiveClaudeSession[] {
@@ -197,7 +183,7 @@
 			</Button>
 		</div>
 
-		<ScrollArea class="flex-1">
+		<ScrollArea class="min-h-0 flex-1">
 			<div class="space-y-0.5 px-2 pb-2">
 				{#if !projectStore.loaded}
 					<p class="px-2 py-8 text-center text-xs text-muted-foreground">Loading...</p>
@@ -254,7 +240,7 @@
 												type="button"
 												aria-label={isExpanded ? 'Collapse' : 'Expand'}
 												aria-expanded={isExpanded}
-												onclick={() => toggleExpanded(project.path)}
+												onclick={() => toggleSet(expandedProjects, project.path)}
 											>
 												{#if isExpanded}
 													<ChevronDownIcon class="size-3" />
@@ -367,7 +353,7 @@
 															type="button"
 															onclick={() => {
 																if (wtHasChildren) {
-																	toggleWorktreeExpanded(wt.path);
+																	toggleSet(expandedWorktrees, wt.path);
 																} else {
 																	worktreeManager.open(project.path, wt.path, wt.branch);
 																}
@@ -437,57 +423,19 @@
 															{/each}
 														{/if}
 														{#each wtSessions as session (session.tabId)}
-															<ContextMenu.Root>
-																<ContextMenu.Trigger class="w-full">
-																	<button
-																		class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-																		type="button"
-																		onclick={() =>
-																			workspaceStore.selectTabByProject(
-																				project.path,
-																				session.tabId
-																			)}
-																	>
-																		{#if session.awaitingInput}
-																			<CircleAlertIcon class="size-3 shrink-0 text-red-400" />
-																		{:else if session.needsAttention}
-																			<CirclePauseIcon
-																				class={`size-3 shrink-0 ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
-																			/>
-																		{:else}
-																			<LoaderCircleIcon
-																				class={`size-3 shrink-0 animate-spin ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
-																			/>
-																		{/if}
-																		<span
-																			class={`truncate text-xs font-medium ${session.awaitingInput ? 'text-red-300' : session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
-																			>{session.label}</span
-																		>
-																	</button>
-																</ContextMenu.Trigger>
-																<ContextMenu.Content class="w-40">
-																	<ContextMenu.Item
-																		onclick={() =>
-																			claudeSessionStore.restartSessionByProject(
-																				project.path,
-																				session.tabId,
-																				session.sessionType
-																			)}
-																	>
-																		<RotateCcwIcon class="size-3.5" />
-																		Restart
-																	</ContextMenu.Item>
-																	<ContextMenu.Separator />
-																	<ContextMenu.Item
-																		class="text-destructive"
-																		onclick={() =>
-																			workspaceStore.closeTabByProject(project.path, session.tabId)}
-																	>
-																		<XIcon class="size-3.5" />
-																		Close
-																	</ContextMenu.Item>
-																</ContextMenu.Content>
-															</ContextMenu.Root>
+															<SessionItem
+																{session}
+																onSelect={() =>
+																	workspaceStore.selectTabByProject(project.path, session.tabId)}
+																onRestart={() =>
+																	claudeSessionStore.restartSessionByProject(
+																		project.path,
+																		session.tabId,
+																		session.sessionType
+																	)}
+																onClose={() =>
+																	workspaceStore.closeTabByProject(project.path, session.tabId)}
+															/>
 														{/each}
 														<button
 															class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
@@ -512,54 +460,18 @@
 										</button>
 									{/if}
 									{#each mainSessions as session (session.tabId)}
-										<ContextMenu.Root>
-											<ContextMenu.Trigger class="w-full">
-												<button
-													class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-													type="button"
-													onclick={() =>
-														workspaceStore.selectTabByProject(project.path, session.tabId)}
-												>
-													{#if session.awaitingInput}
-														<CircleAlertIcon class="size-3 shrink-0 text-red-400" />
-													{:else if session.needsAttention}
-														<CirclePauseIcon
-															class={`size-3 shrink-0 ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
-														/>
-													{:else}
-														<LoaderCircleIcon
-															class={`size-3 shrink-0 animate-spin ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
-														/>
-													{/if}
-													<span
-														class={`truncate text-xs font-medium ${session.awaitingInput ? 'text-red-300' : session.needsAttention ? (session.sessionType === 'codex' ? 'text-sky-300' : 'text-amber-300') : ''}`}
-														>{session.label}</span
-													>
-												</button>
-											</ContextMenu.Trigger>
-											<ContextMenu.Content class="w-40">
-												<ContextMenu.Item
-													onclick={() =>
-														claudeSessionStore.restartSessionByProject(
-															project.path,
-															session.tabId,
-															session.sessionType
-														)}
-												>
-													<RotateCcwIcon class="size-3.5" />
-													Restart
-												</ContextMenu.Item>
-												<ContextMenu.Separator />
-												<ContextMenu.Item
-													class="text-destructive"
-													onclick={() =>
-														workspaceStore.closeTabByProject(project.path, session.tabId)}
-												>
-													<XIcon class="size-3.5" />
-													Close
-												</ContextMenu.Item>
-											</ContextMenu.Content>
-										</ContextMenu.Root>
+										<SessionItem
+											{session}
+											onSelect={() =>
+												workspaceStore.selectTabByProject(project.path, session.tabId)}
+											onRestart={() =>
+												claudeSessionStore.restartSessionByProject(
+													project.path,
+													session.tabId,
+													session.sessionType
+												)}
+											onClose={() => workspaceStore.closeTabByProject(project.path, session.tabId)}
+										/>
 									{/each}
 									{#if mainSessions.length > 0}
 										<button

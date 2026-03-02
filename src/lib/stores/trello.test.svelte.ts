@@ -88,7 +88,6 @@ describe('TrelloStore', () => {
 		it('clears all state and invokes disconnect', async () => {
 			// Pre-populate state
 			store.credentials = { apiKey: 'k', token: 't' };
-			store.authenticated = true;
 			store.availableBoards = [{ id: 'b1', name: 'Board 1', url: '' }];
 			store.boardDataCache = { key: { board: { id: 'b1', name: 'B', url: '' }, columns: [] } };
 

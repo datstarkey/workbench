@@ -173,6 +173,8 @@ export class GitStore {
 
 	async refreshGitState(projectPath: string) {
 		if (this.refreshInFlight.has(projectPath)) return;
+		const lastRefresh = this.lastRefreshedAt[projectPath] ?? 0;
+		if (Date.now() - lastRefresh < 500) return;
 		this.refreshInFlight.add(projectPath);
 		try {
 			await Promise.all([

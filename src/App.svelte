@@ -120,8 +120,7 @@
 	});
 
 	onMount(async () => {
-		await workbenchSettingsStore.load();
-		await projectStore.load();
+		await Promise.all([workbenchSettingsStore.load(), projectStore.load()]);
 		await workspaceStore.load();
 		workspaceStore.ensureShape();
 		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
@@ -131,9 +130,7 @@
 		githubStore.initForProjects(projectStore.projects.map((p) => p.path));
 		githubStore.initSidebarState();
 		await trelloStore.loadCredentials();
-		for (const p of projectStore.projects) {
-			trelloStore.loadProjectConfig(p.path);
-		}
+		await Promise.all(projectStore.projects.map((p) => trelloStore.loadProjectConfig(p.path)));
 	});
 </script>
 

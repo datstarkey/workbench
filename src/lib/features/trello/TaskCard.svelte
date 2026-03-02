@@ -37,7 +37,7 @@
 			.replace(/[^a-z0-9]+/g, '-')
 			.replace(/^-|-$/g, '')
 			.slice(0, 50);
-		worktreeManager.addWithBranch(projectPath, branchName, card.id, boardId);
+		worktreeManager.add(projectPath, { suggestedBranch: branchName, cardId: card.id, boardId });
 	}
 
 	function handleLinkToBranch() {
