@@ -123,7 +123,6 @@ describe('GitHubStore', () => {
 	});
 
 	afterEach(() => {
-		store.destroy();
 		clearInvokeMocks();
 		clearListeners();
 		vi.useRealTimers();
@@ -663,25 +662,6 @@ describe('GitHubStore', () => {
 
 			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
 			expect(calls).toHaveLength(2);
-		});
-	});
-
-	// ─── destroy ──────────────────────────────────────────────
-
-	describe('destroy', () => {
-		it('is safe to call', () => {
-			store.ghAvailable = false;
-			// Trigger a refresh and ensure destroy does not throw.
-			emitMockEvent('project:refresh-requested', {
-				projectPath: '/project',
-				source: 'git-watcher',
-				trigger: 'git-dir-change'
-			});
-
-			// Should not throw
-			store.destroy();
-
-			expect(true).toBe(true);
 		});
 	});
 });

@@ -13,9 +13,7 @@
 	const workspaceStore = getWorkspaceStore();
 	const githubStore = getGitHubStore();
 
-	let activeWorkspace = $derived(
-		workspaceStore.workspaces.find((ws) => ws.id === workspaceStore.activeWorkspaceId)
-	);
+	let activeWorkspace = $derived(workspaceStore.activeWorkspace);
 
 	let activeGitHubUrl = $derived.by(() => {
 		if (!activeWorkspace) return null;

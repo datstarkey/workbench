@@ -16,7 +16,7 @@ import { listen } from '@tauri-apps/api/event';
 export class TrelloStore {
 	// --- State ---
 	credentials: TrelloCredentials | null = $state(null);
-	authenticated = $state(false);
+	readonly authenticated = $derived(this.credentials != null);
 	configByProject: Record<string, TrelloProjectConfig> = $state({});
 	boardDataCache: Record<string, TrelloBoardData> = $state({});
 	availableBoards: TrelloBoard[] = $state([]);
@@ -73,7 +73,6 @@ export class TrelloStore {
 		try {
 			const creds = await invoke<TrelloCredentials | null>('trello_load_credentials');
 			this.credentials = creds;
-			this.authenticated = creds != null;
 		} catch (e) {
 			console.warn('[TrelloStore] Failed to load credentials:', e);
 		}
@@ -82,7 +81,6 @@ export class TrelloStore {
 	async saveCredentials(apiKey: string, token: string): Promise<void> {
 		await invoke('trello_save_credentials', { apiKey, token });
 		this.credentials = { apiKey, token };
-		this.authenticated = true;
 	}
 
 	async validateAuth(apiKey: string, token: string): Promise<boolean> {
@@ -92,7 +90,6 @@ export class TrelloStore {
 	async disconnect(): Promise<void> {
 		await invoke('trello_disconnect');
 		this.credentials = null;
-		this.authenticated = false;
 		this.availableBoards = [];
 		this.boardDataCache = {};
 	}
@@ -213,12 +210,10 @@ export class TrelloStore {
 			if (action.moveToColumnId) {
 				await this.moveCard(cardId, action.moveToColumnId);
 			}
-			for (const labelId of action.addLabelIds ?? []) {
-				await this.addLabel(cardId, labelId);
-			}
-			for (const labelId of action.removeLabelIds ?? []) {
-				await this.removeLabel(cardId, labelId);
-			}
+			await Promise.all([
+				...(action.addLabelIds ?? []).map((id) => this.addLabel(cardId, id)),
+				...(action.removeLabelIds ?? []).map((id) => this.removeLabel(cardId, id))
+			]);
 			await this.refreshAllBoards(projectPath);
 		} catch (e) {
 			console.error('[TrelloStore] Board action failed:', e);
