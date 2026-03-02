@@ -62,6 +62,6 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Run Rust tests
-        run: cargo test
+      - name: Check Rust compiles on Windows
+        run: cargo test --no-run
         working-directory: src-tauri

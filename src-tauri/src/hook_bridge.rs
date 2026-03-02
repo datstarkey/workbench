@@ -1,5 +1,8 @@
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
+use std::sync::{Arc, Mutex};
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
@@ -7,9 +10,26 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::pty::PtyManager;
 use crate::refresh_dispatcher::RefreshDispatcher;
 
+const MAX_LOG_ENTRIES: usize = 500;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookLogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub event_name: Option<String>,
+    pub pane_id: Option<String>,
+    pub source: Option<String>,
+    pub summary: String,
+    pub tool_name: Option<String>,
+}
+
+type LogBuffer = Arc<Mutex<VecDeque<HookLogEntry>>>;
+
 #[derive(Clone)]
 pub struct HookBridgeState {
     socket_path: Option<String>,
+    logs: LogBuffer,
 }
 
 impl HookBridgeState {
@@ -20,6 +40,24 @@ impl HookBridgeState {
     pub fn socket_path(&self) -> Option<&str> {
         self.socket_path.as_deref()
     }
+
+    pub fn get_logs(&self) -> Vec<HookLogEntry> {
+        let logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
+        logs.iter().cloned().collect()
+    }
+
+    pub fn clear_logs(&self) {
+        let mut logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
+        logs.clear();
+    }
+}
+
+fn push_log(logs: &LogBuffer, entry: HookLogEntry) {
+    let mut buf = logs.lock().unwrap_or_else(|e| e.into_inner());
+    if buf.len() >= MAX_LOG_ENTRIES {
+        buf.pop_front();
+    }
+    buf.push_back(entry);
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,12 +212,22 @@ fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
 
 /// Process lines from a stream, dispatching hook events to the frontend.
 /// Shared between Unix socket and TCP implementations.
-fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle) {
+fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBuffer) {
     for line in reader.lines() {
         let line = match line {
             Ok(line) => line,
             Err(e) => {
-                eprintln!("[HookBridge] Failed to read payload: {e}");
+                let entry = HookLogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    level: "error".into(),
+                    event_name: None,
+                    pane_id: None,
+                    source: None,
+                    summary: format!("Failed to read payload: {e}"),
+                    tool_name: None,
+                };
+                push_log(logs, entry.clone());
+                let _ = handle.emit("hook-bridge:log", entry);
                 break;
             }
         };
@@ -190,7 +238,22 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle) {
         let envelope = match serde_json::from_str::<HookBridgeEnvelope>(&line) {
             Ok(envelope) => envelope,
             Err(e) => {
-                eprintln!("[HookBridge] Invalid hook payload: {e}");
+                let truncated = if line.len() > 200 {
+                    format!("{}…", &line[..200])
+                } else {
+                    line.clone()
+                };
+                let entry = HookLogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    level: "error".into(),
+                    event_name: None,
+                    pane_id: None,
+                    source: None,
+                    summary: format!("Invalid payload: {e} — {truncated}"),
+                    tool_name: None,
+                };
+                push_log(logs, entry.clone());
+                let _ = handle.emit("hook-bridge:log", entry);
                 continue;
             }
         };
@@ -198,10 +261,55 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle) {
         match envelope {
             HookBridgeEnvelope::Claude { pane_id, hook } => {
                 emit_project_refresh_event(handle, &pane_id, &hook);
+
+                let event_name = hook
+                    .get("hook_event_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let tool_name = hook
+                    .get("tool_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let summary = match (&event_name, &tool_name) {
+                    (Some(ev), Some(tool)) => format!("{ev}: {tool}"),
+                    (Some(ev), None) => ev.clone(),
+                    _ => "Claude hook event".into(),
+                };
+                let log_entry = HookLogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    level: "event".into(),
+                    event_name,
+                    pane_id: Some(pane_id.clone()),
+                    source: Some("claude".into()),
+                    summary,
+                    tool_name,
+                };
+                push_log(logs, log_entry.clone());
+                let _ = handle.emit("hook-bridge:log", log_entry);
+
                 let event = ClaudeHookEvent::from_payload(pane_id, hook);
                 let _ = handle.emit("claude:hook", event);
             }
             HookBridgeEnvelope::Codex { pane_id, codex } => {
+                let event_name = codex
+                    .get("event")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let summary = event_name
+                    .clone()
+                    .unwrap_or_else(|| "Codex notification".into());
+                let log_entry = HookLogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    level: "event".into(),
+                    event_name,
+                    pane_id: Some(pane_id.clone()),
+                    source: Some("codex".into()),
+                    summary,
+                    tool_name: None,
+                };
+                push_log(logs, log_entry.clone());
+                let _ = handle.emit("hook-bridge:log", log_entry);
+
                 let event = CodexNotifyEvent::from_payload(pane_id, codex);
                 let _ = handle.emit("codex:notify", event);
             }
@@ -213,6 +321,69 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn make_log_entry(summary: &str) -> HookLogEntry {
+        HookLogEntry {
+            timestamp: "2025-01-01T00:00:00Z".into(),
+            level: "event".into(),
+            event_name: None,
+            pane_id: None,
+            source: None,
+            summary: summary.into(),
+            tool_name: None,
+        }
+    }
+
+    // --- Log buffer ---
+
+    #[test]
+    fn log_buffer_push_and_get() {
+        let logs: LogBuffer = Arc::new(Mutex::new(VecDeque::new()));
+        push_log(&logs, make_log_entry("SessionStart"));
+
+        let buf = logs.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].summary, "SessionStart");
+    }
+
+    #[test]
+    fn log_buffer_evicts_oldest_at_capacity() {
+        let logs: LogBuffer = Arc::new(Mutex::new(VecDeque::new()));
+        for i in 0..MAX_LOG_ENTRIES + 50 {
+            push_log(&logs, make_log_entry(&format!("entry-{i}")));
+        }
+
+        let buf = logs.lock().unwrap();
+        assert_eq!(buf.len(), MAX_LOG_ENTRIES);
+        assert_eq!(buf[0].summary, "entry-50");
+        assert_eq!(buf[MAX_LOG_ENTRIES - 1].summary, "entry-549");
+    }
+
+    #[test]
+    fn log_state_get_returns_clone() {
+        let state = HookBridgeState {
+            socket_path: None,
+            logs: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        push_log(&state.logs, make_log_entry("test"));
+        let result = state.get_logs();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].summary, "test");
+    }
+
+    #[test]
+    fn log_state_clear() {
+        let state = HookBridgeState {
+            socket_path: None,
+            logs: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        push_log(&state.logs, make_log_entry("one"));
+        push_log(&state.logs, make_log_entry("two"));
+        assert_eq!(state.get_logs().len(), 2);
+
+        state.clear_logs();
+        assert_eq!(state.get_logs().len(), 0);
+    }
 
     // --- ClaudeHookEvent::from_payload ---
 
@@ -463,19 +634,26 @@ mod tests {
 /// Binds to 127.0.0.1:0 (ephemeral port) so there are no port conflicts.
 /// Hook scripts connect via TCP using /dev/tcp (bash) or TcpClient (PowerShell).
 mod tcp {
+    use std::collections::VecDeque;
     use std::io::BufReader;
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
 
     use tauri::AppHandle;
 
     use super::{handle_stream, HookBridgeState};
 
     pub fn start(app_handle: AppHandle) -> HookBridgeState {
+        let logs = Arc::new(Mutex::new(VecDeque::new()));
+
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("[HookBridge] Failed to bind TCP listener: {e}");
-                return HookBridgeState { socket_path: None };
+                return HookBridgeState {
+                    socket_path: None,
+                    logs,
+                };
             }
         };
 
@@ -483,12 +661,16 @@ mod tcp {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("[HookBridge] Failed to get listener address: {e}");
-                return HookBridgeState { socket_path: None };
+                return HookBridgeState {
+                    socket_path: None,
+                    logs,
+                };
             }
         };
 
         let socket_path = format!("127.0.0.1:{}", addr.port());
         let handle = app_handle.clone();
+        let logs_clone = logs.clone();
 
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -501,14 +683,16 @@ mod tcp {
                 };
 
                 let handle = handle.clone();
+                let logs = logs_clone.clone();
                 std::thread::spawn(move || {
-                    handle_stream(BufReader::new(stream), &handle);
+                    handle_stream(BufReader::new(stream), &handle, &logs);
                 });
             }
         });
 
         HookBridgeState {
             socket_path: Some(socket_path),
+            logs,
         }
     }
 }

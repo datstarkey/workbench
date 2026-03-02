@@ -110,6 +110,7 @@ export class GitHubStore {
 
 	// Not reactive — internal bookkeeping only
 	private trackedProjectsFingerprint = '';
+	lastRefreshedAt: Record<string, number> = {};
 
 	constructor() {
 		listen<ProjectRefreshRequestedEvent>('project:refresh-requested', (event) => {
@@ -159,6 +160,7 @@ export class GitHubStore {
 		if (this.ghAvailable !== true) return;
 		try {
 			await invoke('github_refresh_project', { projectPath });
+			this.lastRefreshedAt[projectPath] = Date.now();
 		} catch (e) {
 			console.warn('[GitHubStore] Failed to request project refresh:', e);
 		}

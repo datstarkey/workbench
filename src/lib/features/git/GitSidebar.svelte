@@ -21,9 +21,9 @@
 
 	// Fetch git data when active path changes (network side effect)
 	$effect(() => {
-		if (activePath) {
-			gitStore.refreshGitState(activePath);
-		}
+		if (!activePath) return;
+		if (Date.now() - (gitStore.lastRefreshedAt[activePath] ?? 0) < 2000) return;
+		gitStore.refreshGitState(activePath);
 	});
 </script>
 

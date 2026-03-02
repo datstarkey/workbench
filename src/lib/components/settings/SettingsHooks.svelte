@@ -1,12 +1,20 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { invoke } from '@tauri-apps/api/core';
+	import { listen } from '@tauri-apps/api/event';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import XIcon from '@lucide/svelte/icons/x';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { getClaudeSettingsStore } from '$stores/context';
 	import SettingsEmptyState from './SettingsEmptyState.svelte';
 	import type { HookEntry } from '$types/claude-settings';
+	import type { HookLogEntry } from '$types/workbench';
+	import { formatSessionDate } from '$lib/utils/format';
 
 	const claudeSettingsStore = getClaudeSettingsStore();
 
@@ -26,6 +34,36 @@
 
 	let addingEvent = $state('');
 	let newCommand = $state('');
+
+	// Hook activity log
+	let logEntries = $state<HookLogEntry[]>([]);
+	let showActivity = $state(false);
+	let errorCount = $derived(logEntries.filter((e) => e.level === 'error').length);
+	let reversedEntries = $derived([...logEntries].reverse());
+
+	onMount(() => {
+		invoke<HookLogEntry[]>('get_hook_logs').then((logs) => {
+			logEntries = logs;
+		});
+
+		const unlistenPromise = listen<HookLogEntry>('hook-bridge:log', (event) => {
+			logEntries = [...logEntries, event.payload];
+		});
+
+		return () => {
+			unlistenPromise.then((fn) => fn());
+		};
+	});
+
+	function clearLogs() {
+		invoke('clear_hook_logs');
+		logEntries = [];
+	}
+
+	function entryClass(level: string): string {
+		const base = 'flex items-start gap-1.5 rounded-md px-2 py-1 text-xs';
+		return level === 'error' ? `${base} bg-destructive/10` : base;
+	}
 
 	function commandText(entry: HookEntry): string {
 		if (entry.command?.trim()) return entry.command.trim();
@@ -174,4 +212,66 @@
 			</div>
 		</div>
 	{/if}
+
+	<div>
+		<button
+			class="flex w-full items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+			onclick={() => (showActivity = !showActivity)}
+		>
+			{#if showActivity}
+				<ChevronDownIcon class="size-3" />
+			{:else}
+				<ChevronRightIcon class="size-3" />
+			{/if}
+			Recent Activity
+			{#if logEntries.length > 0}
+				<Badge variant="secondary" class="text-[10px]">{logEntries.length}</Badge>
+			{/if}
+			{#if errorCount > 0}
+				<Badge variant="destructive" class="text-[10px]">
+					{errorCount} error{errorCount > 1 ? 's' : ''}
+				</Badge>
+			{/if}
+		</button>
+
+		{#if showActivity}
+			<div class="mt-2 space-y-1">
+				{#if logEntries.length === 0}
+					<p class="py-2 text-center text-xs text-muted-foreground">No hook activity recorded</p>
+				{:else}
+					<div class="flex justify-end">
+						<Button
+							variant="ghost"
+							size="sm"
+							class="h-6 gap-1 text-xs text-muted-foreground"
+							onclick={clearLogs}
+						>
+							<Trash2Icon class="size-3" />
+							Clear
+						</Button>
+					</div>
+					<div class="max-h-60 space-y-0.5 overflow-y-auto">
+						{#each reversedEntries as entry (entry.timestamp + entry.summary)}
+							<div class={entryClass(entry.level)}>
+								<span class="shrink-0 text-muted-foreground">
+									{formatSessionDate(entry.timestamp)}
+								</span>
+								{#if entry.source}
+									<Badge variant="outline" class="shrink-0 text-[10px]">
+										{entry.source}
+									</Badge>
+								{/if}
+								<span
+									class="min-w-0 flex-1 break-words"
+									class:text-destructive={entry.level === 'error'}
+								>
+									{entry.summary}
+								</span>
+							</div>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
+	</div>
 </div>
