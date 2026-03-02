@@ -1,8 +1,0 @@
-# Embed Windows manifest in ALL targets (including test binaries).
-# Without this, test binaries load comctl32 v5 which lacks TaskDialogIndirect,
-# causing STATUS_ENTRYPOINT_NOT_FOUND at startup.
-[target.'cfg(windows)']
-rustflags = [
-  "-C", "link-arg=/MANIFEST:EMBED",
-  "-C", "link-arg=/MANIFESTINPUT:windows-app-manifest.xml",
-]
