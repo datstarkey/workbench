@@ -69,15 +69,28 @@ jobs:
       - name: Copy native DLLs to deps
         shell: pwsh
         run: |
-          # Copy the x64 WebView2Loader.dll next to the test binaries
           $dll = Get-ChildItem -Path "src-tauri\target\debug\build" -Recurse -Filter "WebView2Loader.dll" |
             Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
           if ($dll) {
             Copy-Item $dll.FullName "src-tauri\target\debug\deps\"
             Write-Host "Copied $($dll.FullName) to deps"
-          } else {
-            Write-Host "WARNING: WebView2Loader.dll not found in build tree"
           }
+
+      - name: Diagnose missing DLL exports
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path "target\debug\deps" -Filter "workbench_lib-*.exe" | Select-Object -First 1
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath 2>$null
+          $dumpbin = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Recurse -Filter "dumpbin.exe" |
+            Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
+
+          Write-Host "=== Windows version ==="
+          [System.Environment]::OSVersion.VersionString
+
+          Write-Host "`n=== Full imports from test binary ==="
+          & $dumpbin.FullName /imports $exe.FullName 2>&1 | ForEach-Object { $_ }
+        working-directory: src-tauri
+        continue-on-error: true
 
       - name: Run Rust tests
         run: cargo test
