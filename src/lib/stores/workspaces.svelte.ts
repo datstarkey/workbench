@@ -8,7 +8,7 @@ import type {
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 import { newSessionCommand, resumeCommand, tryResumeCommand } from '$lib/utils/claude';
-import { getGitStore } from './context';
+import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 
 interface WorkspaceSnapshot {
@@ -24,6 +24,10 @@ interface AddAISessionOptions {
 export class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
 	selectedId: string | null = $state(null);
+
+	private get useHappy(): boolean {
+		return getWorkbenchSettingsStore().useHappyCoder;
+	}
 
 	get activeWorkspaceId(): string | null {
 		if (this.selectedId && this.workspaces.some((w) => w.id === this.selectedId)) {
@@ -308,7 +312,8 @@ export class WorkspaceStore {
 		this.updateWorkspace(workspaceId, (w) => {
 			const count = w.terminalTabs.filter((t) => t.type === type).length;
 			const label = options?.label?.trim() || `${labelPrefix} ${count + 1}`;
-			const startupCommand = options?.startupCommand?.trim() || newSessionCommand(type);
+			const startupCommand =
+				options?.startupCommand?.trim() || newSessionCommand(type, this.useHappy);
 			const newTab = this.createAITab(label, '', startupCommand, type);
 			tabId = newTab.id;
 			return {
@@ -413,7 +418,9 @@ export class WorkspaceStore {
 			if (!tab || (tab.type !== 'claude' && tab.type !== 'codex')) return w;
 			const type = tab.type;
 			const sessionId = tab.panes[0]?.claudeSessionId;
-			const command = sessionId ? resumeCommand(type, sessionId) : newSessionCommand(type);
+			const command = sessionId
+				? resumeCommand(type, sessionId, this.useHappy)
+				: newSessionCommand(type, this.useHappy);
 			const newTab = this.createAITab(tab.label, sessionId ?? '', command, type);
 			return {
 				...w,
@@ -435,7 +442,12 @@ export class WorkspaceStore {
 		type: SessionType = 'claude'
 	) {
 		this.updateWorkspace(workspaceId, (w) => {
-			const newTab = this.createAITab(label, sessionId, resumeCommand(type, sessionId), type);
+			const newTab = this.createAITab(
+				label,
+				sessionId,
+				resumeCommand(type, sessionId, this.useHappy),
+				type
+			);
 			return {
 				...w,
 				terminalTabs: [...w.terminalTabs, newTab],
@@ -557,13 +569,13 @@ export class WorkspaceStore {
 			const fixedPanes = tab.panes.map((pane) => {
 				const isAI = pane.type === 'claude' || pane.type === 'codex';
 				if (isAI && pane.claudeSessionId) {
-					const cmd = resumeCommand(pane.type!, pane.claudeSessionId);
+					const cmd = resumeCommand(pane.type!, pane.claudeSessionId, this.useHappy);
 					if (pane.startupCommand !== cmd) {
 						changed = true;
 						return { ...pane, startupCommand: cmd };
 					}
 				} else if (isAI && !pane.claudeSessionId) {
-					const cmd = newSessionCommand(pane.type!);
+					const cmd = newSessionCommand(pane.type!, this.useHappy);
 					// Preserve explicit initial prompt invocations (e.g. `claude 'review ...'`).
 					// Safe because we control startupCommand values — they are always built via
 					// newSessionCommand() or agentActionCommand(), so `startsWith(cmd + ' ')` is

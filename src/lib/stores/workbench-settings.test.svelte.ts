@@ -19,6 +19,7 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 		terminalPerformanceMode: 'auto',
 		terminalTelemetryEnabled: false,
 		agentActions: [],
+		useHappyCoder: false,
 		...overrides
 	};
 }
@@ -219,7 +220,8 @@ describe('WorkbenchSettingsStore', () => {
 					terminalTelemetryEnabled: false,
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
-					codexConfigApproved: null
+					codexConfigApproved: null,
+					useHappyCoder: false
 				}
 			});
 		});
@@ -468,7 +470,8 @@ describe('WorkbenchSettingsStore', () => {
 					terminalTelemetryEnabled: false,
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
-					codexConfigApproved: null
+					codexConfigApproved: null,
+					useHappyCoder: false
 				}
 			});
 			expect(store.agentActions[0].name).toBe('Review');
