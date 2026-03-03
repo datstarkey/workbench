@@ -1,4 +1,5 @@
 import type {
+	GitCommitFile,
 	GitCommitResult,
 	GitLogEntry,
 	GitStashEntry,
@@ -187,6 +188,45 @@ export class GitStore {
 			this.lastRefreshedAt[projectPath] = Date.now();
 		} finally {
 			this.refreshInFlight.delete(projectPath);
+		}
+	}
+
+	async showFiles(projectPath: string, sha: string): Promise<GitCommitFile[]> {
+		try {
+			return await invoke<GitCommitFile[]>('git_show_files', { path: projectPath, sha });
+		} catch (e) {
+			console.warn('[GitStore] Failed to show files:', e);
+			return [];
+		}
+	}
+
+	async revert(projectPath: string, sha: string): Promise<GitCommitResult | null> {
+		try {
+			const result = await invoke<GitCommitResult>('git_revert', { path: projectPath, sha });
+			await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
+			return result;
+		} catch (e) {
+			console.warn('[GitStore] Failed to revert:', e);
+			throw e;
+		}
+	}
+
+	async createBranch(projectPath: string, name: string, checkout = true) {
+		await invoke('git_create_branch', { path: projectPath, name, checkout });
+		await this.refreshGitState(projectPath);
+	}
+
+	async commitAmend(projectPath: string, message: string): Promise<GitCommitResult | null> {
+		try {
+			const result = await invoke<GitCommitResult>('git_commit_amend', {
+				path: projectPath,
+				message
+			});
+			await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
+			return result;
+		} catch (e) {
+			console.warn('[GitStore] Failed to amend:', e);
+			return null;
 		}
 	}
 
