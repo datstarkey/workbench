@@ -8,6 +8,9 @@ import {
 	listenSpy
 } from '../../test/tauri-mocks';
 import { ClaudeSessionStore } from './claudeSessions.svelte';
+vi.mock('./context', () => ({
+	getWorkbenchSettingsStore: () => ({ useHappyCoder: false })
+}));
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
