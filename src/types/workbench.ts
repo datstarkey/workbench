@@ -173,6 +173,11 @@ export interface GitCommitResult {
 	message: string;
 }
 
+export interface GitCommitFile {
+	path: string;
+	status: string;
+}
+
 export interface WorktreeCopyOptions {
 	aiConfig: boolean;
 	envFiles: boolean;
