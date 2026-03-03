@@ -1,5 +1,5 @@
 use crate::git;
-use crate::types::{GitCommitResult, GitLogEntry, GitStashEntry, GitStatusResult};
+use crate::types::{GitCommitFile, GitCommitResult, GitLogEntry, GitStashEntry, GitStatusResult};
 
 #[tauri::command(async)]
 pub fn git_status(path: String) -> Result<GitStatusResult, String> {
@@ -79,4 +79,25 @@ pub fn git_pull(path: String) -> Result<bool, String> {
 pub fn git_push(path: String, set_upstream: bool) -> Result<bool, String> {
     git::git_push(&path, set_upstream).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn git_show_files(path: String, sha: String) -> Result<Vec<GitCommitFile>, String> {
+    git::git_show_files(&path, &sha).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn git_revert(path: String, sha: String) -> Result<GitCommitResult, String> {
+    git::git_revert(&path, &sha).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn git_create_branch(path: String, name: String, checkout: bool) -> Result<bool, String> {
+    git::git_create_branch(&path, &name, checkout).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command(async)]
+pub fn git_commit_amend(path: String, message: String) -> Result<GitCommitResult, String> {
+    git::git_commit_amend(&path, &message).map_err(|e| e.to_string())
 }

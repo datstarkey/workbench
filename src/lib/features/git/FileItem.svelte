@@ -4,6 +4,7 @@
 	import UndoIcon from '@lucide/svelte/icons/undo-2';
 	import { Button } from '$lib/components/ui/button';
 	import type { GitFileStatus } from '$types/workbench';
+	import { getStatusDisplay } from './status-display';
 
 	let {
 		file,
@@ -17,18 +18,7 @@
 		actionIcon: 'plus' | 'minus';
 	} = $props();
 
-	const statusDisplay: Record<string, { letter: string; color: string }> = {
-		modified: { letter: 'M', color: 'text-yellow-400' },
-		added: { letter: 'A', color: 'text-green-400' },
-		deleted: { letter: 'D', color: 'text-red-400' },
-		renamed: { letter: 'R', color: 'text-blue-400' },
-		copied: { letter: 'C', color: 'text-blue-400' },
-		untracked: { letter: '?', color: 'text-muted-foreground' }
-	};
-
-	let display = $derived(
-		statusDisplay[file.status] ?? { letter: '?', color: 'text-muted-foreground' }
-	);
+	let display = $derived(getStatusDisplay(file.status));
 </script>
 
 <div class="group flex items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-muted/40">
