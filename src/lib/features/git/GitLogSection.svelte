@@ -46,7 +46,7 @@
 	async function revertCommit(sha: string) {
 		try {
 			const result = await gitStore.revert(path, sha);
-			toast.success(`Reverted: ${result.message}`);
+			if (result) toast.success(`Reverted: ${result.message}`);
 			expandedSha = null;
 		} catch (e) {
 			toast.error(`Revert failed: ${e}`);
@@ -118,8 +118,8 @@
 								<p class="text-[10px] text-muted-foreground">Loading...</p>
 							{:else if filesBySha[entry.sha]}
 								{#each filesBySha[entry.sha] as file (file.path)}
+									{@const display = getStatusDisplay(file.status)}
 									<div class="flex items-center gap-1.5 px-1 py-0.5">
-										{@const display = getStatusDisplay(file.status)}
 										<span
 											class="w-3 shrink-0 text-center font-mono text-[10px] font-medium {display.color}"
 										>
