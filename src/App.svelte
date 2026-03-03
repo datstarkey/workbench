@@ -46,14 +46,14 @@
 	import { onMount, untrack } from 'svelte';
 	import { Toaster, toast } from 'svelte-sonner';
 
+	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
+	const gitStore = setGitStore(new GitStore());
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
-	const workbenchSettingsStore = setWorkbenchSettingsStore(new WorkbenchSettingsStore());
 	const integrationApprovalStore = setIntegrationApprovalStore(new IntegrationApprovalStore());
 	const claudeSessionStore = setClaudeSessionStore(
 		new ClaudeSessionStore(workspaceStore, projectStore, integrationApprovalStore)
 	);
-	const gitStore = setGitStore(new GitStore());
 	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
