@@ -15,6 +15,7 @@ mod pty;
 mod refresh_dispatcher;
 mod session_utils;
 mod settings;
+mod shell_integration;
 mod trello;
 mod trello_commands;
 mod trello_automation;

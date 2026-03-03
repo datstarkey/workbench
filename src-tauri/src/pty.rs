@@ -209,6 +209,19 @@ impl PtyManager {
             cmd.env("WORKBENCH_HOOK_SOCKET", socket_path);
         }
 
+        // Shell integration (OSC 133) — inject ZDOTDIR for zsh
+        if startup_command.is_none() && shell_path.contains("zsh") {
+            if let Ok(zsh_dir) = crate::shell_integration::ensure_shell_integration_dir() {
+                // Preserve original ZDOTDIR so our wrapper can restore it
+                if let Ok(orig) = std::env::var("ZDOTDIR") {
+                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", orig);
+                } else if let Ok(home) = std::env::var("HOME") {
+                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", home);
+                }
+                cmd.env("ZDOTDIR", zsh_dir.to_string_lossy().as_ref());
+            }
+        }
+
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -344,8 +357,11 @@ impl PtyManager {
                     batch.push_str(&data);
                 }
 
-                // If output is flowing fast, yield to let more accumulate.
-                if last_emit.elapsed() < FAST_THRESHOLD {
+                // If output is flowing fast AND the batch is already large,
+                // yield to let more accumulate — reduces IPC event count during
+                // heavy streaming. Skip the yield for small batches (likely
+                // keystroke echo) to minimise input→display latency.
+                if last_emit.elapsed() < FAST_THRESHOLD && batch.len() > 128 {
                     std::thread::sleep(COALESCE_YIELD);
                     while let Ok(data) = data_rx.try_recv() {
                         batch.push_str(&data);

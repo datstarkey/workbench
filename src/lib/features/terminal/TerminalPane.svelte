@@ -4,6 +4,8 @@
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
 	import { WebglAddon } from '@xterm/addon-webgl';
+	import { LigaturesAddon } from '@xterm/addon-ligatures';
+	import { SearchAddon } from '@xterm/addon-search';
 	import { open } from '@tauri-apps/plugin-shell';
 	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
@@ -13,10 +15,13 @@
 		writeTerminal,
 		resizeTerminal,
 		killTerminal,
+		cleanupSessionInput,
 		onSessionTerminalData,
 		onSessionTerminalExit
 	} from '$lib/utils/terminal';
 	import { stripAnsi } from '$lib/utils/format';
+	import TerminalSearch from './TerminalSearch.svelte';
+	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
@@ -43,6 +48,9 @@
 	let resizeObserver: ResizeObserver | null = null;
 	let intersectionObserver: IntersectionObserver | null = null;
 	let exited = false;
+	let searchAddon = $state<SearchAddon | null>(null);
+	let searchOpen = $state(false);
+	let shellState: ShellIntegrationState | null = null;
 	let terminalError = $state('');
 	let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 	let removeVisibilityListener: (() => void) | null = null;
@@ -58,6 +66,7 @@
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
 
 	const OFFSCREEN_FLUSH_INTERVAL_MS = 80;
+	const ECHO_FLUSH_THRESHOLD = 128;
 	const PERF_LOG_INTERVAL_MS = 10000;
 	const SCROLLBACK_NORMAL = terminalOptions.scrollback ?? 5000;
 	const SCROLLBACK_PERFORMANCE = 2000;
@@ -104,7 +113,7 @@
 		if (resizeTimeout) clearTimeout(resizeTimeout);
 		resizeTimeout = setTimeout(() => {
 			fitTerminal();
-		}, 50);
+		}, 500);
 	}
 
 	function canFitTerminal(): boolean {
@@ -208,6 +217,12 @@
 			inputLatencyTotalMsSinceLog += performance.now() - pendingInputAtMs;
 			pendingInputAtMs = null;
 		}
+		// For echo-sized output on an active terminal, flush immediately
+		// instead of waiting up to 16ms for the next animation frame.
+		if (!inPerformanceMode() && outputQueue.length <= ECHO_FLUSH_THRESHOLD) {
+			flushOutputQueue();
+			return;
+		}
 		scheduleOutputFlush();
 	}
 
@@ -245,6 +260,8 @@
 			});
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
+			searchAddon = new SearchAddon({ highlightLimit: 1000 });
+			terminal.loadAddon(searchAddon);
 			try {
 				webglAddon = new WebglAddon();
 				webglAddon.onContextLoss(() => {
@@ -255,10 +272,32 @@
 			} catch (error) {
 				console.warn('[TerminalPane] WebGL addon unavailable, using default renderer:', error);
 			}
+			try {
+				terminal.loadAddon(new LigaturesAddon());
+			} catch (error) {
+				console.warn('[TerminalPane] Ligatures addon failed to load:', error);
+			}
 			if (!inPerformanceMode()) {
 				ensureWebLinksAddon();
 			}
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+				// Ctrl+F / Cmd+F → open search
+				if (event.key === 'f' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+					if (event.type === 'keydown') {
+						searchOpen = true;
+					}
+					return false;
+				}
+
+				// Escape with search open → close search instead of forwarding to PTY
+				if (event.key === 'Escape' && searchOpen) {
+					if (event.type === 'keydown') {
+						searchOpen = false;
+						terminal?.focus();
+					}
+					return false;
+				}
+
 				// Always forward Escape directly to PTY. xterm.js may swallow it
 				// (e.g. to clear a selection) which makes it feel unresponsive in TUIs.
 				if (event.key === 'Escape') {
@@ -299,9 +338,31 @@
 					}
 					return false;
 				}
+				// Ctrl+Shift+Up/Down → navigate between prompt boundaries
+				if (
+					event.ctrlKey &&
+					event.shiftKey &&
+					(event.key === 'ArrowUp' || event.key === 'ArrowDown')
+				) {
+					if (event.type === 'keydown' && shellState && terminal) {
+						const buf = terminal.buffer.active;
+						const currentLine = buf.viewportY;
+						const target =
+							event.key === 'ArrowUp'
+								? shellState.previousPromptLine(currentLine)
+								: shellState.nextPromptLine(currentLine);
+						if (target !== null) {
+							terminal.scrollToLine(target);
+						}
+					}
+					return false;
+				}
 				return true;
 			});
 			terminal.open(container);
+
+			// Shell integration: parse OSC 133 sequences for prompt/command tracking
+			shellState = registerShellIntegration(terminal);
 
 			// Sync PTY size whenever xterm resizes (from FitAddon or any source)
 			terminal.onResize(({ cols, rows }: { cols: number; rows: number }) => {
@@ -387,6 +448,9 @@
 		unlistenExit?.();
 		resizeObserver?.disconnect();
 		intersectionObserver?.disconnect();
+		cleanupSessionInput(sessionId);
+		shellState?.dispose();
+		searchAddon?.dispose();
 		webglAddon?.dispose();
 		terminal?.dispose();
 		if (!exited) {
@@ -411,10 +475,20 @@
 			</div>
 		</div>
 	{/if}
+	{#if searchOpen && searchAddon}
+		<TerminalSearch
+			{searchAddon}
+			onClose={() => {
+				searchOpen = false;
+				terminal?.focus();
+			}}
+		/>
+	{/if}
 </div>
 
 <style>
 	.terminal-wrapper {
+		position: relative;
 		height: 100%;
 		width: 100%;
 		padding: 6px 8px;

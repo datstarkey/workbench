@@ -36,3 +36,12 @@ export const terminalOptions: ITerminalOptions = {
 	scrollback: 5000,
 	theme: terminalTheme
 };
+
+export const searchDecorations = {
+	matchBackground: terminalTheme.yellow + '33',
+	matchBorder: terminalTheme.yellow + '66',
+	matchOverviewRuler: terminalTheme.yellow!,
+	activeMatchBackground: terminalTheme.cursor + '44',
+	activeMatchBorder: terminalTheme.cursor!,
+	activeMatchColorOverviewRuler: terminalTheme.cursor!
+};

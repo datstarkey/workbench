@@ -47,8 +47,72 @@ export async function createTerminal(
 	return invoke<CreateTerminalResponse>('create_terminal', { request });
 }
 
-export async function writeTerminal(sessionId: string, data: string): Promise<boolean> {
-	return invoke<boolean>('write_terminal', { sessionId, data });
+// ── Input coalescing & serialization ────────────────────────────────
+// Rapid keystrokes (especially Shift+letter for capitals) can fire multiple
+// async invoke() calls simultaneously. Without ordering guarantees the PTY
+// may receive keystrokes out-of-order, causing the shell line-editor to
+// replay/garble text.
+//
+// Fix: per-session pending buffer + serial write chain.
+//  • Regular chars accumulate until a microtask flushes them.
+//  • Control chars (Enter, Ctrl+C, escapes, bracketed paste) flush immediately.
+//  • A promise chain per session ensures writes reach the PTY in order.
+
+const sessionInputBuffers = new Map<string, string>();
+const sessionFlushScheduled = new Map<string, boolean>();
+const sessionWriteChains = new Map<string, Promise<unknown>>();
+
+function isControlInput(data: string): boolean {
+	if (data.length === 0) return false;
+	// Multi-char sequences (escape codes, bracketed paste) or control chars
+	if (data.length > 1) return true;
+	return data.charCodeAt(0) < 32;
+}
+
+function enqueueWrite(sessionId: string, data: string): void {
+	const prev = sessionWriteChains.get(sessionId) ?? Promise.resolve();
+	sessionWriteChains.set(
+		sessionId,
+		prev.then(() => invoke<boolean>('write_terminal', { sessionId, data }))
+	);
+}
+
+function flushInputBuffer(sessionId: string): void {
+	sessionFlushScheduled.delete(sessionId);
+	const buffered = sessionInputBuffers.get(sessionId);
+	if (!buffered) return;
+	sessionInputBuffers.delete(sessionId);
+	enqueueWrite(sessionId, buffered);
+}
+
+/** Clean up input coalescing state for a closed session. */
+export function cleanupSessionInput(sessionId: string): void {
+	sessionInputBuffers.delete(sessionId);
+	sessionFlushScheduled.delete(sessionId);
+	sessionWriteChains.delete(sessionId);
+}
+
+export function writeTerminal(sessionId: string, data: string): void {
+	if (isControlInput(data)) {
+		// Flush any pending regular chars first, then send control immediately
+		const buffered = sessionInputBuffers.get(sessionId);
+		if (buffered) {
+			sessionInputBuffers.delete(sessionId);
+			sessionFlushScheduled.delete(sessionId);
+			enqueueWrite(sessionId, buffered);
+		}
+		enqueueWrite(sessionId, data);
+		return;
+	}
+
+	// Coalesce regular chars and flush on next microtask
+	const existing = sessionInputBuffers.get(sessionId) ?? '';
+	sessionInputBuffers.set(sessionId, existing + data);
+
+	if (!sessionFlushScheduled.get(sessionId)) {
+		sessionFlushScheduled.set(sessionId, true);
+		queueMicrotask(() => flushInputBuffer(sessionId));
+	}
 }
 
 export async function resizeTerminal(
