@@ -61,7 +61,19 @@ export interface CodexNotifyEvent {
 	codexPayload: Record<string, unknown>;
 }
 
-export type SessionType = 'shell' | 'claude' | 'codex';
+export type SessionType = 'shell' | 'claude' | 'codex' | 'vscode';
+
+export interface CodeServerInfo {
+	sessionId: string;
+	port: number;
+	url: string;
+	projectPath: string;
+}
+
+export interface CodeServerExitEvent {
+	sessionId: string;
+	exitCode: number;
+}
 
 export interface TerminalPaneState {
 	id: string;

@@ -1,4 +1,6 @@
 mod claude_sessions;
+mod code_server;
+mod code_server_commands;
 mod codex_config;
 mod codex_sessions;
 mod commands;
@@ -20,6 +22,7 @@ mod trello_commands;
 mod trello_automation;
 mod types;
 
+use code_server::CodeServerManager;
 use git_watcher::GitWatcher;
 use github_poller::GitHubPoller;
 use hook_bridge::HookBridgeState;
@@ -36,6 +39,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(PtyManager::new())
+        .manage(CodeServerManager::new())
         .manage(RefreshDispatcher::new())
         .setup(|app| {
             let handle = app.handle().clone();
@@ -116,7 +120,17 @@ pub fn run() {
             trello_commands::trello_disconnect,
             trello_commands::trello_load_project_config,
             trello_commands::trello_save_project_config,
+            code_server_commands::start_code_server,
+            code_server_commands::stop_code_server,
+            code_server_commands::detect_code_server,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Workbench");
+        .build(tauri::generate_context!())
+        .expect("error while building Workbench")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(manager) = app_handle.try_state::<CodeServerManager>() {
+                    manager.stop_all();
+                }
+            }
+        });
 }

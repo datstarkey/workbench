@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CodeXmlIcon from '@lucide/svelte/icons/code-xml';
 	import Columns2Icon from '@lucide/svelte/icons/columns-2';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import Rows2Icon from '@lucide/svelte/icons/rows-2';
@@ -56,6 +57,8 @@
 						<ZapIcon class="size-3 text-sky-400" />
 					{:else if isClaude}
 						<SparklesIcon class="size-3 text-violet-400" />
+					{:else if tab.type === 'vscode'}
+						<CodeXmlIcon class="size-3 text-blue-400" />
 					{:else}
 						<TerminalIcon class="size-3" />
 					{/if}
@@ -89,6 +92,21 @@
 				</Button>
 			</Tooltip.Trigger>
 			<Tooltip.Content>New Terminal</Tooltip.Content>
+		</Tooltip.Root>
+
+		<Tooltip.Root>
+			<Tooltip.Trigger>
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					class="size-7 text-blue-400 hover:text-blue-300"
+					type="button"
+					onclick={() => workspaceStore.addVSCodeTab(workspace.id)}
+				>
+					<CodeXmlIcon class="size-3.5" />
+				</Button>
+			</Tooltip.Trigger>
+			<Tooltip.Content>Open VS Code</Tooltip.Content>
 		</Tooltip.Root>
 
 		<AgentActionsMenu {workspace} />

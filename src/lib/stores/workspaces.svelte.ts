@@ -98,6 +98,16 @@ export class WorkspaceStore {
 		};
 	}
 
+	private createVSCodeTab(tabIndex: number): TerminalTabState {
+		return {
+			id: uid(),
+			label: `VS Code ${tabIndex}`,
+			split: 'horizontal',
+			type: 'vscode',
+			panes: [{ id: uid(), type: 'vscode' }]
+		};
+	}
+
 	private createAITab(
 		label: string,
 		sessionId: string,
@@ -238,6 +248,21 @@ export class WorkspaceStore {
 				activeTerminalTabId: newTab.id
 			};
 		});
+	}
+
+	addVSCodeTab(workspaceId: string): { tabId: string } {
+		let tabId = '';
+		this.updateWorkspace(workspaceId, (w) => {
+			const count = w.terminalTabs.filter((t) => t.type === 'vscode').length;
+			const newTab = this.createVSCodeTab(count + 1);
+			tabId = newTab.id;
+			return {
+				...w,
+				terminalTabs: [...w.terminalTabs, newTab],
+				activeTerminalTabId: newTab.id
+			};
+		});
+		return { tabId };
 	}
 
 	addProjectTaskTab(workspaceId: string, task: ProjectTask): { tabId: string } {

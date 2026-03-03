@@ -1,6 +1,7 @@
 <script lang="ts">
 	import XIcon from '@lucide/svelte/icons/x';
 	import TerminalPane from '$features/terminal/TerminalPane.svelte';
+	import VSCodePane from '$features/terminal/VSCodePane.svelte';
 	import { getWorkspaceStore } from '$stores/context';
 	import type { ProjectConfig, SplitDirection, TerminalPaneState } from '$types/workbench';
 
@@ -31,13 +32,17 @@
 			></div>
 		{/if}
 		<div class="relative min-h-0 min-w-0 flex-1">
-			<TerminalPane
-				sessionId={pane.id}
-				{project}
-				{active}
-				{cwd}
-				startupCommand={pane.startupCommand}
-			/>
+			{#if pane.type === 'vscode'}
+				<VSCodePane sessionId={pane.id} projectPath={cwd ?? project.path} />
+			{:else}
+				<TerminalPane
+					sessionId={pane.id}
+					{project}
+					{active}
+					{cwd}
+					startupCommand={pane.startupCommand}
+				/>
+			{/if}
 			{#if panes.length > 1}
 				<button
 					class="absolute top-2 right-2 flex size-6 items-center justify-center rounded bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground [div:hover>&]:opacity-100"
