@@ -156,11 +156,11 @@
 		return sessionsForWorktree(projectPath, worktreePath).length > 0 || tasks.length > 0;
 	}
 
-	function hasExpandableContent(projectPath: string): boolean {
+	function hasExpandableContent(projectPath: string, tasks: ProjectTask[]): boolean {
 		return (
 			allSessionsForProject(projectPath).length > 0 ||
 			worktreesForProject(projectPath).length > 0 ||
-			(projectStore.getByPath(projectPath)?.tasks?.length ?? 0) > 0
+			tasks.length > 0
 		);
 	}
 
@@ -338,7 +338,7 @@
 	{@const branch = gitStore.branchByProject[project.path]}
 	{@const attentionType = projectAttentionType(project.path)}
 	{@const hasAttention = attentionType !== null}
-	{@const hasChildren = hasExpandableContent(project.path)}
+	{@const hasChildren = hasExpandableContent(project.path, tasks)}
 	{@const isExpanded =
 		expandedProjects.has(project.path) || project.path === workspaceStore.activeProjectPath}
 	{@const isDragOver = dragOverProjectPath === project.path}

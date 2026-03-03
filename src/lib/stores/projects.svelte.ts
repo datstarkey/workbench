@@ -12,19 +12,6 @@ export class ProjectStore {
 	loaded = $state(false);
 	private workspaces: WorkspaceStore;
 
-	/** Unique group names in first-appearance order */
-	groupNames = $derived.by(() => {
-		const names: string[] = [];
-		const seen: Record<string, true> = {};
-		for (const p of this.projects) {
-			if (p.group && !seen[p.group]) {
-				seen[p.group] = true;
-				names.push(p.group);
-			}
-		}
-		return names;
-	});
-
 	/** Projects grouped for display: named groups first (in array order), ungrouped at bottom */
 	groupedProjects: ProjectGroup[] = $derived.by(() => {
 		const groupOrder: string[] = [];
@@ -46,6 +33,11 @@ export class ProjectStore {
 		if (ungrouped.length > 0) result.push({ group: null, projects: ungrouped });
 		return result;
 	});
+
+	/** Unique group names in first-appearance order (derived from groupedProjects) */
+	groupNames: string[] = $derived(
+		this.groupedProjects.map((g) => g.group).filter((g): g is string => g !== null)
+	);
 
 	constructor(workspaces: WorkspaceStore) {
 		this.workspaces = workspaces;

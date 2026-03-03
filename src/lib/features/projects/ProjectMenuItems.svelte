@@ -120,14 +120,14 @@
 		Move to Group
 	</SubTrigger>
 	<SubContent class="w-44">
-		{#each projectStore.groupNames as groupName (groupName)}
-			{#if groupName !== project.group}
-				<Item onclick={() => projectStore.setGroup(project.path, groupName)}>
-					{groupName}
-				</Item>
-			{/if}
+		{#each projectStore.groupNames.filter((g) => g !== project.group) as groupName (groupName)}
+			<Item onclick={() => projectStore.setGroup(project.path, groupName)}>
+				{groupName}
+			</Item>
 		{/each}
-		<Separator />
+		{#if projectStore.groupNames.some((g) => g !== project.group)}
+			<Separator />
+		{/if}
 		<Item onclick={() => projectManager.promptNewGroup(project.path)}>
 			<PlusIcon class="size-3.5" />
 			New Group...
