@@ -55,6 +55,8 @@ export class ClaudeSessionStore {
 	private projects: ProjectStore;
 	/** Reference to integration approval store for gating AI sessions */
 	private integrationApproval: IntegrationApprovalStore;
+	/** Reference to workbench settings store */
+	private settingsStore = getWorkbenchSettingsStore();
 
 	/** Active Claude sessions grouped by project path */
 	readonly activeSessionsByProject = $derived.by((): Record<string, ActiveClaudeSession[]> => {
@@ -150,7 +152,7 @@ export class ClaudeSessionStore {
 	/** Start an agent action for a project (opens project/workspace if needed). */
 	startAgentActionByProject(projectPath: string, action: AgentAction, type: 'claude' | 'codex') {
 		this.projects.openProject(projectPath);
-		const useHappy = getWorkbenchSettingsStore().useHappyCoder;
+		const useHappy = this.settingsStore.useHappyCoder;
 		this.workspaces.addAIByProject(projectPath, type, {
 			label: action.name,
 			startupCommand: newSessionCommandWithPrompt(type, action.prompt, useHappy)
@@ -194,7 +196,7 @@ export class ClaudeSessionStore {
 		action: AgentAction,
 		type: 'claude' | 'codex'
 	) {
-		const useHappy = getWorkbenchSettingsStore().useHappyCoder;
+		const useHappy = this.settingsStore.useHappyCoder;
 		this.workspaces.addAISession(ws.id, type, {
 			label: action.name,
 			startupCommand: newSessionCommandWithPrompt(type, action.prompt, useHappy)

@@ -25,8 +25,11 @@ export class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
 	selectedId: string | null = $state(null);
 
+	private settingsStore = getWorkbenchSettingsStore();
+	private gitStore = getGitStore();
+
 	private get useHappy(): boolean {
-		return getWorkbenchSettingsStore().useHappyCoder;
+		return this.settingsStore.useHappyCoder;
 	}
 
 	get activeWorkspaceId(): string | null {
@@ -609,7 +612,7 @@ export class WorkspaceStore {
 	/** Resolve the current branch for a workspace. Worktrees use their fixed branch; main workspaces derive from git. */
 	resolvedBranch(ws: ProjectWorkspace): string | undefined {
 		if (ws.worktreePath) return ws.branch;
-		return getGitStore().branchByProject[ws.projectPath] ?? ws.branch;
+		return this.gitStore.branchByProject[ws.projectPath] ?? ws.branch;
 	}
 
 	ensureShape() {
