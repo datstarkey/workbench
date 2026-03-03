@@ -9,9 +9,13 @@ import type { ProjectConfig, ProjectFormState, ProjectTask } from '$types/workbe
 export class ProjectManagerStore {
 	dialogOpen = $state(false);
 	dialogMode: 'create' | 'edit' = $state('create');
+	groupDialogOpen = $state(false);
+	groupDialogValue = $state('');
+	private groupDialogProjectPath: string | null = null;
 	form: ProjectFormState = $state({
 		name: '',
 		path: '',
+		group: '',
 		shell: '',
 		startupCommand: '',
 		tasks: []
@@ -31,7 +35,7 @@ export class ProjectManagerStore {
 	}
 
 	private resetForm() {
-		this.form = { name: '', path: '', shell: '', startupCommand: '', tasks: [] };
+		this.form = { name: '', path: '', group: '', shell: '', startupCommand: '', tasks: [] };
 		this.formError = '';
 		this.editingProjectPath = null;
 	}
@@ -56,6 +60,7 @@ export class ProjectManagerStore {
 		this.form = {
 			name: project.name,
 			path: project.path,
+			group: project.group || '',
 			shell: project.shell || '',
 			startupCommand: project.startupCommand || '',
 			tasks: (project.tasks ?? []).map((task) => ({ ...task }))
@@ -136,6 +141,7 @@ export class ProjectManagerStore {
 		const nextProject: ProjectConfig = {
 			name: nextName,
 			path: nextPath,
+			group: this.form.group.trim() || undefined,
 			shell: this.form.shell.trim() || undefined,
 			startupCommand: this.form.startupCommand.trim() || undefined,
 			tasks: normalizedTasks.length > 0 ? normalizedTasks : undefined
@@ -157,6 +163,21 @@ export class ProjectManagerStore {
 
 		this.dialogOpen = false;
 		this.resetForm();
+	}
+
+	promptNewGroup(projectPath: string) {
+		this.groupDialogProjectPath = projectPath;
+		this.groupDialogValue = '';
+		this.groupDialogOpen = true;
+	}
+
+	async saveNewGroup() {
+		const name = this.groupDialogValue.trim();
+		if (!name || !this.groupDialogProjectPath) return;
+		await this.projectStore.setGroup(this.groupDialogProjectPath, name);
+		this.groupDialogOpen = false;
+		this.groupDialogProjectPath = null;
+		this.groupDialogValue = '';
 	}
 
 	remove(projectPath: string) {

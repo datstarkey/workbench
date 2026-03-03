@@ -93,7 +93,14 @@ describe('ProjectManagerStore', () => {
 
 	describe('save - validation', () => {
 		it('shows error when name is empty', async () => {
-			manager.form = { name: '', path: '/some/path', shell: '', startupCommand: '', tasks: [] };
+			manager.form = {
+				name: '',
+				path: '/some/path',
+				group: '',
+				shell: '',
+				startupCommand: '',
+				tasks: []
+			};
 
 			await manager.save();
 
@@ -105,6 +112,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: '   ',
 				path: '/some/path',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: []
@@ -116,7 +124,14 @@ describe('ProjectManagerStore', () => {
 		});
 
 		it('shows error when path is empty', async () => {
-			manager.form = { name: 'Valid', path: '', shell: '', startupCommand: '', tasks: [] };
+			manager.form = {
+				name: 'Valid',
+				path: '',
+				group: '',
+				shell: '',
+				startupCommand: '',
+				tasks: []
+			};
 
 			await manager.save();
 
@@ -128,6 +143,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'New',
 				path: '/existing',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: []
@@ -155,6 +171,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'App',
 				path: '/app',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [{ name: 'Build', command: '' }]
@@ -169,6 +186,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'App',
 				path: '/app',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [
@@ -186,6 +204,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'App',
 				path: '/app',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [
@@ -210,6 +229,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'New App',
 				path: '/projects/new-app',
+				group: '',
 				shell: '/bin/bash',
 				startupCommand: 'npm start',
 				tasks: []
@@ -233,6 +253,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'App',
 				path: '/projects/app',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: []
@@ -249,6 +270,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'App',
 				path: '/projects/app',
+				group: '',
 				shell: '',
 				startupCommand: '  ',
 				tasks: []
@@ -265,6 +287,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: 'App',
 				path: '/projects/app',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [{ name: '', command: '' }]
@@ -313,7 +336,7 @@ describe('ProjectManagerStore', () => {
 
 	describe('addTask / removeTask / reorderTask', () => {
 		it('addTask appends an empty task', () => {
-			manager.form = { name: '', path: '', shell: '', startupCommand: '', tasks: [] };
+			manager.form = { name: '', path: '', group: '', shell: '', startupCommand: '', tasks: [] };
 
 			manager.addTask();
 
@@ -324,6 +347,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: '',
 				path: '',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [{ name: 'Existing', command: 'cmd' }]
@@ -339,6 +363,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: '',
 				path: '',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [
@@ -360,6 +385,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: '',
 				path: '',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [
@@ -378,6 +404,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: '',
 				path: '',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [{ name: 'A', command: 'a' }]
@@ -394,6 +421,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: '',
 				path: '',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [{ name: 'Old', command: 'cmd' }]
@@ -408,6 +436,7 @@ describe('ProjectManagerStore', () => {
 			manager.form = {
 				name: '',
 				path: '',
+				group: '',
 				shell: '',
 				startupCommand: '',
 				tasks: [{ name: 'Task', command: 'old-cmd' }]

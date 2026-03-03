@@ -8,6 +8,7 @@ export interface ProjectTask {
 export interface ProjectConfig {
 	name: string;
 	path: string;
+	group?: string;
 	shell?: string;
 	startupCommand?: string;
 	tasks?: ProjectTask[];
@@ -329,6 +330,7 @@ export interface HookLogEntry {
 export interface ProjectFormState {
 	name: string;
 	path: string;
+	group: string;
 	shell: string;
 	startupCommand: string;
 	tasks: ProjectTask[];
