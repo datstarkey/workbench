@@ -2,14 +2,17 @@
 	import type { Component } from 'svelte';
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GithubIcon from '@lucide/svelte/icons/github';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlayCircleIcon from '@lucide/svelte/icons/play-circle';
 	import PlayIcon from '@lucide/svelte/icons/play';
+	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import XIcon from '@lucide/svelte/icons/x';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import {
 		getClaudeSessionStore,
@@ -111,6 +114,33 @@
 	<GitBranchIcon class="size-3.5" />
 	Add Worktree
 </Item>
+<Sub>
+	<SubTrigger>
+		<FolderIcon class="size-3.5" />
+		Move to Group
+	</SubTrigger>
+	<SubContent class="w-44">
+		{#each projectStore.groupNames.filter((g) => g !== project.group) as groupName (groupName)}
+			<Item onclick={() => projectStore.setGroup(project.path, groupName)}>
+				{groupName}
+			</Item>
+		{/each}
+		{#if projectStore.groupNames.some((g) => g !== project.group)}
+			<Separator />
+		{/if}
+		<Item onclick={() => projectManager.promptNewGroup(project.path)}>
+			<PlusIcon class="size-3.5" />
+			New Group...
+		</Item>
+		{#if project.group}
+			<Separator />
+			<Item onclick={() => projectStore.setGroup(project.path, undefined)}>
+				<XIcon class="size-3.5" />
+				Remove from Group
+			</Item>
+		{/if}
+	</SubContent>
+</Sub>
 <Item onclick={() => gitStore.refreshGitState(project.path)}>
 	<RefreshCwIcon class="size-3.5" />
 	Refresh Git

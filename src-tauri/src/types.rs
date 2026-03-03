@@ -14,6 +14,8 @@ pub struct ProjectTask {
 pub struct ProjectConfig {
     pub name: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -538,6 +540,7 @@ mod tests {
         let config = ProjectConfig {
             name: "my-project".to_string(),
             path: "/home/user/project".to_string(),
+            group: Some("Work".to_string()),
             shell: Some("/bin/zsh".to_string()),
             startup_command: Some("echo hello".to_string()),
             tasks: vec![ProjectTask {
@@ -560,6 +563,7 @@ mod tests {
         let config = ProjectConfig {
             name: "test".to_string(),
             path: "/tmp".to_string(),
+            group: None,
             shell: Some("bash".to_string()),
             startup_command: Some("ls".to_string()),
             tasks: vec![],
@@ -574,12 +578,14 @@ mod tests {
         let config = ProjectConfig {
             name: "minimal".to_string(),
             path: "/tmp".to_string(),
+            group: None,
             shell: None,
             startup_command: None,
             tasks: vec![],
         };
         let json = serde_json::to_string(&config).unwrap();
-        // skip_serializing_if = "Option::is_none" should omit shell and startupCommand
+        // skip_serializing_if = "Option::is_none" should omit group, shell and startupCommand
+        assert!(!json.contains("group"));
         assert!(!json.contains("shell"));
         assert!(!json.contains("startupCommand"));
         // skip_serializing_if = "Vec::is_empty" should omit tasks
@@ -598,6 +604,7 @@ mod tests {
         let config = ProjectConfig {
             name: "tasked".to_string(),
             path: "/project".to_string(),
+            group: None,
             shell: None,
             startup_command: None,
             tasks: vec![
