@@ -270,8 +270,29 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
                     .get("tool_name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let refreshed = should_emit_project_refresh_for_hook(&hook);
                 let summary = match (&event_name, &tool_name) {
-                    (Some(ev), Some(tool)) => format!("{ev}: {tool}"),
+                    (Some(ev), Some(tool)) => {
+                        let mut s = format!("{ev}: {tool}");
+                        if ev == "PostToolUse" && tool == "Bash" {
+                            if let Some(cmd) = hook
+                                .get("tool_input")
+                                .and_then(|v| v.get("command"))
+                                .and_then(|v| v.as_str())
+                            {
+                                let display = if cmd.len() > 80 {
+                                    format!("{}…", &cmd[..80])
+                                } else {
+                                    cmd.to_string()
+                                };
+                                s = format!("{s} — {display}");
+                            }
+                        }
+                        if refreshed {
+                            s.push_str(" → refreshed");
+                        }
+                        s
+                    }
                     (Some(ev), None) => ev.clone(),
                     _ => "Claude hook event".into(),
                 };

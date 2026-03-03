@@ -52,6 +52,13 @@
 			</div>
 
 			<div class="grid gap-1.5">
+				<label class="text-sm font-medium" for="project-group"
+					>Group <span class="font-normal text-muted-foreground">(optional)</span></label
+				>
+				<Input id="project-group" bind:value={form.group} placeholder="e.g. Work, Personal" />
+			</div>
+
+			<div class="grid gap-1.5">
 				<label class="text-sm font-medium" for="project-path">Folder</label>
 				<div class="flex gap-2">
 					<Input id="project-path" bind:value={form.path} placeholder="/code/client-site" />

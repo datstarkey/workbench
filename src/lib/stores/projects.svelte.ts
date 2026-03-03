@@ -2,10 +2,42 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ProjectConfig } from '$types/workbench';
 import type { WorkspaceStore } from './workspaces.svelte';
 
+export interface ProjectGroup {
+	group: string | null;
+	projects: ProjectConfig[];
+}
+
 export class ProjectStore {
 	projects: ProjectConfig[] = $state([]);
 	loaded = $state(false);
 	private workspaces: WorkspaceStore;
+
+	/** Projects grouped for display: named groups first (in array order), ungrouped at bottom */
+	groupedProjects: ProjectGroup[] = $derived.by(() => {
+		const groupOrder: string[] = [];
+		const groupMap: Record<string, ProjectConfig[]> = {};
+		const ungrouped: ProjectConfig[] = [];
+		for (const p of this.projects) {
+			if (p.group) {
+				if (!groupMap[p.group]) {
+					groupMap[p.group] = [];
+					groupOrder.push(p.group);
+				}
+				groupMap[p.group].push(p);
+			} else {
+				ungrouped.push(p);
+			}
+		}
+		const result: ProjectGroup[] = [];
+		for (const name of groupOrder) result.push({ group: name, projects: groupMap[name] });
+		if (ungrouped.length > 0) result.push({ group: null, projects: ungrouped });
+		return result;
+	});
+
+	/** Unique group names in first-appearance order (derived from groupedProjects) */
+	groupNames: string[] = $derived(
+		this.groupedProjects.map((g) => g.group).filter((g): g is string => g !== null)
+	);
 
 	constructor(workspaces: WorkspaceStore) {
 		this.workspaces = workspaces;
@@ -49,6 +81,14 @@ export class ProjectStore {
 		next.splice(toIndex, 0, moved);
 		this.projects = next;
 		this.persist();
+	}
+
+	/** Set or clear the group for a project */
+	async setGroup(projectPath: string, group: string | undefined) {
+		this.projects = this.projects.map((p) =>
+			p.path === projectPath ? { ...p, group: group || undefined } : p
+		);
+		await this.persist();
 	}
 
 	/** Open a project workspace (find by path, then open in workspace store) */

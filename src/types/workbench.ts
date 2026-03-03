@@ -8,6 +8,7 @@ export interface ProjectTask {
 export interface ProjectConfig {
 	name: string;
 	path: string;
+	group?: string;
 	shell?: string;
 	startupCommand?: string;
 	tasks?: ProjectTask[];
@@ -159,6 +160,11 @@ export interface GitStashEntry {
 export interface GitCommitResult {
 	sha: string;
 	message: string;
+}
+
+export interface GitCommitFile {
+	path: string;
+	status: string;
 }
 
 export interface WorktreeCopyOptions {
@@ -329,6 +335,7 @@ export interface HookLogEntry {
 export interface ProjectFormState {
 	name: string;
 	path: string;
+	group: string;
 	shell: string;
 	startupCommand: string;
 	tasks: ProjectTask[];

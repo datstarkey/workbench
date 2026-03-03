@@ -87,6 +87,7 @@ mod tests {
             projects: vec![ProjectConfig {
                 name: "test-project".into(),
                 path: "/Users/jake/test-project".into(),
+                group: None,
                 shell: Some("/bin/zsh".into()),
                 startup_command: Some("echo hello".into()),
                 tasks: vec![ProjectTask {
@@ -125,6 +126,7 @@ mod tests {
         let config = ProjectConfig {
             name: "test".into(),
             path: "/test".into(),
+            group: None,
             shell: None,
             startup_command: Some("npm start".into()),
             tasks: vec![],
@@ -141,6 +143,7 @@ mod tests {
         let config = ProjectConfig {
             name: "test".into(),
             path: "/test".into(),
+            group: None,
             shell: None,
             startup_command: None,
             tasks: vec![],
