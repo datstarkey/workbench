@@ -7,8 +7,8 @@ use anyhow::{bail, Context, Result};
 
 use crate::paths::{copy_dir_skip_symlinks, copy_file};
 use crate::types::{
-    BranchInfo, CreateWorktreeRequest, GitCommitResult, GitFileStatus, GitInfo, GitLogEntry,
-    GitStashEntry, GitStatusResult, WorktreeCopyOptions, WorktreeInfo,
+    BranchInfo, CreateWorktreeRequest, GitCommitFile, GitCommitResult, GitFileStatus, GitInfo,
+    GitLogEntry, GitStashEntry, GitStatusResult, WorktreeCopyOptions, WorktreeInfo,
 };
 
 pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {
@@ -24,7 +24,9 @@ pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {
         bail!("{stderr}");
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
 }
 
 fn list_ignored_paths(repo_root: &str) -> Result<Vec<String>> {
@@ -546,12 +548,7 @@ pub fn git_unstage(path: &str, files: &[String]) -> Result<()> {
 }
 
 pub fn git_commit(path: &str, message: &str) -> Result<GitCommitResult> {
-    git_output(&["commit", "-m", message], path)?;
-    let sha = git_output(&["rev-parse", "--short", "HEAD"], path)?;
-    Ok(GitCommitResult {
-        sha,
-        message: message.to_string(),
-    })
+    commit_inner(path, message, false)
 }
 
 pub fn git_checkout(path: &str, branch: &str) -> Result<()> {
@@ -637,6 +634,77 @@ pub fn git_push(path: &str, set_upstream: bool) -> Result<()> {
         git_output(&["push"], path)?;
     }
     Ok(())
+}
+
+pub fn git_show_files(path: &str, sha: &str) -> Result<Vec<GitCommitFile>> {
+    let output = git_output(
+        &["diff-tree", "--no-commit-id", "-r", "--name-status", sha],
+        path,
+    )?;
+    let mut files = Vec::new();
+    for line in output.lines() {
+        let parts: Vec<&str> = line.splitn(2, '\t').collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let code = parts[0];
+        let status = if code == "A" {
+            "added"
+        } else if code == "D" {
+            "deleted"
+        } else if code == "M" {
+            "modified"
+        } else if code.starts_with('R') {
+            "renamed"
+        } else if code.starts_with('C') {
+            "copied"
+        } else {
+            "modified"
+        }
+        .to_string();
+        files.push(GitCommitFile {
+            path: parts[1].to_string(),
+            status,
+        });
+    }
+    Ok(files)
+}
+
+pub fn git_revert(path: &str, sha: &str) -> Result<GitCommitResult> {
+    git_output(&["revert", "--no-edit", sha], path)?;
+    let new_sha = git_output(&["rev-parse", "--short", "HEAD"], path)?;
+    let message = git_output(&["log", "-1", "--format=%s"], path)?;
+    Ok(GitCommitResult {
+        sha: new_sha,
+        message,
+    })
+}
+
+pub fn git_create_branch(path: &str, name: &str, checkout: bool) -> Result<()> {
+    if checkout {
+        git_output(&["checkout", "-b", name], path)?;
+    } else {
+        git_output(&["branch", name], path)?;
+    }
+    Ok(())
+}
+
+pub fn git_commit_amend(path: &str, message: &str) -> Result<GitCommitResult> {
+    commit_inner(path, message, true)
+}
+
+fn commit_inner(path: &str, message: &str, amend: bool) -> Result<GitCommitResult> {
+    let mut args = vec!["commit"];
+    if amend {
+        args.push("--amend");
+    }
+    args.extend_from_slice(&["-m", message]);
+    git_output(&args, path)?;
+    let sha = git_output(&["rev-parse", "--short", "HEAD"], path)?;
+    Ok(GitCommitResult {
+        sha,
+        message: message.to_string(),
+    })
 }
 
 #[cfg(test)]

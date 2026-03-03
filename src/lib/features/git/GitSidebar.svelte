@@ -32,7 +32,7 @@
 		<div class="space-y-1 py-1">
 			<GitStatusSection {status} path={activePath} />
 			<Separator class="opacity-40" />
-			<GitLogSection entries={log} />
+			<GitLogSection entries={log} path={activePath} />
 			<Separator class="opacity-40" />
 			<GitBranchSection path={activePath} />
 			<Separator class="opacity-40" />
