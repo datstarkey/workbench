@@ -9,12 +9,16 @@ vi.mock('$lib/utils/uid', () => ({
 	uid: () => `uid-${++uidCounter}`
 }));
 
-// Mock context so getGitStore() works outside a component
+// Mock context so getGitStore() and getWorkbenchSettingsStore() work outside a component
 const mockGitStore = {
 	branchByProject: {} as Record<string, string>
 };
+const mockWorkbenchSettingsStore = {
+	useHappyCoder: false
+};
 vi.mock('./context', () => ({
-	getGitStore: () => mockGitStore
+	getGitStore: () => mockGitStore,
+	getWorkbenchSettingsStore: () => mockWorkbenchSettingsStore
 }));
 
 // Helper factories

@@ -319,6 +319,8 @@ pub struct WorkbenchSettings {
     pub worktree_start_point: String,
     #[serde(default)]
     pub worktree_custom_branch: String,
+    #[serde(default)]
+    pub use_happy_coder: bool,
 }
 
 fn default_worktree_strategy() -> String {
@@ -351,6 +353,7 @@ impl Default for WorkbenchSettings {
             worktree_fetch_before_create: true,
             worktree_start_point: default_worktree_start_point(),
             worktree_custom_branch: String::new(),
+            use_happy_coder: false,
         }
     }
 }

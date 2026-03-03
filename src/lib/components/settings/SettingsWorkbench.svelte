@@ -62,6 +62,13 @@
 			checked={store.trelloEnabled}
 			onCheckedChange={(v) => store.setTrelloEnabled(v)}
 		/>
+
+		<SettingsToggle
+			label="Happy Coder"
+			description="Use the happy CLI instead of claude, enabling remote sessions from your phone."
+			checked={store.useHappyCoder}
+			onCheckedChange={(v) => store.setUseHappyCoder(v)}
+		/>
 	</div>
 
 	<Separator />

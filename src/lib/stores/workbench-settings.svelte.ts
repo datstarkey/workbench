@@ -22,6 +22,7 @@ export class WorkbenchSettingsStore {
 	agentActions: AgentAction[] = $state([]);
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
+	useHappyCoder = $state(false);
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -45,6 +46,7 @@ export class WorkbenchSettingsStore {
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
 		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
+		this.useHappyCoder = settings.useHappyCoder ?? false;
 		this.loaded = true;
 		this.dirty = false;
 	}
@@ -98,6 +100,11 @@ export class WorkbenchSettingsStore {
 
 	setTerminalTelemetryEnabled(value: boolean) {
 		this.terminalTelemetryEnabled = value;
+		this.dirty = true;
+	}
+
+	setUseHappyCoder(value: boolean) {
+		this.useHappyCoder = value;
 		this.dirty = true;
 	}
 
@@ -155,7 +162,8 @@ export class WorkbenchSettingsStore {
 			terminalTelemetryEnabled: this.terminalTelemetryEnabled,
 			agentActions: this.agentActions,
 			claudeHooksApproved: this.claudeHooksApproved,
-			codexConfigApproved: this.codexConfigApproved
+			codexConfigApproved: this.codexConfigApproved,
+			useHappyCoder: this.useHappyCoder
 		};
 	}
 

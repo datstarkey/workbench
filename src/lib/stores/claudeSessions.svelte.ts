@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { stripAnsi } from '$lib/utils/format';
 import { newSessionCommandWithPrompt } from '$lib/utils/claude';
+import { getWorkbenchSettingsStore } from './context';
 import type {
 	ActiveClaudeSession,
 	AgentAction,
@@ -149,9 +150,10 @@ export class ClaudeSessionStore {
 	/** Start an agent action for a project (opens project/workspace if needed). */
 	startAgentActionByProject(projectPath: string, action: AgentAction, type: 'claude' | 'codex') {
 		this.projects.openProject(projectPath);
+		const useHappy = getWorkbenchSettingsStore().useHappyCoder;
 		this.workspaces.addAIByProject(projectPath, type, {
 			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt)
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt, useHappy)
 		});
 	}
 
@@ -192,9 +194,10 @@ export class ClaudeSessionStore {
 		action: AgentAction,
 		type: 'claude' | 'codex'
 	) {
+		const useHappy = getWorkbenchSettingsStore().useHappyCoder;
 		this.workspaces.addAISession(ws.id, type, {
 			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt)
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt, useHappy)
 		});
 	}
 
