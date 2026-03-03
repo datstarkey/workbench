@@ -308,6 +308,7 @@ export interface WorkbenchSettings {
 	agentActions: AgentAction[];
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
+	useHappyCoder: boolean;
 }
 
 export interface IntegrationStatus {
