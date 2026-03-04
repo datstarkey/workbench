@@ -2,7 +2,7 @@
 export class ConfirmAction<T> {
 	open = $state(false);
 	error = $state('');
-	private pending: T | null = null;
+	private pending: T | null = $state(null);
 
 	get pendingValue(): T | null {
 		return this.pending;
