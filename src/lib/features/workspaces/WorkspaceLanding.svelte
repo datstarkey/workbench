@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import CodeXmlIcon from '@lucide/svelte/icons/code-xml';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
 	import ZapIcon from '@lucide/svelte/icons/zap';
@@ -65,6 +66,14 @@
 			>
 				<TerminalSquareIcon class="size-4" />
 				New Terminal
+			</Button>
+			<Button
+				type="button"
+				variant="ghost"
+				onclick={() => workspaceStore.addVSCodeTab(workspace.id)}
+			>
+				<CodeXmlIcon class="size-4" />
+				VS Code
 			</Button>
 			<AgentActionsMenu {workspace} showTextButton />
 		</div>

@@ -114,6 +114,24 @@ pub struct WorkspaceFile {
     pub selected_id: Option<String>,
 }
 
+// Code-server types
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeServerInfo {
+    pub session_id: String,
+    pub port: u16,
+    pub url: String,
+    pub project_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeServerExitEvent {
+    pub session_id: String,
+    pub exit_code: i32,
+}
+
 // Claude CLI session discovery types
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
