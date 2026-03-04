@@ -23,13 +23,34 @@ interface AddAISessionOptions {
 
 export class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
-	selectedId: string | null = $state(null);
+	private _selectedId: string | null = $state(null);
 
 	private settingsStore = getWorkbenchSettingsStore();
 	private gitStore = getGitStore();
 
+	private switchCallbacks: Array<(projectPath: string) => void> = [];
+
 	private get useHappy(): boolean {
 		return this.settingsStore.useHappyCoder;
+	}
+
+	get selectedId(): string | null {
+		return this._selectedId;
+	}
+
+	set selectedId(id: string | null) {
+		const prevProjectPath = this.activeProjectPath;
+		this._selectedId = id;
+		const newProjectPath = this.activeProjectPath;
+		if (newProjectPath && newProjectPath !== prevProjectPath) {
+			for (const cb of this.switchCallbacks) {
+				cb(newProjectPath);
+			}
+		}
+	}
+
+	onWorkspaceSwitch(callback: (projectPath: string) => void): void {
+		this.switchCallbacks.push(callback);
 	}
 
 	get activeWorkspaceId(): string | null {
