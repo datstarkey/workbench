@@ -98,6 +98,16 @@
 		void githubStore.syncTrackedProjects();
 	});
 
+	// Refresh git/GitHub data when switching workspaces (throttled to 2s)
+	let lastSwitchRefresh = 0;
+	workspaceStore.onWorkspaceSwitch((projectPath) => {
+		const now = Date.now();
+		if (now - lastSwitchRefresh < 2000) return;
+		lastSwitchRefresh = now;
+		void gitStore.refreshGitState(projectPath);
+		void githubStore.refreshProject(projectPath);
+	});
+
 	// Sync githubStore.sidebarOpen → pane expand/collapse (imperative DOM API)
 	$effect(() => {
 		const open = githubStore.sidebarOpen;
