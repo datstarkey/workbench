@@ -5,15 +5,52 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { getGitHubStore, getWorkspaceStore } from '$stores/context';
+	import { getClaudeSessionStore, getGitHubStore, getWorkspaceStore } from '$stores/context';
 	import { branchUrl, openInGitHub } from '$lib/utils/github';
 	import { effectivePath } from '$lib/utils/path';
 	import { openInVSCode } from '$lib/utils/vscode';
 
+	import type { ProjectWorkspace } from '$types/workbench';
+
 	const workspaceStore = getWorkspaceStore();
 	const githubStore = getGitHubStore();
+	const claudeSessionStore = getClaudeSessionStore();
 
 	let activeWorkspace = $derived(workspaceStore.activeWorkspace);
+
+	type AttentionType = 'claude' | 'codex' | 'input' | null;
+
+	function workspaceAttentionType(workspace: ProjectWorkspace): AttentionType {
+		const sessions = claudeSessionStore.activeSessionsByProject[workspace.projectPath] ?? [];
+		const wsSessions = sessions.filter(
+			(s) => (s.worktreePath ?? null) === (workspace.worktreePath ?? null)
+		);
+		if (wsSessions.some((s) => s.awaitingInput)) return 'input';
+		const attentionSessions = wsSessions.filter((s) => s.needsAttention);
+		if (attentionSessions.length === 0) return null;
+		return attentionSessions.some((s) => s.sessionType === 'claude') ? 'claude' : 'codex';
+	}
+
+	function pillClasses(isActive: boolean, attention: AttentionType): string {
+		if (attention === 'input') {
+			return isActive
+				? 'bg-red-500/15 text-red-300 shadow-sm ring-1 ring-red-500/30'
+				: 'text-red-400 hover:bg-red-500/10';
+		}
+		if (attention === 'claude') {
+			return isActive
+				? 'bg-amber-500/15 text-amber-300 shadow-sm ring-1 ring-amber-500/30'
+				: 'text-amber-400 hover:bg-amber-500/10';
+		}
+		if (attention === 'codex') {
+			return isActive
+				? 'bg-sky-500/15 text-sky-300 shadow-sm ring-1 ring-sky-500/30'
+				: 'text-sky-400 hover:bg-sky-500/10';
+		}
+		return isActive
+			? 'bg-background text-foreground shadow-sm'
+			: 'text-muted-foreground hover:bg-background/50 hover:text-foreground';
+	}
 
 	let activeGitHubUrl = $derived.by(() => {
 		if (!activeWorkspace) return null;
@@ -32,8 +69,9 @@
 		{#each workspaceStore.workspaces as workspace (workspace.id)}
 			{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
 			{@const branch = workspaceStore.resolvedBranch(workspace)}
+			{@const attention = workspaceAttentionType(workspace)}
 			<div
-				class={`inline-flex items-center rounded-md transition-colors ${isActive ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-background/50 hover:text-foreground'}`}
+				class={`inline-flex items-center rounded-md transition-colors ${pillClasses(isActive, attention)}`}
 				draggable="true"
 				role="presentation"
 				ondragstart={(event) => event.dataTransfer?.setData('text/workspace-id', workspace.id)}
@@ -52,7 +90,9 @@
 					onclick={() => (workspaceStore.selectedId = workspace.id)}
 				>
 					{workspace.projectName}{#if branch}
-						<span class="ml-1 text-muted-foreground">({branch})</span>
+						<span class={`ml-1 ${attention ? 'opacity-60' : 'text-muted-foreground'}`}
+							>({branch})</span
+						>
 					{/if}
 				</button>
 				<button
