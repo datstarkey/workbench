@@ -2,7 +2,6 @@
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
-	import LockIcon from '@lucide/svelte/icons/lock';
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import * as Dialog from '$lib/components/ui/dialog';

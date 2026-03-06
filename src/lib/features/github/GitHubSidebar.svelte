@@ -89,7 +89,7 @@
 			projectPath: activeProjectPath,
 			branch: activePr.headRefName
 		});
-		worktreeManager.addWithBranch(activeProjectPath, activePr.headRefName);
+		worktreeManager.add(activeProjectPath, { suggestedBranch: activePr.headRefName });
 	}
 
 	async function handleRerunWorkflow(projectPath: string, runId: number) {
