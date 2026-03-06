@@ -73,7 +73,10 @@ function enqueueWrite(sessionId: string, data: string): void {
 	const prev = sessionWriteChains.get(sessionId) ?? Promise.resolve();
 	sessionWriteChains.set(
 		sessionId,
-		prev.then(() => invoke<boolean>('write_terminal', { sessionId, data }))
+		prev.then(
+			() => invoke<boolean>('write_terminal', { sessionId, data }).catch(() => {}),
+			() => invoke<boolean>('write_terminal', { sessionId, data }).catch(() => {})
+		)
 	);
 }
 

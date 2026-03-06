@@ -38,6 +38,9 @@
 		cwd?: string;
 	} = $props();
 
+	// VS Code pattern: if WebGL fails once, all future terminals skip it
+	let webglUnavailable = false;
+
 	let container: HTMLDivElement;
 	let terminal: Terminal | null = null;
 	let fitAddon: FitAddon | null = null;
@@ -52,21 +55,25 @@
 	let searchOpen = $state(false);
 	let shellState: ShellIntegrationState | null = null;
 	let terminalError = $state('');
-	let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 	let removeVisibilityListener: (() => void) | null = null;
 	let lastCols = 0;
 	let lastRows = 0;
-	let outputQueue = '';
-	let outputFlushRaf: number | null = null;
-	let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 	let documentVisible = $state(document.visibilityState === 'visible');
 	let terminalInView = $state(true);
 	let perfLogInterval: ReturnType<typeof setInterval> | null = null;
 	const claudeSessionStore = getClaudeSessionStore();
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
 
+	// VS Code-style split-axis resize debouncing:
+	// Rows resize immediately (cheap — just add/remove viewport lines).
+	// Columns debounce at 100ms (expensive — every line must reflow).
+	// Short buffers (<200 lines) resize both axes immediately.
+	const COL_RESIZE_DEBOUNCE_MS = 100;
+	const SHORT_BUFFER_THRESHOLD = 200;
+	let colResizeTimeout: ReturnType<typeof setTimeout> | null = null;
+	let pendingCols = 0;
+
 	const OFFSCREEN_FLUSH_INTERVAL_MS = 80;
-	const ECHO_FLUSH_THRESHOLD = 128;
 	const PERF_LOG_INTERVAL_MS = 10000;
 	const SCROLLBACK_NORMAL = terminalOptions.scrollback ?? 5000;
 	const SCROLLBACK_PERFORMANCE = 2000;
@@ -75,11 +82,14 @@
 	let outputBytesSinceLog = 0;
 	let outputFlushesSinceLog = 0;
 	let outputFlushMsSinceLog = 0;
-	let maxQueueBytesSinceLog = 0;
 	let inputEventsSinceLog = 0;
 	let inputLatencySamplesSinceLog = 0;
 	let inputLatencyTotalMsSinceLog = 0;
 	let pendingInputAtMs: number | null = null;
+
+	// Offscreen terminals still need periodic flushing
+	let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
+	let offscreenQueue = '';
 
 	// Buffer early output to detect Claude CLI errors for auto-retry
 	let earlyOutput = '';
@@ -88,7 +98,6 @@
 	function detectClaudeRetry(data: string): void {
 		if (!startupCommand?.startsWith('claude') || claudeRetryCmd) return;
 		earlyOutput += data;
-		// Stop buffering after ~2KB
 		if (earlyOutput.length > 2048) {
 			earlyOutput = '';
 			return;
@@ -96,24 +105,15 @@
 		const plain = stripAnsi(earlyOutput);
 		let retryCmd = '';
 		if (plain.includes('No conversation found with session ID:')) {
-			// --resume failed → start a fresh session instead
 			retryCmd = 'claude';
 		}
 		if (retryCmd) {
 			claudeRetryCmd = retryCmd;
 			earlyOutput = '';
-			// The shell is still alive — just type the corrected command into it
 			setTimeout(() => {
 				writeTerminal(sessionId, `${retryCmd}\n`);
 			}, 500);
 		}
-	}
-
-	function debouncedFit() {
-		if (resizeTimeout) clearTimeout(resizeTimeout);
-		resizeTimeout = setTimeout(() => {
-			fitTerminal();
-		}, 500);
 	}
 
 	function canFitTerminal(): boolean {
@@ -129,11 +129,60 @@
 		fitAddon!.fit();
 	}
 
-	function clearFlushSchedule() {
-		if (outputFlushRaf !== null) {
-			cancelAnimationFrame(outputFlushRaf);
-			outputFlushRaf = null;
+	// VS Code-style split-axis resize: fit the terminal, then apply
+	// row changes immediately and column changes with a short debounce.
+	function smartResize() {
+		if (!canFitTerminal() || !terminal || !fitAddon) return;
+
+		// Use FitAddon to propose new dimensions without applying them
+		const dims = fitAddon.proposeDimensions();
+		if (!dims || dims.cols <= 0 || dims.rows <= 0) return;
+
+		const colsChanged = dims.cols !== terminal.cols;
+		const rowsChanged = dims.rows !== terminal.rows;
+		if (!colsChanged && !rowsChanged) return;
+
+		const isShortBuffer = terminal.buffer.normal.length < SHORT_BUFFER_THRESHOLD;
+
+		if (isShortBuffer) {
+			// Short buffers: resize both axes immediately (like VS Code)
+			terminal.resize(dims.cols, dims.rows);
+			return;
 		}
+
+		// Rows are cheap — apply immediately
+		if (rowsChanged && !colsChanged) {
+			terminal.resize(terminal.cols, dims.rows);
+			return;
+		}
+
+		// Columns are expensive — debounce
+		if (colsChanged) {
+			// Apply row change immediately if there is one
+			if (rowsChanged) {
+				terminal.resize(terminal.cols, dims.rows);
+			}
+			// Debounce column change
+			pendingCols = dims.cols;
+			if (colResizeTimeout) clearTimeout(colResizeTimeout);
+			colResizeTimeout = setTimeout(() => {
+				if (!terminal) return;
+				terminal.resize(pendingCols, terminal.rows);
+				colResizeTimeout = null;
+			}, COL_RESIZE_DEBOUNCE_MS);
+		}
+	}
+
+	// Flush any pending column resize immediately (used on tab switch)
+	function flushPendingResize() {
+		if (colResizeTimeout && terminal && pendingCols > 0) {
+			clearTimeout(colResizeTimeout);
+			colResizeTimeout = null;
+			terminal.resize(pendingCols, terminal.rows);
+		}
+	}
+
+	function clearFlushSchedule() {
 		if (outputFlushTimer) {
 			clearTimeout(outputFlushTimer);
 			outputFlushTimer = null;
@@ -149,6 +198,24 @@
 		if (!terminal || webLinksLoaded) return;
 		terminal.loadAddon(new WebLinksAddon((_event, uri) => open(uri)));
 		webLinksLoaded = true;
+	}
+
+	function loadWebGlAddon() {
+		if (!terminal || webglUnavailable || webglAddon) return;
+		try {
+			webglAddon = new WebglAddon();
+			webglAddon.onContextLoss(() => {
+				webglAddon?.dispose();
+				webglAddon = null;
+				// After context loss, re-fit to recalculate cell metrics
+				// (different renderers may have slightly different measurements)
+				requestAnimationFrame(() => fitTerminal());
+			});
+			terminal.loadAddon(webglAddon);
+		} catch {
+			webglUnavailable = true;
+			webglAddon = null;
+		}
 	}
 
 	function logPerfSnapshotIfEnabled() {
@@ -167,7 +234,6 @@
 			outputBytes: outputBytesSinceLog,
 			outputFlushes: outputFlushesSinceLog,
 			avgFlushMs: Number(avgFlushMs.toFixed(2)),
-			maxQueueBytes: maxQueueBytesSinceLog,
 			inputEvents: inputEventsSinceLog,
 			avgInputLatencyMs: Number(avgInputLatencyMs.toFixed(2))
 		});
@@ -176,61 +242,64 @@
 		outputBytesSinceLog = 0;
 		outputFlushesSinceLog = 0;
 		outputFlushMsSinceLog = 0;
-		maxQueueBytesSinceLog = 0;
 		inputEventsSinceLog = 0;
 		inputLatencySamplesSinceLog = 0;
 		inputLatencyTotalMsSinceLog = 0;
 	}
 
-	function flushOutputQueue() {
-		clearFlushSchedule();
-		if (!terminal || outputQueue.length === 0) return;
-		const batched = outputQueue;
-		outputQueue = '';
-		const start = performance.now();
-		terminal.write(batched);
-		outputFlushesSinceLog += 1;
-		outputFlushMsSinceLog += performance.now() - start;
-		detectClaudeRetry(batched);
-	}
-
-	function scheduleOutputFlush() {
-		if (outputQueue.length === 0) return;
-		if (inPerformanceMode()) {
-			if (outputFlushTimer) return;
-			outputFlushTimer = setTimeout(flushOutputQueue, OFFSCREEN_FLUSH_INTERVAL_MS);
-			return;
-		}
-		if (outputFlushRaf !== null) return;
-		outputFlushRaf = requestAnimationFrame(flushOutputQueue);
-	}
-
-	function queueTerminalOutput(data: string) {
+	// VS Code pattern: write data directly to xterm with a callback.
+	// Active terminals get immediate writes. Offscreen terminals batch
+	// into a queue flushed on a timer to avoid wasted rendering work.
+	function writeTerminalData(data: string) {
 		outputEventsSinceLog += 1;
 		outputBytesSinceLog += data.length;
-		outputQueue += data;
-		if (outputQueue.length > maxQueueBytesSinceLog) {
-			maxQueueBytesSinceLog = outputQueue.length;
-		}
+
 		if (pendingInputAtMs !== null && data.length > 0) {
 			inputLatencySamplesSinceLog += 1;
 			inputLatencyTotalMsSinceLog += performance.now() - pendingInputAtMs;
 			pendingInputAtMs = null;
 		}
-		// For echo-sized output on an active terminal, flush immediately
-		// instead of waiting up to 16ms for the next animation frame.
-		if (!inPerformanceMode() && outputQueue.length <= ECHO_FLUSH_THRESHOLD) {
-			flushOutputQueue();
+
+		detectClaudeRetry(data);
+
+		if (inPerformanceMode()) {
+			// Offscreen: batch into queue, flush on timer
+			offscreenQueue += data;
+			if (!outputFlushTimer) {
+				outputFlushTimer = setTimeout(() => {
+					outputFlushTimer = null;
+					if (!terminal || offscreenQueue.length === 0) return;
+					const batched = offscreenQueue;
+					offscreenQueue = '';
+					const start = performance.now();
+					terminal.write(batched);
+					outputFlushesSinceLog += 1;
+					outputFlushMsSinceLog += performance.now() - start;
+				}, OFFSCREEN_FLUSH_INTERVAL_MS);
+			}
 			return;
 		}
-		scheduleOutputFlush();
+
+		// Active terminal: write directly with callback (VS Code pattern)
+		const start = performance.now();
+		terminal?.write(data, () => {
+			outputFlushesSinceLog += 1;
+			outputFlushMsSinceLog += performance.now() - start;
+		});
 	}
 
+	// On tab switch: flush pending resizes synchronously, fit terminal,
+	// and flush any buffered offscreen data
 	$effect(() => {
 		if (active && fitAddon && terminal) {
-			requestAnimationFrame(() => {
-				fitTerminal();
-			});
+			flushPendingResize();
+			fitTerminal();
+			// Flush offscreen buffer if there's data waiting
+			if (offscreenQueue.length > 0) {
+				const batched = offscreenQueue;
+				offscreenQueue = '';
+				terminal.write(batched);
+			}
 		}
 	});
 
@@ -245,8 +314,6 @@
 			if (!performanceMode) ensureWebLinksAddon();
 		}
 		clearFlushSchedule();
-		if (outputQueue.length === 0) return;
-		scheduleOutputFlush();
 	});
 
 	onMount(async () => {
@@ -262,26 +329,12 @@
 			terminal.loadAddon(fitAddon);
 			searchAddon = new SearchAddon({ highlightLimit: 1000 });
 			terminal.loadAddon(searchAddon);
-			try {
-				webglAddon = new WebglAddon();
-				webglAddon.onContextLoss(() => {
-					webglAddon?.dispose();
-					webglAddon = null;
-				});
-				terminal.loadAddon(webglAddon);
-			} catch (error) {
-				console.warn('[TerminalPane] WebGL addon unavailable, using default renderer:', error);
-			}
-			try {
-				terminal.loadAddon(new LigaturesAddon());
-			} catch (error) {
-				console.warn('[TerminalPane] Ligatures addon failed to load:', error);
-			}
+
 			if (!inPerformanceMode()) {
 				ensureWebLinksAddon();
 			}
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-				// Ctrl+F / Cmd+F → open search
+				// Ctrl+F / Cmd+F -> open search
 				if (event.key === 'f' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
 					if (event.type === 'keydown') {
 						searchOpen = true;
@@ -289,7 +342,7 @@
 					return false;
 				}
 
-				// Escape with search open → close search instead of forwarding to PTY
+				// Escape with search open -> close search instead of forwarding to PTY
 				if (event.key === 'Escape' && searchOpen) {
 					if (event.type === 'keydown') {
 						searchOpen = false;
@@ -302,16 +355,12 @@
 				// (e.g. to clear a selection) which makes it feel unresponsive in TUIs.
 				if (event.key === 'Escape') {
 					if (event.type === 'keydown') {
-						// For Claude/Codex TUIs, send \x1b\x1b so the input library
-						// can instantly disambiguate standalone Escape from a CSI
-						// sequence start, bypassing the ~100ms detection timeout.
 						const isAI = claudeSessionStore.paneType(sessionId) !== null;
 						writeTerminal(sessionId, isAI ? '\x1b\x1b' : '\x1b');
 					}
 					return false;
 				}
-				// Always forward Ctrl+C as interrupt. xterm.js copies to clipboard
-				// when text is selected; on macOS Cmd+C handles copy instead.
+				// Always forward Ctrl+C as interrupt.
 				if (event.key === 'c' && event.ctrlKey && !event.shiftKey && !event.metaKey) {
 					if (event.type === 'keydown') {
 						writeTerminal(sessionId, '\x03');
@@ -325,11 +374,7 @@
 					!event.ctrlKey &&
 					!event.metaKey
 				) {
-					// Block both keydown and keypress so xterm never sends \r.
-					// Only send the newline on keydown to avoid double-firing.
 					if (event.type === 'keydown') {
-						// Write directly to PTY, bypassing xterm's paste pipeline.
-						// Codex: Ctrl+J (ASCII LF). Claude: bracketed paste newline.
 						if (claudeSessionStore.paneType(sessionId) === 'codex') {
 							writeTerminal(sessionId, '\x0A');
 						} else {
@@ -338,7 +383,7 @@
 					}
 					return false;
 				}
-				// Ctrl+Shift+Up/Down → navigate between prompt boundaries
+				// Ctrl+Shift+Up/Down -> navigate between prompt boundaries
 				if (
 					event.ctrlKey &&
 					event.shiftKey &&
@@ -359,14 +404,24 @@
 				}
 				return true;
 			});
+
+			// VS Code: open terminal first, THEN load WebGL addon
+			// (WebGL needs the canvas element to exist)
 			terminal.open(container);
+
+			// Load addons that require the canvas element to exist
+			loadWebGlAddon();
+			try {
+				terminal.loadAddon(new LigaturesAddon());
+			} catch (error) {
+				console.warn('[TerminalPane] Ligatures addon failed to load:', error);
+			}
 
 			// Shell integration: parse OSC 133 sequences for prompt/command tracking
 			shellState = registerShellIntegration(terminal);
 
 			// Sync PTY size whenever xterm resizes (from FitAddon or any source)
 			terminal.onResize(({ cols, rows }: { cols: number; rows: number }) => {
-				// Ignore hidden/invalid fits that can transiently report 0x0 while backgrounded.
 				if (cols <= 0 || rows <= 0) return;
 				lastCols = cols;
 				lastRows = rows;
@@ -382,7 +437,7 @@
 			});
 
 			unlistenData = await onSessionTerminalData(sessionId, (event) => {
-				queueTerminalOutput(event.data);
+				writeTerminalData(event.data);
 			});
 
 			unlistenExit = await onSessionTerminalExit(sessionId, (event) => {
@@ -391,7 +446,6 @@
 			});
 
 			// Fit before creating PTY so it starts with the correct size.
-			// If the view is hidden/backgrounded, keep a sane fallback instead of 0x0.
 			fitTerminal();
 			if (terminal.cols <= 0 || terminal.rows <= 0) {
 				terminal.resize(lastCols > 0 ? lastCols : 80, lastRows > 0 ? lastRows : 24);
@@ -406,9 +460,10 @@
 				startupCommand
 			});
 
-			// Debounced resize on container changes to avoid feedback loops
+			// VS Code-style resize: use ResizeObserver but with smart
+			// split-axis debouncing instead of a flat 500ms delay
 			resizeObserver = new ResizeObserver(() => {
-				debouncedFit();
+				smartResize();
 			});
 			resizeObserver.observe(container);
 			intersectionObserver = new IntersectionObserver(
@@ -417,7 +472,7 @@
 					terminalInView = Boolean(entry?.isIntersecting && entry.intersectionRatio > 0);
 					if (!active || !documentVisible || !terminalInView) return;
 					claudeSessionStore.noteLocalViewportChange(sessionId);
-					requestAnimationFrame(() => fitTerminal());
+					fitTerminal();
 				},
 				{ threshold: 0.01 }
 			);
@@ -427,7 +482,8 @@
 				documentVisible = document.visibilityState === 'visible';
 				if (!active || !documentVisible || !terminalInView) return;
 				claudeSessionStore.noteLocalViewportChange(sessionId);
-				requestAnimationFrame(() => fitTerminal());
+				flushPendingResize();
+				fitTerminal();
 			};
 			document.addEventListener('visibilitychange', onVisibilityChange);
 			removeVisibilityListener = () => {
@@ -440,7 +496,7 @@
 	});
 
 	onDestroy(() => {
-		if (resizeTimeout) clearTimeout(resizeTimeout);
+		if (colResizeTimeout) clearTimeout(colResizeTimeout);
 		clearFlushSchedule();
 		if (perfLogInterval) clearInterval(perfLogInterval);
 		removeVisibilityListener?.();
