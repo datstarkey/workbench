@@ -5,6 +5,7 @@
 	import ProjectManager from '$features/projects/ProjectManager.svelte';
 	import { ProjectManagerStore } from '$features/projects/project-manager.svelte';
 	import ProjectSidebar from '$features/projects/ProjectSidebar.svelte';
+	import NativeTerminalGrid from '$features/terminal/NativeTerminalGrid.svelte';
 	import TerminalGrid from '$features/terminal/TerminalGrid.svelte';
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
 	import WorkspaceLanding from '$features/workspaces/WorkspaceLanding.svelte';
@@ -188,14 +189,23 @@
 											class:hidden={!isActiveTab || !isActiveWs}
 											class:flex={isActiveTab && isActiveWs}
 										>
-											<TerminalGrid
-												workspaceId={ws.id}
-												panes={tab.panes}
-												split={tab.split}
-												active={isActiveTab && isActiveWs}
-												project={wsProject}
-												cwd={ws.worktreePath}
-											/>
+											{#if workbenchSettingsStore.terminalRenderer === 'native'}
+												<NativeTerminalGrid
+													panes={tab.panes}
+													active={isActiveTab && isActiveWs}
+													project={wsProject}
+													cwd={ws.worktreePath}
+												/>
+											{:else}
+												<TerminalGrid
+													workspaceId={ws.id}
+													panes={tab.panes}
+													split={tab.split}
+													active={isActiveTab && isActiveWs}
+													project={wsProject}
+													cwd={ws.worktreePath}
+												/>
+											{/if}
 										</div>
 									{/each}
 								{:else}

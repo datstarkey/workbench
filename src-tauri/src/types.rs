@@ -330,6 +330,8 @@ pub struct WorkbenchSettings {
     pub worktree_custom_branch: String,
     #[serde(default)]
     pub use_happy_coder: bool,
+    #[serde(default = "default_terminal_renderer")]
+    pub terminal_renderer: String,
 }
 
 fn default_worktree_strategy() -> String {
@@ -348,6 +350,10 @@ fn default_worktree_start_point() -> String {
     "auto".to_string()
 }
 
+fn default_terminal_renderer() -> String {
+    "xterm".to_string()
+}
+
 impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
@@ -363,6 +369,7 @@ impl Default for WorkbenchSettings {
             worktree_start_point: default_worktree_start_point(),
             worktree_custom_branch: String::new(),
             use_happy_coder: false,
+            terminal_renderer: default_terminal_renderer(),
         }
     }
 }

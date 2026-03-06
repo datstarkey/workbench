@@ -369,6 +369,13 @@ pub fn clear_hook_logs(
     Ok(())
 }
 
+// Native terminal availability check
+
+#[tauri::command(async)]
+pub fn is_native_terminal_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
 fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {
     snapshot
         .workspaces

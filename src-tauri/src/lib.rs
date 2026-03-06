@@ -10,6 +10,10 @@ mod github;
 mod github_poller;
 mod hook_bridge;
 mod menu;
+#[cfg(target_os = "macos")]
+mod native_terminal;
+#[cfg(target_os = "macos")]
+mod native_terminal_commands;
 mod paths;
 mod pty;
 mod refresh_dispatcher;
@@ -28,28 +32,12 @@ use pty::PtyManager;
 use refresh_dispatcher::RefreshDispatcher;
 use tauri::Manager;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
-        .manage(PtyManager::new())
-        .manage(RefreshDispatcher::new())
-        .setup(|app| {
-            let handle = app.handle().clone();
-            menu::build(&handle).expect("failed to build menu");
-            let bridge = HookBridgeState::new(handle.clone());
-            app.manage(bridge);
-            let git_watcher = GitWatcher::new(handle);
-            app.manage(git_watcher);
-            let github_poller = GitHubPoller::new(app.handle().clone());
-            app.manage(github_poller);
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
+/// Build the invoke handler with all shared commands, plus native terminal
+/// commands on macOS. Uses a declarative macro to avoid duplicating the
+/// shared command list across cfg branches.
+macro_rules! build_invoke_handler {
+    ( $( $extra:path ),* $(,)? ) => {
+        tauri::generate_handler![
             commands::list_projects,
             commands::save_projects,
             commands::create_terminal,
@@ -89,6 +77,7 @@ pub fn run() {
             commands::apply_codex_integration,
             commands::get_hook_logs,
             commands::clear_hook_logs,
+            commands::is_native_terminal_available,
             git_commands::git_status,
             git_commands::git_log,
             git_commands::git_stage,
@@ -121,7 +110,52 @@ pub fn run() {
             trello_commands::trello_disconnect,
             trello_commands::trello_load_project_config,
             trello_commands::trello_save_project_config,
-        ])
+            $( $extra ),*
+        ]
+    };
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .manage(PtyManager::new())
+        .manage(RefreshDispatcher::new())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            menu::build(&handle).expect("failed to build menu");
+            let bridge = HookBridgeState::new(handle.clone());
+            app.manage(bridge);
+            let git_watcher = GitWatcher::new(handle);
+            app.manage(git_watcher);
+            let github_poller = GitHubPoller::new(app.handle().clone());
+            app.manage(github_poller);
+            Ok(())
+        });
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .manage(native_terminal::NativeTerminalManager::new())
+            .invoke_handler(build_invoke_handler!(
+                native_terminal_commands::create_native_terminal,
+                native_terminal_commands::resize_native_terminal,
+                native_terminal_commands::set_native_terminal_visible,
+                native_terminal_commands::kill_native_terminal,
+                native_terminal_commands::write_native_terminal,
+            ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.invoke_handler(build_invoke_handler!());
+    }
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running Workbench");
 }

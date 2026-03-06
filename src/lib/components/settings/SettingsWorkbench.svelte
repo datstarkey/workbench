@@ -4,14 +4,36 @@
 	import SettingsSelect from './SettingsSelect.svelte';
 	import SettingsToggle from './SettingsToggle.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';
-	import { applyClaudeIntegration, applyCodexIntegration } from '$lib/utils/terminal';
+	import {
+		applyClaudeIntegration,
+		applyCodexIntegration,
+		isNativeTerminalAvailable
+	} from '$lib/utils/terminal';
 	import type {
 		TerminalPerformanceMode,
+		TerminalRenderer,
 		WorktreeStartPoint,
 		WorktreeStrategy
 	} from '$types/workbench';
 
+	import { onMount } from 'svelte';
+
 	const store = getWorkbenchSettingsStore();
+
+	let nativeAvailable = $state(false);
+
+	onMount(async () => {
+		try {
+			nativeAvailable = await isNativeTerminalAvailable();
+		} catch {
+			nativeAvailable = false;
+		}
+	});
+
+	const rendererOptions = [
+		{ value: 'xterm', label: 'xterm.js (Web)' },
+		{ value: 'native', label: 'Native (SwiftTerm)' }
+	];
 
 	const strategyOptions = [
 		{ value: 'sibling', label: 'Sibling folder' },
@@ -139,6 +161,16 @@
 				Tune xterm responsiveness. Offscreen panes always run in performance mode.
 			</p>
 		</div>
+
+		{#if nativeAvailable}
+			<SettingsSelect
+				label="Terminal renderer"
+				description="Native mode uses macOS SwiftTerm for rendering. Disables split panes."
+				options={rendererOptions}
+				value={store.terminalRenderer}
+				onValueChange={(v) => store.setTerminalRenderer(v as TerminalRenderer)}
+			/>
+		{/if}
 
 		<SettingsSelect
 			label="Performance mode"

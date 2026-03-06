@@ -18,6 +18,7 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 		gitSidebarEnabled: false,
 		terminalPerformanceMode: 'auto',
 		terminalTelemetryEnabled: false,
+		terminalRenderer: 'xterm',
 		agentActions: [],
 		useHappyCoder: false,
 		...overrides
