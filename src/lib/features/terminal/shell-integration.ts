@@ -1,7 +1,5 @@
-import type { Terminal, IDecoration } from '@xterm/xterm';
+import type { Terminal } from '@xterm/xterm';
 
-const GUTTER_SUCCESS = '#4ade80';
-const GUTTER_FAILURE = '#f87171';
 const MAX_COMMANDS = 200;
 
 export interface CommandEntry {
@@ -11,21 +9,14 @@ export interface CommandEntry {
 	outputEndLine: number | null;
 	exitCode: number | null;
 	timestamp: number;
-	decoration?: IDecoration;
 }
 
 export class ShellIntegrationState {
 	commands: CommandEntry[] = [];
 	private _current: Partial<CommandEntry> | null = null;
-	private _terminal: Terminal | null = null;
-
-	constructor(terminal: Terminal) {
-		this._terminal = terminal;
-	}
 
 	onPromptStart(line: number): void {
 		if (this._current) {
-			// Finalize interrupted command (e.g., user hit Ctrl-C before executing)
 			this._pushEntry(this._finalizeCurrent(null, null));
 		}
 		this._current = { promptStartLine: line, timestamp: Date.now() };
@@ -45,9 +36,7 @@ export class ShellIntegrationState {
 
 	onCommandEnd(line: number, exitCode: number): void {
 		if (this._current) {
-			const entry = this._finalizeCurrent(line, exitCode);
-			this._addDecoration(entry);
-			this._pushEntry(entry);
+			this._pushEntry(this._finalizeCurrent(line, exitCode));
 			this._current = null;
 		}
 	}
@@ -75,12 +64,8 @@ export class ShellIntegrationState {
 	}
 
 	dispose(): void {
-		for (const cmd of this.commands) {
-			cmd.decoration?.dispose();
-		}
 		this.commands = [];
 		this._current = null;
-		this._terminal = null;
 	}
 
 	private _finalizeCurrent(outputEndLine: number | null, exitCode: number | null): CommandEntry {
@@ -97,40 +82,14 @@ export class ShellIntegrationState {
 
 	private _pushEntry(entry: CommandEntry): void {
 		this.commands.push(entry);
-		// Evict oldest entries to bound memory
 		while (this.commands.length > MAX_COMMANDS) {
-			const old = this.commands.shift();
-			old?.decoration?.dispose();
+			this.commands.shift();
 		}
-	}
-
-	private _addDecoration(entry: CommandEntry): void {
-		if (!this._terminal) return;
-		const buf = this._terminal.buffer.active;
-		const rowOffset = entry.promptStartLine - buf.baseY;
-		const marker = this._terminal.registerMarker(rowOffset - buf.cursorY);
-		if (!marker) return;
-
-		const color = entry.exitCode === 0 ? GUTTER_SUCCESS : GUTTER_FAILURE;
-		const decoration = this._terminal.registerDecoration({
-			marker,
-			anchor: 'left',
-			overviewRulerOptions: { color, position: 'left' }
-		});
-
-		decoration?.onRender((element) => {
-			element.style.width = '3px';
-			element.style.height = '100%';
-			element.style.backgroundColor = color;
-			element.style.borderRadius = '1px';
-		});
-
-		entry.decoration = decoration ?? undefined;
 	}
 }
 
 export function registerShellIntegration(terminal: Terminal): ShellIntegrationState {
-	const state = new ShellIntegrationState(terminal);
+	const state = new ShellIntegrationState();
 
 	terminal.parser.registerOscHandler(133, (data: string) => {
 		const buf = terminal.buffer.active;
@@ -148,7 +107,7 @@ export function registerShellIntegration(terminal: Terminal): ShellIntegrationSt
 			state.onCommandEnd(currentLine, isNaN(exitCode) ? 0 : exitCode);
 		}
 
-		return false; // don't consume — let other handlers see the sequence
+		return false;
 	});
 
 	return state;

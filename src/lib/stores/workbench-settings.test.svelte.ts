@@ -18,6 +18,7 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 		gitSidebarEnabled: false,
 		terminalPerformanceMode: 'auto',
 		terminalTelemetryEnabled: false,
+		terminalRenderer: 'xterm',
 		agentActions: [],
 		useHappyCoder: false,
 		...overrides
@@ -218,6 +219,7 @@ describe('WorkbenchSettingsStore', () => {
 					gitSidebarEnabled: false,
 					terminalPerformanceMode: 'auto',
 					terminalTelemetryEnabled: false,
+					terminalRenderer: 'xterm',
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
@@ -468,6 +470,7 @@ describe('WorkbenchSettingsStore', () => {
 					gitSidebarEnabled: false,
 					terminalPerformanceMode: 'auto',
 					terminalTelemetryEnabled: false,
+					terminalRenderer: 'xterm',
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null,

@@ -73,7 +73,10 @@ function enqueueWrite(sessionId: string, data: string): void {
 	const prev = sessionWriteChains.get(sessionId) ?? Promise.resolve();
 	sessionWriteChains.set(
 		sessionId,
-		prev.then(() => invoke<boolean>('write_terminal', { sessionId, data }))
+		prev.then(
+			() => invoke<boolean>('write_terminal', { sessionId, data }).catch(() => {}),
+			() => invoke<boolean>('write_terminal', { sessionId, data }).catch(() => {})
+		)
 	);
 }
 
@@ -199,4 +202,56 @@ export async function applyClaudeIntegration(): Promise<boolean> {
 
 export async function applyCodexIntegration(): Promise<boolean> {
 	return invoke<boolean>('apply_codex_integration');
+}
+
+// ── Native terminal (SwiftTerm) IPC wrappers ───────────────────────
+
+export async function createNativeTerminal(request: {
+	sessionId: string;
+	projectPath: string;
+	shell: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	fontSize: number;
+	startupCommand?: string;
+}): Promise<void> {
+	await invoke('create_native_terminal', {
+		sessionId: request.sessionId,
+		projectPath: request.projectPath,
+		shell: request.shell,
+		x: request.x,
+		y: request.y,
+		width: request.width,
+		height: request.height,
+		fontSize: request.fontSize,
+		startupCommand: request.startupCommand ?? null
+	});
+}
+
+export async function resizeNativeTerminal(
+	sessionId: string,
+	x: number,
+	y: number,
+	width: number,
+	height: number
+): Promise<void> {
+	await invoke('resize_native_terminal', { sessionId, x, y, width, height });
+}
+
+export async function setNativeTerminalVisible(sessionId: string, visible: boolean): Promise<void> {
+	await invoke('set_native_terminal_visible', { sessionId, visible });
+}
+
+export async function killNativeTerminal(sessionId: string): Promise<void> {
+	await invoke('kill_native_terminal', { sessionId });
+}
+
+export async function writeNativeTerminal(sessionId: string, data: string): Promise<void> {
+	await invoke('write_native_terminal', { sessionId, data });
+}
+
+export async function isNativeTerminalAvailable(): Promise<boolean> {
+	return invoke<boolean>('is_native_terminal_available');
 }

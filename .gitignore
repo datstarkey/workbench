@@ -10,6 +10,9 @@ build/
 src-tauri/target/
 src-tauri/gen/
 
+# Swift Package Manager
+src-tauri/SwiftTermBridge/.build/
+
 # Environment & secrets
 .env
 .env.*

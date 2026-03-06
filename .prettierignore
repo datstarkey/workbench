@@ -13,3 +13,6 @@ bun.lockb
 /src-tauri/target/
 /src-tauri/gen/
 *.rs
+
+# Swift
+/src-tauri/SwiftTermBridge/.build/

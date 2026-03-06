@@ -4,6 +4,7 @@ import type {
 	AgentActionTarget,
 	SessionType,
 	TerminalPerformanceMode,
+	TerminalRenderer,
 	WorkbenchSettings,
 	WorktreeStartPoint,
 	WorktreeStrategy
@@ -19,6 +20,7 @@ export class WorkbenchSettingsStore {
 	gitSidebarEnabled = $state(false);
 	terminalPerformanceMode: TerminalPerformanceMode = $state('auto');
 	terminalTelemetryEnabled = $state(false);
+	terminalRenderer: TerminalRenderer = $state<TerminalRenderer>('xterm');
 	agentActions: AgentAction[] = $state([]);
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
@@ -43,6 +45,7 @@ export class WorkbenchSettingsStore {
 		this.gitSidebarEnabled = settings.gitSidebarEnabled ?? false;
 		this.terminalPerformanceMode = settings.terminalPerformanceMode ?? 'auto';
 		this.terminalTelemetryEnabled = settings.terminalTelemetryEnabled ?? false;
+		this.terminalRenderer = settings.terminalRenderer ?? 'xterm';
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
 		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
@@ -103,6 +106,11 @@ export class WorkbenchSettingsStore {
 		this.dirty = true;
 	}
 
+	setTerminalRenderer(value: TerminalRenderer) {
+		this.terminalRenderer = value;
+		this.dirty = true;
+	}
+
 	setUseHappyCoder(value: boolean) {
 		this.useHappyCoder = value;
 		this.dirty = true;
@@ -160,6 +168,7 @@ export class WorkbenchSettingsStore {
 			gitSidebarEnabled: this.gitSidebarEnabled,
 			terminalPerformanceMode: this.terminalPerformanceMode,
 			terminalTelemetryEnabled: this.terminalTelemetryEnabled,
+			terminalRenderer: this.terminalRenderer,
 			agentActions: this.agentActions,
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,

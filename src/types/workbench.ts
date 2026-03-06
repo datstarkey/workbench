@@ -104,6 +104,7 @@ export interface ProjectWorkspace {
 	activeTerminalTabId: string;
 	worktreePath?: string;
 	branch?: string;
+	renderer?: TerminalRenderer;
 }
 
 // Git types
@@ -290,6 +291,7 @@ export interface GitHubBranchStatus {
 export type WorktreeStrategy = 'sibling' | 'inside';
 export type WorktreeStartPoint = 'auto' | 'current' | 'custom';
 export type TerminalPerformanceMode = 'auto' | 'always';
+export type TerminalRenderer = 'xterm' | 'native';
 
 export type AgentActionTarget = 'claude' | 'codex' | 'both';
 
@@ -311,6 +313,7 @@ export interface WorkbenchSettings {
 	gitSidebarEnabled: boolean;
 	terminalPerformanceMode: TerminalPerformanceMode;
 	terminalTelemetryEnabled: boolean;
+	terminalRenderer: TerminalRenderer;
 	agentActions: AgentAction[];
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;

@@ -26,6 +26,7 @@ export const terminalTheme: ITheme = {
 };
 
 export const terminalOptions: ITerminalOptions = {
+	allowProposedApi: true,
 	allowTransparency: false,
 	convertEol: false,
 	cursorBlink: true,

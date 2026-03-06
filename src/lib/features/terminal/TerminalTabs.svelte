@@ -11,13 +11,20 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import ClaudeSessionMenu from '$features/claude/ClaudeSessionMenu.svelte';
-	import { getClaudeSessionStore, getProjectStore, getWorkspaceStore } from '$stores/context';
+	import {
+		getClaudeSessionStore,
+		getProjectStore,
+		getWorkbenchSettingsStore,
+		getWorkspaceStore
+	} from '$stores/context';
 	import { effectivePath } from '$lib/utils/path';
 	import type { ProjectWorkspace } from '$types/workbench';
 
 	const workspaceStore = getWorkspaceStore();
 	const claudeSessionStore = getClaudeSessionStore();
 	const projectStore = getProjectStore();
+	const workbenchSettings = getWorkbenchSettingsStore();
+	let nativeMode = $derived(workbenchSettings.terminalRenderer === 'native');
 
 	let {
 		workspace
@@ -137,36 +144,38 @@
 			onOpen={() => claudeSessionStore.discoverCodexSessions(wsCwd)}
 		/>
 
-		<Separator orientation="vertical" class="!h-4" />
+		{#if !nativeMode}
+			<Separator orientation="vertical" class="!h-4" />
 
-		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					class="size-7 text-muted-foreground hover:text-foreground"
-					type="button"
-					onclick={() => workspaceStore.splitTerminal(workspace.id, 'horizontal')}
-				>
-					<Columns2Icon class="size-3.5" />
-				</Button>
-			</Tooltip.Trigger>
-			<Tooltip.Content>Split Horizontal</Tooltip.Content>
-		</Tooltip.Root>
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="size-7 text-muted-foreground hover:text-foreground"
+						type="button"
+						onclick={() => workspaceStore.splitTerminal(workspace.id, 'horizontal')}
+					>
+						<Columns2Icon class="size-3.5" />
+					</Button>
+				</Tooltip.Trigger>
+				<Tooltip.Content>Split Horizontal</Tooltip.Content>
+			</Tooltip.Root>
 
-		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					class="size-7 text-muted-foreground hover:text-foreground"
-					type="button"
-					onclick={() => workspaceStore.splitTerminal(workspace.id, 'vertical')}
-				>
-					<Rows2Icon class="size-3.5" />
-				</Button>
-			</Tooltip.Trigger>
-			<Tooltip.Content>Split Vertical</Tooltip.Content>
-		</Tooltip.Root>
+			<Tooltip.Root>
+				<Tooltip.Trigger>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="size-7 text-muted-foreground hover:text-foreground"
+						type="button"
+						onclick={() => workspaceStore.splitTerminal(workspace.id, 'vertical')}
+					>
+						<Rows2Icon class="size-3.5" />
+					</Button>
+				</Tooltip.Trigger>
+				<Tooltip.Content>Split Vertical</Tooltip.Content>
+			</Tooltip.Root>
+		{/if}
 	</div>
 </div>
