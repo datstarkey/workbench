@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 #[cfg(unix)]
@@ -145,12 +144,14 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove a file or directory if it exists. Handles symlinks correctly.
+/// Remove a file, directory, or symlink if it exists.
+/// Uses `symlink_metadata` so broken symlinks are detected and removed.
 pub fn remove_path_if_exists(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let meta = fs::symlink_metadata(path)?;
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
     if meta.is_dir() && !meta.file_type().is_symlink() {
         fs::remove_dir_all(path)?;
     } else {
@@ -186,57 +187,6 @@ pub fn copy_dir_skip_symlinks(src: &Path, dst: &Path) -> Result<()> {
             copy_file(&source_path, &dest_path)?;
         }
     }
-    Ok(())
-}
-
-/// Recursively copy a directory, following symlinks and detecting cycles.
-/// Suitable for mirroring plugin/skill directories that may contain symlinks.
-pub fn copy_dir_follow_symlinks(
-    src: &Path,
-    dst: &Path,
-    visited: &mut HashSet<PathBuf>,
-) -> Result<()> {
-    let canonical_src = fs::canonicalize(src).unwrap_or_else(|_| src.to_path_buf());
-    if !visited.insert(canonical_src.clone()) {
-        return Ok(());
-    }
-
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        let meta = fs::symlink_metadata(&src_path)?;
-
-        if meta.file_type().is_symlink() {
-            let resolved = match fs::canonicalize(&src_path) {
-                Ok(path) => path,
-                Err(_) => continue,
-            };
-            let resolved_meta = match fs::metadata(&resolved) {
-                Ok(meta) => meta,
-                Err(_) => continue,
-            };
-
-            if resolved_meta.is_dir() {
-                copy_dir_follow_symlinks(&resolved, &dst_path, visited)?;
-            } else if resolved_meta.is_file() {
-                copy_file(&resolved, &dst_path)?;
-            }
-            continue;
-        }
-
-        if meta.is_dir() {
-            copy_dir_follow_symlinks(&src_path, &dst_path, visited)?;
-        } else if meta.is_file() {
-            copy_file(&src_path, &dst_path)?;
-        }
-    }
-
-    visited.remove(&canonical_src);
     Ok(())
 }
 
@@ -360,6 +310,21 @@ mod tests {
         assert!(remove_path_if_exists(&path).is_ok());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_remove_path_if_exists_broken_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let link = dir.path().join("broken_link");
+        symlink(dir.path().join("nonexistent"), &link).unwrap();
+        assert!(fs::symlink_metadata(&link).is_ok()); // link entry exists
+        assert!(!link.exists()); // but target does not
+
+        remove_path_if_exists(&link).unwrap();
+        assert!(!fs::symlink_metadata(&link).is_ok()); // link removed
+    }
+
     // --- copy_file ---
 
     #[test]
@@ -418,64 +383,6 @@ mod tests {
 
         assert!(dst.join("real.txt").exists());
         assert!(!dst.join("link.txt").exists());
-    }
-
-    // --- copy_dir_follow_symlinks ---
-
-    #[test]
-    fn test_copy_dir_follow_symlinks_copies_tree() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("src");
-        let dst = dir.path().join("dst");
-        fs::create_dir_all(src.join("child")).unwrap();
-        fs::write(src.join("a.txt"), "aaa").unwrap();
-        fs::write(src.join("child").join("b.txt"), "bbb").unwrap();
-
-        let mut visited = HashSet::new();
-        copy_dir_follow_symlinks(&src, &dst, &mut visited).unwrap();
-
-        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "aaa");
-        assert_eq!(
-            fs::read_to_string(dst.join("child").join("b.txt")).unwrap(),
-            "bbb"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_copy_dir_follow_symlinks_follows_file_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("src");
-        let dst = dir.path().join("dst");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("real.txt"), "followed").unwrap();
-        symlink(src.join("real.txt"), src.join("link.txt")).unwrap();
-
-        let mut visited = HashSet::new();
-        copy_dir_follow_symlinks(&src, &dst, &mut visited).unwrap();
-
-        assert_eq!(fs::read_to_string(dst.join("link.txt")).unwrap(), "followed");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_copy_dir_follow_symlinks_cycle_detection() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(src.join("child")).unwrap();
-        fs::write(src.join("file.txt"), "data").unwrap();
-        // Create a cycle: child/loop -> src
-        symlink(&src, src.join("child").join("loop")).unwrap();
-
-        let dst = dir.path().join("dst");
-        let mut visited = HashSet::new();
-        // Should terminate without error despite the cycle
-        copy_dir_follow_symlinks(&src, &dst, &mut visited).unwrap();
-        assert!(dst.join("file.txt").exists());
     }
 
     // --- ensure_script ---
