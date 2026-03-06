@@ -191,6 +191,7 @@ export class WorkspaceStore {
 			projectName: project.name,
 			terminalTabs: [],
 			activeTerminalTabId: '',
+			renderer: this.settingsStore.terminalRenderer,
 			...opts
 		};
 

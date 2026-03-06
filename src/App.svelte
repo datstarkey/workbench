@@ -189,7 +189,7 @@
 											class:hidden={!isActiveTab || !isActiveWs}
 											class:flex={isActiveTab && isActiveWs}
 										>
-											{#if workbenchSettingsStore.terminalRenderer === 'native'}
+											{#if ws.renderer === 'native'}
 												<NativeTerminalGrid
 													panes={tab.panes}
 													active={isActiveTab && isActiveWs}

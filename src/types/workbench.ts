@@ -104,6 +104,7 @@ export interface ProjectWorkspace {
 	activeTerminalTabId: string;
 	worktreePath?: string;
 	branch?: string;
+	renderer?: TerminalRenderer;
 }
 
 // Git types

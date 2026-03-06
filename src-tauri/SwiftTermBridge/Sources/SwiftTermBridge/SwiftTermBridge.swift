@@ -245,7 +245,7 @@ public func swift_term_resize(
     if Thread.isMainThread {
         work()
     } else {
-        DispatchQueue.main.async { work() }
+        DispatchQueue.main.sync { work() }
     }
 }
 

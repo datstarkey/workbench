@@ -18,7 +18,7 @@ use anyhow::{anyhow, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter};
 
-use crate::types::{TerminalActivityEvent, TerminalExitEvent};
+use crate::types::{TerminalActivityEvent, TerminalDataEvent, TerminalExitEvent};
 
 const PTY_READ_BUFFER_SIZE: usize = 32768;
 const STARTUP_COMMAND_DELAY_MS: u64 = 300;
@@ -393,6 +393,17 @@ impl NativeTerminalManager {
                                 reader_session_cstr.as_ptr(),
                                 buf.as_ptr() as *const c_void,
                                 n,
+                            );
+                        }
+                        // Also emit terminal:data so ClaudeSessionStore can
+                        // track session state (awaitingInput, active output).
+                        if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+                            let _ = handle.emit(
+                                "terminal:data",
+                                TerminalDataEvent {
+                                    session_id: sid.clone(),
+                                    data: text.to_string(),
+                                },
                             );
                         }
                     }

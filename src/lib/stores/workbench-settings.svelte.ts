@@ -106,9 +106,9 @@ export class WorkbenchSettingsStore {
 		this.dirty = true;
 	}
 
-	async setTerminalRenderer(value: TerminalRenderer) {
+	setTerminalRenderer(value: TerminalRenderer) {
 		this.terminalRenderer = value;
-		await invoke('save_workbench_settings', { settings: this.toSettings() });
+		this.dirty = true;
 	}
 
 	setUseHappyCoder(value: boolean) {

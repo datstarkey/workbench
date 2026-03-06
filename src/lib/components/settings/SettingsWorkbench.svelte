@@ -165,7 +165,7 @@
 		{#if nativeAvailable}
 			<SettingsSelect
 				label="Terminal renderer"
-				description="Native mode uses macOS SwiftTerm for rendering. Disables split panes."
+				description="Native mode uses macOS SwiftTerm for rendering. Disables split panes. Applies to new workspaces only."
 				options={rendererOptions}
 				value={store.terminalRenderer}
 				onValueChange={(v) => store.setTerminalRenderer(v as TerminalRenderer)}
