@@ -332,6 +332,8 @@ pub struct WorkbenchSettings {
     pub use_happy_coder: bool,
     #[serde(default = "default_terminal_renderer")]
     pub terminal_renderer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_base_dir: Option<String>,
 }
 
 fn default_worktree_strategy() -> String {
@@ -370,6 +372,7 @@ impl Default for WorkbenchSettings {
             worktree_custom_branch: String::new(),
             use_happy_coder: false,
             terminal_renderer: default_terminal_renderer(),
+            clone_base_dir: None,
         }
     }
 }
@@ -449,6 +452,20 @@ pub struct TrelloMergeActionAppliedEvent {
 }
 
 // GitHub integration types
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRepo {
+    pub name: String,
+    pub name_with_owner: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub is_private: bool,
+    pub is_fork: bool,
+    /// Web URL, e.g. https://github.com/owner/repo — also works as HTTP clone URL (append .git if needed)
+    pub url: String,
+    pub ssh_url: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

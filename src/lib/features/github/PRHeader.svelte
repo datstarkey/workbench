@@ -3,6 +3,8 @@
 	import GitPullRequestDraftIcon from '@lucide/svelte/icons/git-pull-request-draft';
 	import GitPullRequestClosedIcon from '@lucide/svelte/icons/git-pull-request-closed';
 	import GitMergeIcon from '@lucide/svelte/icons/git-merge';
+	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
+	import GitForkIcon from '@lucide/svelte/icons/git-fork';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SendHorizontalIcon from '@lucide/svelte/icons/send-horizontal';
@@ -15,10 +17,14 @@
 
 	let {
 		pr,
-		projectPath
+		projectPath,
+		onCheckout,
+		onOpenAsWorktree
 	}: {
 		pr: GitHubPR;
 		projectPath: string;
+		onCheckout?: () => Promise<void>;
+		onOpenAsWorktree?: () => Promise<void>;
 	} = $props();
 
 	let merging = $state(false);
@@ -27,6 +33,10 @@
 	let updateError = $state<string | null>(null);
 	let markingReady = $state(false);
 	let readyError = $state<string | null>(null);
+	let checkingOut = $state(false);
+	let checkoutError = $state<string | null>(null);
+	let openingWorktree = $state(false);
+	let worktreeError = $state<string | null>(null);
 
 	let PrIcon = $derived.by(() => {
 		if (pr.state === 'MERGED') return GitMergeIcon;
@@ -133,6 +143,32 @@
 		(v) => (readyError = v),
 		'github_mark_pr_ready'
 	);
+
+	async function handleCheckout() {
+		if (!onCheckout) return;
+		checkingOut = true;
+		checkoutError = null;
+		try {
+			await onCheckout();
+		} catch (e) {
+			checkoutError = String(e);
+		} finally {
+			checkingOut = false;
+		}
+	}
+
+	async function handleOpenAsWorktree() {
+		if (!onOpenAsWorktree) return;
+		openingWorktree = true;
+		worktreeError = null;
+		try {
+			await onOpenAsWorktree();
+		} catch (e) {
+			worktreeError = String(e);
+		} finally {
+			openingWorktree = false;
+		}
+	}
 </script>
 
 <div class="space-y-2 px-3 py-2">
@@ -161,6 +197,38 @@
 	{/if}
 
 	<div class="flex flex-wrap gap-1.5">
+		{#if onCheckout}
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-7 gap-1.5 text-xs"
+				onclick={handleCheckout}
+				disabled={checkingOut}
+			>
+				{#if checkingOut}
+					<LoaderIcon class="size-3 animate-spin" />
+				{:else}
+					<GitBranchIcon class="size-3" />
+				{/if}
+				Checkout
+			</Button>
+		{/if}
+		{#if onOpenAsWorktree}
+			<Button
+				variant="outline"
+				size="sm"
+				class="h-7 gap-1.5 text-xs"
+				onclick={handleOpenAsWorktree}
+				disabled={openingWorktree}
+			>
+				{#if openingWorktree}
+					<LoaderIcon class="size-3 animate-spin" />
+				{:else}
+					<GitForkIcon class="size-3" />
+				{/if}
+				Open as Worktree
+			</Button>
+		{/if}
 		{#if showDraftAction}
 			<Button
 				variant="outline"
@@ -227,4 +295,6 @@
 	{@render errorMsg(mergeError)}
 	{@render errorMsg(updateError)}
 	{@render errorMsg(readyError)}
+	{@render errorMsg(checkoutError)}
+	{@render errorMsg(worktreeError)}
 </div>

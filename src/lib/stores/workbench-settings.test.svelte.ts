@@ -223,7 +223,8 @@ describe('WorkbenchSettingsStore', () => {
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
-					useHappyCoder: false
+					useHappyCoder: false,
+					cloneBaseDir: null
 				}
 			});
 		});
@@ -474,7 +475,8 @@ describe('WorkbenchSettingsStore', () => {
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
-					useHappyCoder: false
+					useHappyCoder: false,
+					cloneBaseDir: null
 				}
 			});
 			expect(store.agentActions[0].name).toBe('Review');

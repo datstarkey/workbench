@@ -203,6 +203,17 @@ export interface TrelloMergeActionAppliedEvent {
 
 // GitHub types
 
+export interface GitHubRepo {
+	name: string;
+	nameWithOwner: string;
+	description?: string | null;
+	isPrivate: boolean;
+	isFork: boolean;
+	/** Web URL, e.g. https://github.com/owner/repo — also usable as HTTP clone URL */
+	url: string;
+	sshUrl: string;
+}
+
 export interface GitHubRemote {
 	owner: string;
 	repo: string;
@@ -318,6 +329,7 @@ export interface WorkbenchSettings {
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
 	useHappyCoder: boolean;
+	cloneBaseDir?: string | null;
 }
 
 export interface IntegrationStatus {

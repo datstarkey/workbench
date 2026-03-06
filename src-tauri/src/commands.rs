@@ -16,8 +16,8 @@ use crate::settings;
 use crate::types::GitHubProjectStatusEvent;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitHubRemote, GitInfo, HookScriptInfo, IntegrationStatus, PluginInfo,
-    ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile, WorktreeInfo,
+    DiscoveredClaudeSession, GitHubRemote, GitHubRepo, GitInfo, HookScriptInfo, IntegrationStatus,
+    PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile, WorktreeInfo,
 };
 
 #[tauri::command]
@@ -328,6 +328,28 @@ pub fn delete_branch(
 pub fn open_url(url: String) -> Result<bool, String> {
     github::open_url(&url).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+// GitHub clone + PR actions
+
+#[tauri::command(async)]
+pub fn github_list_repos() -> Result<Vec<GitHubRepo>, String> {
+    github::list_repos().map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn github_checkout_pr(project_path: String, pr_number: u64) -> Result<(), String> {
+    github::checkout_pr(&project_path, pr_number).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn github_fetch_pr_branch(project_path: String, branch: String) -> Result<(), String> {
+    github::fetch_pr_branch(&project_path, &branch).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
+    git::clone_repo(&url, &dest_path).map_err(|e| e.to_string())
 }
 
 // Integration check/apply commands

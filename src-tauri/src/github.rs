@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::types::{
     GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubPRActions,
-    GitHubProjectStatus, GitHubRemote, GitHubWorkflowRun,
+    GitHubProjectStatus, GitHubRemote, GitHubRepo, GitHubWorkflowRun,
 };
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
@@ -395,6 +395,34 @@ pub fn mark_pr_ready(path: &str, pr_number: u64) -> Result<()> {
 
 pub fn merge_pr(path: &str, pr_number: u64) -> Result<()> {
     gh_output(&["pr", "merge", &pr_number.to_string(), "--squash"], path)?;
+    Ok(())
+}
+
+pub fn list_repos() -> Result<Vec<GitHubRepo>> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let json = gh_output(
+        &[
+            "repo",
+            "list",
+            "--json",
+            "name,nameWithOwner,description,isPrivate,isFork,url,sshUrl",
+            "--limit",
+            "100",
+            "--no-archived",
+        ],
+        &home.to_string_lossy(),
+    )?;
+    serde_json::from_str(&json)
+        .map_err(|e| anyhow::anyhow!("Failed to parse repo list: {e}\nResponse: {}", &json[..json.len().min(500)]))
+}
+
+pub fn checkout_pr(path: &str, pr_number: u64) -> Result<()> {
+    gh_output(&["pr", "checkout", &pr_number.to_string()], path)?;
+    Ok(())
+}
+
+pub fn fetch_pr_branch(path: &str, branch: &str) -> Result<()> {
+    crate::git::git_output(&["fetch", "origin", &format!("{}:{}", branch, branch)], path)?;
     Ok(())
 }
 
