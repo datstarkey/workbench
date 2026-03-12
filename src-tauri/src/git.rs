@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use crate::paths::{copy_dir_skip_symlinks, copy_file};
+use crate::paths::copy_file;
 use crate::types::{
     BranchInfo, CreateWorktreeRequest, GitCommitFile, GitCommitResult, GitFileStatus, GitInfo,
     GitLogEntry, GitStashEntry, GitStatusResult, WorktreeCopyOptions, WorktreeInfo,
@@ -75,6 +75,9 @@ pub(crate) fn is_relevant_workspace_ignored_path(rel_path: &str, options: &Workt
         if normalized == ".mcp.json" {
             return true;
         }
+        if normalized == "CLAUDE.md" {
+            return true;
+        }
     }
 
     let file_name = Path::new(normalized)
@@ -98,6 +101,7 @@ fn collect_workspace_copy_candidates(
         candidates.insert(PathBuf::from(".claude"));
         candidates.insert(PathBuf::from(".codex"));
         candidates.insert(PathBuf::from(".mcp.json"));
+        candidates.insert(PathBuf::from("CLAUDE.md"));
     }
 
     if options.env_files {
@@ -144,12 +148,73 @@ fn collect_workspace_copy_candidates(
     candidates
 }
 
+/// Returns the set of file paths tracked by git within the given candidate paths.
+fn list_tracked_files(repo_root: &str, paths: &[String]) -> HashSet<String> {
+    if paths.is_empty() {
+        return HashSet::new();
+    }
+    let mut args: Vec<&str> = vec!["ls-files", "--"];
+    for p in paths {
+        args.push(p.as_str());
+    }
+    match git_output(&args, repo_root) {
+        Ok(output) => output
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect(),
+        Err(_) => HashSet::new(),
+    }
+}
+
+/// Recursively copy files from a directory, skipping symlinks and git-tracked files.
+fn copy_dir_untracked(
+    source: &Path,
+    destination: &Path,
+    repo_root: &Path,
+    tracked: &HashSet<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = destination.join(entry.file_name());
+        let meta = fs::symlink_metadata(&src_path)?;
+
+        if meta.file_type().is_symlink() {
+            continue;
+        } else if meta.is_dir() {
+            copy_dir_untracked(&src_path, &dst_path, repo_root, tracked)?;
+        } else if meta.is_file() {
+            if dst_path.exists() {
+                continue;
+            }
+            let rel = src_path
+                .strip_prefix(repo_root)
+                .unwrap_or(&src_path)
+                .to_string_lossy()
+                .to_string();
+            if tracked.contains(&rel) {
+                continue;
+            }
+            copy_file(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 fn copy_workspace_files_to_worktree(
     repo_root: &Path,
     worktree_path: &Path,
     options: &WorktreeCopyOptions,
 ) -> Result<()> {
     let candidates = collect_workspace_copy_candidates(repo_root, options);
+
+    // Ask git which files within our candidates are tracked (already in worktree)
+    let candidate_strs: Vec<String> = candidates
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let tracked = list_tracked_files(&repo_root.to_string_lossy(), &candidate_strs);
 
     for relative in candidates {
         if !is_safe_relative_path(&relative) {
@@ -161,18 +226,21 @@ fn copy_workspace_files_to_worktree(
             continue;
         }
 
-        let destination = worktree_path.join(&relative);
-        if destination.exists() {
-            continue;
-        }
-
         let meta = fs::symlink_metadata(&source)?;
         if meta.file_type().is_symlink() {
             continue;
         } else if meta.is_dir() {
-            copy_dir_skip_symlinks(&source, &destination)
+            copy_dir_untracked(&source, &worktree_path.join(&relative), repo_root, &tracked)
                 .with_context(|| format!("Failed to copy {}", relative.display()))?;
         } else if meta.is_file() {
+            let rel_str = relative.to_string_lossy().to_string();
+            if tracked.contains(&rel_str) {
+                continue; // Already in worktree via git
+            }
+            let destination = worktree_path.join(&relative);
+            if destination.exists() {
+                continue;
+            }
             copy_file(&source, &destination)
                 .with_context(|| format!("Failed to copy {}", relative.display()))?;
         }
@@ -780,6 +848,12 @@ mod tests {
     fn ignored_path_ai_config_mcp_json() {
         let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
         assert!(is_relevant_workspace_ignored_path(".mcp.json", &opts));
+    }
+
+    #[test]
+    fn ignored_path_ai_config_claude_md() {
+        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        assert!(is_relevant_workspace_ignored_path("CLAUDE.md", &opts));
     }
 
     #[test]

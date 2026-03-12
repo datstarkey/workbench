@@ -148,12 +148,13 @@
 			{/if}
 
 			<div class="grid gap-3 rounded-md border p-3">
-				<Label class="text-sm">Copy ignored workspace files</Label>
+				<Label class="text-sm">Copy untracked workspace files</Label>
 				<div class="flex items-center justify-between gap-3">
 					<div>
 						<p class="text-sm font-medium">AI config</p>
 						<p class="text-xs text-muted-foreground">
-							Copy <code>.claude</code>, <code>.codex</code>, and <code>.mcp.json</code>.
+							Copy <code>.claude</code>, <code>CLAUDE.md</code>, <code>.codex</code>, and
+							<code>.mcp.json</code> (skips git-tracked files).
 						</p>
 					</div>
 					<Switch checked={copyAiConfig} onCheckedChange={(v) => (copyAiConfig = v)} />
