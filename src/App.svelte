@@ -182,32 +182,35 @@
 								{#if activeTab && wsProject}
 									<TerminalTabs workspace={ws} />
 
-									{#each ws.terminalTabs as tab (tab.id)}
-										{@const isActiveTab = tab.id === ws.activeTerminalTabId}
-										<div
-											class="min-h-0 flex-1"
-											class:hidden={!isActiveTab || !isActiveWs}
-											class:flex={isActiveTab && isActiveWs}
-										>
-											{#if ws.renderer === 'native'}
-												<NativeTerminalGrid
-													panes={tab.panes}
-													active={isActiveTab && isActiveWs}
-													project={wsProject}
-													cwd={ws.worktreePath}
-												/>
-											{:else}
-												<TerminalGrid
-													workspaceId={ws.id}
-													panes={tab.panes}
-													split={tab.split}
-													active={isActiveTab && isActiveWs}
-													project={wsProject}
-													cwd={ws.worktreePath}
-												/>
-											{/if}
-										</div>
-									{/each}
+									<div class="relative min-h-0 flex-1">
+										{#each ws.terminalTabs as tab (tab.id)}
+											{@const isActiveTab = tab.id === ws.activeTerminalTabId}
+											<div
+												class="absolute inset-0 flex"
+												class:invisible={!isActiveTab || !isActiveWs}
+												class:z-10={isActiveTab && isActiveWs}
+												class:z-0={!isActiveTab || !isActiveWs}
+											>
+												{#if ws.renderer === 'native'}
+													<NativeTerminalGrid
+														panes={tab.panes}
+														active={isActiveTab && isActiveWs}
+														project={wsProject}
+														cwd={ws.worktreePath}
+													/>
+												{:else}
+													<TerminalGrid
+														workspaceId={ws.id}
+														panes={tab.panes}
+														split={tab.split}
+														active={isActiveTab && isActiveWs}
+														project={wsProject}
+														cwd={ws.worktreePath}
+													/>
+												{/if}
+											</div>
+										{/each}
+									</div>
 								{:else}
 									<WorkspaceLanding workspace={ws} />
 								{/if}
