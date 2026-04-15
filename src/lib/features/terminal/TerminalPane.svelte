@@ -22,6 +22,7 @@
 	import { stripAnsi } from '$lib/utils/format';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
+	import { isLayoutDisabled } from './layout-guard';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
@@ -49,6 +50,7 @@
 	let unlistenData: (() => void) | null = null;
 	let unlistenExit: (() => void) | null = null;
 	let resizeObserver: ResizeObserver | null = null;
+	let resizeRAFId: number | null = null;
 	let intersectionObserver: IntersectionObserver | null = null;
 	let exited = false;
 	let searchAddon = $state<SearchAddon | null>(null);
@@ -132,6 +134,7 @@
 	// VS Code-style split-axis resize: fit the terminal, then apply
 	// row changes immediately and column changes with a short debounce.
 	function smartResize() {
+		if (isLayoutDisabled()) return;
 		if (!canFitTerminal() || !terminal || !fitAddon) return;
 
 		// Use FitAddon to propose new dimensions without applying them
@@ -293,7 +296,14 @@
 	$effect(() => {
 		if (active && fitAddon && terminal) {
 			flushPendingResize();
-			fitTerminal();
+			// With overlay model, the container maintains dimensions when hidden
+			// (visibility:hidden instead of display:none). Only re-fit if
+			// dimensions actually changed (e.g., window was resized while this
+			// tab was inactive).
+			const dims = fitAddon.proposeDimensions();
+			if (dims && (dims.cols !== terminal.cols || dims.rows !== terminal.rows)) {
+				fitTerminal();
+			}
 			// Flush offscreen buffer if there's data waiting
 			if (offscreenQueue.length > 0) {
 				const batched = offscreenQueue;
@@ -463,7 +473,11 @@
 			// VS Code-style resize: use ResizeObserver but with smart
 			// split-axis debouncing instead of a flat 500ms delay
 			resizeObserver = new ResizeObserver(() => {
-				smartResize();
+				if (resizeRAFId !== null) return;
+				resizeRAFId = requestAnimationFrame(() => {
+					resizeRAFId = null;
+					smartResize();
+				});
 			});
 			resizeObserver.observe(container);
 			intersectionObserver = new IntersectionObserver(
@@ -496,6 +510,7 @@
 	});
 
 	onDestroy(() => {
+		if (resizeRAFId !== null) cancelAnimationFrame(resizeRAFId);
 		if (colResizeTimeout) clearTimeout(colResizeTimeout);
 		clearFlushSchedule();
 		if (perfLogInterval) clearInterval(perfLogInterval);
@@ -550,6 +565,7 @@
 		padding: 6px 8px;
 		overflow: hidden;
 		box-sizing: border-box;
+		contain: strict;
 	}
 
 	.terminal-shell {

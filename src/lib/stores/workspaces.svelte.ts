@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { newSessionCommand, resumeCommand, tryResumeCommand } from '$lib/utils/claude';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
+import { suppressLayout } from '$features/terminal/layout-guard';
 
 interface WorkspaceSnapshot {
 	workspaces: ProjectWorkspace[];
@@ -296,33 +297,37 @@ export class WorkspaceStore {
 	}
 
 	splitTerminal(workspaceId: string, direction: SplitDirection) {
-		this.updateWorkspace(workspaceId, (w) => {
-			const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
-			if (!tab) return w;
-			const updatedTab: TerminalTabState = {
-				...tab,
-				split: direction,
-				panes: [...tab.panes, { id: uid() }]
-			};
-			return {
-				...w,
-				terminalTabs: w.terminalTabs.map((t) => (t.id === tab.id ? updatedTab : t))
-			};
+		suppressLayout(() => {
+			this.updateWorkspace(workspaceId, (w) => {
+				const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
+				if (!tab) return w;
+				const updatedTab: TerminalTabState = {
+					...tab,
+					split: direction,
+					panes: [...tab.panes, { id: uid() }]
+				};
+				return {
+					...w,
+					terminalTabs: w.terminalTabs.map((t) => (t.id === tab.id ? updatedTab : t))
+				};
+			});
 		});
 	}
 
 	removePane(workspaceId: string, paneId: string) {
-		this.updateWorkspace(workspaceId, (w) => {
-			const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
-			if (!tab || tab.panes.length <= 1) return w;
-			const updatedTab: TerminalTabState = {
-				...tab,
-				panes: tab.panes.filter((p) => p.id !== paneId)
-			};
-			return {
-				...w,
-				terminalTabs: w.terminalTabs.map((t) => (t.id === tab.id ? updatedTab : t))
-			};
+		suppressLayout(() => {
+			this.updateWorkspace(workspaceId, (w) => {
+				const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
+				if (!tab || tab.panes.length <= 1) return w;
+				const updatedTab: TerminalTabState = {
+					...tab,
+					panes: tab.panes.filter((p) => p.id !== paneId)
+				};
+				return {
+					...w,
+					terminalTabs: w.terminalTabs.map((t) => (t.id === tab.id ? updatedTab : t))
+				};
+			});
 		});
 	}
 
