@@ -343,13 +343,24 @@
 			if (!inPerformanceMode()) {
 				ensureWebLinksAddon();
 			}
+			// Intercept a key event: tell xterm.js to skip its own handling AND
+			// prevent the browser from firing the follow-up keypress/input event
+			// on xterm's hidden textarea (which would otherwise re-emit the key
+			// via onData — the root cause of Shift+Enter duplication).
+			// This matches VS Code's xterm integration pattern.
+			const intercept = (event: KeyboardEvent): false => {
+				event.preventDefault();
+				event.stopPropagation();
+				return false;
+			};
+
 			terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
 				// Ctrl+F / Cmd+F -> open search
 				if (event.key === 'f' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
 					if (event.type === 'keydown') {
 						searchOpen = true;
 					}
-					return false;
+					return intercept(event);
 				}
 
 				// Escape with search open -> close search instead of forwarding to PTY
@@ -358,7 +369,7 @@
 						searchOpen = false;
 						terminal?.focus();
 					}
-					return false;
+					return intercept(event);
 				}
 
 				// Always forward Escape directly to PTY. xterm.js may swallow it
@@ -368,14 +379,14 @@
 						const isAI = claudeSessionStore.paneType(sessionId) !== null;
 						writeTerminal(sessionId, isAI ? '\x1b\x1b' : '\x1b');
 					}
-					return false;
+					return intercept(event);
 				}
 				// Always forward Ctrl+C as interrupt.
 				if (event.key === 'c' && event.ctrlKey && !event.shiftKey && !event.metaKey) {
 					if (event.type === 'keydown') {
 						writeTerminal(sessionId, '\x03');
 					}
-					return false;
+					return intercept(event);
 				}
 				if (
 					event.key === 'Enter' &&
@@ -391,7 +402,7 @@
 							writeTerminal(sessionId, '\x1b[200~\n\x1b[201~');
 						}
 					}
-					return false;
+					return intercept(event);
 				}
 				// Ctrl+Shift+Up/Down -> navigate between prompt boundaries
 				if (
@@ -410,7 +421,7 @@
 							terminal.scrollToLine(target);
 						}
 					}
-					return false;
+					return intercept(event);
 				}
 				return true;
 			});
