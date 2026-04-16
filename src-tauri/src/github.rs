@@ -227,19 +227,24 @@ fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
 
 pub fn get_project_status(path: &str) -> GitHubProjectStatus {
     let remote = get_github_remote(path).ok();
-    let prs = if remote.is_some() {
-        list_project_prs(path).unwrap_or_else(|e| {
-            eprintln!("[github] Failed to list PRs for {path}: {e}");
-            vec![]
+
+    // Fetch PRs and workflow runs in parallel — they're independent `gh` CLI calls
+    let (prs, workflow_runs) = if remote.is_some() {
+        std::thread::scope(|s| {
+            let prs_handle = s.spawn(|| {
+                list_project_prs(path).unwrap_or_else(|e| {
+                    eprintln!("[github] Failed to list PRs for {path}: {e}");
+                    vec![]
+                })
+            });
+            let runs_handle = s.spawn(|| list_workflow_runs(path));
+            (
+                prs_handle.join().unwrap_or_default(),
+                runs_handle.join().unwrap_or_default(),
+            )
         })
     } else {
-        vec![]
-    };
-
-    let workflow_runs = if remote.is_some() {
-        list_workflow_runs(path)
-    } else {
-        vec![]
+        (vec![], vec![])
     };
     let branch_runs = group_runs_by_branch(workflow_runs);
 

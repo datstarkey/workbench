@@ -484,29 +484,49 @@ describe('WorkbenchSettingsStore', () => {
 		});
 	});
 
-	// ─── setWorktreeStrategy() ──────────────────────────────
+	// ─── set() generic setter ──────────────────────────────
 
-	describe('setWorktreeStrategy', () => {
-		it('updates strategy and sets dirty', () => {
-			store.setWorktreeStrategy('inside');
+	describe('set', () => {
+		it('updates worktreeStrategy and sets dirty', () => {
+			store.set('worktreeStrategy', 'inside');
 
 			expect(store.worktreeStrategy).toBe('inside');
 			expect(store.dirty).toBe(true);
 		});
-	});
 
-	describe('terminal performance settings', () => {
-		it('updates performance mode and marks dirty', () => {
-			store.setTerminalPerformanceMode('always');
+		it('updates terminalPerformanceMode and marks dirty', () => {
+			store.set('terminalPerformanceMode', 'always');
 
 			expect(store.terminalPerformanceMode).toBe('always');
 			expect(store.dirty).toBe(true);
 		});
 
-		it('updates telemetry flag and marks dirty', () => {
-			store.setTerminalTelemetryEnabled(true);
+		it('updates terminalTelemetryEnabled and marks dirty', () => {
+			store.set('terminalTelemetryEnabled', true);
 
 			expect(store.terminalTelemetryEnabled).toBe(true);
+			expect(store.dirty).toBe(true);
+		});
+
+		it('updates boolean fields', () => {
+			store.set('trelloEnabled', true);
+			expect(store.trelloEnabled).toBe(true);
+			expect(store.dirty).toBe(true);
+		});
+
+		it('updates string fields', () => {
+			store.set('worktreeCustomBranch', 'develop');
+			expect(store.worktreeCustomBranch).toBe('develop');
+			expect(store.dirty).toBe(true);
+		});
+
+		it('updates nullable fields', () => {
+			store.set('cloneBaseDir', '/some/path');
+			expect(store.cloneBaseDir).toBe('/some/path');
+
+			store.dirty = false;
+			store.set('cloneBaseDir', null);
+			expect(store.cloneBaseDir).toBeNull();
 			expect(store.dirty).toBe(true);
 		});
 	});

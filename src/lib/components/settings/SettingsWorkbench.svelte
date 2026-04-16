@@ -62,7 +62,7 @@
 			store.cloneBaseDir ?? undefined,
 			'Select Default Clone Directory'
 		);
-		if (dir !== null) store.setCloneBaseDir(dir);
+		if (dir !== null) store.set('cloneBaseDir', dir);
 	}
 
 	async function toggleClaudeHooks(checked: boolean) {
@@ -91,21 +91,21 @@
 			label="Git sidebar"
 			description="Show the Git tab in the right sidebar for staging, commits, branches, and stashes."
 			checked={store.gitSidebarEnabled}
-			onCheckedChange={(v) => store.setGitSidebarEnabled(v)}
+			onCheckedChange={(v) => store.set('gitSidebarEnabled', v)}
 		/>
 
 		<SettingsToggle
 			label="Trello"
 			description="Connect your Trello boards to projects."
 			checked={store.trelloEnabled}
-			onCheckedChange={(v) => store.setTrelloEnabled(v)}
+			onCheckedChange={(v) => store.set('trelloEnabled', v)}
 		/>
 
 		<SettingsToggle
 			label="Happy Coder"
 			description="Use the happy CLI instead of claude, enabling remote sessions from your phone."
 			checked={store.useHappyCoder}
-			onCheckedChange={(v) => store.setUseHappyCoder(v)}
+			onCheckedChange={(v) => store.set('useHappyCoder', v)}
 		/>
 	</div>
 
@@ -122,7 +122,7 @@
 			description="Where new worktrees are created on disk."
 			options={strategyOptions}
 			value={store.worktreeStrategy}
-			onValueChange={(v) => store.setWorktreeStrategy(v as WorktreeStrategy)}
+			onValueChange={(v) => store.set('worktreeStrategy', v as WorktreeStrategy)}
 		/>
 
 		{#if store.worktreeStrategy === 'inside'}
@@ -141,7 +141,7 @@
 			label="Fetch before creating worktree"
 			description="Run git fetch before creating a new branch to ensure it starts from the latest remote state."
 			checked={store.worktreeFetchBeforeCreate}
-			onCheckedChange={(checked) => store.setWorktreeFetchBeforeCreate(checked)}
+			onCheckedChange={(checked) => store.set('worktreeFetchBeforeCreate', checked)}
 		/>
 
 		<SettingsSelect
@@ -149,7 +149,7 @@
 			description="Start point for new worktree branches."
 			options={startPointOptions}
 			value={store.worktreeStartPoint}
-			onValueChange={(v) => store.setWorktreeStartPoint(v as WorktreeStartPoint)}
+			onValueChange={(v) => store.set('worktreeStartPoint', v as WorktreeStartPoint)}
 		/>
 
 		{#if store.worktreeStartPoint === 'custom'}
@@ -159,7 +159,7 @@
 					id="custom-branch-input"
 					placeholder="e.g. develop, staging, origin/main"
 					value={store.worktreeCustomBranch}
-					oninput={(e) => store.setWorktreeCustomBranch(e.currentTarget.value)}
+					oninput={(e) => store.set('worktreeCustomBranch', e.currentTarget.value)}
 				/>
 				<p class="text-xs text-muted-foreground">
 					Branch or ref to use as the start point. Prefix with <code>origin/</code> to use a remote branch.
@@ -184,7 +184,7 @@
 				description="Native mode uses macOS SwiftTerm for rendering. Disables split panes. Applies to new workspaces only."
 				options={rendererOptions}
 				value={store.terminalRenderer}
-				onValueChange={(v) => store.setTerminalRenderer(v as TerminalRenderer)}
+				onValueChange={(v) => store.set('terminalRenderer', v as TerminalRenderer)}
 			/>
 		{/if}
 
@@ -193,14 +193,14 @@
 			description="Auto optimizes only hidden/background panes. Always optimizes all panes."
 			options={perfModeOptions}
 			value={store.terminalPerformanceMode}
-			onValueChange={(v) => store.setTerminalPerformanceMode(v as TerminalPerformanceMode)}
+			onValueChange={(v) => store.set('terminalPerformanceMode', v as TerminalPerformanceMode)}
 		/>
 
 		<SettingsToggle
 			label="Terminal telemetry"
 			description="Log terminal throughput and latency metrics in developer console."
 			checked={store.terminalTelemetryEnabled}
-			onCheckedChange={(checked) => store.setTerminalTelemetryEnabled(checked)}
+			onCheckedChange={(checked) => store.set('terminalTelemetryEnabled', checked)}
 		/>
 	</div>
 

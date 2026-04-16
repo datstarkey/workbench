@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
+use serde::{de::DeserializeOwned, Serialize};
 
 pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
@@ -187,6 +188,45 @@ pub fn copy_dir_skip_symlinks(src: &Path, dst: &Path) -> Result<()> {
             copy_file(&source_path, &dest_path)?;
         }
     }
+    Ok(())
+}
+
+/// Load a JSON file into a typed value, returning the provided default if the
+/// file does not exist or cannot be parsed.
+#[allow(dead_code)]
+pub fn load_json<T: DeserializeOwned>(path: &Path, default: T) -> T {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return default,
+        Err(e) => {
+            eprintln!("[config] Failed to read {}: {e}", path.display());
+            return default;
+        }
+    };
+    match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[config] Failed to parse {}: {e}", path.display());
+            default
+        }
+    }
+}
+
+/// Load a JSON file into a typed value, propagating errors.
+/// Returns the provided default only when the file does not exist.
+pub fn load_json_strict<T: DeserializeOwned>(path: &Path, default: T) -> Result<T> {
+    if !path.exists() {
+        return Ok(default);
+    }
+    let content = fs::read_to_string(path)?;
+    let value: T = serde_json::from_str(&content)?;
+    Ok(value)
+}
+
+/// Serialize a value to pretty JSON and write it atomically.
+pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let content = serde_json::to_string_pretty(value)?;
+    atomic_write(path, &content)?;
     Ok(())
 }
 

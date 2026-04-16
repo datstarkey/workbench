@@ -28,128 +28,160 @@ export class GitStore {
 		});
 	}
 
-	async fetchGitInfo(projectPath: string) {
+	private async tryInvoke<T>(
+		command: string,
+		args: Record<string, unknown>,
+		warnPrefix: string
+	): Promise<T | undefined> {
 		try {
-			const info = await invoke<{ branch: string; repoRoot: string; isWorktree: boolean }>(
-				'git_info',
-				{ path: projectPath }
-			);
-			this.branchByProject = { ...this.branchByProject, [projectPath]: info.branch };
+			return await invoke<T>(command, args);
 		} catch (e) {
-			console.warn('[GitStore] Not a git repo or git info failed:', e);
+			console.warn(warnPrefix, e);
+			return undefined;
+		}
+	}
+
+	async fetchGitInfo(projectPath: string) {
+		const info = await this.tryInvoke<{ branch: string; repoRoot: string; isWorktree: boolean }>(
+			'git_info',
+			{ path: projectPath },
+			'[GitStore] Not a git repo or git info failed:'
+		);
+		if (info) {
+			this.branchByProject = { ...this.branchByProject, [projectPath]: info.branch };
 		}
 	}
 
 	async fetchWorktrees(projectPath: string) {
-		try {
-			const wts = await invoke<WorktreeInfo[]>('list_worktrees', { path: projectPath });
+		const wts = await this.tryInvoke<WorktreeInfo[]>(
+			'list_worktrees',
+			{ path: projectPath },
+			'[GitStore] Failed to list worktrees:'
+		);
+		if (wts) {
 			this.worktreesByProject = { ...this.worktreesByProject, [projectPath]: wts };
-		} catch (e) {
-			console.warn('[GitStore] Failed to list worktrees:', e);
 		}
 	}
 
 	async fetchStatus(projectPath: string) {
-		try {
-			const status = await invoke<GitStatusResult>('git_status', { path: projectPath });
+		const status = await this.tryInvoke<GitStatusResult>(
+			'git_status',
+			{ path: projectPath },
+			'[GitStore] Failed to fetch status:'
+		);
+		if (status) {
 			this.statusByProject = { ...this.statusByProject, [projectPath]: status };
-		} catch (e) {
-			console.warn('[GitStore] Failed to fetch status:', e);
 		}
 	}
 
 	async fetchLog(projectPath: string, maxCount = 20) {
-		try {
-			const log = await invoke<GitLogEntry[]>('git_log', { path: projectPath, maxCount });
+		const log = await this.tryInvoke<GitLogEntry[]>(
+			'git_log',
+			{ path: projectPath, maxCount },
+			'[GitStore] Failed to fetch log:'
+		);
+		if (log) {
 			this.logByProject = { ...this.logByProject, [projectPath]: log };
-		} catch (e) {
-			console.warn('[GitStore] Failed to fetch log:', e);
 		}
 	}
 
 	async fetchStashes(projectPath: string) {
-		try {
-			const stashes = await invoke<GitStashEntry[]>('git_stash_list', { path: projectPath });
+		const stashes = await this.tryInvoke<GitStashEntry[]>(
+			'git_stash_list',
+			{ path: projectPath },
+			'[GitStore] Failed to fetch stashes:'
+		);
+		if (stashes) {
 			this.stashByProject = { ...this.stashByProject, [projectPath]: stashes };
-		} catch (e) {
-			console.warn('[GitStore] Failed to fetch stashes:', e);
 		}
 	}
 
 	async stageFiles(projectPath: string, files: string[]) {
-		try {
-			await invoke('git_stage', { path: projectPath, files });
+		const ok = await this.tryInvoke<void>(
+			'git_stage',
+			{ path: projectPath, files },
+			'[GitStore] Failed to stage files:'
+		);
+		if (ok !== undefined) {
 			await this.fetchStatus(projectPath);
-		} catch (e) {
-			console.warn('[GitStore] Failed to stage files:', e);
 		}
 	}
 
 	async unstageFiles(projectPath: string, files: string[]) {
-		try {
-			await invoke('git_unstage', { path: projectPath, files });
+		const ok = await this.tryInvoke<void>(
+			'git_unstage',
+			{ path: projectPath, files },
+			'[GitStore] Failed to unstage files:'
+		);
+		if (ok !== undefined) {
 			await this.fetchStatus(projectPath);
-		} catch (e) {
-			console.warn('[GitStore] Failed to unstage files:', e);
 		}
 	}
 
 	async commit(projectPath: string, message: string): Promise<GitCommitResult | null> {
-		try {
-			const result = await invoke<GitCommitResult>('git_commit', {
-				path: projectPath,
-				message
-			});
+		const result = await this.tryInvoke<GitCommitResult>(
+			'git_commit',
+			{ path: projectPath, message },
+			'[GitStore] Failed to commit:'
+		);
+		if (result) {
 			await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
-			return result;
-		} catch (e) {
-			console.warn('[GitStore] Failed to commit:', e);
-			return null;
 		}
+		return result ?? null;
 	}
 
 	async checkoutBranch(projectPath: string, branch: string) {
-		try {
-			await invoke('git_checkout_branch', { path: projectPath, branch });
+		const ok = await this.tryInvoke<void>(
+			'git_checkout_branch',
+			{ path: projectPath, branch },
+			'[GitStore] Failed to checkout branch:'
+		);
+		if (ok !== undefined) {
 			await this.refreshGitState(projectPath);
-		} catch (e) {
-			console.warn('[GitStore] Failed to checkout branch:', e);
 		}
 	}
 
 	async stashPush(projectPath: string, message?: string) {
-		try {
-			await invoke('git_stash_push', { path: projectPath, message });
+		const ok = await this.tryInvoke<void>(
+			'git_stash_push',
+			{ path: projectPath, message },
+			'[GitStore] Failed to push stash:'
+		);
+		if (ok !== undefined) {
 			await Promise.all([this.fetchStatus(projectPath), this.fetchStashes(projectPath)]);
-		} catch (e) {
-			console.warn('[GitStore] Failed to push stash:', e);
 		}
 	}
 
 	async stashPop(projectPath: string, index: number) {
-		try {
-			await invoke('git_stash_pop', { path: projectPath, index });
+		const ok = await this.tryInvoke<void>(
+			'git_stash_pop',
+			{ path: projectPath, index },
+			'[GitStore] Failed to pop stash:'
+		);
+		if (ok !== undefined) {
 			await Promise.all([this.fetchStatus(projectPath), this.fetchStashes(projectPath)]);
-		} catch (e) {
-			console.warn('[GitStore] Failed to pop stash:', e);
 		}
 	}
 
 	async stashDrop(projectPath: string, index: number) {
-		try {
-			await invoke('git_stash_drop', { path: projectPath, index });
+		const ok = await this.tryInvoke<void>(
+			'git_stash_drop',
+			{ path: projectPath, index },
+			'[GitStore] Failed to drop stash:'
+		);
+		if (ok !== undefined) {
 			await this.fetchStashes(projectPath);
-		} catch (e) {
-			console.warn('[GitStore] Failed to drop stash:', e);
 		}
 	}
 
 	async discardFile(projectPath: string, file: string) {
-		try {
-			await invoke('git_discard_file', { path: projectPath, file });
+		const ok = await this.tryInvoke<void>(
+			'git_discard_file',
+			{ path: projectPath, file },
+			'[GitStore] Failed to discard file:'
+		);
+		if (ok !== undefined) {
 			await this.fetchStatus(projectPath);
-		} catch (e) {
-			console.warn('[GitStore] Failed to discard file:', e);
 		}
 	}
 
@@ -192,12 +224,12 @@ export class GitStore {
 	}
 
 	async showFiles(projectPath: string, sha: string): Promise<GitCommitFile[]> {
-		try {
-			return await invoke<GitCommitFile[]>('git_show_files', { path: projectPath, sha });
-		} catch (e) {
-			console.warn('[GitStore] Failed to show files:', e);
-			return [];
-		}
+		const files = await this.tryInvoke<GitCommitFile[]>(
+			'git_show_files',
+			{ path: projectPath, sha },
+			'[GitStore] Failed to show files:'
+		);
+		return files ?? [];
 	}
 
 	async revert(projectPath: string, sha: string): Promise<GitCommitResult | null> {
@@ -217,17 +249,15 @@ export class GitStore {
 	}
 
 	async commitAmend(projectPath: string, message: string): Promise<GitCommitResult | null> {
-		try {
-			const result = await invoke<GitCommitResult>('git_commit_amend', {
-				path: projectPath,
-				message
-			});
+		const result = await this.tryInvoke<GitCommitResult>(
+			'git_commit_amend',
+			{ path: projectPath, message },
+			'[GitStore] Failed to amend:'
+		);
+		if (result) {
 			await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
-			return result;
-		} catch (e) {
-			console.warn('[GitStore] Failed to amend:', e);
-			return null;
 		}
+		return result ?? null;
 	}
 
 	async refreshAll(projectPaths: string[]) {

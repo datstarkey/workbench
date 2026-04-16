@@ -1,6 +1,5 @@
 /// Project and workspace persistence (reads/writes ~/.workbench/).
 use anyhow::Result;
-use std::fs;
 use std::path::PathBuf;
 
 use crate::paths;
@@ -11,13 +10,8 @@ fn config_path() -> PathBuf {
 }
 
 pub fn load_projects() -> Result<Vec<ProjectConfig>> {
-    let path = config_path();
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let content = fs::read_to_string(&path)?;
-    let file: ProjectsFile = serde_json::from_str(&content)?;
+    let file: ProjectsFile =
+        paths::load_json_strict(&config_path(), ProjectsFile { projects: vec![] })?;
     Ok(file.projects)
 }
 
@@ -25,9 +19,7 @@ pub fn save_projects(projects: &[ProjectConfig]) -> Result<()> {
     let file = ProjectsFile {
         projects: projects.to_vec(),
     };
-    let content = serde_json::to_string_pretty(&file)?;
-    paths::atomic_write(&config_path(), &content)?;
-    Ok(())
+    paths::save_json(&config_path(), &file)
 }
 
 fn workspace_path() -> PathBuf {
@@ -35,23 +27,17 @@ fn workspace_path() -> PathBuf {
 }
 
 pub fn load_workspaces() -> Result<WorkspaceFile> {
-    let path = workspace_path();
-    if !path.exists() {
-        return Ok(WorkspaceFile {
+    paths::load_json_strict(
+        &workspace_path(),
+        WorkspaceFile {
             workspaces: Vec::new(),
             selected_id: None,
-        });
-    }
-
-    let content = fs::read_to_string(&path)?;
-    let file: WorkspaceFile = serde_json::from_str(&content)?;
-    Ok(file)
+        },
+    )
 }
 
 pub fn save_workspaces(file: &WorkspaceFile) -> Result<()> {
-    let content = serde_json::to_string_pretty(file)?;
-    paths::atomic_write(&workspace_path(), &content)?;
-    Ok(())
+    paths::save_json(&workspace_path(), file)
 }
 
 fn settings_path() -> PathBuf {
@@ -59,19 +45,11 @@ fn settings_path() -> PathBuf {
 }
 
 pub fn load_workbench_settings() -> Result<WorkbenchSettings> {
-    let path = settings_path();
-    if !path.exists() {
-        return Ok(WorkbenchSettings::default());
-    }
-    let content = fs::read_to_string(&path)?;
-    let settings: WorkbenchSettings = serde_json::from_str(&content)?;
-    Ok(settings)
+    paths::load_json_strict(&settings_path(), WorkbenchSettings::default())
 }
 
 pub fn save_workbench_settings(settings: &WorkbenchSettings) -> Result<()> {
-    let content = serde_json::to_string_pretty(settings)?;
-    paths::atomic_write(&settings_path(), &content)?;
-    Ok(())
+    paths::save_json(&settings_path(), settings)
 }
 
 #[cfg(test)]

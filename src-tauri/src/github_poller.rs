@@ -97,46 +97,73 @@ impl GitHubPoller {
             while !stop.load(Ordering::Relaxed) {
                 let due_projects = Self::take_due_projects(&state);
 
-                for (project_path, persistent) in due_projects {
-                    let status = github::get_project_status(&project_path);
-                    let interval = if status_has_pending(&status) {
-                        FAST_POLL_INTERVAL
-                    } else {
-                        SLOW_POLL_INTERVAL
-                    };
-                    let transitions =
-                        detect_check_transitions_and_update(&state, project_path.as_str(), &status);
-                    let merged_branches = detect_merged_pr_transitions_and_update(
-                        &state,
-                        project_path.as_str(),
-                        &status,
-                    );
+                if !due_projects.is_empty() {
+                    // Fetch statuses for all due projects in parallel
+                    let results: Vec<_> = std::thread::scope(|s| {
+                        let handles: Vec<_> = due_projects
+                            .iter()
+                            .map(|(project_path, _)| {
+                                let path = project_path.as_str();
+                                s.spawn(move || github::get_project_status(path))
+                            })
+                            .collect();
+                        handles
+                            .into_iter()
+                            .map(|h| h.join().unwrap_or_else(|_| GitHubProjectStatus {
+                                remote: None,
+                                prs: vec![],
+                                branch_runs: HashMap::new(),
+                                pr_checks: HashMap::new(),
+                            }))
+                            .collect()
+                    });
 
-                    let _ = app_handle.emit(
-                        "github:project-status",
-                        GitHubProjectStatusEvent {
-                            project_path: project_path.clone(),
-                            status,
-                        },
-                    );
-                    for transition in transitions {
-                        let _ = app_handle.emit("github:check-transition", transition);
-                    }
-                    for merge_event in apply_trello_merge_actions(
-                        &project_path,
-                        merged_branches,
-                        trello_automation::apply_merge_action_for_branch,
-                    ) {
-                        let _ = app_handle.emit("trello:merge-action-applied", merge_event);
-                    }
+                    // Process results sequentially (transition detection, event emission, state updates)
+                    for ((project_path, persistent), status) in
+                        due_projects.into_iter().zip(results)
+                    {
+                        let interval = if status_has_pending(&status) {
+                            FAST_POLL_INTERVAL
+                        } else {
+                            SLOW_POLL_INTERVAL
+                        };
+                        let transitions = detect_check_transitions_and_update(
+                            &state,
+                            project_path.as_str(),
+                            &status,
+                        );
+                        let merged_branches = detect_merged_pr_transitions_and_update(
+                            &state,
+                            project_path.as_str(),
+                            &status,
+                        );
 
-                    let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
-                    if persistent {
-                        if let Some(project) = guard.projects.get_mut(&project_path) {
-                            project.next_poll_at = Instant::now() + interval;
+                        let _ = app_handle.emit(
+                            "github:project-status",
+                            GitHubProjectStatusEvent {
+                                project_path: project_path.clone(),
+                                status,
+                            },
+                        );
+                        for transition in transitions {
+                            let _ = app_handle.emit("github:check-transition", transition);
                         }
-                    } else {
-                        guard.projects.remove(&project_path);
+                        for merge_event in apply_trello_merge_actions(
+                            &project_path,
+                            merged_branches,
+                            trello_automation::apply_merge_action_for_branch,
+                        ) {
+                            let _ = app_handle.emit("trello:merge-action-applied", merge_event);
+                        }
+
+                        let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
+                        if persistent {
+                            if let Some(project) = guard.projects.get_mut(&project_path) {
+                                project.next_poll_at = Instant::now() + interval;
+                            }
+                        } else {
+                            guard.projects.remove(&project_path);
+                        }
                     }
                 }
 

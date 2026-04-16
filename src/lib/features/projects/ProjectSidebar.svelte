@@ -120,10 +120,6 @@
 		return attentionSessions.some((s) => s.sessionType === 'claude') ? 'claude' : 'codex';
 	}
 
-	function tasksForProject(project: ProjectConfig): ProjectTask[] {
-		return project.tasks ?? [];
-	}
-
 	function runTask(project: ProjectConfig, task: ProjectTask): void {
 		projectStore.openProject(project.path);
 		workspaceStore.runTaskByProject(project.path, task);
@@ -349,11 +345,11 @@
 </aside>
 
 {#snippet projectRow(project: ProjectConfig)}
-	{@const isOpen = workspaceStore.openProjectPaths.includes(project.path)}
+	{@const isOpen = workspaceStore.isProjectOpen(project.path)}
 	{@const isActive = workspaceStore.activeProjectPath === project.path}
 	{@const mainSessions = mainSessionsForProject(project.path)}
 	{@const worktrees = worktreesForProject(project.path)}
-	{@const tasks = tasksForProject(project)}
+	{@const tasks = project.tasks ?? []}
 	{@const branch = gitStore.branchByProject[project.path]}
 	{@const attentionType = projectAttentionType(project.path)}
 	{@const hasAttention = attentionType !== null}
