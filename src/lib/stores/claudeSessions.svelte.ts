@@ -4,15 +4,16 @@ import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { stripAnsi } from '$lib/utils/format';
 import { newSessionCommandWithPrompt } from '$lib/utils/claude';
 import { getWorkbenchSettingsStore } from './context';
-import type {
-	ActiveClaudeSession,
-	AgentAction,
-	ClaudeHookEvent,
-	CodexNotifyEvent,
-	DiscoveredClaudeSession,
-	SessionType,
-	TerminalActivityEvent,
-	TerminalDataEvent
+import {
+	isAISessionType,
+	type ActiveClaudeSession,
+	type AgentAction,
+	type ClaudeHookEvent,
+	type CodexNotifyEvent,
+	type DiscoveredClaudeSession,
+	type SessionType,
+	type TerminalActivityEvent,
+	type TerminalDataEvent
 } from '$types/workbench';
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
@@ -49,6 +50,8 @@ export class ClaudeSessionStore {
 	private latestClaudeSessionByPane = new SvelteMap<string, string>();
 	/** Latest Codex session ID observed for each pane from notify events */
 	private latestCodexSessionByPane = new SvelteMap<string, string>();
+	/** Cache of sessionId → resolved label. `null` means discovery ran but no label found yet. */
+	private resolvedSessionLabels = new SvelteMap<string, string | null>();
 	/** Reference to workspace store for Claude pane detection */
 	private workspaces: WorkspaceStore;
 	/** Reference to project store for opening projects */
@@ -62,7 +65,7 @@ export class ClaudeSessionStore {
 	readonly activeSessionsByProject = $derived.by((): Record<string, ActiveClaudeSession[]> => {
 		return this.workspaces.workspaces.reduce<Record<string, ActiveClaudeSession[]>>((acc, ws) => {
 			const sessions = ws.terminalTabs
-				.filter((t) => t.type === 'claude' || t.type === 'codex')
+				.filter((t) => isAISessionType(t.type))
 				.map((t) => {
 					const sessionType: ActiveClaudeSession['sessionType'] =
 						t.type === 'codex' ? 'codex' : 'claude';
@@ -89,7 +92,7 @@ export class ClaudeSessionStore {
 		const result: Record<string, SessionType> = {};
 		for (const ws of this.workspaces.workspaces) {
 			for (const tab of ws.terminalTabs) {
-				if (tab.type !== 'claude' && tab.type !== 'codex') continue;
+				if (!isAISessionType(tab.type)) continue;
 				const paneId = this.getAIPaneId(tab);
 				if (paneId) result[paneId] = tab.type;
 			}
@@ -369,6 +372,22 @@ export class ClaudeSessionStore {
 		type: 'claude' | 'codex'
 	): Promise<void> {
 		const fallback = `Session ${sessionId.slice(0, 8)}`;
+
+		// Check cache: if we already resolved a real label for this session, just apply it.
+		const cached = this.resolvedSessionLabels.get(sessionId);
+		if (cached) {
+			this.workspaces.updateAITabLabelByPaneId(paneId, cached, type);
+			return;
+		}
+
+		// If we already tried discovery once and got no label (cached === null), skip further attempts.
+		// The label will appear naturally when the user opens the resume menu.
+		if (cached === null) {
+			this.workspaces.updateAITabLabelByPaneId(paneId, fallback, type);
+			return;
+		}
+
+		// First time seeing this sessionId — set fallback and attempt discovery.
 		this.workspaces.updateAITabLabelByPaneId(paneId, fallback, type);
 
 		const ctx = this.workspaces.findAIPaneContext(paneId, type);
@@ -384,7 +403,11 @@ export class ClaudeSessionStore {
 
 		const match = sessions.find((s) => s.sessionId === sessionId);
 		if (match?.label) {
+			this.resolvedSessionLabels.set(sessionId, match.label);
 			this.workspaces.updateAITabLabelByPaneId(paneId, match.label, type);
+		} else {
+			// Mark as attempted so subsequent hook events for this session skip discovery.
+			this.resolvedSessionLabels.set(sessionId, null);
 		}
 	}
 

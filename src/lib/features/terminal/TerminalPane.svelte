@@ -503,7 +503,9 @@
 			removeVisibilityListener = () => {
 				document.removeEventListener('visibilitychange', onVisibilityChange);
 			};
-			perfLogInterval = setInterval(logPerfSnapshotIfEnabled, PERF_LOG_INTERVAL_MS);
+			if (workbenchSettingsStore.terminalTelemetryEnabled) {
+				perfLogInterval = setInterval(logPerfSnapshotIfEnabled, PERF_LOG_INTERVAL_MS);
+			}
 		} catch (error) {
 			terminalError = `Failed to start terminal: ${String(error)}`;
 		}

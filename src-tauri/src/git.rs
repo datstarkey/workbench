@@ -118,9 +118,7 @@ fn collect_workspace_copy_candidates(
         for path in env_default_paths {
             candidates.insert(PathBuf::from(path));
         }
-    }
 
-    if options.env_files {
         if let Ok(entries) = fs::read_dir(repo_root) {
             for entry in entries.flatten() {
                 let file_name = entry.file_name();
@@ -474,17 +472,7 @@ pub fn delete_branch(repo_path: &str, branch: &str, force: bool) -> Result<()> {
 
 pub fn clone_repo(url: &str, dest_path: &str) -> Result<()> {
     let home = dirs::home_dir().unwrap_or_default();
-    let output = std::process::Command::new("git")
-        .args(["clone", url, dest_path])
-        .current_dir(&home)
-        .output()
-        .context("Failed to run git clone")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        anyhow::bail!("{stderr}");
-    }
-
+    git_output(&["clone", url, dest_path], &home.to_string_lossy())?;
     Ok(())
 }
 
@@ -683,16 +671,18 @@ pub fn git_stash_push(path: &str, message: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn git_stash_pop(path: &str, index: u32) -> Result<()> {
+fn git_stash_action(path: &str, action: &str, index: u32) -> Result<()> {
     let stash_ref = format!("stash@{{{index}}}");
-    git_output(&["stash", "pop", &stash_ref], path)?;
+    git_output(&["stash", action, &stash_ref], path)?;
     Ok(())
 }
 
+pub fn git_stash_pop(path: &str, index: u32) -> Result<()> {
+    git_stash_action(path, "pop", index)
+}
+
 pub fn git_stash_drop(path: &str, index: u32) -> Result<()> {
-    let stash_ref = format!("stash@{{{index}}}");
-    git_output(&["stash", "drop", &stash_ref], path)?;
-    Ok(())
+    git_stash_action(path, "drop", index)
 }
 
 pub fn git_discard_file(path: &str, file: &str) -> Result<()> {

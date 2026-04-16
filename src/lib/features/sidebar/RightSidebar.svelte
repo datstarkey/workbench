@@ -36,7 +36,7 @@
 					variant={activeTab === 'git' ? 'secondary' : 'ghost'}
 					size="sm"
 					class="h-7 gap-1.5 text-xs"
-					onclick={() => sidebarStore.setTab('git')}
+					onclick={() => (sidebarStore.activeTab = 'git')}
 				>
 					<GitBranchIcon class="size-3.5" />
 					Git
@@ -46,7 +46,7 @@
 				variant={activeTab === 'github' ? 'secondary' : 'ghost'}
 				size="sm"
 				class="h-7 gap-1.5 text-xs"
-				onclick={() => sidebarStore.setTab('github')}
+				onclick={() => (sidebarStore.activeTab = 'github')}
 			>
 				<GithubIcon class="size-3.5" />
 				GitHub
@@ -56,7 +56,7 @@
 					variant={activeTab === 'boards' ? 'secondary' : 'ghost'}
 					size="sm"
 					class="h-7 gap-1.5 text-xs"
-					onclick={() => sidebarStore.setTab('boards')}
+					onclick={() => (sidebarStore.activeTab = 'boards')}
 				>
 					<LayoutListIcon class="size-3.5" />
 					Boards

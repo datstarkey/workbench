@@ -63,6 +63,12 @@ export interface CodexNotifyEvent {
 }
 
 export type SessionType = 'shell' | 'claude' | 'codex';
+export type AISessionType = 'claude' | 'codex';
+
+/** Type guard: true for 'claude' and 'codex' session types */
+export function isAISessionType(type: SessionType | undefined): type is AISessionType {
+	return type === 'claude' || type === 'codex';
+}
 
 export interface TerminalPaneState {
 	id: string;

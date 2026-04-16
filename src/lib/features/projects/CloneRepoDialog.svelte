@@ -13,6 +13,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { invoke } from '@tauri-apps/api/core';
 	import { selectFolder } from '$lib/utils/dialog';
+	import { baseName } from '$lib/utils/path';
 	import { getProjectStore, getWorkbenchSettingsStore } from '$stores/context';
 	import type { GitHubRepo } from '$types/workbench';
 
@@ -56,8 +57,7 @@
 		if (selectedRepo) return selectedRepo.name;
 		const m = manualInput.trim();
 		if (!m) return '';
-		const parts = m.replace(/\.git$/, '').split('/');
-		return parts[parts.length - 1] ?? '';
+		return baseName(m.replace(/\.git$/, ''));
 	});
 
 	let resolvedDestPath = $derived.by(() => {
@@ -108,8 +108,7 @@
 		cloneError = null;
 		try {
 			await invoke('clone_repo', { url: resolvedUrl, destPath: resolvedDestPath });
-			const parts = resolvedDestPath.split('/');
-			const name = repoName || parts[parts.length - 1] || 'Cloned Repo';
+			const name = repoName || baseName(resolvedDestPath) || 'Cloned Repo';
 			await projectStore.add({ name, path: resolvedDestPath });
 			projectStore.openProject(resolvedDestPath);
 			open = false;

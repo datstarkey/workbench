@@ -21,20 +21,11 @@ fn project_config_path(project_path: &str) -> PathBuf {
 }
 
 pub fn load_credentials() -> Result<Option<TrelloCredentials>> {
-    let path = credentials_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&path)?;
-    let creds: TrelloCredentials = serde_json::from_str(&content)?;
-    Ok(Some(creds))
+    paths::load_json_strict(&credentials_path(), None)
 }
 
 pub fn save_credentials(creds: &TrelloCredentials) -> Result<()> {
-    let content = serde_json::to_string_pretty(creds)?;
-    paths::atomic_write(&credentials_path(), &content)?;
-    Ok(())
+    paths::save_json(&credentials_path(), creds)
 }
 
 pub fn delete_credentials() -> Result<()> {
@@ -46,18 +37,9 @@ pub fn delete_credentials() -> Result<()> {
 }
 
 pub fn load_project_config(project_path: &str) -> Result<TrelloProjectConfig> {
-    let path = project_config_path(project_path);
-    if !path.exists() {
-        return Ok(TrelloProjectConfig::default());
-    }
-
-    let content = fs::read_to_string(&path)?;
-    let config: TrelloProjectConfig = serde_json::from_str(&content)?;
-    Ok(config)
+    paths::load_json_strict(&project_config_path(project_path), TrelloProjectConfig::default())
 }
 
 pub fn save_project_config(project_path: &str, config: &TrelloProjectConfig) -> Result<()> {
-    let content = serde_json::to_string_pretty(config)?;
-    paths::atomic_write(&project_config_path(project_path), &content)?;
-    Ok(())
+    paths::save_json(&project_config_path(project_path), config)
 }

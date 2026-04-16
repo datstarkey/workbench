@@ -145,13 +145,15 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
-	describe('openProjectPaths', () => {
-		it('returns all project paths', () => {
+	describe('isProjectOpen', () => {
+		it('returns true for open projects', () => {
 			store.workspaces = [
 				makeWorkspace({ projectPath: '/a' }),
 				makeWorkspace({ projectPath: '/b' })
 			];
-			expect(store.openProjectPaths).toEqual(['/a', '/b']);
+			expect(store.isProjectOpen('/a')).toBe(true);
+			expect(store.isProjectOpen('/b')).toBe(true);
+			expect(store.isProjectOpen('/c')).toBe(false);
 		});
 	});
 
@@ -751,17 +753,6 @@ describe('WorkspaceStore', () => {
 			const tab = store.workspaces[0].terminalTabs[0];
 			expect(tab.label).toBe('Review PR');
 			expect(tab.panes[0].startupCommand).toBe("claude 'Review this PR for regressions'");
-		});
-	});
-
-	describe('addClaudeSession', () => {
-		it('delegates to addAISession with claude type', () => {
-			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-
-			const { tabId } = store.addClaudeSession('ws-a');
-
-			expect(store.workspaces[0].terminalTabs[0].type).toBe('claude');
-			expect(tabId).toBeTruthy();
 		});
 	});
 

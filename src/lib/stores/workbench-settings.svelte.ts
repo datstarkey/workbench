@@ -11,6 +11,12 @@ import type {
 } from '$types/workbench';
 import { invoke } from '@tauri-apps/api/core';
 
+/** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
+type SettableField = keyof Omit<
+	WorkbenchSettings,
+	'agentActions' | 'claudeHooksApproved' | 'codexConfigApproved'
+>;
+
 export class WorkbenchSettingsStore {
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
 	worktreeFetchBeforeCreate = $state(true);
@@ -68,58 +74,9 @@ export class WorkbenchSettingsStore {
 		}
 	}
 
-	setWorktreeStrategy(value: WorktreeStrategy) {
-		this.worktreeStrategy = value;
-		this.dirty = true;
-	}
-
-	setWorktreeFetchBeforeCreate(value: boolean) {
-		this.worktreeFetchBeforeCreate = value;
-		this.dirty = true;
-	}
-
-	setWorktreeStartPoint(value: WorktreeStartPoint) {
-		this.worktreeStartPoint = value;
-		this.dirty = true;
-	}
-
-	setWorktreeCustomBranch(value: string) {
-		this.worktreeCustomBranch = value;
-		this.dirty = true;
-	}
-
-	setTrelloEnabled(value: boolean) {
-		this.trelloEnabled = value;
-		this.dirty = true;
-	}
-
-	setGitSidebarEnabled(value: boolean) {
-		this.gitSidebarEnabled = value;
-		this.dirty = true;
-	}
-
-	setTerminalPerformanceMode(value: TerminalPerformanceMode) {
-		this.terminalPerformanceMode = value;
-		this.dirty = true;
-	}
-
-	setTerminalTelemetryEnabled(value: boolean) {
-		this.terminalTelemetryEnabled = value;
-		this.dirty = true;
-	}
-
-	setTerminalRenderer(value: TerminalRenderer) {
-		this.terminalRenderer = value;
-		this.dirty = true;
-	}
-
-	setUseHappyCoder(value: boolean) {
-		this.useHappyCoder = value;
-		this.dirty = true;
-	}
-
-	setCloneBaseDir(value: string | null) {
-		this.cloneBaseDir = value;
+	set<K extends SettableField>(field: K, value: WorkbenchSettings[K]): void {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		(this as any)[field] = value;
 		this.dirty = true;
 	}
 

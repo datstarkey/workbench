@@ -189,11 +189,8 @@ fn should_emit_project_refresh_for_hook(hook: &Value) -> bool {
     }
 }
 
+/// Emit a project refresh event. Caller must verify `should_emit_project_refresh_for_hook` first.
 fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
-    if !should_emit_project_refresh_for_hook(hook) {
-        return;
-    }
-
     let pty_manager = handle.state::<PtyManager>();
     let Some(project_path) = pty_manager.project_path_for_session(pane_id) else {
         return;
@@ -260,7 +257,10 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
 
         match envelope {
             HookBridgeEnvelope::Claude { pane_id, hook } => {
-                emit_project_refresh_event(handle, &pane_id, &hook);
+                let refreshed = should_emit_project_refresh_for_hook(&hook);
+                if refreshed {
+                    emit_project_refresh_event(handle, &pane_id, &hook);
+                }
 
                 let event_name = hook
                     .get("hook_event_name")
@@ -270,7 +270,6 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
                     .get("tool_name")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let refreshed = should_emit_project_refresh_for_hook(&hook);
                 let summary = match (&event_name, &tool_name) {
                     (Some(ev), Some(tool)) => {
                         let mut s = format!("{ev}: {tool}");
