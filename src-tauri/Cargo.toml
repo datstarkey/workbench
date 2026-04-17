@@ -30,5 +30,8 @@ tauri-plugin-process = "2"
 reqwest = { version = "0.12", features = ["json"] }
 chrono = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
