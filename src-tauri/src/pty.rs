@@ -76,6 +76,68 @@ fn resolve_repo_root(path: &str) -> Option<String> {
     }
 }
 
+/// Kill the shell and every descendant it spawned (vite dev, npm run, etc).
+///
+/// On Unix the PTY slave calls `setsid()`, making the shell the leader of a new
+/// process group; every descendant inherits that pgid. Killing only the shell
+/// PID leaves its children re-parented to init, still running. We signal the
+/// whole group instead: SIGHUP + SIGTERM for graceful shutdown, then SIGKILL
+/// after a short grace period for anything still alive.
+///
+/// On Windows we shell out to `taskkill /T /F`, which terminates the PID and
+/// its whole descendant tree.
+#[cfg(unix)]
+fn terminate_process_tree(child: &mut (dyn portable_pty::Child + Send)) {
+    use std::time::Duration;
+    const GRACE_PERIOD: Duration = Duration::from_millis(500);
+    const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+    // The PTY slave calls setsid() in the child fork, so the child PID is
+    // also its session/process group ID. `killpg` on that id signals the
+    // whole group.
+    let pgid = child.process_id().map(|pid| pid as libc::pid_t);
+
+    if let Some(pgid) = pgid {
+        unsafe {
+            libc::killpg(pgid, libc::SIGHUP);
+            libc::killpg(pgid, libc::SIGTERM);
+        }
+    } else {
+        let _ = child.kill();
+    }
+
+    // Poll for graceful exit within the grace period.
+    let deadline = Instant::now() + GRACE_PERIOD;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() >= deadline => break,
+            Ok(None) => std::thread::sleep(POLL_INTERVAL),
+            Err(_) => break,
+        }
+    }
+
+    // Still alive — escalate to SIGKILL on the whole group.
+    if let Some(pgid) = pgid {
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    } else {
+        let _ = child.kill();
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process_tree(child: &mut (dyn portable_pty::Child + Send)) {
+    if let Some(pid) = child.process_id() {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .output();
+    } else {
+        let _ = child.kill();
+    }
+}
+
 fn send_output_chunk(tx: &SyncSender<String>, data: String) -> bool {
     match tx.try_send(data) {
         Ok(()) => true,
@@ -403,13 +465,18 @@ impl PtyManager {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&sid);
 
-            let exit_code = session_for_cleanup
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .child
-                .wait()
-                .map(|s| if s.success() { 0 } else { 1 })
-                .unwrap_or(1);
+            let exit_code = {
+                let mut sess = session_for_cleanup
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                // Shell exited — sweep any lingering children in its group
+                // (e.g. background `vite dev &` that detached from the shell).
+                terminate_process_tree(sess.child.as_mut());
+                sess.child
+                    .wait()
+                    .map(|s| if s.success() { 0 } else { 1 })
+                    .unwrap_or(1)
+            };
 
             let _ = handle.emit(
                 "terminal:exit",
@@ -471,7 +538,7 @@ impl PtyManager {
             .remove(session_id);
 
         let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = sess.child.kill();
+        terminate_process_tree(sess.child.as_mut());
         let exit_code = sess
             .child
             .wait()
