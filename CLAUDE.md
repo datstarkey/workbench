@@ -4,6 +4,14 @@
 
 Workbench is a Tauri v2 + Svelte 5 desktop terminal manager. Users add local project folders, and each project gets a tabbed workspace with real shell terminals (via `portable-pty` + `xterm.js`). Config persisted to `~/.workbench/projects.json`, workspaces to `~/.workbench/workspaces.json`.
 
+## Release
+
+- **GitHub releases:** created automatically by GitHub Actions (`tauri-action`) when a `v*` tag is pushed. **Do not** run `gh release create` manually — it causes duplicate/empty releases.
+- **Issue/PR linking:** enabled — append `(#N)` references to changelog entries so GitHub auto-links them.
+- **Tag format:** `v`-prefixed semver (e.g. `v0.18.0`).
+- **Changelog location:** `changelog/RELEASE_{version}.md`.
+- **Release flow:** write changelog → commit → tag → push commit + tag → let CI publish the release.
+
 ## Commands
 
 - **Install:** `bun install`
