@@ -402,6 +402,27 @@ export class WorkspaceStore {
 		if (changed) this.persist();
 	}
 
+	/** Find workspace/tab containing any pane (AI or otherwise). */
+	findPaneLocation(paneId: string): { workspaceId: string; tabId: string } | null {
+		for (const ws of this.workspaces) {
+			for (const tab of ws.terminalTabs) {
+				if (tab.panes.some((p) => p.id === paneId)) {
+					return { workspaceId: ws.id, tabId: tab.id };
+				}
+			}
+		}
+		return null;
+	}
+
+	/** Activate the workspace and tab containing the given pane. */
+	focusPane(paneId: string): boolean {
+		const location = this.findPaneLocation(paneId);
+		if (!location) return false;
+		this.selectedId = location.workspaceId;
+		this.setActiveTab(location.workspaceId, location.tabId);
+		return true;
+	}
+
 	/** Find workspace/tab context for an AI pane. */
 	findAIPaneContext(
 		paneId: string,

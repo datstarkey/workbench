@@ -61,6 +61,9 @@ export class ClaudeSessionStore {
 	/** Reference to workbench settings store */
 	private settingsStore = getWorkbenchSettingsStore();
 
+	/** Callbacks invoked when a pane transitions into awaiting-input state */
+	private awaitingInputCallbacks: Array<(paneId: string) => void> = [];
+
 	/** Active Claude sessions grouped by project path */
 	readonly activeSessionsByProject = $derived.by((): Record<string, ActiveClaudeSession[]> => {
 		return this.workspaces.workspaces.reduce<Record<string, ActiveClaudeSession[]>>((acc, ws) => {
@@ -311,10 +314,27 @@ export class ClaudeSessionStore {
 	private applyNotification(paneId: string, payload: Record<string, unknown>): void {
 		if (this.isInputRequiredNotification(payload)) {
 			this.panesInProgress.delete(paneId);
+			const wasAwaiting = this.panesAwaitingInput.has(paneId);
 			this.panesAwaitingInput.add(paneId);
+			if (!wasAwaiting) this.emitAwaitingInput(paneId);
 		} else if (this.isIdlePromptNotification(payload)) {
 			this.panesInProgress.delete(paneId);
 			this.panesAwaitingInput.delete(paneId);
+		}
+	}
+
+	/** Register a callback that fires when a pane transitions into awaiting-input. */
+	onAwaitingInput(callback: (paneId: string) => void): void {
+		this.awaitingInputCallbacks.push(callback);
+	}
+
+	private emitAwaitingInput(paneId: string): void {
+		for (const cb of this.awaitingInputCallbacks) {
+			try {
+				cb(paneId);
+			} catch (e) {
+				console.warn('[ClaudeSessionStore] awaiting-input callback error:', e);
+			}
 		}
 	}
 
@@ -350,7 +370,13 @@ export class ClaudeSessionStore {
 				this.panesInProgress.add(paneId);
 				this.panesAwaitingInput.delete(paneId);
 				break;
-			case 'Stop':
+			case 'Stop': {
+				const wasInProgress = this.panesInProgress.has(paneId);
+				this.panesInProgress.delete(paneId);
+				this.panesAwaitingInput.delete(paneId);
+				if (wasInProgress) this.emitAwaitingInput(paneId);
+				break;
+			}
 			case 'SessionStart':
 				this.panesInProgress.delete(paneId);
 				this.panesAwaitingInput.delete(paneId);
@@ -423,8 +449,10 @@ export class ClaudeSessionStore {
 
 		// Codex notify currently delivers completion/approval style events.
 		if (event.notifyEvent === 'agent-turn-complete') {
+			const wasInProgress = this.panesInProgress.has(paneId);
 			this.panesInProgress.delete(paneId);
 			this.clearSubmitFallback(paneId);
+			if (wasInProgress) this.emitAwaitingInput(paneId);
 		}
 	}
 

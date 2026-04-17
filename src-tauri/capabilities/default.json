@@ -17,6 +17,13 @@
 		"shell:allow-open",
 		"updater:default",
 		"process:default",
-		"core:window:allow-set-badge-count"
+		"core:window:allow-set-badge-count",
+		"core:window:allow-set-focus",
+		"core:window:allow-unminimize",
+		"core:window:allow-show",
+		"notification:default",
+		"notification:allow-notify",
+		"notification:allow-request-permission",
+		"notification:allow-is-permission-granted"
 	]
 }

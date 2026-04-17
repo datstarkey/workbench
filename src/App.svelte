@@ -35,6 +35,7 @@
 		setWorkspaceStore
 	} from '$stores/context';
 	import { GitHubStore } from '$stores/github.svelte';
+	import { NotificationStore } from '$stores/notifications.svelte';
 	import { TrelloStore } from '$stores/trello.svelte';
 	import { UpdaterStore } from '$stores/updater.svelte';
 	import { GitStore } from '$stores/git.svelte';
@@ -70,6 +71,7 @@
 	);
 	const trelloStore = setTrelloStore(new TrelloStore());
 	setSidebarStore(new SidebarStore());
+	new NotificationStore(workspaceStore, claudeSessionStore);
 
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
