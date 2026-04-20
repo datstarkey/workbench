@@ -93,6 +93,8 @@
 	let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 	let offscreenQueue = '';
 
+	let removeCopyListener: (() => void) | null = null;
+
 	// Buffer early output to detect Claude CLI errors for auto-retry
 	let earlyOutput = '';
 	let claudeRetryCmd = '';
@@ -396,11 +398,19 @@
 					!event.metaKey
 				) {
 					if (event.type === 'keydown') {
-						if (claudeSessionStore.paneType(sessionId) === 'codex') {
-							writeTerminal(sessionId, '\x0A');
-						} else {
-							writeTerminal(sessionId, '\x1b[200~\n\x1b[201~');
-						}
+						const paneType = claudeSessionStore.paneType(sessionId);
+						// Codex: Ctrl+J (LF).
+						// Claude: ESC+CR — same sequence VS Code's `/terminal-setup`
+						// keybinding sends; avoids bracketed-paste doubling.
+						// Shell: bracketed-paste newline so zsh/bash insert a literal
+						// newline into the in-progress command instead of submitting.
+						const seq =
+							paneType === 'codex'
+								? '\x0A'
+								: paneType === 'claude'
+									? '\x1b\r'
+									: '\x1b[200~\n\x1b[201~';
+						writeTerminal(sessionId, seq);
 					}
 					return intercept(event);
 				}
@@ -491,6 +501,25 @@
 				});
 			});
 			resizeObserver.observe(container);
+
+			// Post-process xterm's copy output for AI panes only: strip trailing
+			// whitespace from every line. Claude Code / Codex pad rows with spaces
+			// to paint backgrounds, which xterm's selection can't distinguish
+			// from real content. Shell copies pass through untouched so that
+			// legitimate trailing whitespace (e.g. in code) is preserved.
+			// CRLF-safe: xterm joins lines with \r\n on Windows.
+			const onCopy = (event: ClipboardEvent) => {
+				if (claudeSessionStore.paneType(sessionId) === null) return;
+				const data = event.clipboardData?.getData('text/plain');
+				if (!data) return;
+				const cleaned = data.replace(/[ \t]+(?=\r?\n|$)/g, '');
+				if (cleaned === data) return;
+				event.clipboardData!.setData('text/plain', cleaned);
+				event.preventDefault();
+			};
+			container.addEventListener('copy', onCopy);
+			removeCopyListener = () => container.removeEventListener('copy', onCopy);
+
 			intersectionObserver = new IntersectionObserver(
 				(entries) => {
 					const entry = entries[0];
@@ -528,6 +557,7 @@
 		clearFlushSchedule();
 		if (perfLogInterval) clearInterval(perfLogInterval);
 		removeVisibilityListener?.();
+		removeCopyListener?.();
 		unlistenData?.();
 		unlistenExit?.();
 		resizeObserver?.disconnect();
