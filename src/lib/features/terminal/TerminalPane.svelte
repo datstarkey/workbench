@@ -397,14 +397,20 @@
 					!event.ctrlKey &&
 					!event.metaKey
 				) {
-					const paneType = claudeSessionStore.paneType(sessionId);
-					// Only intercept for AI panes. Shell sessions should see a
-					// plain Enter (handled by xterm).
-					if (paneType === null) return true;
 					if (event.type === 'keydown') {
-						// Codex: Ctrl+J (LF). Claude: ESC+CR — same sequence VS Code's
-						// `/terminal-setup` keybinding sends, avoids bracketed-paste doubling.
-						writeTerminal(sessionId, paneType === 'codex' ? '\x0A' : '\x1b\r');
+						const paneType = claudeSessionStore.paneType(sessionId);
+						// Codex: Ctrl+J (LF).
+						// Claude: ESC+CR — same sequence VS Code's `/terminal-setup`
+						// keybinding sends; avoids bracketed-paste doubling.
+						// Shell: bracketed-paste newline so zsh/bash insert a literal
+						// newline into the in-progress command instead of submitting.
+						const seq =
+							paneType === 'codex'
+								? '\x0A'
+								: paneType === 'claude'
+									? '\x1b\r'
+									: '\x1b[200~\n\x1b[201~';
+						writeTerminal(sessionId, seq);
 					}
 					return intercept(event);
 				}
@@ -496,18 +502,17 @@
 			});
 			resizeObserver.observe(container);
 
-			// Post-process xterm's copy output: strip trailing whitespace from
-			// every line. Apps like Claude Code pad rows with spaces to paint
-			// backgrounds, and xterm's isWrapped-aware selection can't tell those
-			// apart from real content. Attach on the wrapper (outside xterm's
-			// element) so we run after xterm's copy handler has set clipboardData.
+			// Post-process xterm's copy output for AI panes only: strip trailing
+			// whitespace from every line. Claude Code / Codex pad rows with spaces
+			// to paint backgrounds, which xterm's selection can't distinguish
+			// from real content. Shell copies pass through untouched so that
+			// legitimate trailing whitespace (e.g. in code) is preserved.
+			// CRLF-safe: xterm joins lines with \r\n on Windows.
 			const onCopy = (event: ClipboardEvent) => {
+				if (claudeSessionStore.paneType(sessionId) === null) return;
 				const data = event.clipboardData?.getData('text/plain');
 				if (!data) return;
-				const cleaned = data
-					.split('\n')
-					.map((line) => line.replace(/[ \t]+$/, ''))
-					.join('\n');
+				const cleaned = data.replace(/[ \t]+(?=\r?\n|$)/g, '');
 				if (cleaned === data) return;
 				event.clipboardData!.setData('text/plain', cleaned);
 				event.preventDefault();
