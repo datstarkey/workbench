@@ -93,6 +93,8 @@
 	let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
 	let offscreenQueue = '';
 
+	let removeCopyListener: (() => void) | null = null;
+
 	// Buffer early output to detect Claude CLI errors for auto-retry
 	let earlyOutput = '';
 	let claudeRetryCmd = '';
@@ -395,12 +397,14 @@
 					!event.ctrlKey &&
 					!event.metaKey
 				) {
+					const paneType = claudeSessionStore.paneType(sessionId);
+					// Only intercept for AI panes. Shell sessions should see a
+					// plain Enter (handled by xterm).
+					if (paneType === null) return true;
 					if (event.type === 'keydown') {
-						if (claudeSessionStore.paneType(sessionId) === 'codex') {
-							writeTerminal(sessionId, '\x0A');
-						} else {
-							writeTerminal(sessionId, '\x1b[200~\n\x1b[201~');
-						}
+						// Codex: Ctrl+J (LF). Claude: ESC+CR — same sequence VS Code's
+						// `/terminal-setup` keybinding sends, avoids bracketed-paste doubling.
+						writeTerminal(sessionId, paneType === 'codex' ? '\x0A' : '\x1b\r');
 					}
 					return intercept(event);
 				}
@@ -491,6 +495,26 @@
 				});
 			});
 			resizeObserver.observe(container);
+
+			// Post-process xterm's copy output: strip trailing whitespace from
+			// every line. Apps like Claude Code pad rows with spaces to paint
+			// backgrounds, and xterm's isWrapped-aware selection can't tell those
+			// apart from real content. Attach on the wrapper (outside xterm's
+			// element) so we run after xterm's copy handler has set clipboardData.
+			const onCopy = (event: ClipboardEvent) => {
+				const data = event.clipboardData?.getData('text/plain');
+				if (!data) return;
+				const cleaned = data
+					.split('\n')
+					.map((line) => line.replace(/[ \t]+$/, ''))
+					.join('\n');
+				if (cleaned === data) return;
+				event.clipboardData!.setData('text/plain', cleaned);
+				event.preventDefault();
+			};
+			container.addEventListener('copy', onCopy);
+			removeCopyListener = () => container.removeEventListener('copy', onCopy);
+
 			intersectionObserver = new IntersectionObserver(
 				(entries) => {
 					const entry = entries[0];
@@ -528,6 +552,7 @@
 		clearFlushSchedule();
 		if (perfLogInterval) clearInterval(perfLogInterval);
 		removeVisibilityListener?.();
+		removeCopyListener?.();
 		unlistenData?.();
 		unlistenExit?.();
 		resizeObserver?.disconnect();
