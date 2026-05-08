@@ -16,7 +16,11 @@ pub fn is_skippable_user_message(trimmed: &str) -> bool {
 pub fn truncate_label(text: &str) -> String {
     let first_line = text.lines().next().unwrap_or(text);
     if first_line.len() > SESSION_LABEL_MAX_LENGTH {
-        format!("{}...", &first_line[..SESSION_LABEL_MAX_LENGTH - 3])
+        let mut end = SESSION_LABEL_MAX_LENGTH - 3;
+        while end > 0 && !first_line.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &first_line[..end])
     } else {
         first_line.to_string()
     }
@@ -112,6 +116,23 @@ mod tests {
     fn truncate_label_multiline_takes_first_line() {
         let multiline = "first line\nsecond line\nthird line";
         assert_eq!(truncate_label(multiline), "first line");
+    }
+
+    #[test]
+    fn truncate_label_multibyte_at_boundary_does_not_panic() {
+        // ASCII prefix + 4-byte emoji straddles the truncation boundary (byte 77).
+        let s = format!("{}{}{}", "a".repeat(75), "🎉", "b".repeat(20));
+        let result = truncate_label(&s);
+        assert!(result.ends_with("..."));
+        assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
+    fn truncate_label_multibyte_overlong_truncates_safely() {
+        let s = "é".repeat(100);
+        let result = truncate_label(&s);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 80);
     }
 
     // fallback_label tests
