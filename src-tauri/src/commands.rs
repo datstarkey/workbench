@@ -179,17 +179,17 @@ pub fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
     settings::list_hooks_scripts().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_info(path: String) -> Result<GitInfo, String> {
     git::git_info(&path).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
     git::list_worktrees(&path).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
     git::create_worktree(&request).map_err(|e| e.to_string())
 }
@@ -204,7 +204,7 @@ pub fn remove_worktree(
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
     git::list_branches(&path).map_err(|e| e.to_string())
 }
