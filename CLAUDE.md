@@ -54,6 +54,7 @@ Run from the repo root. JS tasks go through Turborepo (the local `turbo` binary 
 
 - **Rust:** `cargo test` — desktop + `workbench-core` units, `workbench-server` units, and `apps/server/tests/server.rs` (e2e: binds a real server on an ephemeral port, drives it with reqwest; the spawn cycle runs against a fake `claude` via `WORKBENCH_CLAUDE_BIN` so no real CLI/network is needed).
 - **JS (`turbo run test`):** `@workbench/transport` (route mapping, undefined-param dropping, error handling, `MockTransport`), `@workbench/control-plane-ui` (`ControlPlaneStore` via `createMockTransport`, incl. spawn polling with fake timers), and `@workbench/desktop` (stores/utils; inject `createMockTransport` instead of mocking `@tauri-apps/api`).
+- **Cross-language integration** (`packages/transport/src/http.integration.test.ts`): drives the real `HttpTransport` against the real `workbench-server` binary (spawn→list→kill round-trip). Auto-**skips** unless `target/debug/workbench-server` exists, so build it first (`cargo build -p workbench-server`) to run it; otherwise `turbo test` silently skips it.
 - Not covered by automated tests: the Tauri desktop GUI (would need a webdriver) and native mobile.
 
 Use **Bun** exclusively — do not introduce npm/yarn/pnpm lockfiles. Prettier runs at the root (single pass, keeps prettier-before-eslint ordering); eslint runs per package via turbo.
