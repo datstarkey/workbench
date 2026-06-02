@@ -3,7 +3,6 @@
 	import ActivityRail from '$features/chrome/ActivityRail.svelte';
 	import StatusBar from '$features/chrome/StatusBar.svelte';
 	import IntegrationApprovalDialog from '$components/IntegrationApprovalDialog.svelte';
-	import SettingsSheet from '$components/settings/SettingsSheet.svelte';
 	import ProjectManager from '$features/projects/ProjectManager.svelte';
 	import { ProjectManagerStore } from '$features/projects/project-manager.svelte';
 	import ProjectSidebar from '$features/projects/ProjectSidebar.svelte';
@@ -42,6 +41,7 @@
 	import { UpdaterStore } from '$stores/updater.svelte';
 	import { GitStore } from '$stores/git.svelte';
 	import { SidebarStore } from '$stores/sidebar.svelte';
+	import { openSettingsWindow } from '$lib/utils/settings-window';
 	import { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
@@ -79,7 +79,14 @@
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let githubSidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
-	let settingsOpen = $state(false);
+
+	/** Open (or focus) settings in its own OS window, seeded with the active project. */
+	function openSettings() {
+		void openSettingsWindow(
+			workspaceStore.activeProjectPath,
+			workbenchSettingsStore.settingsWindowBounds
+		);
+	}
 
 	function toggleSidebar() {
 		if (sidebarCollapsed) {
@@ -90,7 +97,15 @@
 	}
 
 	listen('menu:open-settings', () => {
-		settingsOpen = true;
+		openSettings();
+	});
+
+	// The settings window persists changes to disk in its own webview; reload the
+	// live-bound stores here so accent, sidebar toggles, and integrations update.
+	listen('settings:changed', async () => {
+		await workbenchSettingsStore.load();
+		await trelloStore.loadCredentials();
+		await Promise.all(projectStore.projects.map((p) => trelloStore.loadProjectConfig(p.path)));
 	});
 
 	// Apply selected accent preset to the document root (drives CSS-var presets).
@@ -160,7 +175,7 @@
 <Tooltip.Provider>
 	<div class="flex h-screen flex-col overflow-hidden bg-background text-foreground">
 		<div class="flex min-h-0 flex-1">
-			<ActivityRail onToggleSidebar={toggleSidebar} onOpenSettings={() => (settingsOpen = true)} />
+			<ActivityRail onToggleSidebar={toggleSidebar} onOpenSettings={openSettings} />
 			<div class="h-full min-w-0 flex-1">
 				<Resizable.PaneGroup direction="horizontal">
 					<Resizable.Pane
@@ -176,7 +191,7 @@
 					>
 						<ProjectSidebar
 							{sidebarCollapsed}
-							onOpenSettings={() => (settingsOpen = true)}
+							onOpenSettings={openSettings}
 							onToggleSidebar={toggleSidebar}
 						/>
 					</Resizable.Pane>
@@ -260,7 +275,6 @@
 
 <ProjectManager />
 <WorktreeManager />
-<SettingsSheet bind:open={settingsOpen} projectPath={workspaceStore.activeProjectPath} />
 <IntegrationApprovalDialog />
 <UpdateDialog />
 <Toaster theme="dark" position="bottom-right" />
