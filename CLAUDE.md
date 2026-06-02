@@ -91,6 +91,10 @@ All IPC uses `invoke()` from `@tauri-apps/api/core` and `listen()` from `@tauri-
 
 Tailwind CSS v4 via `@tailwindcss/vite`. shadcn-svelte components (`components.json`, base color: slate). Dark mode forced on.
 
+- Pro chrome tokens: `--wb-*` CSS vars in `app.css` (`bg`/`panel`/`panel2`/`rail`/`ink`/`hair` + session colors `claude`/`codex`/`shell`/`ok`/`warn`/`err`), exposed as Tailwind utilities (`bg-wb-panel`, `text-wb-claude`). Use these for new chrome instead of shadcn surface tokens (keeps dialogs/inputs unbroken).
+- Accent is theme-selectable: `:root[data-accent='violet|tideline|ember|moss|iris']` presets in `app.css` drive `--wb-accent` + shadcn `--primary`; the attribute is set from `workbenchSettingsStore.accentColor`. Add new presets in `app.css` AND the swatch list in `SettingsWorkbench.svelte`.
+- Window chrome components live in `src/lib/features/chrome/` (`ActivityRail` 44px left rail, `StatusBar` 22px bottom). App uses the native titlebar (`decorations: true`) — no custom traffic-light bar.
+
 ### Terminal persistence
 
 All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive (keeps xterm.js mounted and PTY alive). The `active` prop triggers `fitAddon.fit()` via `$effect` + `requestAnimationFrame` (ResizeObserver doesn't fire on `display:none`).
@@ -133,12 +137,15 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 
 **Never use `$effect` to sync state.** Don't read reactive values in an effect and write them to other reactive state. Instead, use `$derived` or `$derived.by`. If you need a computed value that can be reassigned (optimistic UI), use writable `$derived` instead of an effect.
 
+**`runed` is available** — for unavoidable side effects prefer `watch(() => dep, (v) => {…})` (tracked dependency getter, untracked callback) over `$effect`. Don't refactor pre-existing `$effect`s unless asked.
+
 **Cross-component reactive state:** Derive in the store (where the data lives), not via effects in components. If multiple components need the same derived value, put the `$derived` on the store class, not in each component.
 
 **Cross-store derived state:** Put the `$derived` on the store that owns the concept (e.g., `activeBranches` on `GitHubStore`), not as an `$effect` in a component that reads one store and writes to another.
 
 ## Gotchas
 
+- Adding a `WorkbenchSettings` field touches 5 places: Rust `types.rs` (field + `default_*` fn + `Default` impl), TS `WorkbenchSettings` interface, store `workbench-settings.svelte.ts` (field decl + `load()` + `toSettings()`), and `workbench-settings.test.svelte.ts` — two exact `toHaveBeenCalledWith('save_workbench_settings', …)` assertions list every field, so both break until updated.
 - Rust modules use `anyhow::Result` internally. `commands.rs` converts to `Result<_, String>` for Tauri IPC via `.map_err(|e| e.to_string())`.
 - Config/settings writes use `paths::atomic_write()` (temp file + rename) to prevent corruption.
 - `PtyManager` uses per-session `Arc<Mutex<PtySession>>` — outer map lock held only briefly for insert/remove/lookup, never during I/O.

@@ -19,36 +19,46 @@
 		onClose: () => void;
 	} = $props();
 
+	const isClaude = $derived(session.sessionType === 'claude');
+
 	const labelClass = $derived(
 		session.awaitingInput
-			? 'text-red-300'
+			? 'text-wb-err'
 			: session.needsAttention
-				? session.sessionType === 'codex'
-					? 'text-sky-300'
-					: 'text-amber-300'
-				: ''
+				? isClaude
+					? 'text-wb-warn'
+					: 'text-wb-codex'
+				: 'text-wb-ink-mute'
 	);
+
+	const badgeClass = $derived(
+		isClaude ? 'bg-wb-claude/20 text-wb-claude' : 'bg-wb-codex/20 text-wb-codex'
+	);
+
+	const badgeLabel = $derived(isClaude ? 'CLA' : 'COD');
 </script>
 
 <ContextMenu.Root>
 	<ContextMenu.Trigger class="w-full">
 		<button
-			class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+			class="flex w-full items-center gap-1.5 px-2 py-[4px] text-left transition-colors hover:bg-wb-panel2"
 			type="button"
 			onclick={onSelect}
 		>
 			{#if session.awaitingInput}
-				<CircleAlertIcon class="size-3 shrink-0 text-red-400" />
+				<CircleAlertIcon class="size-3 shrink-0 text-wb-err" />
 			{:else if session.needsAttention}
-				<CirclePauseIcon
-					class={`size-3 shrink-0 ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
-				/>
+				<CirclePauseIcon class={['size-3 shrink-0', isClaude ? 'text-wb-warn' : 'text-wb-codex']} />
 			{:else}
 				<LoaderCircleIcon
-					class={`size-3 shrink-0 animate-spin ${session.sessionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
+					class={['size-3 shrink-0 animate-spin', isClaude ? 'text-wb-warn' : 'text-wb-codex']}
 				/>
 			{/if}
-			<span class={`truncate text-xs font-medium ${labelClass}`}>{session.label}</span>
+			<span class={['truncate font-mono text-[11px]', labelClass]}>{session.label}</span>
+			<span
+				class={['ml-auto shrink-0 rounded px-1 font-mono text-[9.5px] font-semibold', badgeClass]}
+				>{badgeLabel}</span
+			>
 		</button>
 	</ContextMenu.Trigger>
 	<ContextMenu.Content class="w-40">

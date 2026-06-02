@@ -1,5 +1,6 @@
 import { uid } from '$lib/utils/uid';
 import type {
+	AccentColor,
 	AgentAction,
 	AgentActionTarget,
 	SessionType,
@@ -32,6 +33,7 @@ export class WorkbenchSettingsStore {
 	codexConfigApproved: boolean | null = $state(null);
 	useHappyCoder = $state(false);
 	cloneBaseDir: string | null = $state(null);
+	accentColor: AccentColor = $state<AccentColor>('violet');
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -58,6 +60,7 @@ export class WorkbenchSettingsStore {
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
 		this.useHappyCoder = settings.useHappyCoder ?? false;
 		this.cloneBaseDir = settings.cloneBaseDir ?? null;
+		this.accentColor = settings.accentColor ?? 'violet';
 		this.loaded = true;
 		this.dirty = false;
 	}
@@ -137,7 +140,8 @@ export class WorkbenchSettingsStore {
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,
 			useHappyCoder: this.useHappyCoder,
-			cloneBaseDir: this.cloneBaseDir
+			cloneBaseDir: this.cloneBaseDir,
+			accentColor: this.accentColor
 		};
 	}
 

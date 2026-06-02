@@ -1,6 +1,7 @@
 <script lang="ts">
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import GithubIcon from '@lucide/svelte/icons/github';
+	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PanelRightOpenIcon from '@lucide/svelte/icons/panel-right-open';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
@@ -31,25 +32,12 @@
 		return attentionSessions.some((s) => s.sessionType === 'claude') ? 'claude' : 'codex';
 	}
 
-	function pillClasses(isActive: boolean, attention: AttentionType): string {
-		if (attention === 'input') {
-			return isActive
-				? 'bg-red-500/15 text-red-300 shadow-sm ring-1 ring-red-500/30'
-				: 'text-red-400 hover:bg-red-500/10';
-		}
-		if (attention === 'claude') {
-			return isActive
-				? 'bg-amber-500/15 text-amber-300 shadow-sm ring-1 ring-amber-500/30'
-				: 'text-amber-400 hover:bg-amber-500/10';
-		}
-		if (attention === 'codex') {
-			return isActive
-				? 'bg-sky-500/15 text-sky-300 shadow-sm ring-1 ring-sky-500/30'
-				: 'text-sky-400 hover:bg-sky-500/10';
-		}
-		return isActive
-			? 'bg-background text-foreground shadow-sm'
-			: 'text-muted-foreground hover:bg-background/50 hover:text-foreground';
+	/** Returns the text color class for the accent bar at tab top */
+	function accentBarClass(attention: AttentionType): string {
+		if (attention === 'input') return 'bg-wb-err';
+		if (attention === 'claude') return 'bg-wb-warn';
+		if (attention === 'codex') return 'bg-wb-codex';
+		return 'bg-wb-accent';
 	}
 
 	let activeGitHubUrl = $derived.by(() => {
@@ -64,14 +52,18 @@
 	});
 </script>
 
-<div class="flex shrink-0 items-start border-b border-border/60 bg-muted/30 px-1 py-1">
-	<div class="flex flex-1 flex-wrap items-center gap-0.5" role="tablist" aria-label="Workspaces">
+<!-- Tab strip: bg-wb-rail, h-[30px], border-b -->
+<div class="flex h-[30px] shrink-0 items-stretch border-b border-wb-hair bg-wb-rail">
+	<div class="flex flex-1 items-stretch overflow-x-auto" role="tablist" aria-label="Workspaces">
 		{#each workspaceStore.workspaces as workspace (workspace.id)}
 			{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
 			{@const branch = workspaceStore.resolvedBranch(workspace)}
 			{@const attention = workspaceAttentionType(workspace)}
 			<div
-				class={`inline-flex items-center rounded-md transition-colors ${pillClasses(isActive, attention)}`}
+				class={[
+					'group relative inline-flex items-stretch border-r border-wb-hair transition-colors',
+					isActive ? 'bg-wb-panel' : 'bg-transparent hover:bg-wb-panel/50'
+				]}
 				draggable="true"
 				role="presentation"
 				ondragstart={(event) => event.dataTransfer?.setData('text/workspace-id', workspace.id)}
@@ -82,21 +74,31 @@
 					if (fromId) workspaceStore.reorder(fromId, workspace.id);
 				}}
 			>
+				<!-- Accent underline at top -->
+				{#if isActive}
+					<span class={['absolute inset-x-0 top-0 h-0.5', accentBarClass(attention)]}></span>
+				{/if}
 				<button
-					class="px-3 py-1.5 text-xs font-medium whitespace-nowrap"
+					class={[
+						'flex items-center gap-1.5 px-3.5 font-mono text-[11.5px] whitespace-nowrap',
+						isActive ? 'text-wb-ink' : 'text-wb-ink-mute'
+					]}
 					type="button"
 					role="tab"
 					aria-selected={isActive}
 					onclick={() => (workspaceStore.selectedId = workspace.id)}
 				>
-					{workspace.projectName}{#if branch}
-						<span class={`ml-1 ${attention ? 'opacity-60' : 'text-muted-foreground'}`}
-							>({branch})</span
-						>
+					{#if branch}
+						<GitBranchIcon
+							class={['size-3 shrink-0', isActive ? 'text-wb-accent' : 'text-wb-ink-soft']}
+						/>
 					{/if}
+					{workspace.projectName}{#if branch}<span
+							class={['ml-0.5', attention ? 'opacity-60' : 'text-wb-ink-soft']}>/{branch}</span
+						>{/if}
 				</button>
 				<button
-					class="mr-1 flex size-5 items-center justify-center rounded opacity-50 transition-opacity hover:bg-muted hover:opacity-100"
+					class="mr-1 flex size-5 shrink-0 items-center justify-center self-center rounded text-wb-ink-soft opacity-0 transition-opacity group-hover:opacity-100 hover:bg-wb-panel2 hover:text-wb-ink"
 					type="button"
 					aria-label="Close project tab"
 					onclick={() => workspaceStore.close(workspace.id)}
@@ -107,13 +109,13 @@
 		{/each}
 	</div>
 
-	<div class="flex shrink-0 items-center gap-0.5 border-l border-border/60 pr-1 pl-2">
+	<div class="flex shrink-0 items-center gap-0.5 border-l border-wb-hair px-1">
 		<Tooltip.Root>
 			<Tooltip.Trigger>
 				<Button
 					variant="ghost"
 					size="icon-sm"
-					class="size-7 text-muted-foreground hover:text-foreground"
+					class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
 					type="button"
 					onclick={() => openInVSCode(activeWorkspace ? effectivePath(activeWorkspace) : '')}
 				>
@@ -128,7 +130,7 @@
 					<Button
 						variant="ghost"
 						size="icon-sm"
-						class="size-7 text-muted-foreground hover:text-foreground"
+						class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
 						type="button"
 						onclick={() => openInGitHub(activeGitHubUrl!)}
 					>
@@ -144,9 +146,12 @@
 					<Button
 						variant="ghost"
 						size="icon-sm"
-						class="size-7 {githubStore.sidebarOpen
-							? 'bg-accent text-foreground'
-							: 'text-muted-foreground hover:text-foreground'}"
+						class={[
+							'size-6',
+							githubStore.sidebarOpen
+								? 'bg-wb-panel2 text-wb-ink'
+								: 'text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink'
+						]}
 						type="button"
 						onclick={() => githubStore.toggleSidebar()}
 					>

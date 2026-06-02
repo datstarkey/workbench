@@ -164,117 +164,141 @@
 
 	let dragOverProjectPath = $state<string | null>(null);
 	let cloneDialogOpen = $state(false);
+
+	/** Returns parent dir portion for the project path hint */
+	function parentDir(path: string): string {
+		const parts = path.split('/');
+		return parts.length >= 2 ? parts[parts.length - 2] : '';
+	}
+
+	function claudeCount(sessions: ActiveClaudeSession[]): number {
+		return sessions.filter((s) => s.sessionType === 'claude').length;
+	}
+
+	function codexCount(sessions: ActiveClaudeSession[]): number {
+		return sessions.filter((s) => s.sessionType === 'codex').length;
+	}
 </script>
 
-<aside class="flex h-full w-full flex-col overflow-hidden bg-muted/20">
-	<div class="flex h-10 shrink-0 items-center border-b border-border/60 px-2">
+<aside class="flex h-full w-full flex-col overflow-hidden border-r border-wb-hair bg-wb-panel">
+	<!-- Header row -->
+	<div class="flex h-[38px] shrink-0 items-center border-b border-wb-hair px-2.5">
 		{#if !sidebarCollapsed}
 			<div class="flex items-center gap-2 overflow-hidden">
 				<div
-					class="flex size-6 shrink-0 items-center justify-center rounded bg-primary/15 text-primary"
+					class="flex size-5 shrink-0 items-center justify-center rounded bg-wb-accent/15 text-wb-accent"
 				>
-					<TerminalSquareIcon class="size-3.5" />
+					<TerminalSquareIcon class="size-3" />
 				</div>
-				<span class="truncate text-sm font-semibold tracking-tight">Workbench</span>
-			</div>
-		{/if}
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			class={`shrink-0 text-muted-foreground hover:text-foreground ${sidebarCollapsed ? 'mx-auto' : 'ml-auto'}`}
-			type="button"
-			aria-label="Toggle sidebar"
-			onclick={onToggleSidebar}
-		>
-			{#if sidebarCollapsed}
-				<PanelLeftOpenIcon class="size-3.5" />
-			{:else}
-				<PanelLeftCloseIcon class="size-3.5" />
-			{/if}
-		</Button>
-	</div>
-
-	{#if !sidebarCollapsed}
-		<div class="shrink-0 space-y-2 p-2">
-			<div class="flex gap-1.5">
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					class="flex-1 justify-start gap-2 text-muted-foreground hover:text-foreground"
-					onclick={() => projectManager.add()}
+				<span
+					class="truncate text-[10.5px] font-semibold tracking-widest text-wb-ink-soft uppercase"
+					>Projects</span
 				>
-					<PlusIcon class="size-3.5" />
-					Add Project
-				</Button>
+			</div>
+			<div class="ml-auto flex items-center gap-0.5">
 				<Tooltip.Root>
 					<Tooltip.Trigger>
-						<Button
+						<button
+							class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 							type="button"
-							variant="outline"
-							size="icon-sm"
-							class="shrink-0 text-muted-foreground hover:text-foreground"
-							onclick={() => (cloneDialogOpen = true)}
+							onclick={() => projectManager.add()}
+							aria-label="Add project"
 						>
-							<DownloadIcon class="size-3.5" />
-						</Button>
+							<PlusIcon class="size-3" />
+						</button>
+					</Tooltip.Trigger>
+					<Tooltip.Content side="bottom">Add Project</Tooltip.Content>
+				</Tooltip.Root>
+				<Tooltip.Root>
+					<Tooltip.Trigger>
+						<button
+							class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+							type="button"
+							onclick={() => (cloneDialogOpen = true)}
+							aria-label="Clone from GitHub"
+						>
+							<DownloadIcon class="size-3" />
+						</button>
 					</Tooltip.Trigger>
 					<Tooltip.Content side="bottom">Clone from GitHub</Tooltip.Content>
 				</Tooltip.Root>
+				<button
+					class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+					type="button"
+					aria-label="Toggle sidebar"
+					onclick={onToggleSidebar}
+				>
+					<PanelLeftCloseIcon class="size-3" />
+				</button>
 			</div>
-			{#if projectStore.projects.length > 0}
-				<div class="relative">
-					<SearchIcon
-						class="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground/60"
-					/>
-					<Input
-						bind:value={filterText}
-						placeholder="Filter projects..."
-						class="h-7 pr-7 pl-7 text-xs"
-					/>
-					{#if filterText}
-						<button
-							type="button"
-							class="absolute top-1/2 right-1.5 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 hover:text-foreground"
-							onclick={() => (filterText = '')}
-						>
-							<XIcon class="size-3" />
-						</button>
-					{/if}
-				</div>
-			{/if}
-		</div>
+		{:else}
+			<button
+				class="mx-auto flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+				type="button"
+				aria-label="Toggle sidebar"
+				onclick={onToggleSidebar}
+			>
+				<PanelLeftOpenIcon class="size-3" />
+			</button>
+		{/if}
+	</div>
+
+	{#if !sidebarCollapsed}
+		<!-- Filter input -->
+		{#if projectStore.projects.length > 0}
+			<div class="relative shrink-0 px-2 py-1.5">
+				<SearchIcon
+					class="pointer-events-none absolute top-1/2 left-3.5 size-3 -translate-y-1/2 text-wb-ink-soft"
+				/>
+				<Input
+					bind:value={filterText}
+					placeholder="Filter projects..."
+					class="h-6 border-wb-hair bg-wb-bg pr-6 pl-6 font-mono text-[11px] text-wb-ink-mute placeholder:text-wb-ink-soft focus-visible:ring-wb-accent/40"
+				/>
+				{#if filterText}
+					<button
+						type="button"
+						class="absolute top-1/2 right-3.5 -translate-y-1/2 rounded p-0.5 text-wb-ink-soft hover:text-wb-ink"
+						onclick={() => (filterText = '')}
+					>
+						<XIcon class="size-2.5" />
+					</button>
+				{/if}
+			</div>
+		{/if}
 
 		<ScrollArea class="min-h-0 flex-1">
-			<div class="space-y-0.5 px-2 pb-2">
+			<div class="space-y-0 pb-2">
 				{#if !projectStore.loaded}
-					<p class="px-2 py-8 text-center text-xs text-muted-foreground">Loading...</p>
+					<p class="px-3 py-8 text-center font-mono text-[11px] text-wb-ink-soft">Loading...</p>
 				{:else if projectStore.projects.length === 0}
-					<div class="px-2 py-8 text-center">
-						<p class="text-xs text-muted-foreground">No projects yet.</p>
-						<p class="mt-1 text-xs text-muted-foreground/60">Add a folder to get started.</p>
+					<div class="px-3 py-8 text-center">
+						<p class="font-mono text-[11px] text-wb-ink-mute">No projects yet.</p>
+						<p class="mt-1 font-mono text-[10.5px] text-wb-ink-soft">
+							Add a folder to get started.
+						</p>
 					</div>
 				{:else if filteredGroupedProjects.length === 0}
-					<p class="px-2 py-4 text-center text-xs text-muted-foreground">No matches.</p>
+					<p class="px-3 py-4 text-center font-mono text-[11px] text-wb-ink-soft">No matches.</p>
 				{:else}
 					{#each filteredGroupedProjects as section (section.group ?? '__ungrouped')}
 						{#if section.group}
 							{@const isGroupCollapsed = collapsedGroups.has(section.group) && !filterText}
 							<button
-								class="mt-2 flex w-full items-center gap-1 rounded px-1.5 py-1 text-left first:mt-0"
+								class="mt-2 flex w-full items-center gap-1 px-3 py-1 text-left first:mt-0"
 								type="button"
 								onclick={() => toggleSet(collapsedGroups, section.group!)}
 							>
 								{#if isGroupCollapsed}
-									<ChevronRightIcon class="size-3 shrink-0 text-muted-foreground/60" />
+									<ChevronRightIcon class="size-3 shrink-0 text-wb-ink-soft" />
 								{:else}
-									<ChevronDownIcon class="size-3 shrink-0 text-muted-foreground/60" />
+									<ChevronDownIcon class="size-3 shrink-0 text-wb-ink-soft" />
 								{/if}
 								<span
-									class="truncate text-[11px] font-semibold tracking-wider text-muted-foreground/60 uppercase"
+									class="truncate text-[10.5px] font-semibold tracking-wider text-wb-ink-soft uppercase"
 									>{section.group}</span
 								>
-								<span class="ml-auto text-[10px] text-muted-foreground/40"
+								<span class="ml-auto font-mono text-[10px] text-wb-ink-soft"
 									>{section.projects.length}</span
 								>
 							</button>
@@ -295,48 +319,42 @@
 			</div>
 		</ScrollArea>
 
-		<div class="shrink-0 border-t border-border/60 p-2">
-			<Button
+		<div class="shrink-0 border-t border-wb-hair p-1.5">
+			<button
 				type="button"
-				variant="ghost"
-				size="sm"
-				class="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+				class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 				onclick={onOpenSettings}
 			>
-				<SettingsIcon class="size-3.5" />
-				Settings
-			</Button>
+				<SettingsIcon class="size-3 shrink-0" />
+				<span class="font-mono text-[11px]">Settings</span>
+			</button>
 		</div>
 	{:else}
 		<div class="flex flex-1 flex-col items-center gap-1 pt-2">
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						class="text-muted-foreground hover:text-foreground"
+					<button
+						class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 						type="button"
 						onclick={() => projectManager.add()}
 					>
-						<PlusIcon class="size-3.5" />
-					</Button>
+						<PlusIcon class="size-3" />
+					</button>
 				</Tooltip.Trigger>
 				<Tooltip.Content side="right">Add Project</Tooltip.Content>
 			</Tooltip.Root>
 		</div>
 
-		<div class="shrink-0 border-t border-border/60 p-1">
+		<div class="shrink-0 border-t border-wb-hair p-1">
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						class="mx-auto text-muted-foreground hover:text-foreground"
+					<button
+						class="mx-auto flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 						type="button"
 						onclick={onOpenSettings}
 					>
-						<SettingsIcon class="size-3.5" />
-					</Button>
+						<SettingsIcon class="size-3" />
+					</button>
 				</Tooltip.Trigger>
 				<Tooltip.Content side="right">Settings</Tooltip.Content>
 			</Tooltip.Root>
@@ -357,6 +375,9 @@
 	{@const isExpanded =
 		expandedProjects.has(project.path) || project.path === workspaceStore.activeProjectPath}
 	{@const isDragOver = dragOverProjectPath === project.path}
+	{@const cCount = claudeCount(mainSessions)}
+	{@const xCount = codexCount(mainSessions)}
+	{@const hint = parentDir(project.path)}
 	<div
 		role="listitem"
 		draggable="true"
@@ -381,11 +402,17 @@
 		<ContextMenu.Root>
 			<ContextMenu.Trigger>
 				<div
-					class={`group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors ${isDragOver ? 'border-t-2 border-primary' : 'border-t-2 border-transparent'} ${isActive ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
+					class={[
+						'group flex items-center gap-1 border-l-2 px-2.5 py-[5px] transition-colors',
+						isDragOver ? 'border-t border-wb-accent' : '',
+						isActive
+							? 'border-l-wb-accent bg-wb-panel2 text-wb-ink'
+							: 'border-l-transparent text-wb-ink-mute hover:bg-wb-panel2/60 hover:text-wb-ink'
+					]}
 				>
 					{#if hasChildren}
 						<button
-							class="flex size-4 shrink-0 items-center justify-center rounded hover:bg-muted"
+							class="flex size-4 shrink-0 items-center justify-center rounded text-wb-ink-soft hover:text-wb-ink"
 							type="button"
 							aria-label={isExpanded ? 'Collapse' : 'Expand'}
 							aria-expanded={isExpanded}
@@ -401,14 +428,15 @@
 						<div class="size-4 shrink-0"></div>
 					{/if}
 					<button
-						class="flex min-w-0 flex-1 items-center gap-2 text-left"
+						class="flex min-w-0 flex-1 items-center gap-1.5 text-left"
 						type="button"
 						onclick={() => projectStore.openProject(project.path)}
 					>
-						<FolderIcon class="size-3.5 shrink-0 opacity-60" />
-						<span class="truncate text-sm">{project.name}</span>
+						<FolderIcon
+							class={['size-3.5 shrink-0', isActive ? 'text-wb-accent' : 'text-wb-ink-soft']}
+						/>
+						<span class="truncate font-mono text-[12px]">{project.name}</span>
 						{#if branch}
-							<span class="truncate text-[10px] text-muted-foreground/60">({branch})</span>
 							{@const branchStatus = githubStore.getBranchStatus(project.path, branch)}
 							{#if branchStatus?.pr}
 								<PRStatusBadge
@@ -422,24 +450,37 @@
 								/>
 							{/if}
 						{/if}
+					</button>
+					<!-- Right-side meta: session badges + attention + hint -->
+					<div class="flex shrink-0 items-center gap-1">
 						{#if attentionType === 'input'}
-							<CircleAlertIcon class="size-3 shrink-0 text-red-400" />
+							<CircleAlertIcon class="size-3 shrink-0 text-wb-err" />
 						{:else if hasAttention}
 							<CirclePauseIcon
-								class={`size-3 shrink-0 ${attentionType === 'codex' ? 'text-sky-400' : 'text-amber-400'}`}
+								class={[
+									'size-3 shrink-0',
+									attentionType === 'codex' ? 'text-wb-codex' : 'text-wb-warn'
+								]}
 							/>
 						{:else if isOpen}
-							<span class="size-1.5 shrink-0 rounded-full bg-primary"></span>
+							<span class="size-1.5 shrink-0 rounded-full bg-wb-accent"></span>
 						{/if}
-					</button>
+						{@render sessionBadges(cCount, xCount)}
+						{#if hint}
+							<span
+								class="hidden max-w-[60px] truncate font-mono text-[10.5px] text-wb-ink-soft group-hover:block"
+								>{hint}</span
+							>
+						{/if}
+					</div>
 					<DropdownMenu.Root>
 						<DropdownMenu.Trigger>
 							<Button
 								variant="ghost"
 								size="icon-sm"
-								class="size-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+								class="size-5 shrink-0 text-wb-ink-soft opacity-0 transition-opacity group-hover:opacity-100 hover:bg-wb-panel2 hover:text-wb-ink"
 							>
-								<EllipsisVerticalIcon class="size-3.5" />
+								<EllipsisVerticalIcon class="size-3" />
 							</Button>
 						</DropdownMenu.Trigger>
 						<DropdownMenu.Content align="end" class="w-44">
@@ -474,16 +515,16 @@
 		</ContextMenu.Root>
 
 		{#if isExpanded && hasChildren}
-			<div class="mt-0.5 ml-5 space-y-0.5 border-l border-border/40 pl-2">
+			<div class="mt-0 ml-7 space-y-0 border-l border-wb-hair-soft pl-2">
 				{#if tasks.length > 0}
 					{#each tasks as task, i (`${task.name}-${i}`)}
 						<button
-							class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+							class="flex w-full items-center gap-2 px-2 py-1 text-left font-mono text-[11px] text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 							type="button"
 							onclick={() => runTask(project, task)}
 						>
-							<PlayIcon class="size-3 shrink-0 text-cyan-400" />
-							<span class="truncate text-xs font-medium">{task.name}</span>
+							<PlayIcon class="size-3 shrink-0 text-wb-ok" />
+							<span class="truncate">{task.name}</span>
 						</button>
 					{/each}
 				{/if}
@@ -493,11 +534,19 @@
 						{@const wtHasChildren = worktreeHasChildren(project.path, wt.path, tasks)}
 						{@const wtExpanded = expandedWorktrees.has(wt.path)}
 						{@const wtBranchStatus = githubStore.getBranchStatus(project.path, wt.branch)}
+						{@const wtActive = workspaceStore.getByWorktreePath(wt.path) !== null}
+						{@const wtCCount = claudeCount(wtSessions)}
+						{@const wtXCount = codexCount(wtSessions)}
 						<div>
 							<ContextMenu.Root>
 								<ContextMenu.Trigger class="w-full">
 									<button
-										class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+										class={[
+											'flex w-full items-center gap-1.5 border-l-2 py-[4px] pr-2 pl-1 text-left font-mono text-[11.5px] transition-colors',
+											wtActive
+												? 'border-l-wb-accent bg-wb-accent-soft text-wb-ink'
+												: 'border-l-transparent text-wb-ink-mute hover:bg-wb-panel2/60 hover:text-wb-ink'
+										]}
 										type="button"
 										onclick={() => {
 											if (wtHasChildren) {
@@ -509,14 +558,14 @@
 									>
 										{#if wtHasChildren}
 											{#if wtExpanded}
-												<ChevronDownIcon class="size-3 shrink-0 text-emerald-400" />
+												<ChevronDownIcon class="size-3 shrink-0 text-wb-ink-soft" />
 											{:else}
-												<ChevronRightIcon class="size-3 shrink-0 text-emerald-400" />
+												<ChevronRightIcon class="size-3 shrink-0 text-wb-ink-soft" />
 											{/if}
 										{:else}
-											<GitBranchIcon class="size-3 shrink-0 text-emerald-400" />
+											<GitBranchIcon class="size-3 shrink-0 text-wb-ink-soft" />
 										{/if}
-										<span class="truncate text-xs font-medium">{wt.branch}</span>
+										<span class="truncate">{wt.branch}</span>
 										{#if wtBranchStatus?.pr}
 											<PRStatusBadge
 												pr={wtBranchStatus.pr}
@@ -528,6 +577,9 @@
 												onclick={() => githubStore.showBranch(project.path, wt.branch)}
 											/>
 										{/if}
+										<div class="ml-auto flex shrink-0 items-center gap-1">
+											{@render sessionBadges(wtCCount, wtXCount)}
+										</div>
 									</button>
 								</ContextMenu.Trigger>
 								<ContextMenu.Content class="w-44">
@@ -554,16 +606,16 @@
 								</ContextMenu.Content>
 							</ContextMenu.Root>
 							{#if wtExpanded && wtHasChildren}
-								<div class="mt-0.5 ml-4 space-y-0.5 border-l border-border/30 pl-2">
+								<div class="mt-0 ml-4 space-y-0 border-l border-wb-hair-soft pl-2">
 									{#if tasks.length > 0}
 										{#each tasks as task, i (`wt-${wt.path}-${task.name}-${i}`)}
 											<button
-												class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+												class="flex w-full items-center gap-2 px-2 py-1 text-left font-mono text-[11px] text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 												type="button"
 												onclick={() => runTaskInWorktree(project, wt.path, wt.branch, task)}
 											>
-												<PlayIcon class="size-3 shrink-0 text-cyan-400" />
-												<span class="truncate text-xs font-medium">{task.name}</span>
+												<PlayIcon class="size-3 shrink-0 text-wb-ok" />
+												<span class="truncate">{task.name}</span>
 											</button>
 										{/each}
 									{/if}
@@ -582,24 +634,24 @@
 										/>
 									{/each}
 									<button
-										class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
+										class="flex w-full items-center gap-2 px-2 py-1 text-left font-mono text-[11px] text-wb-ink-soft transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 										type="button"
 										onclick={() => startSessionInWorktree(project.path, wt.path, wt.branch)}
 									>
 										<PlusIcon class="size-3 shrink-0" />
-										<span class="text-xs">New Session</span>
+										<span>New Session</span>
 									</button>
 								</div>
 							{/if}
 						</div>
 					{/each}
 					<button
-						class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
+						class="flex w-full items-center gap-2 px-2 py-1 text-left font-mono text-[11px] text-wb-ink-soft transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 						type="button"
 						onclick={() => worktreeManager.add(project.path)}
 					>
 						<PlusIcon class="size-3 shrink-0" />
-						<span class="text-xs">Add Worktree</span>
+						<span>Add Worktree</span>
 					</button>
 				{/if}
 				{#each mainSessions as session (session.tabId)}
@@ -617,17 +669,30 @@
 				{/each}
 				{#if mainSessions.length > 0}
 					<button
-						class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-muted-foreground/60 transition-colors hover:bg-accent/50 hover:text-foreground"
+						class="flex w-full items-center gap-2 px-2 py-1 text-left font-mono text-[11px] text-wb-ink-soft transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 						type="button"
 						onclick={() => claudeSessionStore.startSessionByProject(project.path)}
 					>
 						<PlusIcon class="size-3 shrink-0" />
-						<span class="text-xs">New Session</span>
+						<span>New Session</span>
 					</button>
 				{/if}
 			</div>
 		{/if}
 	</div>
+{/snippet}
+
+{#snippet sessionBadges(cCount: number, xCount: number)}
+	{#if cCount > 0}
+		<span class="rounded bg-wb-claude/20 px-1 font-mono text-[9.5px] font-semibold text-wb-claude"
+			>C{cCount}</span
+		>
+	{/if}
+	{#if xCount > 0}
+		<span class="rounded bg-wb-codex/20 px-1 font-mono text-[9.5px] font-semibold text-wb-codex"
+			>X{xCount}</span
+		>
+	{/if}
 {/snippet}
 
 <CloneRepoDialog bind:open={cloneDialogOpen} />

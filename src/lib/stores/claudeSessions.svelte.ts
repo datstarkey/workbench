@@ -91,6 +91,19 @@ export class ClaudeSessionStore {
 		}, {});
 	});
 
+	/** Global active-session counts by agent type, across all projects. */
+	readonly totalSessionCounts = $derived.by((): { claude: number; codex: number } => {
+		let claude = 0;
+		let codex = 0;
+		for (const sessions of Object.values(this.activeSessionsByProject)) {
+			for (const s of sessions) {
+				if (s.sessionType === 'codex') codex++;
+				else claude++;
+			}
+		}
+		return { claude, codex };
+	});
+
 	readonly paneTypeById = $derived.by((): Record<string, SessionType> => {
 		const result: Record<string, SessionType> = {};
 		for (const ws of this.workspaces.workspaces) {

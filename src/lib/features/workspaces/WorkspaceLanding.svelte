@@ -3,7 +3,6 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
 	import ZapIcon from '@lucide/svelte/icons/zap';
-	import { Button } from '$lib/components/ui/button';
 	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import RecentSessionList from '$features/workspaces/RecentSessionList.svelte';
 	import { effectivePath } from '$lib/utils/path';
@@ -29,57 +28,99 @@
 	});
 </script>
 
-<div class="flex flex-1 items-center justify-center">
-	<div class="flex w-full max-w-md flex-col items-center text-center">
-		<div
-			class="mb-4 flex size-12 items-center justify-center rounded-xl bg-violet-500/10 text-violet-400"
-		>
-			<SparklesIcon class="size-6" />
+<div class="flex flex-1 items-center justify-center bg-wb-bg">
+	<div class="flex w-full max-w-[540px] flex-col items-center gap-6 px-4 text-center">
+		<!-- Hero icon + headline -->
+		<div class="flex flex-col items-center gap-3">
+			<div class="grid size-10 place-items-center rounded-xl bg-wb-accent/10 text-wb-accent">
+				<SparklesIcon class="size-5" />
+			</div>
+			<div>
+				<h2 class="text-[15px] font-semibold tracking-tight text-wb-ink">Start a session</h2>
+				<p class="mt-0.5 text-[12px] text-wb-ink-soft">
+					Pick an AI agent or open a plain terminal to get started.
+				</p>
+			</div>
 		</div>
 
-		<h2 class="text-lg font-semibold tracking-tight">Start a session</h2>
-
-		<div class="mt-4 flex gap-2">
-			<Button
+		<!-- Action rows -->
+		<div class="flex w-full flex-col gap-2">
+			<!-- Claude — primary action -->
+			<button
 				type="button"
-				class="bg-violet-600 hover:bg-violet-700"
 				onclick={() => claudeSessionStore.startSessionInWorkspace(workspace)}
+				class="group flex w-full items-center gap-3 rounded-lg border border-wb-accent bg-wb-panel px-3 py-2.5 ring-2 ring-wb-accent/20 transition-colors hover:bg-wb-panel2"
 			>
-				<SparklesIcon class="size-4" />
-				New Claude Session
-			</Button>
-			<Button
+				<div
+					class="grid size-8 shrink-0 place-items-center rounded-md bg-wb-bg text-wb-accent transition-colors group-hover:bg-wb-accent/10"
+				>
+					<SparklesIcon class="size-4" />
+				</div>
+				<div class="flex flex-1 flex-col items-start text-left">
+					<span class="text-[13px] font-medium text-wb-ink">New Claude Session</span>
+					<span class="text-[11.5px] text-wb-ink-soft">AI coding assistant with full context</span>
+				</div>
+				<span class="font-mono text-[11px] text-wb-ink-soft">claude</span>
+			</button>
+
+			<!-- Codex -->
+			<button
 				type="button"
-				class="bg-sky-600 hover:bg-sky-700"
 				onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
+				class="group flex w-full items-center gap-3 rounded-lg border border-wb-hair bg-wb-panel px-3 py-2.5 transition-colors hover:bg-wb-panel2"
 			>
-				<ZapIcon class="size-4" />
-				New Codex Session
-			</Button>
-			<Button
+				<div
+					class="grid size-8 shrink-0 place-items-center rounded-md bg-wb-bg text-wb-codex transition-colors group-hover:bg-wb-codex/10"
+				>
+					<ZapIcon class="size-4" />
+				</div>
+				<div class="flex flex-1 flex-col items-start text-left">
+					<span class="text-[13px] font-medium text-wb-ink">New Codex Session</span>
+					<span class="text-[11.5px] text-wb-ink-soft">OpenAI Codex agent in your terminal</span>
+				</div>
+				<span class="font-mono text-[11px] text-wb-ink-soft">codex</span>
+			</button>
+
+			<!-- Shell -->
+			<button
 				type="button"
-				variant="ghost"
 				onclick={() => {
 					if (wsProject) workspaceStore.addTerminalTab(workspace.id, wsProject);
 				}}
+				class="group flex w-full items-center gap-3 rounded-lg border border-wb-hair bg-wb-panel px-3 py-2.5 transition-colors hover:bg-wb-panel2"
 			>
-				<TerminalSquareIcon class="size-4" />
-				New Terminal
-			</Button>
-			<AgentActionsMenu {workspace} showTextButton />
+				<div
+					class="grid size-8 shrink-0 place-items-center rounded-md bg-wb-bg text-wb-shell transition-colors group-hover:bg-wb-shell/10"
+				>
+					<TerminalSquareIcon class="size-4" />
+				</div>
+				<div class="flex flex-1 flex-col items-start text-left">
+					<span class="text-[13px] font-medium text-wb-ink">New Terminal</span>
+					<span class="text-[11.5px] text-wb-ink-soft">Plain interactive shell session</span>
+				</div>
+				<span class="font-mono text-[11px] text-wb-ink-soft">$</span>
+			</button>
+
+			<!-- Agent actions (keeps its own button/menu) -->
+			<div class="flex justify-start">
+				<AgentActionsMenu {workspace} showTextButton />
+			</div>
 		</div>
 
-		<RecentSessionList
-			title="Recent Claude Sessions"
-			sessions={claudeSessionStore.discoveredSessions}
-			onResume={(id, label) => claudeSessionStore.resumeSession(workspace.id, id, label)}
-			onRemove={(id) => claudeSessionStore.removeDiscoveredSession(id)}
-		/>
-		<RecentSessionList
-			title="Recent Codex Sessions"
-			sessions={claudeSessionStore.discoveredCodexSessions}
-			onResume={(id, label) => claudeSessionStore.resumeSession(workspace.id, id, label, 'codex')}
-			onRemove={(id) => claudeSessionStore.removeDiscoveredSession(id, 'codex')}
-		/>
+		<!-- Recent sessions -->
+		<div class="w-full">
+			<RecentSessionList
+				title="Recent Claude Sessions"
+				sessions={claudeSessionStore.discoveredSessions}
+				onResume={(id, label) => claudeSessionStore.resumeSession(workspace.id, id, label)}
+				onRemove={(id) => claudeSessionStore.removeDiscoveredSession(id)}
+			/>
+			<RecentSessionList
+				title="Recent Codex Sessions"
+				sessions={claudeSessionStore.discoveredCodexSessions}
+				onResume={(id, label) => claudeSessionStore.resumeSession(workspace.id, id, label, 'codex')}
+				onRemove={(id) => claudeSessionStore.removeDiscoveredSession(id, 'codex')}
+			/>
+		</div>
 	</div>
 </div>

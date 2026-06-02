@@ -16,6 +16,7 @@
 	import { selectFolder } from '$lib/utils/dialog';
 	import { invoke } from '@tauri-apps/api/core';
 	import type {
+		AccentColor,
 		TerminalPerformanceMode,
 		TerminalRenderer,
 		WorktreeStartPoint,
@@ -37,6 +38,15 @@
 		}
 		ghAuthenticated = await invoke<boolean>('github_is_available');
 	});
+
+	// Swatch values mirror the --wb-accent token for each [data-accent] preset in app.css.
+	const accentOptions: { value: AccentColor; label: string; swatch: string }[] = [
+		{ value: 'violet', label: 'Violet', swatch: 'oklch(0.68 0.16 280)' },
+		{ value: 'tideline', label: 'Tideline', swatch: '#7aa5ff' },
+		{ value: 'ember', label: 'Ember', swatch: '#d18a6a' },
+		{ value: 'moss', label: 'Moss', swatch: '#5fc78b' },
+		{ value: 'iris', label: 'Iris', swatch: '#b783e8' }
+	];
 
 	const rendererOptions = [
 		{ value: 'xterm', label: 'xterm.js (Web)' },
@@ -81,6 +91,40 @@
 </script>
 
 <div class="space-y-8">
+	<div class="space-y-4">
+		<div>
+			<h2 class="text-sm font-semibold">Appearance</h2>
+			<p class="mt-1 text-xs text-muted-foreground">
+				Accent color drives primary buttons, the active worktree indicator, and tab highlights.
+				Claude and Codex keep their own session colors.
+			</p>
+		</div>
+
+		<div class="flex flex-wrap gap-2">
+			{#each accentOptions as option (option.value)}
+				{@const active = store.accentColor === option.value}
+				<button
+					type="button"
+					class="flex items-center gap-2 rounded-md border px-3 py-2 text-xs transition-colors {active
+						? 'border-primary bg-primary/10 text-foreground'
+						: 'border-border text-muted-foreground hover:text-foreground'}"
+					onclick={() => store.set('accentColor', option.value)}
+				>
+					<span
+						class="size-4 rounded-full"
+						style:background={option.swatch}
+						style:box-shadow={active
+							? `0 0 0 2px var(--background), 0 0 0 4px ${option.swatch}`
+							: 'none'}
+					></span>
+					{option.label}
+				</button>
+			{/each}
+		</div>
+	</div>
+
+	<Separator />
+
 	<div class="space-y-6">
 		<div>
 			<h2 class="text-sm font-semibold">Features</h2>

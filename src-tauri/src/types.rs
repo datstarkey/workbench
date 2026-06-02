@@ -334,10 +334,16 @@ pub struct WorkbenchSettings {
     pub terminal_renderer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone_base_dir: Option<String>,
+    #[serde(default = "default_accent_color")]
+    pub accent_color: String,
 }
 
 fn default_worktree_strategy() -> String {
     "sibling".to_string()
+}
+
+fn default_accent_color() -> String {
+    "violet".to_string()
 }
 
 fn default_terminal_performance_mode() -> String {
@@ -373,6 +379,7 @@ impl Default for WorkbenchSettings {
             use_happy_coder: false,
             terminal_renderer: default_terminal_renderer(),
             clone_base_dir: None,
+            accent_color: default_accent_color(),
         }
     }
 }
