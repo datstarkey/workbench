@@ -112,30 +112,36 @@
 	<div class="flex shrink-0 items-center gap-0.5 border-l border-wb-hair px-1">
 		<Tooltip.Root>
 			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
-					type="button"
-					onclick={() => openInVSCode(activeWorkspace ? effectivePath(activeWorkspace) : '')}
-				>
-					<CodeIcon class="size-3.5" />
-				</Button>
+				{#snippet child({ props })}
+					<Button
+						{...props}
+						variant="ghost"
+						size="icon-sm"
+						class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
+						type="button"
+						onclick={() => openInVSCode(activeWorkspace ? effectivePath(activeWorkspace) : '')}
+					>
+						<CodeIcon class="size-3.5" />
+					</Button>
+				{/snippet}
 			</Tooltip.Trigger>
 			<Tooltip.Content>Open in VS Code</Tooltip.Content>
 		</Tooltip.Root>
 		{#if activeGitHubUrl}
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
-						type="button"
-						onclick={() => openInGitHub(activeGitHubUrl!)}
-					>
-						<GithubIcon class="size-3.5" />
-					</Button>
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="ghost"
+							size="icon-sm"
+							class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
+							type="button"
+							onclick={() => openInGitHub(activeGitHubUrl!)}
+						>
+							<GithubIcon class="size-3.5" />
+						</Button>
+					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>Open in GitHub</Tooltip.Content>
 			</Tooltip.Root>
@@ -143,20 +149,23 @@
 		{#if githubStore.ghAvailable !== false}
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						class={[
-							'size-6',
-							githubStore.sidebarOpen
-								? 'bg-wb-panel2 text-wb-ink'
-								: 'text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink'
-						]}
-						type="button"
-						onclick={() => githubStore.toggleSidebar()}
-					>
-						<PanelRightOpenIcon class="size-3.5" />
-					</Button>
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="ghost"
+							size="icon-sm"
+							class={[
+								'size-6',
+								githubStore.sidebarOpen
+									? 'bg-wb-panel2 text-wb-ink'
+									: 'text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink'
+							]}
+							type="button"
+							onclick={() => githubStore.toggleSidebar()}
+						>
+							<PanelRightOpenIcon class="size-3.5" />
+						</Button>
+					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>Show/Hide GitHub Actions</Tooltip.Content>
 			</Tooltip.Root>

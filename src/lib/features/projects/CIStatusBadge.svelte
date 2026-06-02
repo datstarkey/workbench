@@ -33,20 +33,23 @@
 {#if StatusIcon}
 	<Tooltip.Root>
 		<Tooltip.Trigger>
-			<button
-				class="inline-flex items-center rounded px-0.5 hover:bg-muted"
-				type="button"
-				onclick={(e) => {
-					e.stopPropagation();
-					onclick();
-				}}
-			>
-				<StatusIcon
-					class="size-2.5 shrink-0 {statusColor} {status.overall === 'pending'
-						? 'animate-spin'
-						: ''}"
-				/>
-			</button>
+			{#snippet child({ props })}
+				<button
+					{...props}
+					class="inline-flex items-center rounded px-0.5 hover:bg-muted"
+					type="button"
+					onclick={(e) => {
+						e.stopPropagation();
+						onclick();
+					}}
+				>
+					<StatusIcon
+						class="size-2.5 shrink-0 {statusColor} {status.overall === 'pending'
+							? 'animate-spin'
+							: ''}"
+					/>
+				</button>
+			{/snippet}
 		</Tooltip.Trigger>
 		<Tooltip.Content>{tooltipText}</Tooltip.Content>
 	</Tooltip.Root>
