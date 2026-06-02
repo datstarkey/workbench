@@ -14,6 +14,7 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+workbench-core = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
@@ -22,13 +23,11 @@ portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-dirs = "6"
 notify = "7"
 notify-debouncer-mini = "0.5"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
-reqwest = { version = "0.12", features = ["json"] }
 chrono = "0.4"
 
 [target.'cfg(unix)'.dependencies]

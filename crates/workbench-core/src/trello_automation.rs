@@ -48,7 +48,14 @@ fn resolve_merge_action(config: &TrelloProjectConfig, branch: &str) -> Option<(S
 }
 
 fn execute_action(creds: &TrelloCredentials, card_id: &str, action: &MergeAction) -> Result<()> {
-    tauri::async_runtime::block_on(async {
+    // Trello's HTTP client (`api::*`) is async and backed by reqwest, which needs
+    // a Tokio reactor. Build a self-contained current-thread runtime so this sync
+    // entry point stays callable from non-async contexts (e.g. the GitHub poller
+    // worker thread on desktop) without depending on Tauri's runtime.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
         if let Some(target_list_id) = action.move_to_column_id.as_deref() {
             api::move_card(creds, card_id, target_list_id).await?;
         }

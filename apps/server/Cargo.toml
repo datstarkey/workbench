@@ -1,0 +1,24 @@
+[package]
+name = "workbench-server"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+description = "Headless Workbench control-plane server: list/create worktrees, list sessions, and spawn `claude remote-control` sessions for access from the Claude mobile app."
+
+[[bin]]
+name = "workbench-server"
+path = "src/main.rs"
+
+[dependencies]
+workbench-core = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+axum = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+portable-pty = { workspace = true }
+clap = { workspace = true }
+uuid = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

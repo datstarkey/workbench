@@ -7,11 +7,14 @@ build/
 .svelte-kit/
 
 # Tauri / Rust
-src-tauri/target/
-src-tauri/gen/
+target/
+apps/desktop/src-tauri/gen/
 
 # Swift Package Manager
-src-tauri/SwiftTermBridge/.build/
+apps/desktop/src-tauri/SwiftTermBridge/.build/
+
+# Turborepo
+.turbo/
 
 # Environment & secrets
 .env

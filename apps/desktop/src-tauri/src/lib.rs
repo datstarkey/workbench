@@ -1,12 +1,14 @@
-mod claude_sessions;
-mod codex_config;
-mod codex_sessions;
+// Pure logic now lives in `workbench-core`. Re-export each moved module at the
+// crate root so existing `crate::config`, `crate::git`, `crate::types`, … paths
+// throughout the desktop crate keep resolving without per-file edits.
+pub use workbench_core::{
+    claude_sessions, codex_config, codex_sessions, config, git, github, paths, session_utils,
+    settings, shell_integration, trello, trello_automation, types,
+};
+
 mod commands;
-mod config;
-mod git;
 mod git_commands;
 mod git_watcher;
-mod github;
 mod github_poller;
 mod hook_bridge;
 mod menu;
@@ -14,16 +16,9 @@ mod menu;
 mod native_terminal;
 #[cfg(target_os = "macos")]
 mod native_terminal_commands;
-mod paths;
 mod pty;
 mod refresh_dispatcher;
-mod session_utils;
-mod settings;
-mod shell_integration;
-mod trello;
 mod trello_commands;
-mod trello_automation;
-mod types;
 
 use git_watcher::GitWatcher;
 use github_poller::GitHubPoller;

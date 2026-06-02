@@ -10,9 +10,13 @@ bun.lockb
 .claude/
 
 # Rust
-/src-tauri/target/
-/src-tauri/gen/
+/target/
+/apps/desktop/src-tauri/gen/
 *.rs
 
 # Swift
-/src-tauri/SwiftTermBridge/.build/
+/apps/desktop/src-tauri/SwiftTermBridge/.build/
+
+# Build output
+dist/
+.turbo/
