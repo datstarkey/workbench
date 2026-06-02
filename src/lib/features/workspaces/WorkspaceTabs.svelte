@@ -52,8 +52,8 @@
 	});
 </script>
 
-<!-- Tab strip: bg-wb-rail, h-[30px], border-b -->
-<div class="flex h-[30px] shrink-0 items-stretch border-b border-wb-hair bg-wb-rail">
+<!-- Tab strip: bg-wb-rail, h-[38px] to align with left/right sidebar headers, border-b -->
+<div class="flex h-[38px] shrink-0 items-stretch border-b border-wb-hair bg-wb-rail">
 	<div class="flex flex-1 items-stretch overflow-x-auto" role="tablist" aria-label="Workspaces">
 		{#each workspaceStore.workspaces as workspace (workspace.id)}
 			{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
