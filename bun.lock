@@ -84,6 +84,7 @@
         "svelte": "^5.51.3",
         "svelte-check": "^4.4.0",
         "typescript": "^5.7.3",
+        "vitest": "^4.0.18",
       },
       "peerDependencies": {
         "svelte": "^5",
@@ -98,6 +99,7 @@
       "devDependencies": {
         "@tauri-apps/api": "^2",
         "typescript": "^5.7.3",
+        "vitest": "^4.0.18",
       },
       "peerDependencies": {
         "@tauri-apps/api": "^2",

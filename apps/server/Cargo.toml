@@ -22,3 +22,7 @@ clap = { workspace = true }
 uuid = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tempfile = { workspace = true }

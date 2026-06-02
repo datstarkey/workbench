@@ -6,8 +6,14 @@
 	"description": "Shared shadcn-svelte UI primitives + cn() utility.",
 	"svelte": "./src/utils.ts",
 	"exports": {
-		".": "./src/utils.ts",
-		"./*": "./src/ui/*/index.ts"
+		".": {
+			"svelte": "./src/utils.ts",
+			"default": "./src/utils.ts"
+		},
+		"./*": {
+			"svelte": "./src/ui/*/index.ts",
+			"default": "./src/ui/*/index.ts"
+		}
 	},
 	"dependencies": {
 		"@lucide/svelte": "^0.561.0",

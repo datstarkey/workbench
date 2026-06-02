@@ -50,6 +50,12 @@ Run from the repo root. JS tasks go through Turborepo (the local `turbo` binary 
 - **Rust:** `cargo build` / `cargo test` / `cargo clippy` operate on the whole workspace; scope with `-p workbench|workbench-core|workbench-server`.
 - **Server (standalone):** `cargo run -p workbench-server -- --port 4317` (flags: `--bind`, `--port`, `--token`; envs `WORKBENCH_BIND/PORT/TOKEN`).
 
+### Tests
+
+- **Rust:** `cargo test` — desktop + `workbench-core` units, `workbench-server` units, and `apps/server/tests/server.rs` (e2e: binds a real server on an ephemeral port, drives it with reqwest; the spawn cycle runs against a fake `claude` via `WORKBENCH_CLAUDE_BIN` so no real CLI/network is needed).
+- **JS (`turbo run test`):** `@workbench/transport` (route mapping, undefined-param dropping, error handling, `MockTransport`), `@workbench/control-plane-ui` (`ControlPlaneStore` via `createMockTransport`, incl. spawn polling with fake timers), and `@workbench/desktop` (stores/utils; inject `createMockTransport` instead of mocking `@tauri-apps/api`).
+- Not covered by automated tests: the Tauri desktop GUI (would need a webdriver) and native mobile.
+
 Use **Bun** exclusively — do not introduce npm/yarn/pnpm lockfiles. Prettier runs at the root (single pass, keeps prettier-before-eslint ordering); eslint runs per package via turbo.
 
 ## Architecture
@@ -204,6 +210,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - bun workspaces nest `@workbench/*` symlinks under the **consumer's** `node_modules` (e.g. `apps/desktop/node_modules/@workbench/transport`), not hoisted to root. A new workspace dep needs declaring in the consumer's `package.json` (`"workspace:*"`) + `bun install`.
 - `TauriTransport` uses **static** imports of `@tauri-apps/api` (not dynamic) so call timing/arg-shape match what stores/tests expect; it omits the args object when undefined.
 - UI primitives import from `@workbench/ui/<component>` and `cn` from `@workbench/ui` (NOT `$lib/components/ui` / `$lib/utils` anymore). `components.json` (shadcn CLI) aliases still say `$lib/...`; if you `shadcn add` a component it lands in the app — move it into `packages/ui/src/ui/` and fix its `$lib/utils` import to `../../utils`.
+- The server spawns `claude remote-control` via the binary named by `WORKBENCH_CLAUDE_BIN` (default `claude`) — set it to a fake script in tests, or to point at an alternative CLI.
 - The desktop has TWO sidebars: the rich terminal-coupled `ProjectSidebar` (local mode) and the shared `ControlPlaneSidebar` from `@workbench/control-plane-ui` (remote mode, via `RemoteServerDialog` + `HttpTransport`). Keep control-plane features that should work remotely in the shared one.
 - Adding a `WorkbenchSettings` field touches 5 places: Rust `crates/workbench-core/src/types.rs` (field + `default_*` fn + `Default` impl), TS `apps/desktop/src/types/workbench.ts` interface, store `workbench-settings.svelte.ts` (field decl + `load()` + `toSettings()`), and `workbench-settings.test.svelte.ts` — two exact `toHaveBeenCalledWith('save_workbench_settings', …)` assertions list every field, so both break until updated.
 - Rust modules use `anyhow::Result` internally. `commands.rs` converts to `Result<_, String>` for Tauri IPC via `.map_err(|e| e.to_string())`.
