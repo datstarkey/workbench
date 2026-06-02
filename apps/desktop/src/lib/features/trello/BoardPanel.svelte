@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getTrelloStore } from '$stores/context';
-	import { Separator } from '$lib/components/ui/separator';
+	import { Separator } from '@workbench/ui/separator';
 	import BoardEmptyState from './BoardEmptyState.svelte';
 	import BoardSection from './BoardSection.svelte';
 

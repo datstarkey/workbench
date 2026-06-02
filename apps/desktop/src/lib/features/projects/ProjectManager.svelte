@@ -1,8 +1,8 @@
 <script lang="ts">
 	import ConfirmDialog from '$components/ConfirmDialog.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import * as Dialog from '$lib/components/ui/dialog';
-	import { Input } from '$lib/components/ui/input';
+	import { Button } from '@workbench/ui/button';
+	import * as Dialog from '@workbench/ui/dialog';
+	import { Input } from '@workbench/ui/input';
 	import ProjectDialog from './ProjectDialog.svelte';
 	import { getProjectManager } from '$stores/context';
 

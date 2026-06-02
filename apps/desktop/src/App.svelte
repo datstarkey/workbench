@@ -15,8 +15,8 @@
 	import WorkspaceTabs from '$features/workspaces/WorkspaceTabs.svelte';
 	import WorktreeManager from '$features/worktrees/WorktreeManager.svelte';
 	import { WorktreeManagerStore } from '$features/worktrees/worktree-manager.svelte';
-	import * as Resizable from '$lib/components/ui/resizable';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import * as Resizable from '@workbench/ui/resizable';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import UpdateDialog from '$components/UpdateDialog.svelte';
 	import { ClaudeSettingsStore } from '$stores/claude-settings.svelte';
 	import { ClaudeSessionStore } from '$stores/claudeSessions.svelte';

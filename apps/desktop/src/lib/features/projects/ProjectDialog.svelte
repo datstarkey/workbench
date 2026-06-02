@@ -2,9 +2,9 @@
 	import GripVerticalIcon from '@lucide/svelte/icons/grip-vertical';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { Button } from '$lib/components/ui/button';
-	import * as Dialog from '$lib/components/ui/dialog';
-	import { Input } from '$lib/components/ui/input';
+	import { Button } from '@workbench/ui/button';
+	import * as Dialog from '@workbench/ui/dialog';
+	import { Input } from '@workbench/ui/input';
 	import type { ProjectFormState } from '$types/workbench';
 
 	let {

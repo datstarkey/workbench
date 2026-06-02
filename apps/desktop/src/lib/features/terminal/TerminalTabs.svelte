@@ -5,9 +5,9 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import XIcon from '@lucide/svelte/icons/x';
 	import ZapIcon from '@lucide/svelte/icons/zap';
-	import { Button } from '$lib/components/ui/button';
-	import { Separator } from '$lib/components/ui/separator';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Button } from '@workbench/ui/button';
+	import { Separator } from '@workbench/ui/separator';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import ClaudeSessionMenu from '$features/claude/ClaudeSessionMenu.svelte';
 	import {

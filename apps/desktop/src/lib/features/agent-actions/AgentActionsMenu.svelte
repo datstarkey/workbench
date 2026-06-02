@@ -2,11 +2,11 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import ZapIcon from '@lucide/svelte/icons/zap';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import { Input } from '$lib/components/ui/input';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
+	import { Input } from '@workbench/ui/input';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 	import type { AgentAction, ProjectWorkspace } from '$types/workbench';
 

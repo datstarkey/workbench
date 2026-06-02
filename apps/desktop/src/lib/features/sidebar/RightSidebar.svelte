@@ -3,7 +3,7 @@
 	import GithubIcon from '@lucide/svelte/icons/github';
 	import LayoutListIcon from '@lucide/svelte/icons/layout-list';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { Button } from '$lib/components/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { getSidebarStore, getWorkbenchSettingsStore } from '$stores/context';
 	import GitHubSidebar from '$features/github/GitHubSidebar.svelte';
 	import GitSidebar from '$features/git/GitSidebar.svelte';

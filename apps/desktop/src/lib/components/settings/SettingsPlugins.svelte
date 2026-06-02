@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { Switch } from '$lib/components/ui/switch';
-	import { Badge } from '$lib/components/ui/badge';
+	import { Switch } from '@workbench/ui/switch';
+	import { Badge } from '@workbench/ui/badge';
 	import { getClaudeSettingsStore } from '$stores/context';
 	import SettingsEmptyState from './SettingsEmptyState.svelte';
 

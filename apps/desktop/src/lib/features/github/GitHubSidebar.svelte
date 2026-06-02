@@ -2,9 +2,9 @@
 	import GithubIcon from '@lucide/svelte/icons/github';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GitPullRequestIcon from '@lucide/svelte/icons/git-pull-request';
-	import { Separator } from '$lib/components/ui/separator';
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import { Badge } from '$lib/components/ui/badge';
+	import { Separator } from '@workbench/ui/separator';
+	import { ScrollArea } from '@workbench/ui/scroll-area';
+	import { Badge } from '@workbench/ui/badge';
 	import { getGitHubStore, getGitStore, getWorktreeManager } from '$stores/context';
 	import type { GitHubCheckDetail } from '$types/workbench';
 	import PRHeader from './PRHeader.svelte';

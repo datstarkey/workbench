@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Label } from '$lib/components/ui/label';
-	import { Switch } from '$lib/components/ui/switch';
-	import { Badge } from '$lib/components/ui/badge';
+	import { Label } from '@workbench/ui/label';
+	import { Switch } from '@workbench/ui/switch';
+	import { Badge } from '@workbench/ui/badge';
 	import { getClaudeSettingsStore } from '$stores/context';
 	import SettingsEmptyState from './SettingsEmptyState.svelte';
 	import type { McpServerConfig } from '$types/claude-settings';

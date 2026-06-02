@@ -1,8 +1,8 @@
 <script lang="ts">
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
-	import { Button } from '$lib/components/ui/button';
-	import { Separator } from '$lib/components/ui/separator';
+	import { Button } from '@workbench/ui/button';
+	import { Separator } from '@workbench/ui/separator';
 	import type { TrelloBoardData } from '$types/trello';
 	import TaskCard from './TaskCard.svelte';
 	import QuickAddTask from './QuickAddTask.svelte';

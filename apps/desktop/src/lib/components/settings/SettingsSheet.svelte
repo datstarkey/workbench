@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import * as Dialog from '$lib/components/ui/dialog';
+	import { ScrollArea } from '@workbench/ui/scroll-area';
+	import * as Dialog from '@workbench/ui/dialog';
 	import { getClaudeSettingsStore, getWorkbenchSettingsStore } from '$stores/context';
 	import type { ScopeGroup } from '$types/claude-settings';
 	import { baseName } from '$lib/utils/path';

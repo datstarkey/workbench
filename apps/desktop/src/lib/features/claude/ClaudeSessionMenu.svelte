@@ -1,8 +1,8 @@
 <script lang="ts">
 	import HistoryIcon from '@lucide/svelte/icons/history';
-	import { Button } from '$lib/components/ui/button';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Button } from '@workbench/ui/button';
+	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import { getClaudeSessionStore } from '$stores/context';
 	import { formatSessionDate } from '$lib/utils/format';
 	import type { SessionType } from '$types/workbench';

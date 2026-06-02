@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import { Separator } from '$lib/components/ui/separator';
+	import { ScrollArea } from '@workbench/ui/scroll-area';
+	import { Separator } from '@workbench/ui/separator';
 	import { getGitStore, getWorkspaceStore } from '$stores/context';
 	import { effectivePath } from '$lib/utils/path';
 	import GitStatusSection from './GitStatusSection.svelte';

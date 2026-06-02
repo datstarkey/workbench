@@ -5,10 +5,10 @@
 	import GitBranchPlusIcon from '@lucide/svelte/icons/git-branch-plus';
 	import type { TrelloCard } from '$types/trello';
 	import { getTrelloStore, getWorktreeManager } from '$stores/context';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import { invoke } from '@tauri-apps/api/core';
 	import { trelloLabelColor } from './label-colors';
 

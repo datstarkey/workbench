@@ -5,7 +5,7 @@
 	import GithubIcon from '@lucide/svelte/icons/github';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import {
 		getGitHubStore,
 		getGitStore,

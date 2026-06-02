@@ -4,8 +4,8 @@
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PanelRightOpenIcon from '@lucide/svelte/icons/panel-right-open';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { Button } from '$lib/components/ui/button';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Button } from '@workbench/ui/button';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import { getClaudeSessionStore, getGitHubStore, getWorkspaceStore } from '$stores/context';
 	import { branchUrl, openInGitHub } from '$lib/utils/github';
 	import { effectivePath } from '$lib/utils/path';

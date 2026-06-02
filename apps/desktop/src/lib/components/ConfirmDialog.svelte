@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { Button } from '$lib/components/ui/button';
-	import * as Dialog from '$lib/components/ui/dialog';
+	import { Button } from '@workbench/ui/button';
+	import * as Dialog from '@workbench/ui/dialog';
 
 	let {
 		open = $bindable(),

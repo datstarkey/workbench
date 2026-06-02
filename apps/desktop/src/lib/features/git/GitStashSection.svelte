@@ -4,8 +4,8 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
 	import UploadIcon from '@lucide/svelte/icons/upload';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
+	import { Button } from '@workbench/ui/button';
+	import { Input } from '@workbench/ui/input';
 	import { getGitStore } from '$stores/context';
 	import type { GitStashEntry } from '$types/workbench';
 	import { toast } from 'svelte-sonner';

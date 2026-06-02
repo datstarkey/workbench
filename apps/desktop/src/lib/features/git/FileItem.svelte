@@ -2,7 +2,7 @@
 	import MinusIcon from '@lucide/svelte/icons/minus';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import UndoIcon from '@lucide/svelte/icons/undo-2';
-	import { Button } from '$lib/components/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import type { GitFileStatus } from '$types/workbench';
 	import { getStatusDisplay } from './status-display';
 

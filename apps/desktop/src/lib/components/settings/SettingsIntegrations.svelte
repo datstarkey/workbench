@@ -1,7 +1,7 @@
 <script lang="ts">
 	import SettingsTrelloAuth from './SettingsTrelloAuth.svelte';
 	import SettingsBoardConfig from './SettingsBoardConfig.svelte';
-	import { Separator } from '$lib/components/ui/separator';
+	import { Separator } from '@workbench/ui/separator';
 	import { getTrelloStore } from '$stores/context';
 
 	let { projectPath }: { projectPath: string | null } = $props();

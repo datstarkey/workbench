@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Input } from '$lib/components/ui/input';
+	import { Input } from '@workbench/ui/input';
 	import { getClaudeSettingsStore } from '$stores/context';
 	import SettingsSelect from './SettingsSelect.svelte';
 	import SettingsToggle from './SettingsToggle.svelte';

@@ -4,7 +4,7 @@
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import XIcon from '@lucide/svelte/icons/x';
-	import * as ContextMenu from '$lib/components/ui/context-menu';
+	import * as ContextMenu from '@workbench/ui/context-menu';
 	import type { ActiveClaudeSession } from '$types/workbench';
 
 	let {

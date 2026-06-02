@@ -23,6 +23,7 @@
         "@tauri-apps/plugin-store": "^2",
         "@tauri-apps/plugin-updater": "^2.10.0",
         "@workbench/transport": "workspace:*",
+        "@workbench/ui": "workspace:*",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-ligatures": "^0.10.0",
         "@xterm/addon-search": "^0.16.0",
@@ -90,6 +91,21 @@
       "version": "0.1.0",
       "devDependencies": {
         "typescript": "^5.7.3",
+      },
+    },
+    "packages/ui": {
+      "name": "@workbench/ui",
+      "version": "0.1.0",
+      "dependencies": {
+        "@lucide/svelte": "^0.561.0",
+        "bits-ui": "^2.15.6",
+        "clsx": "^2.1.1",
+        "paneforge": "^1.0.2",
+        "tailwind-merge": "^3.4.1",
+        "tailwind-variants": "^3.2.2",
+      },
+      "peerDependencies": {
+        "svelte": "^5",
       },
     },
   },
@@ -431,6 +447,8 @@
     "@workbench/transport": ["@workbench/transport@workspace:packages/transport"],
 
     "@workbench/types": ["@workbench/types@workspace:packages/types"],
+
+    "@workbench/ui": ["@workbench/ui@workspace:packages/ui"],
 
     "@xterm/addon-fit": ["@xterm/addon-fit@0.11.0", "", {}, "sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g=="],
 

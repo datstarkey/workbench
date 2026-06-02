@@ -5,8 +5,8 @@
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
-	import { Button } from '$lib/components/ui/button';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Button } from '@workbench/ui/button';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import type { GitHubCheckDetail } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
 

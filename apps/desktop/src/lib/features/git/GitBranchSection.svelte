@@ -3,8 +3,8 @@
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import PlusIcon from '@lucide/svelte/icons/plus';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
+	import { Button } from '@workbench/ui/button';
+	import { Input } from '@workbench/ui/input';
 	import { getGitStore } from '$stores/context';
 	import type { BranchInfo } from '$types/workbench';
 	import { invoke } from '@tauri-apps/api/core';

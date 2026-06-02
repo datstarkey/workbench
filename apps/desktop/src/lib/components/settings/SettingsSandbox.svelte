@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { Label } from '$lib/components/ui/label';
-	import { Input } from '$lib/components/ui/input';
+	import { Label } from '@workbench/ui/label';
+	import { Input } from '@workbench/ui/input';
 	import { getClaudeSettingsStore } from '$stores/context';
 	import EditableStringList from './EditableStringList.svelte';
 

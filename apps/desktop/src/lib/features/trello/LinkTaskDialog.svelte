@@ -1,7 +1,7 @@
 <script lang="ts">
-	import * as Dialog from '$lib/components/ui/dialog';
-	import { Button } from '$lib/components/ui/button';
-	import * as Select from '$lib/components/ui/select';
+	import * as Dialog from '@workbench/ui/dialog';
+	import { Button } from '@workbench/ui/button';
+	import * as Select from '@workbench/ui/select';
 	import { getTrelloStore, getGitStore } from '$stores/context';
 	import type { TrelloCard } from '$types/trello';
 

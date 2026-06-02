@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import { Input } from '@workbench/ui/input';
+	import { Badge } from '@workbench/ui/badge';
 	import { getTrelloStore } from '$stores/context';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import CheckIcon from '@lucide/svelte/icons/check';

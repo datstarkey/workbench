@@ -3,7 +3,7 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import UndoIcon from '@lucide/svelte/icons/undo-2';
-	import { Button } from '$lib/components/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import { getGitStore } from '$stores/context';
 	import type { GitCommitFile, GitLogEntry } from '$types/workbench';
 	import { toast } from 'svelte-sonner';

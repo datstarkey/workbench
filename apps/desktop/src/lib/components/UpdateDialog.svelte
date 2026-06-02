@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import * as Dialog from '$lib/components/ui/dialog';
+	import { Button } from '@workbench/ui/button';
+	import * as Dialog from '@workbench/ui/dialog';
 	import { getUpdaterStore } from '$stores/context';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import CheckCircleIcon from '@lucide/svelte/icons/circle-check';

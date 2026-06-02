@@ -1,7 +1,7 @@
 <script lang="ts">
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import XIcon from '@lucide/svelte/icons/x';
-	import * as ContextMenu from '$lib/components/ui/context-menu';
+	import * as ContextMenu from '@workbench/ui/context-menu';
 	import { formatSessionDate } from '$lib/utils/format';
 	import type { DiscoveredClaudeSession } from '$types/workbench';
 

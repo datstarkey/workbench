@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import { Checkbox } from '$lib/components/ui/checkbox';
-	import { Separator } from '$lib/components/ui/separator';
+	import { Button } from '@workbench/ui/button';
+	import { Checkbox } from '@workbench/ui/checkbox';
+	import { Separator } from '@workbench/ui/separator';
 	import { getTrelloStore } from '$stores/context';
 	import type { BoardConfig, MergeAction, TrelloLabel, TrelloList } from '$types/trello';
 	import { trelloLabelColor } from '$features/trello/label-colors';

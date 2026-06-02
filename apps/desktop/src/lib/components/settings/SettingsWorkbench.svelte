@@ -1,10 +1,10 @@
 <script lang="ts">
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Input } from '$lib/components/ui/input';
-	import { Separator } from '$lib/components/ui/separator';
+	import { Button } from '@workbench/ui/button';
+	import { Badge } from '@workbench/ui/badge';
+	import { Input } from '@workbench/ui/input';
+	import { Separator } from '@workbench/ui/separator';
 	import SettingsSelect from './SettingsSelect.svelte';
 	import SettingsToggle from './SettingsToggle.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';

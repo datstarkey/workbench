@@ -1,9 +1,9 @@
 <script lang="ts">
-	import * as Dialog from '$lib/components/ui/dialog';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import * as Select from '$lib/components/ui/select';
-	import { Switch } from '$lib/components/ui/switch';
+	import * as Dialog from '@workbench/ui/dialog';
+	import { Input } from '@workbench/ui/input';
+	import { Label } from '@workbench/ui/label';
+	import * as Select from '@workbench/ui/select';
+	import { Switch } from '@workbench/ui/switch';
 	import type { BranchInfo, WorktreeCopyOptions } from '$types/workbench';
 	import { baseName } from '$lib/utils/path';
 	import { getWorkbenchSettingsStore } from '$stores/context';

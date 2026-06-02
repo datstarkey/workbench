@@ -6,7 +6,7 @@
 	import GitPullRequestDraftIcon from '@lucide/svelte/icons/git-pull-request-draft';
 	import GitPullRequestClosedIcon from '@lucide/svelte/icons/git-pull-request-closed';
 	import GitMergeIcon from '@lucide/svelte/icons/git-merge';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import type { GitHubPR } from '$types/workbench';
 
 	let {

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import PlusIcon from '@lucide/svelte/icons/plus';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
+	import { Button } from '@workbench/ui/button';
+	import { Input } from '@workbench/ui/input';
 	import { getTrelloStore } from '$stores/context';
 
 	let { listId, projectPath }: { listId: string; projectPath: string } = $props();

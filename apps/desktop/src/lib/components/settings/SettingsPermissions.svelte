@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Label } from '$lib/components/ui/label';
+	import { Label } from '@workbench/ui/label';
 	import { getClaudeSettingsStore } from '$stores/context';
 	import type { PermissionsConfig } from '$types/claude-settings';
 

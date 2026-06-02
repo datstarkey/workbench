@@ -18,12 +18,12 @@
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { Button } from '$lib/components/ui/button';
-	import * as ContextMenu from '$lib/components/ui/context-menu';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
-	import { Input } from '$lib/components/ui/input';
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import * as Tooltip from '$lib/components/ui/tooltip';
+	import { Button } from '@workbench/ui/button';
+	import * as ContextMenu from '@workbench/ui/context-menu';
+	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
+	import { Input } from '@workbench/ui/input';
+	import { ScrollArea } from '@workbench/ui/scroll-area';
+	import * as Tooltip from '@workbench/ui/tooltip';
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		getClaudeSessionStore,

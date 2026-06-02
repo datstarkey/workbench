@@ -1,6 +1,9 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
+/* Scan the shared UI package so Tailwind v4 generates classes used only there. */
+@source '../../../packages/ui/src';
+
 @custom-variant dark (&:is(.dark *));
 
 :root {

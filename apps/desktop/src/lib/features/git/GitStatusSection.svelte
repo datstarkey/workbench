@@ -7,10 +7,10 @@
 	import MinusIcon from '@lucide/svelte/icons/minus';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import { Checkbox } from '$lib/components/ui/checkbox';
-	import { Input } from '$lib/components/ui/input';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import { Checkbox } from '@workbench/ui/checkbox';
+	import { Input } from '@workbench/ui/input';
 	import { getGitStore } from '$stores/context';
 	import type { GitStatusResult } from '$types/workbench';
 	import { toast } from 'svelte-sonner';

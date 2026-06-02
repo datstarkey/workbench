@@ -4,7 +4,7 @@
 	import CircleXIcon from '@lucide/svelte/icons/circle-x';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
-	import { Button } from '$lib/components/ui/button';
+	import { Button } from '@workbench/ui/button';
 	import type { GitHubBranchRuns } from '$types/workbench';
 	import { openInGitHub, branchUrl } from '$lib/utils/github';
 

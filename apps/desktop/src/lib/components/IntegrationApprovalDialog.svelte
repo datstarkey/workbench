@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import * as Dialog from '$lib/components/ui/dialog';
+	import { Button } from '@workbench/ui/button';
+	import * as Dialog from '@workbench/ui/dialog';
 	import { getIntegrationApprovalStore } from '$stores/context';
 
 	const store = getIntegrationApprovalStore();

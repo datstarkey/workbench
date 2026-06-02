@@ -1,9 +1,9 @@
 <script lang="ts">
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import * as Select from '$lib/components/ui/select';
+	import { Button } from '@workbench/ui/button';
+	import { Input } from '@workbench/ui/input';
+	import * as Select from '@workbench/ui/select';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 	import type { AgentAction, AgentActionTarget } from '$types/workbench';
 

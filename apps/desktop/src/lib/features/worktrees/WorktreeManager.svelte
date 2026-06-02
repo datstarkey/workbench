@@ -1,6 +1,6 @@
 <script lang="ts">
 	import ConfirmDialog from '$components/ConfirmDialog.svelte';
-	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { Checkbox } from '@workbench/ui/checkbox';
 	import WorktreeDialog from './WorktreeDialog.svelte';
 	import { getWorktreeManager } from '$stores/context';
 

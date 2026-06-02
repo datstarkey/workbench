@@ -10,9 +10,9 @@
 	import SendHorizontalIcon from '@lucide/svelte/icons/send-horizontal';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import { Badge } from '@workbench/ui/badge';
+	import { Button } from '@workbench/ui/button';
+	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import type { GitHubPR, MergePrOptions } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
 	import { invoke } from '@tauri-apps/api/core';
