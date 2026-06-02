@@ -3,6 +3,7 @@ export type {
 	ControlPlaneCommands,
 	ControlPlaneEvents,
 	ControlPlaneTransport,
+	RemoteSession,
 	Unsubscribe
 } from './transport.ts';
 export { createTauriTransport } from './tauri.ts';

@@ -69,6 +69,25 @@
       "name": "@workbench/mobile",
       "version": "0.1.0",
     },
+    "packages/control-plane-ui": {
+      "name": "@workbench/control-plane-ui",
+      "version": "0.1.0",
+      "dependencies": {
+        "@workbench/transport": "workspace:*",
+        "@workbench/types": "workspace:*",
+        "@workbench/ui": "workspace:*",
+      },
+      "devDependencies": {
+        "@sveltejs/vite-plugin-svelte": "^6.2.4",
+        "@tsconfig/svelte": "^5.0.8",
+        "svelte": "^5.51.3",
+        "svelte-check": "^4.4.0",
+        "typescript": "^5.7.3",
+      },
+      "peerDependencies": {
+        "svelte": "^5",
+      },
+    },
     "packages/transport": {
       "name": "@workbench/transport",
       "version": "0.1.0",
@@ -439,6 +458,8 @@
     "@vitest/spy": ["@vitest/spy@4.0.18", "", {}, "sha512-cbQt3PTSD7P2OARdVW3qWER5EGq7PHlvE+QfzSC0lbwO+xnt7+XH06ZzFjFRgzUX//JmpxrCu92VdwvEPlWSNw=="],
 
     "@vitest/utils": ["@vitest/utils@4.0.18", "", { "dependencies": { "@vitest/pretty-format": "4.0.18", "tinyrainbow": "^3.0.3" } }, "sha512-msMRKLMVLWygpK3u2Hybgi4MNjcYJvwTb0Ru09+fOyCXIgT5raYP041DRRdiJiI3k/2U6SEbAETB3YtBrUkCFA=="],
+
+    "@workbench/control-plane-ui": ["@workbench/control-plane-ui@workspace:packages/control-plane-ui"],
 
     "@workbench/desktop": ["@workbench/desktop@workspace:apps/desktop"],
 
