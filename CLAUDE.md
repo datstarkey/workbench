@@ -17,8 +17,11 @@ apps/
 crates/
   workbench-core/   # shared pure Rust logic (no tauri): config, git, sessions, settings, types
 packages/
-  transport/    # @workbench/transport: ControlPlaneTransport (Tauri/Http/mock impls)
+  types/        # @workbench/types: shared TS types (mirror of workbench-core serde types)
+  transport/    # @workbench/transport: ControlPlaneTransport (Tauri/Http/mock impls), typed via @workbench/types
 ```
+
+Not yet extracted (planned, gated on building the native mobile app — the web client served by `workbench-server` covers the phone use-case today): `@workbench/ui` (shadcn primitives + `cn`), `@workbench/tailwind-preset`, `@workbench/control-plane-ui` (shared sidebar + the `ClaudeSessions`→core/desktop and `Workspace`→data/desktop store splits).
 
 Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-core` (pure logic), `workbench-server` (lib+bin). `workbench-core` and `workbench-server` must **never** depend on `tauri` — verify with `cargo tree -p workbench-server | grep -i tauri` (must be empty). Tauri deps live only in `apps/desktop/src-tauri/Cargo.toml`.
 
@@ -128,7 +131,7 @@ Control-plane stores call `invoke`/`listen` imported from **`$lib/transport`** (
 
 ### Path aliases (in `apps/desktop/vite.config.ts`)
 
-`$lib` → `src/lib`, `$components` → `src/lib/components`, `$features` → `src/lib/features`, `$stores` → `src/lib/stores`, `$types` → `src/types` (all resolved relative to `apps/desktop`, cwd-relative — turbo runs vite from `apps/desktop`). Cross-package imports use the package name (`@workbench/transport`), not `$`-aliases. Frontend feature/store/component paths below are all under `apps/desktop/src/`.
+`$lib` → `src/lib`, `$components` → `src/lib/components`, `$features` → `src/lib/features`, `$stores` → `src/lib/stores`, `$types` → `../../packages/types/src` (the `@workbench/types` package — repointed so existing `$types/workbench` imports work unchanged). All resolved relative to `apps/desktop`, cwd-relative — turbo runs vite from `apps/desktop`. Cross-package imports use the package name (`@workbench/transport`, `@workbench/types`), not `$`-aliases. Frontend feature/store/component paths below are all under `apps/desktop/src/`.
 
 ### Styling
 
