@@ -3,6 +3,7 @@
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GithubIcon from '@lucide/svelte/icons/github';
+	import ServerIcon from '@lucide/svelte/icons/server';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import * as Tooltip from '@workbench/ui/tooltip';
@@ -16,8 +17,10 @@
 
 	let {
 		onToggleSidebar,
-		onOpenSettings
-	}: { onToggleSidebar: () => void; onOpenSettings: () => void } = $props();
+		onOpenSettings,
+		onOpenRemote
+	}: { onToggleSidebar: () => void; onOpenSettings: () => void; onOpenRemote: () => void } =
+		$props();
 
 	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
@@ -91,6 +94,7 @@
 		GithubIcon
 	)}
 	{@render railButton('Sessions', false, undefined, () => {}, SparklesIcon)}
+	{@render railButton('Remote server', false, undefined, onOpenRemote, ServerIcon)}
 	{@render railButton('Docs', false, undefined, () => {}, BookOpenIcon)}
 	{@render railButton('Settings', false, undefined, onOpenSettings, SettingsIcon)}
 

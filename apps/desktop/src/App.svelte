@@ -7,6 +7,7 @@
 	import ProjectManager from '$features/projects/ProjectManager.svelte';
 	import { ProjectManagerStore } from '$features/projects/project-manager.svelte';
 	import ProjectSidebar from '$features/projects/ProjectSidebar.svelte';
+	import RemoteServerDialog from '$features/remote/RemoteServerDialog.svelte';
 	import NativeTerminalGrid from '$features/terminal/NativeTerminalGrid.svelte';
 	import TerminalGrid from '$features/terminal/TerminalGrid.svelte';
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
@@ -81,6 +82,7 @@
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let githubSidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let settingsOpen = $state(false);
+	let remoteOpen = $state(false);
 
 	function toggleSidebar() {
 		if (sidebarCollapsed) {
@@ -168,7 +170,11 @@
 <Tooltip.Provider>
 	<div class="flex h-screen flex-col overflow-hidden bg-background text-foreground">
 		<div class="flex min-h-0 flex-1">
-			<ActivityRail onToggleSidebar={toggleSidebar} onOpenSettings={() => (settingsOpen = true)} />
+			<ActivityRail
+				onToggleSidebar={toggleSidebar}
+				onOpenSettings={() => (settingsOpen = true)}
+				onOpenRemote={() => (remoteOpen = true)}
+			/>
 			<div class="h-full min-w-0 flex-1">
 				<Resizable.PaneGroup direction="horizontal">
 					<Resizable.Pane
@@ -269,6 +275,7 @@
 <ProjectManager />
 <WorktreeManager />
 <SettingsSheet bind:open={settingsOpen} projectPath={workspaceStore.activeProjectPath} />
+<RemoteServerDialog bind:open={remoteOpen} />
 <IntegrationApprovalDialog />
 <UpdateDialog />
 <Toaster theme="dark" position="bottom-right" />

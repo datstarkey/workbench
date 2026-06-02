@@ -17,6 +17,7 @@
 		"test:component": "vitest run --project component"
 	},
 	"dependencies": {
+		"@workbench/control-plane-ui": "workspace:*",
 		"@workbench/transport": "workspace:*",
 		"@workbench/ui": "workspace:*",
 		"@tauri-apps/api": "^2",
