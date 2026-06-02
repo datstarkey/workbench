@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<title>Workbench Server</title>
+		<style>
+			:root {
+				--bg: #0e1116;
+				--panel: #161b22;
+				--panel2: #1c2230;
+				--hair: #2a313c;
+				--ink: #e6edf3;
+				--muted: #8b949e;
+				--accent: #8b7bff;
+				--ok: #3fb950;
+				--err: #f85149;
+			}
+			* {
+				box-sizing: border-box;
+			}
+			body {
+				margin: 0;
+				font:
+					15px/1.45 -apple-system,
+					BlinkMacSystemFont,
+					'Segoe UI',
+					sans-serif;
+				background: var(--bg);
+				color: var(--ink);
+				padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+			}
+			header {
+				position: sticky;
+				top: 0;
+				background: var(--panel);
+				border-bottom: 1px solid var(--hair);
+				padding: 12px 16px;
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			header h1 {
+				font-size: 15px;
+				margin: 0;
+				flex: 1;
+			}
+			.dot {
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+				background: var(--err);
+			}
+			.dot.ok {
+				background: var(--ok);
+			}
+			main {
+				max-width: 720px;
+				margin: 0 auto;
+				padding: 16px;
+				display: flex;
+				flex-direction: column;
+				gap: 16px;
+			}
+			.card {
+				background: var(--panel);
+				border: 1px solid var(--hair);
+				border-radius: 10px;
+				overflow: hidden;
+			}
+			.card h2 {
+				font-size: 13px;
+				text-transform: uppercase;
+				letter-spacing: 0.04em;
+				color: var(--muted);
+				margin: 0;
+				padding: 12px 14px;
+				border-bottom: 1px solid var(--hair);
+			}
+			.row {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				padding: 11px 14px;
+				border-bottom: 1px solid var(--hair);
+			}
+			.row:last-child {
+				border-bottom: none;
+			}
+			.row .grow {
+				flex: 1;
+				min-width: 0;
+			}
+			.row .name {
+				font-weight: 600;
+			}
+			.row .sub {
+				color: var(--muted);
+				font-size: 12px;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			button {
+				font: inherit;
+				font-weight: 600;
+				border: 1px solid var(--hair);
+				background: var(--panel2);
+				color: var(--ink);
+				border-radius: 8px;
+				padding: 8px 12px;
+				cursor: pointer;
+			}
+			button.primary {
+				background: var(--accent);
+				border-color: var(--accent);
+				color: #0b0e14;
+			}
+			button.danger {
+				color: var(--err);
+			}
+			button:active {
+				opacity: 0.7;
+			}
+			input,
+			select {
+				font: inherit;
+				background: var(--panel2);
+				border: 1px solid var(--hair);
+				color: var(--ink);
+				border-radius: 8px;
+				padding: 8px 10px;
+				width: 100%;
+			}
+			.muted {
+				color: var(--muted);
+			}
+			.empty {
+				padding: 16px 14px;
+				color: var(--muted);
+			}
+			.toast {
+				position: fixed;
+				left: 50%;
+				bottom: 20px;
+				transform: translateX(-50%);
+				background: var(--panel2);
+				border: 1px solid var(--hair);
+				padding: 10px 16px;
+				border-radius: 8px;
+				max-width: 90vw;
+				box-shadow: 0 8px 24px #0008;
+			}
+			.toast.err {
+				border-color: var(--err);
+				color: var(--err);
+			}
+			a {
+				color: var(--accent);
+			}
+			.stack {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				padding: 12px 14px;
+			}
+			.inline {
+				display: flex;
+				gap: 8px;
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<span class="dot" id="status-dot"></span>
+			<h1>Workbench Server</h1>
+			<button id="refresh">Refresh</button>
+		</header>
+		<main>
+			<div class="card" id="auth-card" style="display: none">
+				<h2>Token</h2>
+				<div class="stack">
+					<p class="muted" style="margin: 0">This server requires a bearer token.</p>
+					<div class="inline">
+						<input id="token" type="password" placeholder="Bearer token" />
+						<button class="primary" id="save-token">Save</button>
+					</div>
+				</div>
+			</div>
+
+			<div class="card">
+				<h2>Running sessions</h2>
+				<div id="sessions"><div class="empty">None.</div></div>
+			</div>
+
+			<div class="card">
+				<h2>Projects</h2>
+				<div id="projects"><div class="empty">Loading…</div></div>
+			</div>
+		</main>
+
+		<script>
+			const TOKEN_KEY = 'workbench.token';
+			let token = localStorage.getItem(TOKEN_KEY) || '';
+			let projects = [];
+			let expanded = null; // project path currently expanded
+
+			const $ = (id) => document.getElementById(id);
+
+			function toast(msg, isErr) {
+				const t = document.createElement('div');
+				t.className = 'toast' + (isErr ? ' err' : '');
+				t.textContent = msg;
+				document.body.appendChild(t);
+				setTimeout(() => t.remove(), 3200);
+			}
+
+			async function api(path, opts = {}) {
+				const headers = { 'content-type': 'application/json', ...(opts.headers || {}) };
+				if (token) headers.authorization = 'Bearer ' + token;
+				const res = await fetch(path, { ...opts, headers });
+				if (res.status === 401) {
+					$('auth-card').style.display = '';
+					throw new Error('Unauthorized — enter a token');
+				}
+				if (!res.ok) {
+					let m = res.status + ' ' + res.statusText;
+					try {
+						const j = await res.json();
+						if (j.error) m = j.error;
+					} catch {}
+					throw new Error(m);
+				}
+				if (res.status === 204) return null;
+				const text = await res.text();
+				return text ? JSON.parse(text) : null;
+			}
+
+			function setOnline(ok) {
+				$('status-dot').classList.toggle('ok', ok);
+			}
+
+			async function loadSessions() {
+				try {
+					const sessions = await api('/remote/sessions');
+					const el = $('sessions');
+					if (!sessions.length) {
+						el.innerHTML = '<div class="empty">None.</div>';
+						return;
+					}
+					el.innerHTML = '';
+					for (const s of sessions) {
+						const row = document.createElement('div');
+						row.className = 'row';
+						const url = s.sessionUrl
+							? `<a href="${s.sessionUrl}" target="_blank">open</a>`
+							: '<span class="muted">starting…</span>';
+						row.innerHTML = `<div class="grow"><div class="name">${s.name || s.id.slice(0, 8)}</div><div class="sub">${s.cwd} · ${s.status?.exited ? 'exited' : s.status || ''} · ${url}</div></div>`;
+						const kill = document.createElement('button');
+						kill.className = 'danger';
+						kill.textContent = 'Kill';
+						kill.onclick = async () => {
+							try {
+								await api('/remote/sessions/' + encodeURIComponent(s.id), { method: 'DELETE' });
+								loadSessions();
+							} catch (e) {
+								toast(e.message, true);
+							}
+						};
+						row.appendChild(kill);
+						el.appendChild(row);
+					}
+				} catch (e) {
+					toast(e.message, true);
+				}
+			}
+
+			async function spawn(projectPath, worktreePath, name) {
+				try {
+					await api('/remote/spawn', {
+						method: 'POST',
+						body: JSON.stringify({ projectPath, worktreePath, name })
+					});
+					toast('Session spawned — check the Claude app');
+					loadSessions();
+				} catch (e) {
+					toast(e.message, true);
+				}
+			}
+
+			async function createWorktree(repoPath, branch) {
+				if (!branch) return;
+				try {
+					await api('/projects/worktrees', {
+						method: 'POST',
+						body: JSON.stringify({ repoPath, branch, newBranch: true })
+					});
+					toast('Worktree created');
+					openProject(repoPath, true);
+				} catch (e) {
+					toast(e.message, true);
+				}
+			}
+
+			function projectName(p) {
+				return p.name || p.path.split('/').pop();
+			}
+
+			async function openProject(path, forceReload) {
+				if (expanded === path && !forceReload) {
+					expanded = null;
+					renderProjects();
+					return;
+				}
+				expanded = path;
+				renderProjects();
+				try {
+					const worktrees = await api('/projects/worktrees?path=' + encodeURIComponent(path));
+					renderProjects(worktrees);
+				} catch (e) {
+					toast(e.message, true);
+				}
+			}
+
+			function renderProjects(worktrees) {
+				const el = $('projects');
+				if (!projects.length) {
+					el.innerHTML = '<div class="empty">No projects on this server.</div>';
+					return;
+				}
+				el.innerHTML = '';
+				for (const p of projects) {
+					const row = document.createElement('div');
+					row.className = 'row';
+					row.innerHTML = `<div class="grow"><div class="name">${projectName(p)}</div><div class="sub">${p.path}</div></div>`;
+					const spawnBtn = document.createElement('button');
+					spawnBtn.className = 'primary';
+					spawnBtn.textContent = 'Spawn';
+					spawnBtn.onclick = (e) => {
+						e.stopPropagation();
+						spawn(p.path, null, projectName(p));
+					};
+					const moreBtn = document.createElement('button');
+					moreBtn.textContent = expanded === p.path ? '▾' : '▸';
+					moreBtn.onclick = () => openProject(p.path);
+					row.appendChild(spawnBtn);
+					row.appendChild(moreBtn);
+					el.appendChild(row);
+
+					if (expanded === p.path) {
+						const panel = document.createElement('div');
+						panel.className = 'stack';
+						panel.style.background = 'var(--panel2)';
+						if (!worktrees) {
+							panel.innerHTML = '<span class="muted">Loading worktrees…</span>';
+						} else {
+							for (const w of worktrees) {
+								const wr = document.createElement('div');
+								wr.className = 'inline';
+								wr.style.alignItems = 'center';
+								wr.innerHTML = `<div class="grow"><div class="name">${w.branch || '(detached)'}</div><div class="sub">${w.path}${w.isMain ? ' · main' : ''}</div></div>`;
+								const sp = document.createElement('button');
+								sp.className = 'primary';
+								sp.textContent = 'Spawn';
+								sp.onclick = () =>
+									spawn(p.path, w.isMain ? null : w.path, `${projectName(p)}:${w.branch}`);
+								wr.appendChild(sp);
+								panel.appendChild(wr);
+							}
+							const form = document.createElement('div');
+							form.className = 'inline';
+							const input = document.createElement('input');
+							input.placeholder = 'new-branch-name';
+							const mk = document.createElement('button');
+							mk.textContent = 'Create worktree';
+							mk.onclick = () => createWorktree(p.path, input.value.trim());
+							form.appendChild(input);
+							form.appendChild(mk);
+							panel.appendChild(form);
+						}
+						el.appendChild(panel);
+					}
+				}
+			}
+
+			async function loadProjects() {
+				try {
+					projects = await api('/projects');
+					setOnline(true);
+					$('auth-card').style.display = 'none';
+					renderProjects();
+				} catch (e) {
+					setOnline(false);
+					$('projects').innerHTML = `<div class="empty">${e.message}</div>`;
+				}
+			}
+
+			async function refresh() {
+				await Promise.all([loadProjects(), loadSessions()]);
+			}
+
+			$('refresh').onclick = refresh;
+			$('save-token').onclick = () => {
+				token = $('token').value.trim();
+				localStorage.setItem(TOKEN_KEY, token);
+				refresh();
+			};
+			if (token) $('token').value = token;
+			refresh();
+		</script>
+	</body>
+</html>

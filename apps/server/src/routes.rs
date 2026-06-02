@@ -1,5 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::Html;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -11,6 +12,7 @@ use workbench_core::types::CreateWorktreeRequest;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(index))
         .route("/health", get(health))
         .route("/projects", get(list_projects))
         .route(
@@ -34,6 +36,12 @@ pub fn router(state: AppState) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Minimal mobile-friendly web client (spawn sessions / manage worktrees from a
+/// phone browser over the private network). Complements the native mobile app.
+async fn index() -> Html<&'static str> {
+    Html(include_str!("../web/index.html"))
 }
 
 // --- control plane: projects / worktrees / branches ---

@@ -16,7 +16,10 @@ pub async fn require_bearer(
         return Ok(next.run(request).await);
     };
 
-    if request.uri().path() == "/health" {
+    // The web client page and liveness check load without a token; the page's
+    // own API calls still carry the bearer token.
+    let path = request.uri().path();
+    if path == "/" || path == "/health" {
         return Ok(next.run(request).await);
     }
 
