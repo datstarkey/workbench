@@ -622,7 +622,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		color: #fca5a5;
-		font-size: 13px;
+		color: var(--wb-err);
+		font-size: 12px;
+		font-family: var(--font-mono, ui-monospace, monospace);
 	}
 </style>

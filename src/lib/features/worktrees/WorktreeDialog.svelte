@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -84,33 +83,51 @@
 		}
 	}}
 >
-	<Dialog.Content class="sm:max-w-lg">
-		<Dialog.Header>
-			<Dialog.Title>Create Worktree</Dialog.Title>
-			<Dialog.Description>Create a new git worktree for parallel development.</Dialog.Description>
+	<Dialog.Content class="border-wb-hair bg-wb-panel text-wb-ink shadow-2xl sm:max-w-lg">
+		<Dialog.Header class="border-b border-wb-hair pb-3">
+			<Dialog.Title class="text-[14px] font-semibold text-wb-ink">Create Worktree</Dialog.Title>
+			<Dialog.Description class="text-[12px] text-wb-ink-soft">
+				Create a new git worktree for parallel development.
+			</Dialog.Description>
 		</Dialog.Header>
 
-		<div class="grid gap-4 py-4">
-			<div class="flex gap-2">
-				<Button
-					variant={mode === 'new' ? 'default' : 'outline'}
-					size="sm"
+		<div class="flex flex-col gap-4 py-4">
+			<!-- Mode toggle -->
+			<div class="flex gap-1.5">
+				<button
+					type="button"
 					onclick={() => (mode = 'new')}
+					class={[
+						'rounded-md border px-3 py-1 text-[12px] font-medium transition-colors',
+						mode === 'new'
+							? 'border-wb-accent bg-wb-accent/10 text-wb-accent'
+							: 'border-wb-hair bg-wb-bg text-wb-ink-mute hover:border-wb-hair-soft hover:text-wb-ink'
+					]}
 				>
 					New branch
-				</Button>
-				<Button
-					variant={mode === 'existing' ? 'default' : 'outline'}
-					size="sm"
+				</button>
+				<button
+					type="button"
 					onclick={() => (mode = 'existing')}
+					class={[
+						'rounded-md border px-3 py-1 text-[12px] font-medium transition-colors',
+						mode === 'existing'
+							? 'border-wb-accent bg-wb-accent/10 text-wb-accent'
+							: 'border-wb-hair bg-wb-bg text-wb-ink-mute hover:border-wb-hair-soft hover:text-wb-ink'
+					]}
 				>
 					Existing branch
-				</Button>
+				</button>
 			</div>
 
 			{#if mode === 'new'}
-				<div class="grid gap-2">
-					<Label for="branch-name">Branch name</Label>
+				<div class="flex flex-col gap-1.5">
+					<Label
+						for="branch-name"
+						class="text-[10.5px] font-medium tracking-wide text-wb-ink-soft uppercase"
+					>
+						Branch name
+					</Label>
 					<Input
 						id="branch-name"
 						placeholder="feature/my-branch"
@@ -118,22 +135,32 @@
 						autocorrect="off"
 						autocapitalize="off"
 						spellcheck="false"
+						class="border-wb-hair bg-wb-bg font-mono text-[12px] text-wb-ink placeholder:text-wb-ink-soft focus-visible:ring-wb-accent/40"
 					/>
 				</div>
 			{:else}
-				<div class="grid gap-2">
-					<Label>Branch</Label>
+				<div class="flex flex-col gap-1.5">
+					<Label class="text-[10.5px] font-medium tracking-wide text-wb-ink-soft uppercase">
+						Branch
+					</Label>
 					<Select.Root
 						type="single"
 						value={selectedBranch}
 						onValueChange={(v) => (selectedBranch = v)}
 					>
-						<Select.Trigger class="w-full">
+						<Select.Trigger
+							class="border-wb-hair bg-wb-bg font-mono text-[12px] text-wb-ink data-[placeholder]:text-wb-ink-soft"
+						>
 							{selectedBranch || 'Select a branch'}
 						</Select.Trigger>
-						<Select.Content>
+						<Select.Content class="border-wb-hair bg-wb-panel">
 							{#each localBranches as branch (branch.name)}
-								<Select.Item value={branch.name}>{branch.name}</Select.Item>
+								<Select.Item
+									value={branch.name}
+									class="font-mono text-[12px] text-wb-ink hover:bg-wb-panel2 focus:bg-wb-panel2"
+								>
+									{branch.name}
+								</Select.Item>
 							{/each}
 						</Select.Content>
 					</Select.Root>
@@ -141,29 +168,43 @@
 			{/if}
 
 			{#if worktreePath}
-				<div class="grid gap-2">
-					<Label>Worktree path</Label>
-					<Input value={worktreePath} readonly class="text-muted-foreground" />
+				<div class="flex flex-col gap-1.5">
+					<Label class="text-[10.5px] font-medium tracking-wide text-wb-ink-soft uppercase">
+						Worktree path
+					</Label>
+					<Input
+						value={worktreePath}
+						readonly
+						class="border-wb-hair bg-wb-bg font-mono text-[11.5px] text-wb-ink-mute"
+					/>
 				</div>
 			{/if}
 
-			<div class="grid gap-3 rounded-md border p-3">
-				<Label class="text-sm">Copy untracked workspace files</Label>
+			<!-- Copy options -->
+			<div class="flex flex-col gap-3 rounded-md border border-wb-hair bg-wb-bg/60 p-3">
+				<span class="text-[10.5px] font-medium tracking-wide text-wb-ink-soft uppercase">
+					Copy untracked workspace files
+				</span>
 				<div class="flex items-center justify-between gap-3">
 					<div>
-						<p class="text-sm font-medium">AI config</p>
-						<p class="text-xs text-muted-foreground">
-							Copy <code>.claude</code>, <code>CLAUDE.md</code>, <code>.codex</code>, and
-							<code>.mcp.json</code> (skips git-tracked files).
+						<p class="text-[12px] font-medium text-wb-ink">AI config</p>
+						<p class="text-[11px] text-wb-ink-soft">
+							Copy <code class="font-mono text-wb-ink-mute">.claude</code>,
+							<code class="font-mono text-wb-ink-mute">CLAUDE.md</code>,
+							<code class="font-mono text-wb-ink-mute">.codex</code>, and
+							<code class="font-mono text-wb-ink-mute">.mcp.json</code> (skips git-tracked files).
 						</p>
 					</div>
 					<Switch checked={copyAiConfig} onCheckedChange={(v) => (copyAiConfig = v)} />
 				</div>
+				<div class="border-t border-wb-hair-soft"></div>
 				<div class="flex items-center justify-between gap-3">
 					<div>
-						<p class="text-sm font-medium">Env files</p>
-						<p class="text-xs text-muted-foreground">
-							Copy <code>.env*</code>, <code>.envrc</code>, and <code>.dev.vars</code>.
+						<p class="text-[12px] font-medium text-wb-ink">Env files</p>
+						<p class="text-[11px] text-wb-ink-soft">
+							Copy <code class="font-mono text-wb-ink-mute">.env*</code>,
+							<code class="font-mono text-wb-ink-mute">.envrc</code>, and
+							<code class="font-mono text-wb-ink-mute">.dev.vars</code>.
 						</p>
 					</div>
 					<Switch checked={copyEnvFiles} onCheckedChange={(v) => (copyEnvFiles = v)} />
@@ -171,13 +212,26 @@
 			</div>
 
 			{#if error}
-				<p class="text-sm text-destructive">{error}</p>
+				<p class="text-[12px] text-wb-err">{error}</p>
 			{/if}
 		</div>
 
-		<Dialog.Footer>
-			<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-			<Button onclick={handleSave} disabled={!branchName}>Create Worktree</Button>
+		<Dialog.Footer class="border-t border-wb-hair pt-3">
+			<button
+				type="button"
+				onclick={() => (open = false)}
+				class="rounded-md border border-wb-hair px-3 py-1.5 text-[12px] font-medium text-wb-ink transition-colors hover:bg-wb-panel2"
+			>
+				Cancel
+			</button>
+			<button
+				type="button"
+				onclick={handleSave}
+				disabled={!branchName}
+				class="rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+			>
+				Create Worktree
+			</button>
 		</Dialog.Footer>
 	</Dialog.Content>
 </Dialog.Root>

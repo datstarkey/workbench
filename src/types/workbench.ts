@@ -316,6 +316,7 @@ export type WorktreeStrategy = 'sibling' | 'inside';
 export type WorktreeStartPoint = 'auto' | 'current' | 'custom';
 export type TerminalPerformanceMode = 'auto' | 'always';
 export type TerminalRenderer = 'xterm' | 'native';
+export type AccentColor = 'violet' | 'tideline' | 'ember' | 'moss' | 'iris';
 
 export type AgentActionTarget = 'claude' | 'codex' | 'both';
 
@@ -343,6 +344,7 @@ export interface WorkbenchSettings {
 	codexConfigApproved?: boolean | null;
 	useHappyCoder: boolean;
 	cloneBaseDir?: string | null;
+	accentColor?: AccentColor;
 }
 
 export interface IntegrationStatus {
