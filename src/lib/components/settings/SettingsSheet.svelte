@@ -4,6 +4,7 @@
 	import { getClaudeSettingsStore, getWorkbenchSettingsStore } from '$stores/context';
 	import type { ScopeGroup } from '$types/claude-settings';
 	import { baseName } from '$lib/utils/path';
+	import { FloatingPanel } from '$lib/utils/floating-panel.svelte';
 	import { watch } from 'runed';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import SaveIcon from '@lucide/svelte/icons/save';
@@ -27,6 +28,15 @@
 
 	const claudeSettingsStore = getClaudeSettingsStore();
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
+
+	// Draggable + resizable settings window; geometry persists across sessions.
+	const panel = new FloatingPanel({
+		defaultWidth: 840,
+		defaultHeight: 560,
+		minWidth: 560,
+		minHeight: 380,
+		onCommit: (bounds) => void workbenchSettingsStore.setSettingsWindowBounds(bounds)
+	});
 
 	let {
 		open = $bindable(false),
@@ -79,7 +89,10 @@
 	watch(
 		() => [open, projectPath] as const,
 		([isOpen, path]) => {
-			if (isOpen) claudeSettingsStore.load(path);
+			if (isOpen) {
+				claudeSettingsStore.load(path);
+				panel.apply(workbenchSettingsStore.settingsWindowBounds);
+			}
 		}
 	);
 
@@ -99,15 +112,24 @@
 <Dialog.Root bind:open>
 	<Dialog.Content
 		showCloseButton={false}
-		class="flex h-[560px] w-[840px] max-w-[90vw] flex-col gap-0 overflow-hidden rounded-[10px] border-wb-hair bg-wb-panel p-0 text-wb-ink shadow-[0_32px_80px_rgba(0,0,0,0.5)]"
+		class="flex flex-col gap-0 overflow-hidden rounded-[10px] border-wb-hair bg-wb-panel p-0 text-wb-ink shadow-[0_32px_80px_rgba(0,0,0,0.5)]"
+		style="left:{panel.x}px;top:{panel.y}px;width:{panel.width}px;height:{panel.height}px;transform:none;max-width:none;max-height:none"
 	>
 		<Dialog.Title class="sr-only">Settings</Dialog.Title>
 		<Dialog.Description class="sr-only">
 			Manage Workbench and Claude Code configuration settings
 		</Dialog.Description>
 
-		<!-- Header -->
-		<div class="flex h-12 flex-shrink-0 items-center gap-2.5 border-b border-wb-hair px-4.5">
+		<!-- Header (drag handle) -->
+		<div
+			role="toolbar"
+			tabindex={-1}
+			aria-label="Settings window title bar"
+			class="flex h-12 flex-shrink-0 cursor-move items-center gap-2.5 border-b border-wb-hair px-4.5 select-none"
+			onpointerdown={(e) => {
+				if (!(e.target as HTMLElement).closest('button')) panel.startDrag(e);
+			}}
+		>
 			<SettingsIcon size={15} class="text-wb-accent" />
 			<span class="text-[13.5px] font-semibold">Settings</span>
 			{#if contextLabel}
@@ -292,5 +314,24 @@
 				Save changes
 			</button>
 		</div>
+
+		<!-- Resize handle (bottom-right corner) -->
+		<button
+			type="button"
+			aria-label="Resize settings window"
+			tabindex={-1}
+			class="absolute right-0 bottom-0 size-4 cursor-nwse-resize text-wb-ink-mute hover:text-wb-ink"
+			onpointerdown={panel.startResize}
+		>
+			<svg
+				viewBox="0 0 16 16"
+				class="size-full"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="1.25"
+			>
+				<path d="M11 15 L15 11 M6 15 L15 6" stroke-linecap="round" />
+			</svg>
+		</button>
 	</Dialog.Content>
 </Dialog.Root>

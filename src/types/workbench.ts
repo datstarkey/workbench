@@ -345,6 +345,15 @@ export interface WorkbenchSettings {
 	useHappyCoder: boolean;
 	cloneBaseDir?: string | null;
 	accentColor?: AccentColor;
+	settingsWindowBounds?: SettingsWindowBounds | null;
+}
+
+/** Persisted position + size of the draggable settings window. */
+export interface SettingsWindowBounds {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
 }
 
 export interface IntegrationStatus {

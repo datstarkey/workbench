@@ -4,6 +4,7 @@ import type {
 	AgentAction,
 	AgentActionTarget,
 	SessionType,
+	SettingsWindowBounds,
 	TerminalPerformanceMode,
 	TerminalRenderer,
 	WorkbenchSettings,
@@ -34,6 +35,7 @@ export class WorkbenchSettingsStore {
 	useHappyCoder = $state(false);
 	cloneBaseDir: string | null = $state(null);
 	accentColor: AccentColor = $state<AccentColor>('violet');
+	settingsWindowBounds: SettingsWindowBounds | null = $state(null);
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -61,6 +63,7 @@ export class WorkbenchSettingsStore {
 		this.useHappyCoder = settings.useHappyCoder ?? false;
 		this.cloneBaseDir = settings.cloneBaseDir ?? null;
 		this.accentColor = settings.accentColor ?? 'violet';
+		this.settingsWindowBounds = settings.settingsWindowBounds ?? null;
 		this.loaded = true;
 		this.dirty = false;
 	}
@@ -141,8 +144,18 @@ export class WorkbenchSettingsStore {
 			codexConfigApproved: this.codexConfigApproved,
 			useHappyCoder: this.useHappyCoder,
 			cloneBaseDir: this.cloneBaseDir,
-			accentColor: this.accentColor
+			accentColor: this.accentColor,
+			settingsWindowBounds: this.settingsWindowBounds
 		};
+	}
+
+	/**
+	 * Persist the settings window position/size. Quiet save (does not toggle
+	 * `dirty`) — geometry isn't part of the form's save/discard flow.
+	 */
+	async setSettingsWindowBounds(bounds: SettingsWindowBounds) {
+		this.settingsWindowBounds = bounds;
+		await invoke('save_workbench_settings', { settings: this.toSettings() });
 	}
 
 	private normalizeAgentActions(actions: AgentAction[] | undefined): AgentAction[] {
