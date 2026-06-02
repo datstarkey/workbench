@@ -47,6 +47,7 @@
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
 	import { listen } from '@tauri-apps/api/event';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
+	import { startServer } from '$lib/server-mode';
 	import { onMount, untrack } from 'svelte';
 	import { watch } from 'runed';
 	import { Toaster, toast } from 'svelte-sonner';
@@ -154,6 +155,13 @@
 		githubStore.initSidebarState();
 		await trelloStore.loadCredentials();
 		await Promise.all(projectStore.projects.map((p) => trelloStore.loadProjectConfig(p.path)));
+		if (workbenchSettingsStore.serverMode) {
+			try {
+				await startServer(workbenchSettingsStore.serverPort);
+			} catch {
+				/* server failed to start (e.g. port in use); surfaced in settings */
+			}
+		}
 	});
 </script>
 

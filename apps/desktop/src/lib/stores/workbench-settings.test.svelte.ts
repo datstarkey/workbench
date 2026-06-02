@@ -225,7 +225,9 @@ describe('WorkbenchSettingsStore', () => {
 					codexConfigApproved: null,
 					useHappyCoder: false,
 					cloneBaseDir: null,
-					accentColor: 'violet'
+					accentColor: 'violet',
+					serverMode: false,
+					serverPort: 4317
 				}
 			});
 		});
@@ -478,7 +480,9 @@ describe('WorkbenchSettingsStore', () => {
 					codexConfigApproved: null,
 					useHappyCoder: false,
 					cloneBaseDir: null,
-					accentColor: 'violet'
+					accentColor: 'violet',
+					serverMode: false,
+					serverPort: 4317
 				}
 			});
 			expect(store.agentActions[0].name).toBe('Review');

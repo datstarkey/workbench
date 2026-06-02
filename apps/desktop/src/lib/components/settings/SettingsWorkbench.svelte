@@ -14,6 +14,7 @@
 		isNativeTerminalAvailable
 	} from '$lib/utils/terminal';
 	import { selectFolder } from '$lib/utils/dialog';
+	import { startServer, stopServer, serverStatus, type ServerStatus } from '$lib/server-mode';
 	import { invoke } from '@tauri-apps/api/core';
 	import type {
 		AccentColor,
@@ -29,6 +30,8 @@
 
 	let nativeAvailable = $state(false);
 	let ghAuthenticated: boolean | null = $state(null);
+	let server: ServerStatus = $state({ running: false, address: null });
+	let serverError: string | null = $state(null);
 
 	onMount(async () => {
 		try {
@@ -37,7 +40,43 @@
 			nativeAvailable = false;
 		}
 		ghAuthenticated = await invoke<boolean>('github_is_available');
+		try {
+			server = await serverStatus();
+		} catch {
+			/* leave as not-running */
+		}
 	});
+
+	async function toggleServerMode(checked: boolean) {
+		serverError = null;
+		store.set('serverMode', checked);
+		await store.save();
+		try {
+			server = checked ? await startServer(store.serverPort) : await stopServer();
+		} catch (e) {
+			serverError = e instanceof Error ? e.message : String(e);
+			store.set('serverMode', false);
+			await store.save();
+		}
+	}
+
+	async function applyServerPort(value: string) {
+		const port = Number(value);
+		if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+		store.set('serverPort', port);
+		await store.save();
+		// Restart if currently running so the new port takes effect.
+		if (server.running) {
+			serverError = null;
+			try {
+				await stopServer();
+				server = await startServer(port);
+			} catch (e) {
+				serverError = e instanceof Error ? e.message : String(e);
+				server = { running: false, address: null };
+			}
+		}
+	}
 
 	// Swatch values mirror the --wb-accent token for each [data-accent] preset in app.css.
 	const accentOptions: { value: AccentColor; label: string; swatch: string }[] = [
@@ -151,6 +190,48 @@
 			checked={store.useHappyCoder}
 			onCheckedChange={(v) => store.set('useHappyCoder', v)}
 		/>
+	</div>
+
+	<Separator />
+
+	<div class="space-y-6">
+		<div>
+			<h2 class="text-sm font-semibold">Server mode</h2>
+			<p class="mt-1 text-xs text-muted-foreground">
+				Run a control-plane server on this machine so other devices can create worktrees and spawn
+				<code>claude remote-control</code> sessions here. Secure it with a private network (e.g. Tailscale).
+				Spawned sessions appear in the Claude mobile app automatically.
+			</p>
+		</div>
+
+		<SettingsToggle
+			label="Enable server mode"
+			description="Start the embedded Workbench server."
+			checked={store.serverMode}
+			onCheckedChange={toggleServerMode}
+		/>
+
+		<div class="flex items-center justify-between gap-4">
+			<div>
+				<p class="text-sm font-medium">Port</p>
+				<p class="text-xs text-muted-foreground">TCP port the server listens on.</p>
+			</div>
+			<Input
+				type="number"
+				min="1"
+				max="65535"
+				class="w-28"
+				value={store.serverPort}
+				onchange={(e) => applyServerPort((e.currentTarget as HTMLInputElement).value)}
+			/>
+		</div>
+
+		{#if server.running && server.address}
+			<p class="text-xs text-wb-ok">Listening on {server.address}</p>
+		{/if}
+		{#if serverError}
+			<p class="text-xs text-wb-err">{serverError}</p>
+		{/if}
 	</div>
 
 	<Separator />

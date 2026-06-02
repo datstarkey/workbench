@@ -34,6 +34,8 @@ export class WorkbenchSettingsStore {
 	useHappyCoder = $state(false);
 	cloneBaseDir: string | null = $state(null);
 	accentColor: AccentColor = $state<AccentColor>('violet');
+	serverMode = $state(false);
+	serverPort = $state(4317);
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -61,6 +63,8 @@ export class WorkbenchSettingsStore {
 		this.useHappyCoder = settings.useHappyCoder ?? false;
 		this.cloneBaseDir = settings.cloneBaseDir ?? null;
 		this.accentColor = settings.accentColor ?? 'violet';
+		this.serverMode = settings.serverMode ?? false;
+		this.serverPort = settings.serverPort ?? 4317;
 		this.loaded = true;
 		this.dirty = false;
 	}
@@ -141,7 +145,9 @@ export class WorkbenchSettingsStore {
 			codexConfigApproved: this.codexConfigApproved,
 			useHappyCoder: this.useHappyCoder,
 			cloneBaseDir: this.cloneBaseDir,
-			accentColor: this.accentColor
+			accentColor: this.accentColor,
+			serverMode: this.serverMode,
+			serverPort: this.serverPort
 		};
 	}
 

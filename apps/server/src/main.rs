@@ -1,17 +1,5 @@
-mod auth;
-mod cli;
-mod error;
-mod routes;
-mod spawn;
-mod state;
-
-use anyhow::Context;
 use clap::Parser;
-use tower_http::trace::TraceLayer;
-
-use crate::cli::Cli;
-use crate::spawn::RemoteControlManager;
-use crate::state::AppState;
+use workbench_server::cli::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,37 +12,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let state = AppState {
-        spawn: RemoteControlManager::new(),
-        token: cli.token.clone(),
-    };
-
-    let app = routes::router(state.clone())
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            auth::require_bearer,
-        ))
-        .layer(TraceLayer::new_for_http());
-
-    let addr = format!("{}:{}", cli.bind, cli.port);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
-
     if cli.token.is_some() {
-        tracing::info!("workbench-server listening on {addr} (bearer token required)");
+        tracing::info!(
+            "workbench-server listening on {}:{} (bearer token required)",
+            cli.bind,
+            cli.port
+        );
     } else {
         tracing::warn!(
-            "workbench-server listening on {addr} with NO auth — secure it with a private network (e.g. Tailscale)"
+            "workbench-server listening on {}:{} with NO auth — secure it with a private network (e.g. Tailscale)",
+            cli.bind,
+            cli.port
         );
     }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
-
-    Ok(())
+    workbench_server::serve(&cli.bind, cli.port, cli.token, shutdown_signal()).await
 }
 
 async fn shutdown_signal() {

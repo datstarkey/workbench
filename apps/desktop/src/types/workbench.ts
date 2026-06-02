@@ -345,6 +345,8 @@ export interface WorkbenchSettings {
 	useHappyCoder: boolean;
 	cloneBaseDir?: string | null;
 	accentColor?: AccentColor;
+	serverMode?: boolean;
+	serverPort?: number;
 }
 
 export interface IntegrationStatus {

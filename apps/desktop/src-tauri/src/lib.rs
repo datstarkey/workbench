@@ -18,6 +18,7 @@ mod native_terminal;
 mod native_terminal_commands;
 mod pty;
 mod refresh_dispatcher;
+mod server_control;
 mod trello_commands;
 
 use git_watcher::GitWatcher;
@@ -109,6 +110,9 @@ macro_rules! build_invoke_handler {
             trello_commands::trello_disconnect,
             trello_commands::trello_load_project_config,
             trello_commands::trello_save_project_config,
+            server_control::start_server,
+            server_control::stop_server,
+            server_control::server_status,
             $( $extra ),*
         ]
     };
@@ -125,6 +129,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(PtyManager::new())
         .manage(RefreshDispatcher::new())
+        .manage(server_control::ServerControl::new())
         .setup(|app| {
             let handle = app.handle().clone();
             menu::build(&handle).expect("failed to build menu");

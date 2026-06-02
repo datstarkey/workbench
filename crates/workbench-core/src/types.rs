@@ -336,6 +336,14 @@ pub struct WorkbenchSettings {
     pub clone_base_dir: Option<String>,
     #[serde(default = "default_accent_color")]
     pub accent_color: String,
+    #[serde(default)]
+    pub server_mode: bool,
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+}
+
+fn default_server_port() -> u16 {
+    4317
 }
 
 fn default_worktree_strategy() -> String {
@@ -380,6 +388,8 @@ impl Default for WorkbenchSettings {
             terminal_renderer: default_terminal_renderer(),
             clone_base_dir: None,
             accent_color: default_accent_color(),
+            server_mode: false,
+            server_port: default_server_port(),
         }
     }
 }
