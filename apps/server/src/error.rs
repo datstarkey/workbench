@@ -39,3 +39,28 @@ impl IntoResponse for ApiError {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anyhow_errors_map_to_500() {
+        let err: ApiError = anyhow::anyhow!("boom").into();
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message, "boom");
+    }
+
+    #[test]
+    fn bad_request_maps_to_400() {
+        let err = ApiError::bad_request("nope");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "nope");
+    }
+
+    #[test]
+    fn into_response_uses_the_status() {
+        let resp = ApiError::bad_request("x").into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}

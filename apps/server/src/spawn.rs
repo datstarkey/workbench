@@ -268,6 +268,28 @@ mod tests {
     }
 
     #[test]
+    fn resolve_cwd_accepts_existing_project_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let resolved = RemoteControlManager::resolve_cwd(path, None).unwrap();
+        assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn resolve_cwd_rejects_missing_project_dir() {
+        assert!(RemoteControlManager::resolve_cwd("/no/such/dir", None).is_err());
+    }
+
+    #[test]
+    fn resolve_cwd_rejects_unknown_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        // A worktree path that isn't a known worktree of the (non-repo) project.
+        let res =
+            RemoteControlManager::resolve_cwd(dir.path().to_str().unwrap(), Some("/tmp/elsewhere"));
+        assert!(res.is_err());
+    }
+
+    #[test]
     fn strips_trailing_punctuation_and_ansi() {
         let out = "see https://claude.ai/code/x.\u{1b}[0m";
         assert_eq!(extract_url(out).as_deref(), Some("https://claude.ai/code/x"));
