@@ -7,7 +7,9 @@
 	import ProjectManager from '$features/projects/ProjectManager.svelte';
 	import { ProjectManagerStore } from '$features/projects/project-manager.svelte';
 	import ProjectSidebar from '$features/projects/ProjectSidebar.svelte';
-	import RemoteServerDialog from '$features/remote/RemoteServerDialog.svelte';
+	import RemoteInstanceSidebar from '$features/instances/RemoteInstanceSidebar.svelte';
+	import ConnectInstanceDialog from '$features/instances/ConnectInstanceDialog.svelte';
+	import { InstancesStore } from '$features/instances/instances.svelte';
 	import NativeTerminalGrid from '$features/terminal/NativeTerminalGrid.svelte';
 	import TerminalGrid from '$features/terminal/TerminalGrid.svelte';
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
@@ -28,6 +30,7 @@
 		setGitHubStore,
 		setGitStore,
 		setIntegrationApprovalStore,
+		setInstancesStore,
 		setProjectManager,
 		setProjectStore,
 		setSidebarStore,
@@ -76,13 +79,14 @@
 	);
 	const trelloStore = setTrelloStore(new TrelloStore());
 	setSidebarStore(new SidebarStore());
+	const instancesStore = setInstancesStore(new InstancesStore());
 	new NotificationStore(workspaceStore, claudeSessionStore);
 
 	let sidebarCollapsed = $state(false);
 	let sidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let githubSidebarPane = $state<ReturnType<typeof Resizable.Pane> | null>(null);
 	let settingsOpen = $state(false);
-	let remoteOpen = $state(false);
+	let connectOpen = $state(false);
 
 	function toggleSidebar() {
 		if (sidebarCollapsed) {
@@ -146,6 +150,7 @@
 	});
 
 	onMount(async () => {
+		instancesStore.load();
 		await Promise.all([workbenchSettingsStore.load(), projectStore.load()]);
 		await workspaceStore.load();
 		workspaceStore.ensureShape();
@@ -173,7 +178,7 @@
 			<ActivityRail
 				onToggleSidebar={toggleSidebar}
 				onOpenSettings={() => (settingsOpen = true)}
-				onOpenRemote={() => (remoteOpen = true)}
+				onOpenRemote={() => (connectOpen = true)}
 			/>
 			<div class="h-full min-w-0 flex-1">
 				<Resizable.PaneGroup direction="horizontal">
@@ -188,11 +193,21 @@
 						onExpand={() => (sidebarCollapsed = false)}
 						class="h-full"
 					>
-						<ProjectSidebar
-							{sidebarCollapsed}
-							onOpenSettings={() => (settingsOpen = true)}
-							onToggleSidebar={toggleSidebar}
-						/>
+						{#if instancesStore.activeIsLocal || !instancesStore.activeRemote}
+							<ProjectSidebar
+								{sidebarCollapsed}
+								onOpenSettings={() => (settingsOpen = true)}
+								onToggleSidebar={toggleSidebar}
+								onConnect={() => (connectOpen = true)}
+							/>
+						{:else}
+							<RemoteInstanceSidebar
+								instance={instancesStore.activeRemote}
+								{sidebarCollapsed}
+								onToggleSidebar={toggleSidebar}
+								onConnect={() => (connectOpen = true)}
+							/>
+						{/if}
 					</Resizable.Pane>
 					<Resizable.Handle withHandle class="cursor-col-resize" />
 					<Resizable.Pane defaultSize={83} minSize={50} class="h-full">
@@ -275,7 +290,7 @@
 <ProjectManager />
 <WorktreeManager />
 <SettingsSheet bind:open={settingsOpen} projectPath={workspaceStore.activeProjectPath} />
-<RemoteServerDialog bind:open={remoteOpen} />
+<ConnectInstanceDialog bind:open={connectOpen} />
 <IntegrationApprovalDialog />
 <UpdateDialog />
 <Toaster theme="dark" position="bottom-right" />

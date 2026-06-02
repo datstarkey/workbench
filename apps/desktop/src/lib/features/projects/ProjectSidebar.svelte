@@ -15,7 +15,7 @@
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
-	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
+	import InstanceSwitcher from '$features/instances/InstanceSwitcher.svelte';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '@workbench/ui/button';
@@ -59,11 +59,13 @@
 	let {
 		sidebarCollapsed,
 		onOpenSettings,
-		onToggleSidebar
+		onToggleSidebar,
+		onConnect
 	}: {
 		sidebarCollapsed: boolean;
 		onOpenSettings: () => void;
 		onToggleSidebar: () => void;
+		onConnect: () => void;
 	} = $props();
 
 	const expandedProjects = new SvelteSet<string>();
@@ -184,17 +186,7 @@
 	<!-- Header row -->
 	<div class="flex h-[38px] shrink-0 items-center border-b border-wb-hair px-2.5">
 		{#if !sidebarCollapsed}
-			<div class="flex items-center gap-2 overflow-hidden">
-				<div
-					class="flex size-5 shrink-0 items-center justify-center rounded bg-wb-accent/15 text-wb-accent"
-				>
-					<TerminalSquareIcon class="size-3" />
-				</div>
-				<span
-					class="truncate text-[10.5px] font-semibold tracking-widest text-wb-ink-soft uppercase"
-					>Projects</span
-				>
-			</div>
+			<InstanceSwitcher {onConnect} />
 			<div class="ml-auto flex items-center gap-0.5">
 				<Tooltip.Root>
 					<Tooltip.Trigger>

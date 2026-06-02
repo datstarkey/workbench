@@ -12,6 +12,7 @@ import type { UpdaterStore } from './updater.svelte';
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { SidebarStore } from './sidebar.svelte';
 import type { WorkbenchSettingsStore } from './workbench-settings.svelte';
+import type { InstancesStore } from '$features/instances/instances.svelte';
 
 export const [getProjectStore, setProjectStore] = createContext<ProjectStore>();
 export const [getWorkspaceStore, setWorkspaceStore] = createContext<WorkspaceStore>();
@@ -29,3 +30,4 @@ export const [getTrelloStore, setTrelloStore] = createContext<TrelloStore>();
 export const [getIntegrationApprovalStore, setIntegrationApprovalStore] =
 	createContext<IntegrationApprovalStore>();
 export const [getSidebarStore, setSidebarStore] = createContext<SidebarStore>();
+export const [getInstancesStore, setInstancesStore] = createContext<InstancesStore>();
