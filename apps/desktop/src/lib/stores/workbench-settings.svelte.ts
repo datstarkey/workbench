@@ -10,7 +10,7 @@ import type {
 	WorktreeStartPoint,
 	WorktreeStrategy
 } from '$types/workbench';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '$lib/transport';
 
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<

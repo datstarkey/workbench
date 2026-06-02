@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '$lib/transport';
 import type { ProjectConfig } from '$types/workbench';
 import type { WorkspaceStore } from './workspaces.svelte';
 

@@ -7,7 +7,7 @@ import {
 	type SplitDirection,
 	type TerminalTabState
 } from '$types/workbench';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '$lib/transport';
 import { newSessionCommand, resumeCommand, tryResumeCommand } from '$lib/utils/claude';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';

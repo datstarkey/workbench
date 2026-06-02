@@ -5,7 +5,7 @@ import type { ProjectStore } from '$stores/projects.svelte';
 import type { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 import type { WorkspaceStore } from '$stores/workspaces.svelte';
 import type { BranchInfo, WorktreeCopyOptions } from '$types/workbench';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '$lib/transport';
 
 interface WorktreeRemoval {
 	projectPath: string;
