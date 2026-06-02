@@ -56,24 +56,27 @@
 
 <Tooltip.Root>
 	<Tooltip.Trigger>
-		<button
-			class="inline-flex items-center gap-0.5 rounded px-0.5 hover:bg-muted"
-			type="button"
-			onclick={(e) => {
-				e.stopPropagation();
-				onClickPr();
-			}}
-		>
-			<PrIcon class="size-3 shrink-0 {prColor}" />
-			<span class="text-[10px] {prColor}">#{pr.number}</span>
-			{#if ChecksIcon}
-				<ChecksIcon
-					class="size-2.5 shrink-0 {checksColor} {pr.checksStatus.overall === 'pending'
-						? 'animate-spin'
-						: ''}"
-				/>
-			{/if}
-		</button>
+		{#snippet child({ props })}
+			<button
+				{...props}
+				class="inline-flex items-center gap-0.5 rounded px-0.5 hover:bg-muted"
+				type="button"
+				onclick={(e) => {
+					e.stopPropagation();
+					onClickPr();
+				}}
+			>
+				<PrIcon class="size-3 shrink-0 {prColor}" />
+				<span class="text-[10px] {prColor}">#{pr.number}</span>
+				{#if ChecksIcon}
+					<ChecksIcon
+						class="size-2.5 shrink-0 {checksColor} {pr.checksStatus.overall === 'pending'
+							? 'animate-spin'
+							: ''}"
+					/>
+				{/if}
+			</button>
+		{/snippet}
 	</Tooltip.Trigger>
 	<Tooltip.Content>{tooltipText}</Tooltip.Content>
 </Tooltip.Root>

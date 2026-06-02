@@ -131,17 +131,20 @@
 	<div class="flex shrink-0 items-center gap-0.5 border-l border-wb-hair px-1">
 		<Tooltip.Root>
 			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
-					type="button"
-					onclick={() => {
-						if (wsProject) workspaceStore.addTerminalTab(workspace.id, wsProject);
-					}}
-				>
-					<PlusIcon class="size-3.5" />
-				</Button>
+				{#snippet child({ props })}
+					<Button
+						{...props}
+						variant="ghost"
+						size="icon-sm"
+						class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
+						type="button"
+						onclick={() => {
+							if (wsProject) workspaceStore.addTerminalTab(workspace.id, wsProject);
+						}}
+					>
+						<PlusIcon class="size-3.5" />
+					</Button>
+				{/snippet}
 			</Tooltip.Trigger>
 			<Tooltip.Content>New Terminal</Tooltip.Content>
 		</Tooltip.Root>
@@ -150,15 +153,18 @@
 
 		<Tooltip.Root>
 			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					class="size-6 text-wb-claude hover:bg-wb-claude/10 hover:text-wb-claude"
-					type="button"
-					onclick={() => claudeSessionStore.startSessionInWorkspace(workspace)}
-				>
-					<SparklesIcon class="size-3.5" />
-				</Button>
+				{#snippet child({ props })}
+					<Button
+						{...props}
+						variant="ghost"
+						size="icon-sm"
+						class="size-6 text-wb-claude hover:bg-wb-claude/10 hover:text-wb-claude"
+						type="button"
+						onclick={() => claudeSessionStore.startSessionInWorkspace(workspace)}
+					>
+						<SparklesIcon class="size-3.5" />
+					</Button>
+				{/snippet}
 			</Tooltip.Trigger>
 			<Tooltip.Content>New Claude Session</Tooltip.Content>
 		</Tooltip.Root>
@@ -172,15 +178,18 @@
 
 		<Tooltip.Root>
 			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					class="size-6 text-wb-codex hover:bg-wb-codex/10 hover:text-wb-codex"
-					type="button"
-					onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
-				>
-					<ZapIcon class="size-3.5" />
-				</Button>
+				{#snippet child({ props })}
+					<Button
+						{...props}
+						variant="ghost"
+						size="icon-sm"
+						class="size-6 text-wb-codex hover:bg-wb-codex/10 hover:text-wb-codex"
+						type="button"
+						onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
+					>
+						<ZapIcon class="size-3.5" />
+					</Button>
+				{/snippet}
 			</Tooltip.Trigger>
 			<Tooltip.Content>New Codex Session</Tooltip.Content>
 		</Tooltip.Root>
@@ -197,30 +206,36 @@
 
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
-						type="button"
-						onclick={() => workspaceStore.splitTerminal(workspace.id, 'horizontal')}
-					>
-						<Columns2Icon class="size-3.5" />
-					</Button>
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="ghost"
+							size="icon-sm"
+							class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
+							type="button"
+							onclick={() => workspaceStore.splitTerminal(workspace.id, 'horizontal')}
+						>
+							<Columns2Icon class="size-3.5" />
+						</Button>
+					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>Split Horizontal</Tooltip.Content>
 			</Tooltip.Root>
 
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<Button
-						variant="ghost"
-						size="icon-sm"
-						class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
-						type="button"
-						onclick={() => workspaceStore.splitTerminal(workspace.id, 'vertical')}
-					>
-						<Rows2Icon class="size-3.5" />
-					</Button>
+					{#snippet child({ props })}
+						<Button
+							{...props}
+							variant="ghost"
+							size="icon-sm"
+							class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
+							type="button"
+							onclick={() => workspaceStore.splitTerminal(workspace.id, 'vertical')}
+						>
+							<Rows2Icon class="size-3.5" />
+						</Button>
+					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content>Split Vertical</Tooltip.Content>
 			</Tooltip.Root>
