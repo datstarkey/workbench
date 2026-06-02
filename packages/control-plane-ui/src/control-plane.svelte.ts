@@ -69,7 +69,16 @@ export class ControlPlaneStore {
 		const session = await this.run(() =>
 			this.transport.invoke('remote_spawn', { projectPath, worktreePath, name })
 		);
-		if (session) await this.refreshSessions();
+		if (session) {
+			await this.refreshSessions();
+			// The session URL/status update asynchronously once `claude` prints the
+			// URL; poll a few times so the UI flips starting→running on its own.
+			let tries = 0;
+			const poll = setInterval(() => {
+				void this.refreshSessions();
+				if (++tries >= 5) clearInterval(poll);
+			}, 2000);
+		}
 		return session;
 	}
 

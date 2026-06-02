@@ -52,6 +52,21 @@ pub async fn start_server(
         .map_err(|e| e.to_string())?;
     let address = handle.addr().to_string();
 
+    // Re-check after the await: a concurrent start_server may have won the race.
+    // If so, stop this freshly-spawned server so it isn't orphaned (ServerHandle's
+    // Drop does NOT stop the server).
+    let existing_addr = {
+        let guard = state.handle.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().map(|h| h.addr().to_string())
+    };
+    if let Some(addr) = existing_addr {
+        handle.stop().await;
+        return Ok(ServerStatus {
+            running: true,
+            address: Some(addr),
+        });
+    }
+
     let mut guard = state.handle.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(handle);
 

@@ -61,9 +61,11 @@ async fn list_worktrees(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
     Ok(Json(serde_json::to_value(worktrees)?))
 }
 
-async fn create_worktree(Json(req): Json<CreateWorktreeRequest>) -> ApiResult<Json<Value>> {
+async fn create_worktree(Json(req): Json<CreateWorktreeRequest>) -> ApiResult<Json<String>> {
+    // Returns the bare worktree path string to match the Tauri command and the
+    // ControlPlaneCommands.create_worktree result type.
     let path = workbench_core::git::create_worktree(&req)?;
-    Ok(Json(json!({ "path": path })))
+    Ok(Json(path))
 }
 
 #[derive(Deserialize)]

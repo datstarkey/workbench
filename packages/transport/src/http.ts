@@ -83,7 +83,16 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 	// (`/events`) is not implemented yet; this fans out frames of the shape
 	// `{ event, payload }` to per-event subscriber sets once it exists.
 	let ws: WebSocket | null = null;
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	const listeners = new Map<string, Set<(payload: unknown) => void>>();
+
+	const scheduleReconnect = () => {
+		if (reconnectTimer || listeners.size === 0) return;
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = null;
+			ensureSocket();
+		}, 2000);
+	};
 
 	const ensureSocket = () => {
 		if (ws) return;
@@ -98,11 +107,18 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 					/* ignore malformed frames */
 				}
 			});
+			// Reconnect on drop/failure so subscriptions survive server restarts
+			// and transient network blips instead of going silently dead.
 			ws.addEventListener('close', () => {
 				ws = null;
+				scheduleReconnect();
+			});
+			ws.addEventListener('error', () => {
+				ws?.close();
 			});
 		} catch {
 			ws = null;
+			scheduleReconnect();
 		}
 	};
 
@@ -111,7 +127,17 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 
 		async invoke(name, args) {
 			const req = toRequest(name, args);
-			const qs = req.query ? '?' + new URLSearchParams(req.query).toString() : '';
+			// Drop missing values so an absent param never serializes as the literal
+			// string "undefined" (which would hit the server as a bogus path).
+			const cleanQuery = req.query
+				? Object.fromEntries(
+						Object.entries(req.query).filter(([, v]) => v != null && v !== 'undefined')
+					)
+				: undefined;
+			const qs =
+				cleanQuery && Object.keys(cleanQuery).length
+					? '?' + new URLSearchParams(cleanQuery).toString()
+					: '';
 			const res = await fetch(`${base}${req.path}${qs}`, {
 				method: req.method,
 				headers: headers(),

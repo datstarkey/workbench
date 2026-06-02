@@ -134,18 +134,34 @@ impl RemoteControlManager {
             started_at,
         };
 
+        // Clone the reader BEFORE moving the master into the map, then insert the
+        // tracked entry FIRST so the reader thread can never update a session that
+        // isn't in the map yet (the child can print its URL almost immediately).
+        let reader = pair.master.try_clone_reader().ok();
+
+        let tracked = Tracked {
+            meta: meta.clone(),
+            child,
+            _master: pair.master,
+        };
+        self.inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("spawn manager lock poisoned"))?
+            .insert(id.clone(), tracked);
+
         // Scan early output for the session URL, then keep draining so the PTY
-        // buffer never fills and blocks the child.
-        if let Ok(mut reader) = pair.master.try_clone_reader() {
+        // buffer never fills and blocks the child. On EOF (child gone) remove the
+        // entry so self-exited sessions don't accumulate.
+        if let Some(mut reader) = reader {
             let inner = self.inner.clone();
-            let sid = id.clone();
+            let sid = id;
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 let mut accumulated = String::new();
                 let mut found = false;
                 loop {
                     match reader.read(&mut buf) {
-                        Ok(0) => break,
+                        Ok(0) | Err(_) => break,
                         Ok(n) => {
                             if !found {
                                 accumulated.push_str(&String::from_utf8_lossy(&buf[..n]));
@@ -164,21 +180,14 @@ impl RemoteControlManager {
                                 }
                             }
                         }
-                        Err(_) => break,
                     }
+                }
+                // Child closed its PTY → it has exited; stop tracking it.
+                if let Ok(mut map) = inner.lock() {
+                    map.remove(&sid);
                 }
             });
         }
-
-        let tracked = Tracked {
-            meta: meta.clone(),
-            child,
-            _master: pair.master,
-        };
-        self.inner
-            .lock()
-            .map_err(|_| anyhow::anyhow!("spawn manager lock poisoned"))?
-            .insert(id, tracked);
 
         Ok(meta)
     }
