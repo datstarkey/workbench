@@ -336,6 +336,17 @@ pub struct WorkbenchSettings {
     pub clone_base_dir: Option<String>,
     #[serde(default = "default_accent_color")]
     pub accent_color: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_window_bounds: Option<SettingsWindowBounds>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsWindowBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 fn default_worktree_strategy() -> String {
@@ -380,6 +391,7 @@ impl Default for WorkbenchSettings {
             terminal_renderer: default_terminal_renderer(),
             clone_base_dir: None,
             accent_color: default_accent_color(),
+            settings_window_bounds: None,
         }
     }
 }
