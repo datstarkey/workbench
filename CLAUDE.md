@@ -17,11 +17,15 @@ apps/
 crates/
   workbench-core/   # shared pure Rust logic (no tauri): config, git, sessions, settings, types
 packages/
-  types/        # @workbench/types: shared TS types (mirror of workbench-core serde types)
-  transport/    # @workbench/transport: ControlPlaneTransport (Tauri/Http/mock impls), typed via @workbench/types
+  types/             # @workbench/types: shared TS types (mirror of workbench-core serde types)
+  transport/         # @workbench/transport: ControlPlaneTransport (Tauri/Http/mock impls), typed via @workbench/types
+  ui/                # @workbench/ui: shadcn-svelte primitives + cn(); subpath exports (@workbench/ui/button …)
+  control-plane-ui/  # @workbench/control-plane-ui: transport-driven ControlPlaneStore + ControlPlaneSidebar (mobile / desktop-remote)
 ```
 
-Not yet extracted (planned, gated on building the native mobile app — the web client served by `workbench-server` covers the phone use-case today): `@workbench/ui` (shadcn primitives + `cn`), `@workbench/tailwind-preset`, `@workbench/control-plane-ui` (shared sidebar + the `ClaudeSessions`→core/desktop and `Workspace`→data/desktop store splits).
+`@workbench/ui` owns the shadcn primitives (`@workbench/ui/<component>`) and `cn`/type-helpers (`@workbench/ui` root). Apps must add `@source '<rel>/packages/ui/src'` in their `app.css` so Tailwind v4 generates classes used only in the package. `@workbench/control-plane-ui` is a clean, transport-driven shared sidebar (list projects, view/create worktrees, spawn/kill remote sessions, no terminal IO) — consumed by the desktop's **remote-client mode** (ActivityRail "Remote server" → `RemoteServerDialog`, `HttpTransport`) and, in future, the native mobile app.
+
+Not yet extracted (deferred; desktop keeps its own terminal-coupled `ProjectSidebar`/stores): `@workbench/tailwind-preset`, and splitting the desktop `ClaudeSessions`/`Workspace` stores into shared core slices. The desktop's rich sidebar is intentionally NOT shared — it's coupled to terminals/git/github; the shared `ControlPlaneSidebar` is the lean cross-platform one.
 
 Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-core` (pure logic), `workbench-server` (lib+bin). `workbench-core` and `workbench-server` must **never** depend on `tauri` — verify with `cargo tree -p workbench-server | grep -i tauri` (must be empty). Tauri deps live only in `apps/desktop/src-tauri/Cargo.toml`.
 
@@ -199,6 +203,8 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - `@tauri-apps/api` must not be imported in `packages/*` except `transport/src/tauri.ts` (optional peer dep) — keeps shared packages buildable by the future mobile app.
 - bun workspaces nest `@workbench/*` symlinks under the **consumer's** `node_modules` (e.g. `apps/desktop/node_modules/@workbench/transport`), not hoisted to root. A new workspace dep needs declaring in the consumer's `package.json` (`"workspace:*"`) + `bun install`.
 - `TauriTransport` uses **static** imports of `@tauri-apps/api` (not dynamic) so call timing/arg-shape match what stores/tests expect; it omits the args object when undefined.
+- UI primitives import from `@workbench/ui/<component>` and `cn` from `@workbench/ui` (NOT `$lib/components/ui` / `$lib/utils` anymore). `components.json` (shadcn CLI) aliases still say `$lib/...`; if you `shadcn add` a component it lands in the app — move it into `packages/ui/src/ui/` and fix its `$lib/utils` import to `../../utils`.
+- The desktop has TWO sidebars: the rich terminal-coupled `ProjectSidebar` (local mode) and the shared `ControlPlaneSidebar` from `@workbench/control-plane-ui` (remote mode, via `RemoteServerDialog` + `HttpTransport`). Keep control-plane features that should work remotely in the shared one.
 - Adding a `WorkbenchSettings` field touches 5 places: Rust `crates/workbench-core/src/types.rs` (field + `default_*` fn + `Default` impl), TS `apps/desktop/src/types/workbench.ts` interface, store `workbench-settings.svelte.ts` (field decl + `load()` + `toSettings()`), and `workbench-settings.test.svelte.ts` — two exact `toHaveBeenCalledWith('save_workbench_settings', …)` assertions list every field, so both break until updated.
 - Rust modules use `anyhow::Result` internally. `commands.rs` converts to `Result<_, String>` for Tauri IPC via `.map_err(|e| e.to_string())`.
 - Config/settings writes use `paths::atomic_write()` (temp file + rename) to prevent corruption.
