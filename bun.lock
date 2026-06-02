@@ -71,6 +71,9 @@
     "packages/transport": {
       "name": "@workbench/transport",
       "version": "0.1.0",
+      "dependencies": {
+        "@workbench/types": "workspace:*",
+      },
       "devDependencies": {
         "@tauri-apps/api": "^2",
         "typescript": "^5.7.3",

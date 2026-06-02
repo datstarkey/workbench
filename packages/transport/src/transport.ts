@@ -15,38 +15,60 @@
  * feature-detect.
  */
 
+import type {
+	BranchInfo,
+	ClaudeHookEvent,
+	CodexNotifyEvent,
+	DiscoveredClaudeSession,
+	GitInfo,
+	ProjectConfig,
+	ProjectRefreshRequestedEvent,
+	WorktreeInfo
+} from '@workbench/types';
+
+/** A spawned `claude remote-control` session (mirrors the server's RemoteSession). */
+export interface RemoteSession {
+	id: string;
+	name: string | null;
+	cwd: string;
+	pid: number | null;
+	status: 'starting' | 'running' | { exited: { code: number } };
+	sessionUrl: string | null;
+	startedAt: number;
+}
+
 /** A control-plane command name and its argument/result shapes. */
 export interface ControlPlaneCommands {
-	list_projects: { args: void; result: unknown[] };
-	save_projects: { args: { projects: unknown[] }; result: void };
+	list_projects: { args: void; result: ProjectConfig[] };
+	save_projects: { args: { projects: ProjectConfig[] }; result: void };
 	load_workspaces: { args: void; result: unknown };
 	save_workspaces: { args: { file: unknown }; result: void };
-	list_worktrees: { args: { path: string }; result: unknown[] };
+	list_worktrees: { args: { path: string }; result: WorktreeInfo[] };
 	create_worktree: { args: { request: unknown }; result: string };
 	remove_worktree: {
 		args: { repoPath: string; worktreePath: string; force: boolean };
 		result: void;
 	};
-	list_branches: { args: { path: string }; result: unknown[] };
-	git_info: { args: { path: string }; result: unknown };
-	discover_claude_sessions: { args: { projectPath: string }; result: unknown[] };
-	discover_codex_sessions: { args: { projectPath: string }; result: unknown[] };
+	list_branches: { args: { path: string }; result: BranchInfo[] };
+	git_info: { args: { path: string }; result: GitInfo };
+	discover_claude_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
+	discover_codex_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
 	load_claude_settings: { args: { scope: string; projectPath?: string }; result: unknown };
 	load_workbench_settings: { args: void; result: unknown };
 	/** Spawn `claude remote-control` on the server (Claude only; Codex has none). */
 	remote_spawn: {
 		args: { projectPath: string; worktreePath?: string; name?: string };
-		result: unknown;
+		result: RemoteSession;
 	};
-	remote_sessions: { args: void; result: unknown[] };
+	remote_sessions: { args: void; result: RemoteSession[] };
 	remote_kill: { args: { id: string }; result: void };
 }
 
 /** Control-plane events streamed from the backend (NOT `terminal:data/exit`). */
 export interface ControlPlaneEvents {
-	'project:refresh-requested': unknown;
-	'claude:hook': unknown;
-	'codex:notify': unknown;
+	'project:refresh-requested': ProjectRefreshRequestedEvent;
+	'claude:hook': ClaudeHookEvent;
+	'codex:notify': CodexNotifyEvent;
 }
 
 export type Unsubscribe = () => void;
