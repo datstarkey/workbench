@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::types::{
     GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubPRActions,
-    GitHubProjectStatus, GitHubRemote, GitHubRepo, GitHubWorkflowRun,
+    GitHubProjectStatus, GitHubRemote, GitHubRepo, GitHubWorkflowRun, MergePrOptions,
 };
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
@@ -398,8 +398,27 @@ pub fn mark_pr_ready(path: &str, pr_number: u64) -> Result<()> {
     Ok(())
 }
 
-pub fn merge_pr(path: &str, pr_number: u64) -> Result<()> {
-    gh_output(&["pr", "merge", &pr_number.to_string(), "--squash"], path)?;
+pub fn merge_pr(path: &str, pr_number: u64, options: &MergePrOptions) -> Result<()> {
+    let method_flag = match options.method.as_str() {
+        "merge" => "--merge",
+        "rebase" => "--rebase",
+        "squash" => "--squash",
+        other => bail!("Unknown merge method: {other}"),
+    };
+
+    let pr = pr_number.to_string();
+    let mut args = vec!["pr", "merge", &pr, method_flag];
+    if options.delete_branch {
+        args.push("--delete-branch");
+    }
+    if options.admin {
+        args.push("--admin");
+    }
+    if options.auto {
+        args.push("--auto");
+    }
+
+    gh_output(&args, path)?;
     Ok(())
 }
 

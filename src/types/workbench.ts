@@ -262,6 +262,13 @@ export interface GitHubPRActions {
 	canUpdateBranch: boolean;
 }
 
+export interface MergePrOptions {
+	method: 'squash' | 'merge' | 'rebase';
+	deleteBranch: boolean;
+	admin: boolean;
+	auto: boolean;
+}
+
 export interface GitHubProjectStatus {
 	remote: GitHubRemote | null;
 	prs: GitHubPR[];

@@ -9,9 +9,11 @@
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SendHorizontalIcon from '@lucide/svelte/icons/send-horizontal';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
-	import type { GitHubPR } from '$types/workbench';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import type { GitHubPR, MergePrOptions } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
 	import { invoke } from '@tauri-apps/api/core';
 
@@ -29,6 +31,9 @@
 
 	let merging = $state(false);
 	let mergeError = $state<string | null>(null);
+	let mergeMethod = $state<'squash' | 'merge' | 'rebase'>('squash');
+	let deleteBranch = $state(true);
+	let adminOverride = $state(false);
 	let updating = $state(false);
 	let updateError = $state<string | null>(null);
 	let markingReady = $state(false);
@@ -128,11 +133,32 @@
 		};
 	}
 
-	const handleMerge = runPrAction(
-		(v) => (merging = v),
-		(v) => (mergeError = v),
-		'github_merge_pr'
-	);
+	const methodLabels: Record<'squash' | 'merge' | 'rebase', string> = {
+		squash: 'Squash and merge',
+		merge: 'Create a merge commit',
+		rebase: 'Rebase and merge'
+	};
+
+	async function runMerge(auto: boolean) {
+		merging = true;
+		mergeError = null;
+		try {
+			const options: MergePrOptions = {
+				method: mergeMethod,
+				deleteBranch,
+				admin: adminOverride,
+				auto
+			};
+			await invoke('github_merge_pr', { projectPath, prNumber: pr.number, options });
+		} catch (e) {
+			mergeError = String(e);
+		} finally {
+			merging = false;
+		}
+	}
+
+	const handleMerge = () => runMerge(false);
+	const handleAutoMerge = () => runMerge(true);
 	const handleUpdateBranch = runPrAction(
 		(v) => (updating = v),
 		(v) => (updateError = v),
@@ -245,20 +271,47 @@
 				Ready for Review
 			</Button>
 		{:else if canMerge}
-			<Button
-				variant="default"
-				size="sm"
-				class="h-7 flex-1 gap-1.5 text-xs"
-				onclick={handleMerge}
-				disabled={merging}
-			>
-				{#if merging}
-					<LoaderIcon class="size-3 animate-spin" />
-				{:else}
-					<GitMergeIcon class="size-3" />
-				{/if}
-				Merge
-			</Button>
+			<div class="flex flex-1">
+				<Button
+					variant="default"
+					size="sm"
+					class="h-7 flex-1 gap-1.5 rounded-r-none text-xs"
+					onclick={handleMerge}
+					disabled={merging}
+				>
+					{#if merging}
+						<LoaderIcon class="size-3 animate-spin" />
+					{:else}
+						<GitMergeIcon class="size-3" />
+					{/if}
+					{methodLabels[mergeMethod]}
+				</Button>
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger
+						class="inline-flex h-7 items-center justify-center rounded-l-none border-l border-primary-foreground/20 bg-primary px-1.5 text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+						disabled={merging}
+						aria-label="Merge options"
+					>
+						<ChevronDownIcon class="size-3.5" />
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="end" class="w-52">
+						<DropdownMenu.RadioGroup bind:value={mergeMethod}>
+							{#each Object.entries(methodLabels) as [value, label] (value)}
+								<DropdownMenu.RadioItem {value}>{label}</DropdownMenu.RadioItem>
+							{/each}
+						</DropdownMenu.RadioGroup>
+						<DropdownMenu.Separator />
+						<DropdownMenu.CheckboxItem bind:checked={deleteBranch}>
+							Delete branch
+						</DropdownMenu.CheckboxItem>
+						<DropdownMenu.CheckboxItem bind:checked={adminOverride}>
+							Admin override
+						</DropdownMenu.CheckboxItem>
+						<DropdownMenu.Separator />
+						<DropdownMenu.Item onclick={handleAutoMerge}>Enable auto-merge</DropdownMenu.Item>
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
 		{/if}
 		{#if showUpdateBranch}
 			<Button
