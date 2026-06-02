@@ -510,6 +510,22 @@ pub struct GitHubPRActions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MergePrOptions {
+    /// Merge strategy: "squash", "merge", or "rebase".
+    pub method: String,
+    /// Delete the head branch after a successful merge.
+    #[serde(default)]
+    pub delete_branch: bool,
+    /// Bypass branch protection / required checks (requires admin perms).
+    #[serde(default)]
+    pub admin: bool,
+    /// Enable auto-merge instead of merging immediately.
+    #[serde(default)]
+    pub auto: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitHubProjectStatus {
     pub remote: Option<GitHubRemote>,
     pub prs: Vec<GitHubPR>,

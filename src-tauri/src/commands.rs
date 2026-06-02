@@ -307,9 +307,10 @@ pub fn github_mark_pr_ready(
 pub fn github_merge_pr(
     project_path: String,
     pr_number: u64,
+    options: crate::types::MergePrOptions,
     app_handle: AppHandle,
 ) -> Result<bool, String> {
-    github::merge_pr(&project_path, pr_number).map_err(|e| e.to_string())?;
+    github::merge_pr(&project_path, pr_number, &options).map_err(|e| e.to_string())?;
     emit_github_status(&app_handle, &project_path);
     Ok(true)
 }
