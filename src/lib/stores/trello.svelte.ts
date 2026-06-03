@@ -9,9 +9,24 @@ import type {
 	TrelloProjectConfig
 } from '$types/trello';
 import type { TrelloMergeActionAppliedEvent } from '$types/workbench';
+import type { WorkspaceStore } from './workspaces.svelte';
 import { getWorkspaceStore } from './context';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+
+/**
+ * The settings OS window instantiates TrelloStore without a WorkspaceStore in
+ * context — it only needs credentials + project config, and gets its project
+ * path from the query string. Returning null there keeps construction from
+ * throwing `missing_context` (which would blank the whole window).
+ */
+function tryGetWorkspaceStore(): WorkspaceStore | null {
+	try {
+		return getWorkspaceStore();
+	} catch {
+		return null;
+	}
+}
 
 export class TrelloStore {
 	// --- State ---
@@ -22,8 +37,9 @@ export class TrelloStore {
 	availableBoards: TrelloBoard[] = $state([]);
 	loading = $state(false);
 
-	// Private refs to other stores
-	private workspaces = getWorkspaceStore();
+	// Private refs to other stores. Null in the settings window (no WorkspaceStore
+	// in context there); the settings UI takes its project path from the query string.
+	private workspaces = tryGetWorkspaceStore();
 
 	constructor() {
 		listen<TrelloMergeActionAppliedEvent>('trello:merge-action-applied', (event) => {
@@ -32,7 +48,7 @@ export class TrelloStore {
 	}
 
 	// --- Derived ---
-	readonly activeProjectPath = $derived(this.workspaces.activeWorkspace?.projectPath ?? null);
+	readonly activeProjectPath = $derived(this.workspaces?.activeWorkspace?.projectPath ?? null);
 
 	readonly activeBoards = $derived.by((): BoardConfig[] => {
 		const pp = this.activeProjectPath;
@@ -47,9 +63,9 @@ export class TrelloStore {
 	});
 
 	readonly activeBranch = $derived.by((): string | null => {
-		const ws = this.workspaces.activeWorkspace;
+		const ws = this.workspaces?.activeWorkspace;
 		if (!ws) return null;
-		return this.workspaces.resolvedBranch(ws) ?? null;
+		return this.workspaces?.resolvedBranch(ws) ?? null;
 	});
 
 	readonly linkedTask = $derived.by((): TaskLink | null => {
