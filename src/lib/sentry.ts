@@ -9,10 +9,12 @@ const DSN =
  * Initialise Sentry error tracking.
  *
  * Only runs in production builds (`tauri build`). During `tauri dev`
- * (`import.meta.env.DEV`) this is a no-op, so local development never
- * reports errors upstream.
+ * (`import.meta.env.DEV`), under the test runner (`MODE === 'test'`), or
+ * without a DSN this is a no-op, so local development and tests never report
+ * errors upstream.
  */
 export function initSentry(): void {
+	if (import.meta.env.MODE === 'test') return;
 	if (!import.meta.env.PROD) return;
 	if (!DSN) return;
 

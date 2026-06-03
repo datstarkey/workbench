@@ -233,7 +233,7 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
         std::thread::scope(|s| {
             let prs_handle = s.spawn(|| {
                 list_project_prs(path).unwrap_or_else(|e| {
-                    eprintln!("[github] Failed to list PRs for {path}: {e}");
+                    log::warn!("[github] Failed to list PRs for {path}: {e}");
                     vec![]
                 })
             });
@@ -436,8 +436,12 @@ pub fn list_repos() -> Result<Vec<GitHubRepo>> {
         ],
         &home.to_string_lossy(),
     )?;
-    serde_json::from_str(&json)
-        .map_err(|e| anyhow::anyhow!("Failed to parse repo list: {e}\nResponse: {}", &json[..json.len().min(500)]))
+    serde_json::from_str(&json).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to parse repo list: {e}\nResponse: {}",
+            &json[..json.len().min(500)]
+        )
+    })
 }
 
 pub fn checkout_pr(path: &str, pr_number: u64) -> Result<()> {
@@ -446,7 +450,10 @@ pub fn checkout_pr(path: &str, pr_number: u64) -> Result<()> {
 }
 
 pub fn fetch_pr_branch(path: &str, branch: &str) -> Result<()> {
-    crate::git::git_output(&["fetch", "origin", &format!("{}:{}", branch, branch)], path)?;
+    crate::git::git_output(
+        &["fetch", "origin", &format!("{}:{}", branch, branch)],
+        path,
+    )?;
     Ok(())
 }
 

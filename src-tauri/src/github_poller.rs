@@ -71,7 +71,11 @@ impl GitHubPoller {
             entry.next_poll_at = now;
         }
 
-        let active_prefixes: Vec<String> = state.projects.keys().map(|path| format!("{path}::")).collect();
+        let active_prefixes: Vec<String> = state
+            .projects
+            .keys()
+            .map(|path| format!("{path}::"))
+            .collect();
         state
             .previous_check_buckets
             .retain(|key, _| active_prefixes.iter().any(|prefix| key.starts_with(prefix)));
@@ -109,12 +113,14 @@ impl GitHubPoller {
                             .collect();
                         handles
                             .into_iter()
-                            .map(|h| h.join().unwrap_or_else(|_| GitHubProjectStatus {
-                                remote: None,
-                                prs: vec![],
-                                branch_runs: HashMap::new(),
-                                pr_checks: HashMap::new(),
-                            }))
+                            .map(|h| {
+                                h.join().unwrap_or_else(|_| GitHubProjectStatus {
+                                    remote: None,
+                                    prs: vec![],
+                                    branch_runs: HashMap::new(),
+                                    pr_checks: HashMap::new(),
+                                })
+                            })
                             .collect()
                     });
 
@@ -224,8 +230,7 @@ fn detect_merged_pr_transitions_and_update(
         let key = pr_key(project_path, pr.number);
         seen_keys.insert(key.clone());
         let previous = guard.previous_pr_states.insert(key, pr.state.clone());
-        if matches!(previous.as_deref(), Some(state) if state != "MERGED") && pr.state == "MERGED"
-        {
+        if matches!(previous.as_deref(), Some(state) if state != "MERGED") && pr.state == "MERGED" {
             merged_branches.push(pr.head_ref_name.clone());
         }
     }
@@ -256,9 +261,11 @@ where
             }),
             Ok(None) => {}
             Err(err) => {
-                eprintln!(
+                log::warn!(
                     "[GitHubPoller] Failed Trello merge action for {} ({}): {}",
-                    project_path, branch, err
+                    project_path,
+                    branch,
+                    err
                 );
             }
         }
@@ -352,7 +359,7 @@ mod tests {
         detect_merged_pr_transitions_and_update, status_has_pending, PollProjectState, PollerState,
     };
     use crate::types::{
-        GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPRActions, GitHubPR,
+        GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubPRActions,
         GitHubProjectStatus,
     };
 
@@ -517,7 +524,11 @@ mod tests {
     fn apply_trello_merge_actions_emits_only_successful_events() {
         let events = apply_trello_merge_actions(
             "/repo",
-            vec!["feature/a".to_string(), "feature/b".to_string(), "feature/c".to_string()],
+            vec![
+                "feature/a".to_string(),
+                "feature/b".to_string(),
+                "feature/c".to_string(),
+            ],
             |_project_path, branch| -> Result<Option<String>, String> {
                 match branch {
                     "feature/a" => Ok(Some("card-1".to_string())),
