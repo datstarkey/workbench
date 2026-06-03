@@ -43,7 +43,10 @@ export async function openSettingsWindow(
 		resizable: true,
 		decorations: true,
 		focus: true,
-		center: bounds == null
+		center: bounds == null,
+		// Start hidden so the user never sees a blank white webview while the bundle
+		// boots; SettingsWindow shows it once its shell has painted (no flash).
+		visible: false
 	});
 
 	win.once('tauri://error', (event) => {

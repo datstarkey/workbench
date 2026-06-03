@@ -37,6 +37,14 @@
 	}
 
 	onMount(async () => {
+		const win = getCurrentWindow();
+
+		// The window is created hidden (visible: false) to avoid a blank white flash
+		// while the bundle boots. onMount runs after the shell has painted, so reveal
+		// it now — the nav/header render immediately and data loads behind spinners.
+		await win.show();
+		await win.setFocus();
+
 		await Promise.all([
 			workbenchSettingsStore.load(),
 			claudeSettingsStore.load(projectPath),
@@ -46,7 +54,6 @@
 
 		// Persist native window geometry (debounced) so it restores next session.
 		// Skipped while there are unsaved edits so a resize never flushes a draft.
-		const win = getCurrentWindow();
 		const saveBounds = debounce(() => {
 			if (workbenchSettingsStore.dirty) return;
 			void (async () => {
