@@ -1,5 +1,9 @@
 import './app.css';
 import { mount } from 'svelte';
+import { initSentry } from '$lib/sentry';
+
+// Error tracking — no-op in dev, reports only in production builds.
+initSentry();
 
 // Force dark mode
 document.documentElement.classList.add('dark');
