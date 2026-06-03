@@ -2,10 +2,14 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
+import tauriConf from './src-tauri/tauri.conf.json';
 
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
+	define: {
+		__APP_VERSION__: JSON.stringify(tauriConf.version)
+	},
 	plugins: [tailwindcss(), svelte()],
 	resolve: {
 		alias: {
