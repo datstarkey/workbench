@@ -147,11 +147,11 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
   - **Org:** `starkey-digital`
   - **Project:** `workbench` (numeric id `20`)
   - Example: `sentry-admin issues starkey-digital -p workbench`
-- **`@sentry/svelte`**, frontend only, **errors only** (no tracing — `tracesSampleRate: 0`).
-- `src/lib/sentry.ts` exports `initSentry()`; `src/main.ts` calls it before mount for **both** the main and settings windows.
-- **Prod-gated:** `initSentry()` is a no-op unless `import.meta.env.PROD` — `tauri dev` never reports upstream.
-- DSN is a public write-only key inlined in `sentry.ts`, overridable via `VITE_SENTRY_DSN` at build time.
-- **Release tag:** `workbench@${__APP_VERSION__}` — `__APP_VERSION__` is defined in `vite.config.ts` from `tauri.conf.json`'s version.
+- **Errors only** on both ends (no tracing — sample rate `0`). Same DSN/project for frontend + backend.
+- **Frontend:** `@sentry/svelte`. `src/lib/sentry.ts` exports `initSentry()`; `src/main.ts` calls it before mount for **both** the main and settings windows. Prod-gated — no-op unless `import.meta.env.PROD`, and an explicit early-return when `import.meta.env.MODE === 'test'`. DSN is a public write-only key inlined in `sentry.ts`, overridable via `VITE_SENTRY_DSN`. Release tag `workbench@${__APP_VERSION__}` (`__APP_VERSION__` from `vite.config.ts` ← `tauri.conf.json` version).
+- **Backend (Rust):** `src-tauri/src/observability.rs` exports `init(release)`, called once at the top of `lib.rs::run()` with the Tauri package version; the returned guard is held for the process lifetime (drop flushes). Captures Rust **panics** (incl. background threads) the frontend can't see. DSN inlined, overridable via `SENTRY_DSN` at build time. Release tag `workbench@<version>`.
+- **Prod/test gating (backend):** the Sentry client is a no-op when `cfg!(debug_assertions) || cfg!(test)` — so `cargo test`, `cargo test --release`, and `tauri dev` never report upstream.
+- **Backend logging:** `observability::init` also installs a global `log` logger (`env_logger` → stderr, respects `RUST_LOG`, default `info`) wrapped by Sentry. In release: `log::error!` → Sentry **event**, `log::warn!`/`log::info!` → **breadcrumb** (shown on the next event). Use `log::warn!`/`log::error!` for backend diagnostics, **not** `eprintln!`. Stderr output works in all builds; Sentry forwarding only in release.
 
 ### Svelte 5 reactivity
 
