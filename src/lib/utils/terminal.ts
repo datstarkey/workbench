@@ -186,6 +186,12 @@ export async function createNativeTerminal(request: {
 	});
 }
 
+// These are best-effort UI-sync calls. The backend rejects with
+// "Session not found" once a session is cleaned up (reader-thread EOF), but
+// the UI may still fire a resize/visibility/write/kill during teardown.
+// Swallow rejections so they don't surface as unhandled promise rejections.
+function ignoreSessionGone(): void {}
+
 export async function resizeNativeTerminal(
 	sessionId: string,
 	x: number,
@@ -193,19 +199,21 @@ export async function resizeNativeTerminal(
 	width: number,
 	height: number
 ): Promise<void> {
-	await invoke('resize_native_terminal', { sessionId, x, y, width, height });
+	await invoke('resize_native_terminal', { sessionId, x, y, width, height }).catch(
+		ignoreSessionGone
+	);
 }
 
 export async function setNativeTerminalVisible(sessionId: string, visible: boolean): Promise<void> {
-	await invoke('set_native_terminal_visible', { sessionId, visible });
+	await invoke('set_native_terminal_visible', { sessionId, visible }).catch(ignoreSessionGone);
 }
 
 export async function killNativeTerminal(sessionId: string): Promise<void> {
-	await invoke('kill_native_terminal', { sessionId });
+	await invoke('kill_native_terminal', { sessionId }).catch(ignoreSessionGone);
 }
 
 export async function writeNativeTerminal(sessionId: string, data: string): Promise<void> {
-	await invoke('write_native_terminal', { sessionId, data });
+	await invoke('write_native_terminal', { sessionId, data }).catch(ignoreSessionGone);
 }
 
 export async function isNativeTerminalAvailable(): Promise<boolean> {
