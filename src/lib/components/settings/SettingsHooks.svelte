@@ -251,7 +251,7 @@
 						</Button>
 					</div>
 					<div class="max-h-60 space-y-0.5 overflow-y-auto">
-						{#each reversedEntries as entry (entry.timestamp + entry.summary)}
+						{#each reversedEntries as entry, i (logEntries.length - 1 - i)}
 							<div class={entryClass(entry.level)}>
 								<span class="shrink-0 text-muted-foreground">
 									{formatSessionDate(entry.timestamp)}
