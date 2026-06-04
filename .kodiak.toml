@@ -1,0 +1,41 @@
+# Kodiak — automated PR merge bot. https://kodiakhq.com/docs/config-reference
+#
+# What this does:
+#   - Keeps PR branches automatically up to date with `main` (no manual "Update branch").
+#   - Merges a PR (squash) as soon as it has the `automerge` label AND all required
+#     branch-protection checks (CI) pass.
+#
+# Setup required (one-time, outside this file):
+#   1. Install the Kodiak GitHub App on this repo:  https://github.com/marketplace/kodiakhq
+#   2. Enable branch protection on `main` with the CI checks marked as REQUIRED
+#      (Settings → Branches). Kodiak only merges PRs that satisfy branch protection.
+#   3. Create an `automerge` label (Issues → Labels). Add it to any PR you want
+#      merged automatically once green.
+version = 1
+
+[merge]
+# Only merge PRs that opt in via this label.
+automerge_label = "automerge"
+require_automerge_label = true
+
+# Squash-merge to match this repo's workflow, and clean up the branch after.
+method = "squash"
+delete_branch_on_merge = true
+
+# Never merge work-in-progress PRs.
+blocking_title_regex = "^(WIP|DRAFT|DO ?NOT ?MERGE)\\b.*"
+blocking_labels = ["wip", "do-not-merge"]
+
+# Speculatively update/merge while waiting on checks instead of polling serially.
+optimistic_updates = true
+
+[merge.message]
+# Use the PR title/body for the squash commit (keeps Conventional Commit subjects).
+title = "pull_request_title"
+body = "pull_request_body"
+include_pr_number = true
+
+[update]
+# Keep automerge-labeled PR branches rebased on the latest `main` automatically.
+always = true
+require_automerge_label = true

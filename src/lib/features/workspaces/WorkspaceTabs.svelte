@@ -8,6 +8,7 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { getClaudeSessionStore, getGitHubStore, getWorkspaceStore } from '$stores/context';
 	import { branchUrl, openInGitHub } from '$lib/utils/github';
+	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import { effectivePath } from '$lib/utils/path';
 	import { openInVSCode } from '$lib/utils/vscode';
 
@@ -54,59 +55,64 @@
 
 <!-- Tab strip: bg-wb-rail, h-[38px] to align with left/right sidebar headers, border-b -->
 <div class="flex h-[38px] shrink-0 items-stretch border-b border-wb-hair bg-wb-rail">
-	<div class="flex flex-1 items-stretch overflow-x-auto" role="tablist" aria-label="Workspaces">
-		{#each workspaceStore.workspaces as workspace (workspace.id)}
-			{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
-			{@const branch = workspaceStore.resolvedBranch(workspace)}
-			{@const attention = workspaceAttentionType(workspace)}
-			<div
-				class={[
-					'group relative inline-flex items-stretch border-r border-wb-hair transition-colors',
-					isActive ? 'bg-wb-panel' : 'bg-transparent hover:bg-wb-panel/50'
-				]}
-				draggable="true"
-				role="presentation"
-				ondragstart={(event) => event.dataTransfer?.setData('text/workspace-id', workspace.id)}
-				ondragover={(event) => event.preventDefault()}
-				ondrop={(event) => {
-					event.preventDefault();
-					const fromId = event.dataTransfer?.getData('text/workspace-id');
-					if (fromId) workspaceStore.reorder(fromId, workspace.id);
-				}}
-			>
-				<!-- Accent underline at top -->
-				{#if isActive}
-					<span class={['absolute inset-x-0 top-0 h-0.5', accentBarClass(attention)]}></span>
-				{/if}
-				<button
+	<div
+		class="min-w-0 flex-1"
+		{@attach overlayScrollbars({ overflow: { x: 'scroll', y: 'hidden' } })}
+	>
+		<div class="flex h-full items-stretch" role="tablist" aria-label="Workspaces">
+			{#each workspaceStore.workspaces as workspace (workspace.id)}
+				{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
+				{@const branch = workspaceStore.resolvedBranch(workspace)}
+				{@const attention = workspaceAttentionType(workspace)}
+				<div
 					class={[
-						'flex items-center gap-1.5 px-3.5 font-mono text-[11.5px] whitespace-nowrap',
-						isActive ? 'text-wb-ink' : 'text-wb-ink-mute'
+						'group relative inline-flex items-stretch border-r border-wb-hair transition-colors',
+						isActive ? 'bg-wb-panel' : 'bg-transparent hover:bg-wb-panel/50'
 					]}
-					type="button"
-					role="tab"
-					aria-selected={isActive}
-					onclick={() => (workspaceStore.selectedId = workspace.id)}
+					draggable="true"
+					role="presentation"
+					ondragstart={(event) => event.dataTransfer?.setData('text/workspace-id', workspace.id)}
+					ondragover={(event) => event.preventDefault()}
+					ondrop={(event) => {
+						event.preventDefault();
+						const fromId = event.dataTransfer?.getData('text/workspace-id');
+						if (fromId) workspaceStore.reorder(fromId, workspace.id);
+					}}
 				>
-					{#if branch}
-						<GitBranchIcon
-							class={['size-3 shrink-0', isActive ? 'text-wb-accent' : 'text-wb-ink-soft']}
-						/>
+					<!-- Accent underline at top -->
+					{#if isActive}
+						<span class={['absolute inset-x-0 top-0 h-0.5', accentBarClass(attention)]}></span>
 					{/if}
-					{workspace.projectName}{#if branch}<span
-							class={['ml-0.5', attention ? 'opacity-60' : 'text-wb-ink-soft']}>/{branch}</span
-						>{/if}
-				</button>
-				<button
-					class="mr-1 flex size-5 shrink-0 items-center justify-center self-center rounded text-wb-ink-soft opacity-0 transition-opacity group-hover:opacity-100 hover:bg-wb-panel2 hover:text-wb-ink"
-					type="button"
-					aria-label="Close project tab"
-					onclick={() => workspaceStore.close(workspace.id)}
-				>
-					<XIcon class="size-3" />
-				</button>
-			</div>
-		{/each}
+					<button
+						class={[
+							'flex items-center gap-1.5 px-3.5 font-mono text-[11.5px] whitespace-nowrap',
+							isActive ? 'text-wb-ink' : 'text-wb-ink-mute'
+						]}
+						type="button"
+						role="tab"
+						aria-selected={isActive}
+						onclick={() => (workspaceStore.selectedId = workspace.id)}
+					>
+						{#if branch}
+							<GitBranchIcon
+								class={['size-3 shrink-0', isActive ? 'text-wb-accent' : 'text-wb-ink-soft']}
+							/>
+						{/if}
+						{workspace.projectName}{#if branch}<span
+								class={['ml-0.5', attention ? 'opacity-60' : 'text-wb-ink-soft']}>/{branch}</span
+							>{/if}
+					</button>
+					<button
+						class="mr-1 flex size-5 shrink-0 items-center justify-center self-center rounded text-wb-ink-soft opacity-0 transition-opacity group-hover:opacity-100 hover:bg-wb-panel2 hover:text-wb-ink"
+						type="button"
+						aria-label="Close project tab"
+						onclick={() => workspaceStore.close(workspace.id)}
+					>
+						<XIcon class="size-3" />
+					</button>
+				</div>
+			{/each}
+		</div>
 	</div>
 
 	<div class="flex shrink-0 items-center gap-0.5 border-l border-wb-hair px-1">
