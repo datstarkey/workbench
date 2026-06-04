@@ -74,16 +74,20 @@ export function writeTerminal(sessionId: string, data: string): void {
 	enqueueWrite(sessionId, data);
 }
 
+// Best-effort UI-sync calls. The backend rejects with "Session not found"
+// once a session is cleaned up (reader-thread EOF), but xterm may still fire
+// a final resize/kill during teardown. Swallow so they don't surface as
+// unhandled promise rejections (see also the native wrappers below).
 export async function resizeTerminal(
 	sessionId: string,
 	cols: number,
 	rows: number
 ): Promise<boolean> {
-	return invoke<boolean>('resize_terminal', { sessionId, cols, rows });
+	return invoke<boolean>('resize_terminal', { sessionId, cols, rows }).catch(() => false);
 }
 
 export async function killTerminal(sessionId: string): Promise<boolean> {
-	return invoke<boolean>('kill_terminal', { sessionId });
+	return invoke<boolean>('kill_terminal', { sessionId }).catch(() => false);
 }
 
 export async function onTerminalData(
