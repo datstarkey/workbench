@@ -347,6 +347,15 @@ export interface WorkbenchSettings {
 	accentColor?: AccentColor;
 	serverMode?: boolean;
 	serverPort?: number;
+	settingsWindowBounds?: SettingsWindowBounds | null;
+}
+
+/** Persisted position + size of the draggable settings window. */
+export interface SettingsWindowBounds {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
 }
 
 export interface IntegrationStatus {

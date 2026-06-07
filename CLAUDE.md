@@ -37,6 +37,18 @@ Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-
 - **Changelog location:** `changelog/RELEASE_{version}.md`.
 - **Release flow:** write changelog → commit → tag → push commit + tag → let CI publish the release.
 
+## Workflow
+
+**Default flow for all non-trivial work** — never commit directly to `main`:
+
+1. **Branch:** create a feature branch off `main` (e.g. `feat/...`, `fix/...`). `main` has force-push protection.
+2. **Commit:** Conventional Commits format. Commit/push only when the change is complete or the user asks.
+3. **PR:** open a PR with `gh pr create`. Reference issues/PRs with `(#N)` so GitHub auto-links.
+4. **Auto-merge:** enable auto-merge (`gh pr merge --auto --squash`) so the PR lands once CI passes — don't sit and babysit checks unless asked.
+5. **Cleanup:** delete the branch after merge (auto-merge with `--squash` does this on GitHub).
+
+The `github-pr` / `prep-pr` skills automate this; prefer them over hand-running `gh`.
+
 ## Commands
 
 Run from the repo root. JS tasks go through Turborepo (the local `turbo` binary — invoke via `bun run`, not a global `turbo`).
@@ -185,6 +197,18 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - `gh run list` returns `databaseId` (not `id`) — use `#[serde(alias = "databaseId")]` for deserialization.
 - `gh repo list --json` valid fields include `name,nameWithOwner,description,isPrivate,isFork,url,sshUrl` — `httpCloneUrl` does **not** exist and causes `gh` to exit with an error. The `url` (web URL) also works as an HTTP clone URL.
 - `gh pr checks` returns empty string `""` for `completedAt` on pending checks — validate parsed dates before computing durations.
+
+### Observability (Sentry)
+
+- **Self-hosted Sentry** at `sentry.starkeydigital.com`. Manage via the `sentry` skill / `sentry-admin` CLI.
+  - **Org:** `starkey-digital`
+  - **Project:** `workbench` (numeric id `20`)
+  - Example: `sentry-admin issues starkey-digital -p workbench`
+- **Errors only** on both ends (no tracing — sample rate `0`). Same DSN/project for frontend + backend.
+- **Frontend:** `@sentry/svelte`. `src/lib/sentry.ts` exports `initSentry()`; `src/main.ts` calls it before mount for **both** the main and settings windows. Prod-gated — no-op unless `import.meta.env.PROD`, and an explicit early-return when `import.meta.env.MODE === 'test'`. DSN is a public write-only key inlined in `sentry.ts`, overridable via `VITE_SENTRY_DSN`. Release tag `workbench@${__APP_VERSION__}` (`__APP_VERSION__` from `vite.config.ts` ← `tauri.conf.json` version).
+- **Backend (Rust):** `src-tauri/src/observability.rs` exports `init(release)`, called once at the top of `lib.rs::run()` with the Tauri package version; the returned guard is held for the process lifetime (drop flushes). Captures Rust **panics** (incl. background threads) the frontend can't see. DSN inlined, overridable via `SENTRY_DSN` at build time. Release tag `workbench@<version>`.
+- **Prod/test gating (backend):** the Sentry client is a no-op when `cfg!(debug_assertions) || cfg!(test)` — so `cargo test`, `cargo test --release`, and `tauri dev` never report upstream.
+- **Backend logging:** `observability::init` also installs a global `log` logger (`env_logger` → stderr, respects `RUST_LOG`, default `info`) wrapped by Sentry. In release: `log::error!` → Sentry **event**, `log::warn!`/`log::info!` → **breadcrumb** (shown on the next event). Use `log::warn!`/`log::error!` for backend diagnostics, **not** `eprintln!`. Stderr output works in all builds; Sentry forwarding only in release.
 
 ### Svelte 5 reactivity
 

@@ -27,15 +27,20 @@
 	});
 </script>
 
-<div class="flex h-full flex-col border-l border-border/60 bg-background">
+<div class="flex h-full flex-col border-l border-wb-hair bg-wb-panel">
 	<!-- Tab bar -->
-	<div class="flex shrink-0 items-center justify-between border-b border-border/60 px-2 py-1.5">
+	<div class="flex h-[38px] shrink-0 items-center justify-between border-b border-wb-hair px-2">
 		<div class="flex items-center gap-0.5">
 			{#if gitEnabled}
 				<Button
-					variant={activeTab === 'git' ? 'secondary' : 'ghost'}
+					variant="ghost"
 					size="sm"
-					class="h-7 gap-1.5 text-xs"
+					class={[
+						'h-7 gap-1.5 text-xs',
+						activeTab === 'git'
+							? 'bg-wb-panel2 text-wb-ink'
+							: 'text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink'
+					]}
 					onclick={() => (sidebarStore.activeTab = 'git')}
 				>
 					<GitBranchIcon class="size-3.5" />
@@ -43,9 +48,14 @@
 				</Button>
 			{/if}
 			<Button
-				variant={activeTab === 'github' ? 'secondary' : 'ghost'}
+				variant="ghost"
 				size="sm"
-				class="h-7 gap-1.5 text-xs"
+				class={[
+					'h-7 gap-1.5 text-xs',
+					activeTab === 'github'
+						? 'bg-wb-panel2 text-wb-ink'
+						: 'text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink'
+				]}
 				onclick={() => (sidebarStore.activeTab = 'github')}
 			>
 				<GithubIcon class="size-3.5" />
@@ -53,9 +63,14 @@
 			</Button>
 			{#if trelloEnabled}
 				<Button
-					variant={activeTab === 'boards' ? 'secondary' : 'ghost'}
+					variant="ghost"
 					size="sm"
-					class="h-7 gap-1.5 text-xs"
+					class={[
+						'h-7 gap-1.5 text-xs',
+						activeTab === 'boards'
+							? 'bg-wb-panel2 text-wb-ink'
+							: 'text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink'
+					]}
 					onclick={() => (sidebarStore.activeTab = 'boards')}
 				>
 					<LayoutListIcon class="size-3.5" />
@@ -63,7 +78,12 @@
 				</Button>
 			{/if}
 		</div>
-		<Button variant="ghost" size="icon-sm" class="size-6" onclick={onClose}>
+		<Button
+			variant="ghost"
+			size="icon-sm"
+			class="size-6 text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink"
+			onclick={onClose}
+		>
 			<XIcon class="size-3" />
 		</Button>
 	</div>

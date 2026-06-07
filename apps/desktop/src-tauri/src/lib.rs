@@ -16,6 +16,7 @@ mod menu;
 mod native_terminal;
 #[cfg(target_os = "macos")]
 mod native_terminal_commands;
+mod observability;
 mod pty;
 mod refresh_dispatcher;
 mod server_control;
@@ -120,6 +121,13 @@ macro_rules! build_invoke_handler {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+
+    // Initialise backend error reporting before building the app so panics in
+    // any thread are captured. No-op in debug builds. Guard kept alive for the
+    // whole process — dropping it flushes pending events on shutdown.
+    let _sentry_guard = observability::init(context.package_info().version.to_string());
+
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -160,7 +168,5 @@ pub fn run() {
         builder = builder.invoke_handler(build_invoke_handler!());
     }
 
-    builder
-        .run(tauri::generate_context!())
-        .expect("error while running Workbench");
+    builder.run(context).expect("error while running Workbench");
 }

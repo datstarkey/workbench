@@ -190,27 +190,33 @@
 			<div class="ml-auto flex items-center gap-0.5">
 				<Tooltip.Root>
 					<Tooltip.Trigger>
-						<button
-							class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
-							type="button"
-							onclick={() => projectManager.add()}
-							aria-label="Add project"
-						>
-							<PlusIcon class="size-3" />
-						</button>
+						{#snippet child({ props })}
+							<button
+								{...props}
+								class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+								type="button"
+								onclick={() => projectManager.add()}
+								aria-label="Add project"
+							>
+								<PlusIcon class="size-3" />
+							</button>
+						{/snippet}
 					</Tooltip.Trigger>
 					<Tooltip.Content side="bottom">Add Project</Tooltip.Content>
 				</Tooltip.Root>
 				<Tooltip.Root>
 					<Tooltip.Trigger>
-						<button
-							class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
-							type="button"
-							onclick={() => (cloneDialogOpen = true)}
-							aria-label="Clone from GitHub"
-						>
-							<DownloadIcon class="size-3" />
-						</button>
+						{#snippet child({ props })}
+							<button
+								{...props}
+								class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+								type="button"
+								onclick={() => (cloneDialogOpen = true)}
+								aria-label="Clone from GitHub"
+							>
+								<DownloadIcon class="size-3" />
+							</button>
+						{/snippet}
 					</Tooltip.Trigger>
 					<Tooltip.Content side="bottom">Clone from GitHub</Tooltip.Content>
 				</Tooltip.Root>
@@ -325,13 +331,16 @@
 		<div class="flex flex-1 flex-col items-center gap-1 pt-2">
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<button
-						class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
-						type="button"
-						onclick={() => projectManager.add()}
-					>
-						<PlusIcon class="size-3" />
-					</button>
+					{#snippet child({ props })}
+						<button
+							{...props}
+							class="flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+							type="button"
+							onclick={() => projectManager.add()}
+						>
+							<PlusIcon class="size-3" />
+						</button>
+					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content side="right">Add Project</Tooltip.Content>
 			</Tooltip.Root>
@@ -340,13 +349,16 @@
 		<div class="shrink-0 border-t border-wb-hair p-1">
 			<Tooltip.Root>
 				<Tooltip.Trigger>
-					<button
-						class="mx-auto flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
-						type="button"
-						onclick={onOpenSettings}
-					>
-						<SettingsIcon class="size-3" />
-					</button>
+					{#snippet child({ props })}
+						<button
+							{...props}
+							class="mx-auto flex size-[22px] items-center justify-center rounded text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+							type="button"
+							onclick={onOpenSettings}
+						>
+							<SettingsIcon class="size-3" />
+						</button>
+					{/snippet}
 				</Tooltip.Trigger>
 				<Tooltip.Content side="right">Settings</Tooltip.Content>
 			</Tooltip.Root>

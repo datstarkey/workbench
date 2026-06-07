@@ -37,7 +37,7 @@ impl GitWatcher {
                 let events = match events {
                     Ok(e) => e,
                     Err(err) => {
-                        eprintln!("[GitWatcher] watcher error: {err}");
+                        log::warn!("[GitWatcher] watcher error: {err}");
                         return;
                     }
                 };
@@ -73,7 +73,7 @@ impl GitWatcher {
         match debouncer {
             Ok(d) => Some(d),
             Err(err) => {
-                eprintln!("[GitWatcher] Failed to create debouncer: {err}");
+                log::error!("[GitWatcher] Failed to create debouncer: {err}");
                 None
             }
         }
@@ -141,7 +141,9 @@ impl GitWatcher {
         // Watch .git/HEAD for branch switches
         let head = git_dir.join("HEAD");
         if head.exists() {
-            watcher.watcher().watch(&head, RecursiveMode::NonRecursive)?;
+            watcher
+                .watcher()
+                .watch(&head, RecursiveMode::NonRecursive)?;
         }
 
         // Watch .git/refs/ for new commits, branches, tags
@@ -153,7 +155,9 @@ impl GitWatcher {
         // Watch .git/index for staging changes
         let index = git_dir.join("index");
         if index.exists() {
-            watcher.watcher().watch(&index, RecursiveMode::NonRecursive)?;
+            watcher
+                .watcher()
+                .watch(&index, RecursiveMode::NonRecursive)?;
         }
 
         watched.insert(path);
@@ -172,14 +176,14 @@ impl GitWatcher {
         for path in to_watch {
             let project_path = path.to_string_lossy().to_string();
             if let Err(err) = self.watch_project(&project_path) {
-                eprintln!("[GitWatcher] Failed to watch {project_path}: {err}");
+                log::warn!("[GitWatcher] Failed to watch {project_path}: {err}");
             }
         }
 
         for path in to_unwatch {
             let project_path = path.to_string_lossy().to_string();
             if let Err(err) = self.unwatch_project(&project_path) {
-                eprintln!("[GitWatcher] Failed to unwatch {project_path}: {err}");
+                log::warn!("[GitWatcher] Failed to unwatch {project_path}: {err}");
             }
         }
     }
@@ -225,7 +229,10 @@ fn normalize_project_paths(project_paths: Vec<String>) -> HashSet<PathBuf> {
         .collect()
 }
 
-fn watch_diff(current: &HashSet<PathBuf>, desired: &HashSet<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+fn watch_diff(
+    current: &HashSet<PathBuf>,
+    desired: &HashSet<PathBuf>,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     (
         desired.difference(current).cloned().collect(),
         current.difference(desired).cloned().collect(),

@@ -340,10 +340,21 @@ pub struct WorkbenchSettings {
     pub server_mode: bool,
     #[serde(default = "default_server_port")]
     pub server_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_window_bounds: Option<SettingsWindowBounds>,
 }
 
 fn default_server_port() -> u16 {
     4317
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsWindowBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 fn default_worktree_strategy() -> String {
@@ -390,6 +401,7 @@ impl Default for WorkbenchSettings {
             accent_color: default_accent_color(),
             server_mode: false,
             server_port: default_server_port(),
+            settings_window_bounds: None,
         }
     }
 }

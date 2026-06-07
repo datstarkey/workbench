@@ -227,7 +227,8 @@ describe('WorkbenchSettingsStore', () => {
 					cloneBaseDir: null,
 					accentColor: 'violet',
 					serverMode: false,
-					serverPort: 4317
+					serverPort: 4317,
+					settingsWindowBounds: null
 				}
 			});
 		});
@@ -482,7 +483,8 @@ describe('WorkbenchSettingsStore', () => {
 					cloneBaseDir: null,
 					accentColor: 'violet',
 					serverMode: false,
-					serverPort: 4317
+					serverPort: 4317,
+					settingsWindowBounds: null
 				}
 			});
 			expect(store.agentActions[0].name).toBe('Review');

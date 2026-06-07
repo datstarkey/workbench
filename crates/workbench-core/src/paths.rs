@@ -199,14 +199,14 @@ pub fn load_json<T: DeserializeOwned>(path: &Path, default: T) -> T {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return default,
         Err(e) => {
-            eprintln!("[config] Failed to read {}: {e}", path.display());
+            log::warn!("[config] Failed to read {}: {e}", path.display());
             return default;
         }
     };
     match serde_json::from_str(&content) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[config] Failed to parse {}: {e}", path.display());
+            log::warn!("[config] Failed to parse {}: {e}", path.display());
             default
         }
     }
@@ -279,10 +279,7 @@ mod tests {
 
     #[test]
     fn encode_project_path_windows_drive_letter() {
-        assert_eq!(
-            encode_project_path("D:\\repos\\my-app"),
-            "D-repos-my-app"
-        );
+        assert_eq!(encode_project_path("D:\\repos\\my-app"), "D-repos-my-app");
     }
 
     #[test]

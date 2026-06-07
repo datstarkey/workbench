@@ -165,11 +165,7 @@ fn command_mentions_git_or_gh(command: &str) -> bool {
 }
 
 fn should_emit_project_refresh_for_hook(hook: &Value) -> bool {
-    if hook
-        .get("hook_event_name")
-        .and_then(|v| v.as_str())
-        != Some("PostToolUse")
-    {
+    if hook.get("hook_event_name").and_then(|v| v.as_str()) != Some("PostToolUse") {
         return false;
     }
 
@@ -593,7 +589,10 @@ mod tests {
                 "tool_name": tool,
                 "tool_input": {}
             });
-            assert!(!should_emit_project_refresh_for_hook(&payload), "should reject {tool}");
+            assert!(
+                !should_emit_project_refresh_for_hook(&payload),
+                "should reject {tool}"
+            );
         }
     }
 
@@ -669,7 +668,7 @@ mod tcp {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("[HookBridge] Failed to bind TCP listener: {e}");
+                log::error!("[HookBridge] Failed to bind TCP listener: {e}");
                 return HookBridgeState {
                     socket_path: None,
                     logs,
@@ -680,7 +679,7 @@ mod tcp {
         let addr = match listener.local_addr() {
             Ok(a) => a,
             Err(e) => {
-                eprintln!("[HookBridge] Failed to get listener address: {e}");
+                log::error!("[HookBridge] Failed to get listener address: {e}");
                 return HookBridgeState {
                     socket_path: None,
                     logs,
@@ -697,7 +696,7 @@ mod tcp {
                 let stream = match stream {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[HookBridge] TCP accept failed: {e}");
+                        log::warn!("[HookBridge] TCP accept failed: {e}");
                         continue;
                     }
                 };
