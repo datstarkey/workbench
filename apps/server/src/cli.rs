@@ -25,3 +25,37 @@ pub struct Cli {
     #[arg(long, env = "WORKBENCH_TOKEN")]
     pub token: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_bind_all_interfaces_on_4317_no_token() {
+        let cli = Cli::parse_from(["workbench-server"]);
+        assert_eq!(cli.bind, "0.0.0.0");
+        assert_eq!(cli.port, 4317);
+        assert!(cli.token.is_none());
+    }
+
+    #[test]
+    fn explicit_flags_override_defaults() {
+        let cli = Cli::parse_from([
+            "workbench-server",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            "9000",
+            "--token",
+            "secret",
+        ]);
+        assert_eq!(cli.bind, "127.0.0.1");
+        assert_eq!(cli.port, 9000);
+        assert_eq!(cli.token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn rejects_a_non_numeric_port() {
+        assert!(Cli::try_parse_from(["workbench-server", "--port", "not-a-port"]).is_err());
+    }
+}
