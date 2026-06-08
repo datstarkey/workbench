@@ -71,7 +71,7 @@ export class InstancesStore {
 	}
 
 	load(): void {
-		let configs: RemoteInstanceConfig[] = [];
+		let configs: RemoteInstanceConfig[];
 		try {
 			configs = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
 		} catch {

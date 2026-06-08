@@ -2,7 +2,7 @@
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
-	import GithubIcon from '@lucide/svelte/icons/github';
+	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';

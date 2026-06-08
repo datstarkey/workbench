@@ -4,7 +4,7 @@
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
-	import GithubIcon from '@lucide/svelte/icons/github';
+	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlayCircleIcon from '@lucide/svelte/icons/play-circle';
 	import PlayIcon from '@lucide/svelte/icons/play';

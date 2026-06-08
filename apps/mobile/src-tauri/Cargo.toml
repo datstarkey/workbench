@@ -1,0 +1,20 @@
+[package]
+name = "workbench-mobile"
+version = "0.1.0"
+description = "Workbench mobile control-plane client"
+license = "AGPL-3.0-or-later"
+authors = []
+edition = "2021"
+
+[lib]
+name = "workbench_mobile_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-log = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

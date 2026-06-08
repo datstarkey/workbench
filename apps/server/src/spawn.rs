@@ -57,7 +57,7 @@ impl RemoteControlManager {
     /// Resolve the working directory for a spawn request. When a worktree path is
     /// given it must be a known worktree of the project (reuses core's worktree
     /// listing) so we only ever spawn inside directories Workbench manages.
-    fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> Result<String> {
+    pub(crate) fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> Result<String> {
         match worktree_path {
             Some(wt) => {
                 let worktrees = workbench_core::git::list_worktrees(project_path)

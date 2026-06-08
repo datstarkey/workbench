@@ -1,6 +1,6 @@
 <script lang="ts">
 	import CodeIcon from '@lucide/svelte/icons/code';
-	import GithubIcon from '@lucide/svelte/icons/github';
+	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PanelRightOpenIcon from '@lucide/svelte/icons/panel-right-open';
 	import XIcon from '@lucide/svelte/icons/x';

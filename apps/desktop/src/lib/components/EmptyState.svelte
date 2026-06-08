@@ -1,6 +1,6 @@
 <script lang="ts">
 	import FolderIcon from '@lucide/svelte/icons/folder';
-	import GithubIcon from '@lucide/svelte/icons/github';
+	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import { open } from '@tauri-apps/plugin-shell';
 	import { getProjectManager } from '$stores/context';

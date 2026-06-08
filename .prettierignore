@@ -12,6 +12,7 @@ bun.lockb
 # Rust
 /target/
 /apps/desktop/src-tauri/gen/
+/apps/mobile/src-tauri/gen/
 *.rs
 
 # Swift

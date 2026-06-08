@@ -31,6 +31,12 @@ pub fn router(state: AppState) -> Router {
         .route("/remote/spawn", post(remote_spawn))
         .route("/remote/sessions", get(remote_sessions))
         .route("/remote/sessions/:id", delete(remote_kill))
+        .route(
+            "/remote/terminals",
+            get(crate::terminal::terminal_list).post(crate::terminal::terminal_create),
+        )
+        .route("/remote/terminals/:id/ws", get(crate::terminal::terminal_attach))
+        .route("/remote/terminals/:id", delete(crate::terminal::terminal_kill))
         .with_state(state)
 }
 

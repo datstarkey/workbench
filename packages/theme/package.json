@@ -1,0 +1,14 @@
+{
+	"name": "@workbench/theme",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Shared Workbench design tokens + Tailwind v4 theme (shadcn + wb-* chrome). Consumed by desktop and mobile app.css.",
+	"exports": {
+		".": "./theme.css",
+		"./theme.css": "./theme.css"
+	},
+	"files": [
+		"theme.css"
+	]
+}

@@ -2,10 +2,34 @@
 	"name": "@workbench/mobile",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Workbench mobile app (placeholder — not yet implemented)",
 	"type": "module",
+	"description": "Workbench mobile app — phone-side control-plane client for workbench-server.",
 	"scripts": {
-		"dev": "echo 'mobile app not implemented yet' && exit 0",
-		"build": "echo 'mobile app not implemented yet' && exit 0"
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"tauri": "tauri"
+	},
+	"dependencies": {
+		"@tauri-apps/plugin-log": "^2",
+		"@workbench/control-plane-ui": "workspace:*",
+		"@workbench/theme": "workspace:*",
+		"@workbench/transport": "workspace:*",
+		"@workbench/types": "workspace:*",
+		"@workbench/ui": "workspace:*",
+		"@xterm/addon-fit": "catalog:",
+		"@xterm/xterm": "catalog:",
+		"svelte": "catalog:"
+	},
+	"devDependencies": {
+		"@sveltejs/vite-plugin-svelte": "catalog:",
+		"@tailwindcss/vite": "catalog:",
+		"@tauri-apps/cli": "catalog:",
+		"@tsconfig/svelte": "catalog:",
+		"svelte-check": "catalog:",
+		"tailwindcss": "catalog:",
+		"typescript": "catalog:",
+		"vite": "catalog:"
 	}
 }

@@ -7,6 +7,7 @@ pub mod error;
 pub mod routes;
 pub mod spawn;
 pub mod state;
+pub mod terminal;
 
 use anyhow::Context;
 use std::net::SocketAddr;
@@ -14,6 +15,7 @@ use tokio::sync::oneshot;
 
 pub use spawn::RemoteControlManager;
 pub use state::AppState;
+pub use terminal::TerminalManager;
 
 /// Build the full router (control-plane routes + optional bearer auth + CORS).
 pub fn app(state: AppState) -> axum::Router {
@@ -38,6 +40,7 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let state = AppState {
         spawn: RemoteControlManager::new(),
+        terminals: TerminalManager::new(),
         token,
     };
     let app = app(state);
@@ -84,6 +87,7 @@ pub async fn spawn_embedded(
 ) -> anyhow::Result<ServerHandle> {
     let state = AppState {
         spawn: RemoteControlManager::new(),
+        terminals: TerminalManager::new(),
         token,
     };
     let app = app(state);

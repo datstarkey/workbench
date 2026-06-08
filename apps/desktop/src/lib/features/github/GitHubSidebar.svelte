@@ -1,5 +1,5 @@
 <script lang="ts">
-	import GithubIcon from '@lucide/svelte/icons/github';
+	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GitPullRequestIcon from '@lucide/svelte/icons/git-pull-request';
 	import { Separator } from '@workbench/ui/separator';
