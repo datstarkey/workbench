@@ -105,3 +105,51 @@ pub fn server_status(state: tauri::State<'_, ServerControl>) -> ServerStatus {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    /// Build a headless mock Tauri app (no webview) holding the ServerControl state,
+    /// so the embedded-server commands can be driven exactly as the frontend does.
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        mock_builder()
+            .manage(ServerControl::new())
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build")
+    }
+
+    #[tokio::test]
+    async fn start_status_stop_cycle() {
+        let app = mock_app();
+
+        // Initially stopped.
+        assert!(!server_status(app.state()).running);
+
+        // Start on an ephemeral port (bind 127.0.0.1 so the test never exposes a port).
+        let started = start_server(app.state(), Some("127.0.0.1".to_string()), 0, None)
+            .await
+            .expect("start_server");
+        assert!(started.running);
+        assert!(started.address.is_some());
+
+        // Status reflects the running server.
+        let status = server_status(app.state());
+        assert!(status.running);
+        assert_eq!(status.address, started.address);
+
+        // Starting again while running is a no-op that returns the same address
+        // (exercises the double-checked-lock guard, not a second bind).
+        let again = start_server(app.state(), None, 0, None)
+            .await
+            .expect("second start is idempotent");
+        assert_eq!(again.address, started.address);
+
+        // Stop, and confirm status goes back to stopped.
+        let stopped = stop_server(app.state()).await.expect("stop_server");
+        assert!(!stopped.running);
+        assert!(!server_status(app.state()).running);
+    }
+}

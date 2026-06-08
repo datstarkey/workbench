@@ -7227,6 +7227,7 @@ dependencies = [
  "tauri-plugin-store",
  "tauri-plugin-updater",
  "tempfile",
+ "tokio",
  "workbench-core",
  "workbench-server",
 ]
