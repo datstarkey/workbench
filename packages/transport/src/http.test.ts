@@ -128,6 +128,10 @@ describe('HttpTransport event socket reconnect backoff', () => {
 		fail() {
 			this.handlers.error?.forEach((cb) => cb());
 		}
+		/** Simulate a successful connection (resets the backoff). */
+		open() {
+			this.handlers.open?.forEach((cb) => cb());
+		}
 	}
 
 	afterEach(() => {
@@ -156,6 +160,28 @@ describe('HttpTransport event socket reconnect backoff', () => {
 		expect(FakeWS.instances).toHaveLength(2); // still waiting (only 2s of 4s elapsed)
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(FakeWS.instances).toHaveLength(3); // fires at 4s
+	});
+
+	it('resets the backoff to the base delay after a successful open', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('WebSocket', FakeWS);
+
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await t.subscribe('claude:hook', () => {});
+
+		// Fail twice so the next scheduled delay has backed off (2s→4s→8s).
+		FakeWS.instances[0].fail();
+		await vi.advanceTimersByTimeAsync(2000);
+		FakeWS.instances[1].fail();
+		await vi.advanceTimersByTimeAsync(4000);
+		expect(FakeWS.instances).toHaveLength(3);
+
+		// Third socket connects successfully, then drops → backoff must be back at the
+		// 2s base, so the reconnect fires after 2s (not the backed-off ~16s).
+		FakeWS.instances[2].open();
+		FakeWS.instances[2].fail();
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(FakeWS.instances).toHaveLength(4);
 	});
 
 	it('does not open a socket or reconnect when there are no subscribers', async () => {

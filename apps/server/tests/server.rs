@@ -35,22 +35,60 @@ fn write_fake_claude(dir: &std::path::Path) -> std::path::PathBuf {
 /// WORKBENCH_CLAUDE_BIN / WORKBENCH_MAX_*) so they don't clobber each other.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+/// Holds the global env lock for the test and records every env var it sets,
+/// removing them on Drop — so a panicking (failing) test can't leak a global like
+/// WORKBENCH_MAX_SESSIONS=1 into sibling tests.
+struct EnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    keys: std::cell::RefCell<Vec<&'static str>>,
+}
+
+impl EnvGuard {
+    fn set(&self, key: &'static str, val: impl AsRef<std::ffi::OsStr>) {
+        std::env::set_var(key, val);
+        self.keys.borrow_mut().push(key);
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for k in self.keys.borrow().iter() {
+            std::env::remove_var(k);
+        }
+    }
+}
+
+fn env_guard() -> EnvGuard {
+    EnvGuard {
+        _lock: ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
+        keys: std::cell::RefCell::new(Vec::new()),
+    }
 }
 
 /// Point WORKBENCH_CONFIG_DIR at a fresh dir that registers `project_path` as a
-/// Workbench project (so the spawn/terminal cwd allowlist accepts it). Keep the
-/// returned TempDir alive for the duration of the test.
-fn register_project(project_path: &std::path::Path) -> tempfile::TempDir {
+/// Workbench project (so the spawn/terminal cwd allowlist accepts it). The var is
+/// tracked by `env` so it's cleaned up on drop; keep the returned TempDir alive.
+fn register_project(env: &EnvGuard, project_path: &std::path::Path) -> tempfile::TempDir {
     let cfg = tempfile::tempdir().unwrap();
     std::fs::write(
         cfg.path().join("projects.json"),
         json!({ "projects": [{ "name": "test", "path": project_path }] }).to_string(),
     )
     .unwrap();
-    std::env::set_var("WORKBENCH_CONFIG_DIR", cfg.path());
+    env.set("WORKBENCH_CONFIG_DIR", cfg.path());
     cfg
+}
+
+/// `git init` a directory so `git worktree list` succeeds against it.
+#[cfg(unix)]
+fn git_init(dir: &std::path::Path) {
+    let ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir)
+        .status()
+        .expect("run git init")
+        .success();
+    assert!(ok, "git init should succeed");
 }
 
 #[tokio::test]
@@ -135,12 +173,12 @@ async fn auth_gate() {
 #[cfg(unix)]
 #[tokio::test]
 async fn spawn_list_kill_cycle() {
-    let _env = env_guard();
+    let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let fake = write_fake_claude(tmp.path());
-    std::env::set_var("WORKBENCH_CLAUDE_BIN", &fake);
+    env.set("WORKBENCH_CLAUDE_BIN", &fake);
     // Register tmp as a Workbench project so the spawn cwd allowlist accepts it.
-    let _cfg = register_project(tmp.path());
+    let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start(None).await;
     let http = reqwest::Client::new();
@@ -200,18 +238,24 @@ async fn spawn_list_kill_cycle() {
     assert_eq!(after.as_array().unwrap().len(), 0);
 
     handle.stop().await;
-    std::env::remove_var("WORKBENCH_CLAUDE_BIN");
-    std::env::remove_var("WORKBENCH_CONFIG_DIR");
+    // EnvGuard drop removes WORKBENCH_CLAUDE_BIN / WORKBENCH_CONFIG_DIR.
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn spawn_rejects_unknown_worktree() {
+    let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
+    // A real repo so list_worktrees succeeds and the known-worktree guard actually
+    // runs (otherwise list_worktrees errors first and the test passes vacuously).
+    git_init(tmp.path());
+    let _cfg = register_project(&env, tmp.path());
+
     let (handle, base) = start(None).await;
     let http = reqwest::Client::new();
 
-    // worktreePath that is not a known worktree of the project → error (not 200).
+    // Registered project + real repo, but the worktree path is not a known worktree
+    // of it → rejected by the known-worktree guard.
     let res = http
         .post(format!("{base}/remote/spawn"))
         .json(&json!({
@@ -221,7 +265,7 @@ async fn spawn_rejects_unknown_worktree() {
         .send()
         .await
         .unwrap();
-    assert!(res.status().is_server_error() || res.status().is_client_error());
+    assert!(res.status().is_server_error());
 
     handle.stop().await;
 }
@@ -248,16 +292,17 @@ async fn remote_kill_is_idempotent() {
 #[cfg(unix)]
 #[tokio::test]
 async fn spawn_rejects_unregistered_dir() {
-    let _env = env_guard();
+    let env = env_guard();
     // A config dir with no projects.json → zero registered projects.
     let cfg = tempfile::tempdir().unwrap();
-    std::env::set_var("WORKBENCH_CONFIG_DIR", cfg.path());
+    env.set("WORKBENCH_CONFIG_DIR", cfg.path());
     let tmp = tempfile::tempdir().unwrap();
 
     let (handle, base) = start(None).await;
     let http = reqwest::Client::new();
 
-    // tmp exists but is not a registered Workbench project → must be rejected.
+    // tmp exists but is not a registered Workbench project → rejected by the
+    // allowlist (500 from resolve_cwd, not an earlier validation error).
     let res = http
         .post(format!("{base}/remote/spawn"))
         .json(&json!({ "projectPath": tmp.path(), "name": "x" }))
@@ -265,23 +310,22 @@ async fn spawn_rejects_unregistered_dir() {
         .await
         .unwrap();
     assert!(
-        res.status().is_server_error() || res.status().is_client_error(),
+        res.status().is_server_error(),
         "spawning in an unregistered directory must be rejected"
     );
 
     handle.stop().await;
-    std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn spawn_respects_session_cap() {
-    let _env = env_guard();
+    let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let fake = write_fake_claude(tmp.path());
-    std::env::set_var("WORKBENCH_CLAUDE_BIN", &fake);
-    std::env::set_var("WORKBENCH_MAX_SESSIONS", "1");
-    let _cfg = register_project(tmp.path());
+    env.set("WORKBENCH_CLAUDE_BIN", &fake);
+    env.set("WORKBENCH_MAX_SESSIONS", "1");
+    let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start(None).await;
     let http = reqwest::Client::new();
@@ -307,17 +351,14 @@ async fn spawn_respects_session_cap() {
     );
 
     handle.stop().await;
-    std::env::remove_var("WORKBENCH_CLAUDE_BIN");
-    std::env::remove_var("WORKBENCH_MAX_SESSIONS");
-    std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn terminal_ws_requires_token_when_set() {
-    let _env = env_guard();
+    let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
-    let _cfg = register_project(tmp.path());
+    let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start(Some("secret")).await;
     let addr = handle.addr().to_string();
@@ -355,16 +396,15 @@ async fn terminal_ws_requires_token_when_set() {
     );
 
     handle.stop().await;
-    std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn terminal_ws_closes_when_killed() {
     use futures_util::StreamExt;
-    let _env = env_guard();
+    let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
-    let _cfg = register_project(tmp.path());
+    let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start(None).await;
     let addr = handle.addr().to_string();
@@ -406,7 +446,6 @@ async fn terminal_ws_closes_when_killed() {
     );
 
     handle.stop().await;
-    std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }
 
 #[cfg(unix)]
@@ -414,9 +453,9 @@ async fn terminal_ws_closes_when_killed() {
 async fn terminal_ws_closes_on_shell_exit() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
-    let _env = env_guard();
+    let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
-    let _cfg = register_project(tmp.path());
+    let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start(None).await;
     let addr = handle.addr().to_string();
@@ -440,9 +479,7 @@ async fn terminal_ws_closes_on_shell_exit() {
 
     // Drive the shell to exit (raw bytes → PTY). On EOF the reader signals done and
     // the attached socket must close instead of hanging on a dead shell.
-    ws.send(Message::Binary(b"exit\n".to_vec().into()))
-        .await
-        .unwrap();
+    ws.send(Message::Binary(b"exit\n".to_vec())).await.unwrap();
 
     let ended = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(Ok(msg)) = ws.next().await {
@@ -458,16 +495,15 @@ async fn terminal_ws_closes_on_shell_exit() {
     );
 
     handle.stop().await;
-    std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn terminal_respects_cap() {
-    let _env = env_guard();
+    let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
-    std::env::set_var("WORKBENCH_MAX_TERMINALS", "1");
-    let _cfg = register_project(tmp.path());
+    env.set("WORKBENCH_MAX_TERMINALS", "1");
+    let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start(None).await;
     let http = reqwest::Client::new();
@@ -492,6 +528,4 @@ async fn terminal_respects_cap() {
     );
 
     handle.stop().await;
-    std::env::remove_var("WORKBENCH_MAX_TERMINALS");
-    std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }

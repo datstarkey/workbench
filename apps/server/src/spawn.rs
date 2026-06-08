@@ -75,6 +75,12 @@ impl RemoteControlManager {
         worktree_path: Option<&str>,
         registered_projects: &[String],
     ) -> Result<String> {
+        // BOTH branches must resolve inside a registered Workbench project — a
+        // worktree path is only trusted because its project is. Otherwise an
+        // unauthenticated caller could spawn in any git repo's worktree on the host.
+        if !is_registered_project(project_path, registered_projects) {
+            bail!("project path is not a registered Workbench project: {project_path}");
+        }
         match worktree_path {
             Some(wt) => {
                 let worktrees = workbench_core::git::list_worktrees(project_path)
@@ -88,9 +94,6 @@ impl RemoteControlManager {
             None => {
                 if !std::path::Path::new(project_path).is_dir() {
                     bail!("project path does not exist: {project_path}");
-                }
-                if !registered_projects.iter().any(|p| p == project_path) {
-                    bail!("project path is not a registered Workbench project: {project_path}");
                 }
                 Ok(project_path.to_string())
             }
@@ -262,6 +265,16 @@ impl RemoteControlManager {
     }
 }
 
+/// True if `path` is — or canonicalizes to — one of the registered project paths.
+/// Canonicalizing tolerates a trailing slash, symlink, or `..` differing between
+/// what the client sends and what's stored in `projects.json`.
+fn is_registered_project(path: &str, registered: &[String]) -> bool {
+    let canon = std::fs::canonicalize(path).ok();
+    registered
+        .iter()
+        .any(|p| p == path || (canon.is_some() && std::fs::canonicalize(p).ok() == canon))
+}
+
 /// Pull the session URL out of accumulated terminal output. `claude
 /// remote-control` prints a docs link in its banner alongside the real session
 /// URL, so we collect every http(s) URL and prefer one that isn't documentation.
@@ -327,13 +340,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_cwd_rejects_worktree_in_unregistered_project() {
+        // The worktree branch is gated by the same allowlist as the bare-project
+        // branch: an unregistered project_path is rejected even with a worktree.
+        let dir = tempfile::tempdir().unwrap();
+        let res =
+            RemoteControlManager::resolve_cwd(dir.path().to_str().unwrap(), Some("/tmp/wt"), &[]);
+        assert!(res.is_err());
+    }
+
+    #[test]
     fn resolve_cwd_rejects_unknown_worktree() {
         let dir = tempfile::tempdir().unwrap();
-        // A worktree path that isn't a known worktree of the (non-repo) project.
+        let registered = vec![dir.path().to_str().unwrap().to_string()];
+        // Registered project, but the worktree path isn't a known worktree (the
+        // non-repo dir makes list_worktrees fail, which is also a rejection).
         let res = RemoteControlManager::resolve_cwd(
             dir.path().to_str().unwrap(),
             Some("/tmp/elsewhere"),
-            &[],
+            &registered,
         );
         assert!(res.is_err());
     }

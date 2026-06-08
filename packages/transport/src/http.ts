@@ -105,11 +105,14 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 		if (ws) return;
 		const wsUrl = base.replace(/^http/, 'ws') + '/events';
 		try {
-			ws = new WebSocket(wsUrl);
-			ws.addEventListener('open', () => {
+			// Capture the socket locally so a stale handler (from a previous socket
+			// that errors/closes late) never acts on the current one.
+			const sock = new WebSocket(wsUrl);
+			ws = sock;
+			sock.addEventListener('open', () => {
 				reconnectDelay = BASE_RECONNECT_MS;
 			});
-			ws.addEventListener('message', (ev) => {
+			sock.addEventListener('message', (ev) => {
 				try {
 					const { event, payload } = JSON.parse(ev.data as string);
 					listeners.get(event)?.forEach((cb) => cb(payload));
@@ -119,13 +122,12 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 			});
 			// Reconnect on drop/failure so subscriptions survive server restarts
 			// and transient network blips instead of going silently dead.
-			ws.addEventListener('close', () => {
+			sock.addEventListener('close', () => {
+				if (ws !== sock) return; // a newer socket is already active
 				ws = null;
 				scheduleReconnect();
 			});
-			ws.addEventListener('error', () => {
-				ws?.close();
-			});
+			sock.addEventListener('error', () => sock.close());
 		} catch {
 			ws = null;
 			scheduleReconnect();

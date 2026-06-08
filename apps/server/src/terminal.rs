@@ -230,14 +230,19 @@ impl TerminalManager {
     }
 
     pub fn kill(&self, id: &str) -> bool {
-        if let Some(s) = lock(&self.inner).remove(id) {
-            let _ = lock(&s.child).kill();
-            // Wake attached sockets so they close (the reader thread's EOF signal can
-            // race or be missed if the child was killed before producing EOF).
-            let _ = s.done_tx.send(true);
-            true
-        } else {
-            false
+        // Remove under the map lock, then DROP the guard before the kill syscall +
+        // wake — the outer map lock must never be held during I/O (it would serialize
+        // create/list/attach against every kill).
+        let session = lock(&self.inner).remove(id);
+        match session {
+            Some(s) => {
+                let _ = lock(&s.child).kill();
+                // Wake attached sockets so they close (the reader thread's EOF signal
+                // can race or be missed if the child was killed before producing EOF).
+                let _ = s.done_tx.send(true);
+                true
+            }
+            None => false,
         }
     }
 }

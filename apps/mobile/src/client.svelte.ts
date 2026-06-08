@@ -133,14 +133,19 @@ export class MobileClient {
 			});
 			if (!res.ok) throw new Error(`create terminal failed (${res.status})`);
 			const meta: TerminalMeta = await res.json();
-			// Open the new terminal immediately, then reconcile with the server list —
-			// otherwise a list that hasn't yet surfaced the new id leaves activeTerminal
-			// null and the view never opens.
-			if (!this.terminals.some((t) => t.id === meta.id)) {
-				this.terminals = [...this.terminals, meta];
-			}
+			// Show the new terminal immediately AND keep it after refreshTerminals()
+			// reconciles — otherwise the refresh overwrites `terminals` with a server
+			// list that hasn't surfaced the new id yet, the $derived activeTerminal goes
+			// null, and the view never opens.
+			const ensureVisible = () => {
+				if (!this.terminals.some((t) => t.id === meta.id)) {
+					this.terminals = [...this.terminals, meta];
+				}
+			};
+			ensureVisible();
 			this.activeTerminalId = meta.id;
 			await this.refreshTerminals();
+			ensureVisible();
 		} catch (e) {
 			this.connectError = e instanceof Error ? e.message : String(e);
 		}

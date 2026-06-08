@@ -104,7 +104,7 @@ describe('MobileClient', () => {
 		expect(c.terminals.map((t) => t.id)).toContain('new-1');
 	});
 
-	it('createTerminal() sets the active id even if the list has not surfaced it yet', async () => {
+	it('createTerminal() keeps the new terminal open even if the list has not surfaced it', async () => {
 		const meta = { id: 'new-2', cwd: '/p', createdAt: 0, alive: true };
 		const c = await connected();
 		// POST create → meta; GET list stays empty (eventual-consistency race).
@@ -116,6 +116,10 @@ describe('MobileClient', () => {
 		);
 		await c.createTerminal('/p', undefined, 'shell');
 		expect(c.activeTerminalId).toBe('new-2');
+		// The view gates on the $derived activeTerminal = terminals.find(id===activeId),
+		// so the terminal must remain in `terminals` after the (empty) refresh, otherwise
+		// the view never opens. This is the actual fix — assert it, not just the id.
+		expect(c.terminals.map((t) => t.id)).toContain('new-2');
 	});
 
 	it('disconnect() disposes the store and clears terminal state', async () => {
