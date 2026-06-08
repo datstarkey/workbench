@@ -408,3 +408,90 @@ async fn terminal_ws_closes_when_killed() {
     handle.stop().await;
     std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_ws_closes_on_shell_exit() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let _env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(tmp.path());
+
+    let (handle, base) = start(None).await;
+    let addr = handle.addr().to_string();
+    let http = reqwest::Client::new();
+
+    let meta: Value = http
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({ "projectPath": tmp.path() }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = meta["id"].as_str().expect("terminal id").to_string();
+
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
+            .await
+            .expect("WS should connect");
+
+    // Drive the shell to exit (raw bytes → PTY). On EOF the reader signals done and
+    // the attached socket must close instead of hanging on a dead shell.
+    ws.send(Message::Binary(b"exit\n".to_vec().into()))
+        .await
+        .unwrap();
+
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(Ok(msg)) = ws.next().await {
+            if msg.is_close() {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "attached WS must close after the shell exits, not hang"
+    );
+
+    handle.stop().await;
+    std::env::remove_var("WORKBENCH_CONFIG_DIR");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_respects_cap() {
+    let _env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("WORKBENCH_MAX_TERMINALS", "1");
+    let _cfg = register_project(tmp.path());
+
+    let (handle, base) = start(None).await;
+    let http = reqwest::Client::new();
+
+    let create = |c: &reqwest::Client| {
+        c.post(format!("{base}/remote/terminals"))
+            .json(&json!({ "projectPath": tmp.path() }))
+            .send()
+    };
+
+    let first = create(&http).await.unwrap();
+    assert_eq!(
+        first.status(),
+        200,
+        "first terminal under the cap should succeed"
+    );
+
+    let second = create(&http).await.unwrap();
+    assert!(
+        second.status().is_server_error(),
+        "creating a terminal past the cap should be rejected"
+    );
+
+    handle.stop().await;
+    std::env::remove_var("WORKBENCH_MAX_TERMINALS");
+    std::env::remove_var("WORKBENCH_CONFIG_DIR");
+}

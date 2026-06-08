@@ -3,6 +3,7 @@
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
+	import { terminalWsUrl } from './terminal-url.ts';
 
 	let {
 		serverUrl,
@@ -51,12 +52,7 @@
 		fit.fit();
 
 		// Attach to the persistent session; the server replays scrollback first.
-		// Initial size is sent via the resize message on open (the server reads only
-		// the id from the URL). A browser WebSocket can't set an Authorization
-		// header, so the bearer token (if any) rides along as a ?token= query param.
-		const base = serverUrl.replace(/^http/, 'ws').replace(/\/$/, '');
-		const qs = token ? `?token=${encodeURIComponent(token)}` : '';
-		ws = new WebSocket(`${base}/remote/terminals/${id}/ws${qs}`);
+		ws = new WebSocket(terminalWsUrl(serverUrl, id, token));
 		ws.binaryType = 'arraybuffer';
 
 		ws.onopen = () => {

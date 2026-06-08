@@ -88,10 +88,12 @@
         "@tailwindcss/vite": "catalog:",
         "@tauri-apps/cli": "catalog:",
         "@tsconfig/svelte": "catalog:",
+        "jsdom": "^29.1.1",
         "svelte-check": "catalog:",
         "tailwindcss": "catalog:",
         "typescript": "catalog:",
         "vite": "catalog:",
+        "vitest": "catalog:",
       },
     },
     "packages/control-plane-ui": {

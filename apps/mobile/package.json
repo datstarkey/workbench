@@ -9,6 +9,7 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"test": "vitest run",
 		"tauri": "tauri"
 	},
 	"dependencies": {
@@ -27,9 +28,11 @@
 		"@tailwindcss/vite": "catalog:",
 		"@tauri-apps/cli": "catalog:",
 		"@tsconfig/svelte": "catalog:",
+		"jsdom": "^29.1.1",
 		"svelte-check": "catalog:",
 		"tailwindcss": "catalog:",
 		"typescript": "catalog:",
-		"vite": "catalog:"
+		"vite": "catalog:",
+		"vitest": "catalog:"
 	}
 }
