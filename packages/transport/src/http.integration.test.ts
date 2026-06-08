@@ -44,8 +44,16 @@ describe.skipIf(!hasBin)('HttpTransport ↔ real workbench-server', () => {
 		writeFileSync(fake, '#!/bin/sh\necho "Session: https://claude.ai/code/int-test"\nsleep 30\n');
 		chmodSync(fake, 0o755);
 
+		// Register projectDir as a Workbench project so the spawn cwd allowlist
+		// accepts it (point the server's config dir at a throwaway projects.json).
+		const configDir = mkdtempSync(join(tmpdir(), 'wb-int-cfg-'));
+		writeFileSync(
+			join(configDir, 'projects.json'),
+			JSON.stringify({ projects: [{ name: 'int', path: projectDir }] })
+		);
+
 		server = spawn(BIN, ['--port', String(PORT)], {
-			env: { ...process.env, WORKBENCH_CLAUDE_BIN: fake },
+			env: { ...process.env, WORKBENCH_CLAUDE_BIN: fake, WORKBENCH_CONFIG_DIR: configDir },
 			stdio: 'ignore'
 		});
 		await waitForHealth();

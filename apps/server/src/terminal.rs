@@ -44,8 +44,15 @@ use crate::state::AppState;
 /// Scrollback kept per session for replay on reattach.
 const BUFFER_CAP: usize = 256 * 1024;
 
-/// Backstop against runaway terminal creation (see MAX_REMOTE_SESSIONS).
-const MAX_TERMINALS: usize = 64;
+/// Backstop against runaway terminal creation (see RemoteControlManager).
+/// Overridable via `WORKBENCH_MAX_TERMINALS` (defaults to 64).
+fn max_terminals() -> usize {
+    std::env::var("WORKBENCH_MAX_TERMINALS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(64)
+}
 
 fn default_cols() -> u16 {
     80
@@ -103,8 +110,9 @@ impl TerminalManager {
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<TerminalMeta> {
-        if lock(&self.inner).len() >= MAX_TERMINALS {
-            anyhow::bail!("terminal session limit reached ({MAX_TERMINALS})");
+        let max = max_terminals();
+        if lock(&self.inner).len() >= max {
+            anyhow::bail!("terminal session limit reached ({max})");
         }
 
         let pty = native_pty_system();

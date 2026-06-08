@@ -96,4 +96,21 @@ describe('ControlPlaneStore', () => {
 		expect(store.error).toBe('network down');
 		expect(store.projects).toEqual([]);
 	});
+
+	it('dispose() cancels the spawn status poll so it stops hitting the server', async () => {
+		vi.useFakeTimers();
+		transport.mockInvoke('remote_spawn', () => session());
+		let listCalls = 0;
+		transport.mockInvoke('remote_sessions', () => {
+			listCalls++;
+			return [session()];
+		});
+
+		await store.spawn('/p', undefined, 'test');
+		expect(listCalls).toBe(1); // immediate refresh after spawn
+
+		store.dispose(); // cancel the still-running poll
+		await vi.advanceTimersByTimeAsync(10000);
+		expect(listCalls).toBe(1); // no further polling after dispose
+	});
 });

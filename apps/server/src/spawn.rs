@@ -46,7 +46,14 @@ struct Tracked {
 
 /// Backstop against runaway spawns (the server is unauthenticated by default, so
 /// this caps process/PTY/thread creation even if the network boundary is bypassed).
-const MAX_REMOTE_SESSIONS: usize = 64;
+/// Overridable via `WORKBENCH_MAX_SESSIONS` (defaults to 64).
+fn max_remote_sessions() -> usize {
+    std::env::var("WORKBENCH_MAX_SESSIONS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(64)
+}
 
 #[derive(Clone, Default)]
 pub struct RemoteControlManager {
@@ -104,8 +111,9 @@ impl RemoteControlManager {
                 .inner
                 .lock()
                 .map_err(|_| anyhow::anyhow!("spawn manager lock poisoned"))?;
-            if map.len() >= MAX_REMOTE_SESSIONS {
-                bail!("remote session limit reached ({MAX_REMOTE_SESSIONS})");
+            let max = max_remote_sessions();
+            if map.len() >= max {
+                bail!("remote session limit reached ({max})");
             }
         }
 

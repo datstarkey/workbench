@@ -108,3 +108,61 @@ describe('MockTransport', () => {
 		expect(seen).toEqual([{ a: 1 }]);
 	});
 });
+
+describe('HttpTransport event socket reconnect backoff', () => {
+	// Minimal WebSocket stand-in: records instances and lets the test drive the
+	// error/close handlers without a real server (the server has no /events yet).
+	class FakeWS {
+		static instances: FakeWS[] = [];
+		private handlers: Record<string, Array<(ev?: unknown) => void>> = {};
+		constructor(public url: string) {
+			FakeWS.instances.push(this);
+		}
+		addEventListener(type: string, cb: (ev?: unknown) => void) {
+			(this.handlers[type] ??= []).push(cb);
+		}
+		close() {
+			this.handlers.close?.forEach((cb) => cb());
+		}
+		/** Simulate a failed connection (error → close → reconnect scheduled). */
+		fail() {
+			this.handlers.error?.forEach((cb) => cb());
+		}
+	}
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+		FakeWS.instances = [];
+	});
+
+	it('backs off exponentially instead of reconnecting every 2s', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('WebSocket', FakeWS);
+
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await t.subscribe('claude:hook', () => {});
+		expect(FakeWS.instances).toHaveLength(1);
+		expect(FakeWS.instances[0].url).toBe('ws://host:4317/events');
+
+		// First failure → reconnect scheduled at the 2s base delay.
+		FakeWS.instances[0].fail();
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(FakeWS.instances).toHaveLength(2);
+
+		// Second failure → next attempt is backed off to 4s, not another 2s.
+		FakeWS.instances[1].fail();
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(FakeWS.instances).toHaveLength(2); // still waiting (only 2s of 4s elapsed)
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(FakeWS.instances).toHaveLength(3); // fires at 4s
+	});
+
+	it('does not open a socket or reconnect when there are no subscribers', async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal('WebSocket', FakeWS);
+		createHttpTransport({ baseUrl: 'http://host:4317' });
+		await vi.advanceTimersByTimeAsync(60000);
+		expect(FakeWS.instances).toHaveLength(0);
+	});
+});
