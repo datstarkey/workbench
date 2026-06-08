@@ -6,11 +6,13 @@
 
 	let {
 		serverUrl,
+		token,
 		id,
 		name,
 		onClose
 	}: {
 		serverUrl: string;
+		token?: string;
 		id: string;
 		name: string;
 		onClose: () => void;
@@ -49,9 +51,12 @@
 		fit.fit();
 
 		// Attach to the persistent session; the server replays scrollback first.
+		// Initial size is sent via the resize message on open (the server reads only
+		// the id from the URL). A browser WebSocket can't set an Authorization
+		// header, so the bearer token (if any) rides along as a ?token= query param.
 		const base = serverUrl.replace(/^http/, 'ws').replace(/\/$/, '');
-		const params = new URLSearchParams({ cols: String(term.cols), rows: String(term.rows) });
-		ws = new WebSocket(`${base}/remote/terminals/${id}/ws?${params}`);
+		const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+		ws = new WebSocket(`${base}/remote/terminals/${id}/ws${qs}`);
 		ws.binaryType = 'arraybuffer';
 
 		ws.onopen = () => {
@@ -84,8 +89,13 @@
 		return () => {
 			ro.disconnect();
 			vv?.removeEventListener('resize', onVv);
+			// Detach the socket handlers before disposing the terminal so a frame that
+			// arrives during teardown can't call term.write() on a disposed terminal.
 			// Closing the socket only detaches — the server keeps the shell alive.
-			ws?.close();
+			if (ws) {
+				ws.onopen = ws.onmessage = ws.onclose = null;
+				ws.close();
+			}
 			ws = undefined;
 			term.dispose();
 		};

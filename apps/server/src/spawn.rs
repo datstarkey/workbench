@@ -44,6 +44,10 @@ struct Tracked {
     _master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
+/// Backstop against runaway spawns (the server is unauthenticated by default, so
+/// this caps process/PTY/thread creation even if the network boundary is bypassed).
+const MAX_REMOTE_SESSIONS: usize = 64;
+
 #[derive(Clone, Default)]
 pub struct RemoteControlManager {
     inner: Arc<Mutex<HashMap<String, Tracked>>>,
@@ -54,10 +58,16 @@ impl RemoteControlManager {
         Self::default()
     }
 
-    /// Resolve the working directory for a spawn request. When a worktree path is
-    /// given it must be a known worktree of the project (reuses core's worktree
-    /// listing) so we only ever spawn inside directories Workbench manages.
-    pub(crate) fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> Result<String> {
+    /// Resolve the working directory for a spawn request, restricted to directories
+    /// Workbench manages. A worktree path must be a known worktree of the project
+    /// (reuses core's worktree listing); a bare project path must be a **registered
+    /// Workbench project** (`registered_projects`). This stops an unauthenticated
+    /// caller from running a session/shell in an arbitrary directory on the host.
+    pub(crate) fn resolve_cwd(
+        project_path: &str,
+        worktree_path: Option<&str>,
+        registered_projects: &[String],
+    ) -> Result<String> {
         match worktree_path {
             Some(wt) => {
                 let worktrees = workbench_core::git::list_worktrees(project_path)
@@ -72,6 +82,9 @@ impl RemoteControlManager {
                 if !std::path::Path::new(project_path).is_dir() {
                     bail!("project path does not exist: {project_path}");
                 }
+                if !registered_projects.iter().any(|p| p == project_path) {
+                    bail!("project path is not a registered Workbench project: {project_path}");
+                }
                 Ok(project_path.to_string())
             }
         }
@@ -82,8 +95,20 @@ impl RemoteControlManager {
         project_path: &str,
         worktree_path: Option<&str>,
         name: Option<String>,
+        registered_projects: &[String],
     ) -> Result<RemoteSession> {
-        let cwd = Self::resolve_cwd(project_path, worktree_path)?;
+        let cwd = Self::resolve_cwd(project_path, worktree_path, registered_projects)?;
+
+        {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("spawn manager lock poisoned"))?;
+            if map.len() >= MAX_REMOTE_SESSIONS {
+                bail!("remote session limit reached ({MAX_REMOTE_SESSIONS})");
+            }
+        }
+
         let id = uuid::Uuid::new_v4().to_string();
 
         let pty = native_pty_system();
@@ -211,7 +236,10 @@ impl RemoteControlManager {
         map.values().map(|t| t.meta.clone()).collect()
     }
 
-    pub fn kill(&self, id: &str) -> Result<()> {
+    /// Kill and stop tracking a session. Returns `false` if no such session
+    /// exists (already killed, or self-exited and reaped by the reader thread) so
+    /// the route can stay idempotent rather than 500ing on a normal race.
+    pub fn kill(&self, id: &str) -> bool {
         let mut map = match self.inner.lock() {
             Ok(m) => m,
             Err(p) => p.into_inner(),
@@ -219,9 +247,9 @@ impl RemoteControlManager {
         match map.remove(id) {
             Some(mut tracked) => {
                 let _ = tracked.child.kill();
-                Ok(())
+                true
             }
-            None => bail!("no remote session with id {id}"),
+            None => false,
         }
     }
 }
@@ -268,31 +296,47 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cwd_accepts_existing_project_dir() {
+    fn resolve_cwd_accepts_registered_project_dir() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
-        let resolved = RemoteControlManager::resolve_cwd(path, None).unwrap();
+        let registered = vec![path.to_string()];
+        let resolved = RemoteControlManager::resolve_cwd(path, None, &registered).unwrap();
         assert_eq!(resolved, path);
     }
 
     #[test]
+    fn resolve_cwd_rejects_unregistered_existing_dir() {
+        // A real directory that is not a registered project must be rejected so a
+        // caller can't spawn in an arbitrary host directory.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        assert!(RemoteControlManager::resolve_cwd(path, None, &[]).is_err());
+    }
+
+    #[test]
     fn resolve_cwd_rejects_missing_project_dir() {
-        assert!(RemoteControlManager::resolve_cwd("/no/such/dir", None).is_err());
+        assert!(RemoteControlManager::resolve_cwd("/no/such/dir", None, &[]).is_err());
     }
 
     #[test]
     fn resolve_cwd_rejects_unknown_worktree() {
         let dir = tempfile::tempdir().unwrap();
         // A worktree path that isn't a known worktree of the (non-repo) project.
-        let res =
-            RemoteControlManager::resolve_cwd(dir.path().to_str().unwrap(), Some("/tmp/elsewhere"));
+        let res = RemoteControlManager::resolve_cwd(
+            dir.path().to_str().unwrap(),
+            Some("/tmp/elsewhere"),
+            &[],
+        );
         assert!(res.is_err());
     }
 
     #[test]
     fn strips_trailing_punctuation_and_ansi() {
         let out = "see https://claude.ai/code/x.\u{1b}[0m";
-        assert_eq!(extract_url(out).as_deref(), Some("https://claude.ai/code/x"));
+        assert_eq!(
+            extract_url(out).as_deref(),
+            Some("https://claude.ai/code/x")
+        );
     }
 
     #[test]

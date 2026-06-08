@@ -13,6 +13,11 @@ pub fn home_dir() -> PathBuf {
 }
 
 pub fn workbench_config_dir() -> PathBuf {
+    // Overridable so a headless server can point at an alternate config (and so
+    // tests can isolate `~/.workbench` without touching the real home dir).
+    if let Some(dir) = std::env::var_os("WORKBENCH_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
     home_dir().join(".workbench")
 }
 

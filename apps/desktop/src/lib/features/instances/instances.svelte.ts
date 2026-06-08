@@ -17,7 +17,6 @@ export class RemoteInstance {
 	readonly config: RemoteInstanceConfig;
 	status = $state<InstanceStatus>('connecting');
 	readonly store: ControlPlaneStore;
-	private loadedOnce = false;
 
 	constructor(config: RemoteInstanceConfig) {
 		this.config = config;
@@ -30,8 +29,11 @@ export class RemoteInstance {
 		return this.config.url.replace(/\/$/, '');
 	}
 
-	/** Ping /health; on first transition to online, load its projects/sessions. */
+	/** Ping /health; (re)load its projects/sessions on any transition into online —
+	 *  the first connect AND every recovery after an outage, so a server that comes
+	 *  back doesn't keep showing stale pre-outage data. */
 	async checkHealth(): Promise<void> {
+		const prev = this.status;
 		try {
 			const headers: Record<string, string> = {};
 			if (this.config.token) headers.authorization = `Bearer ${this.config.token}`;
@@ -40,10 +42,14 @@ export class RemoteInstance {
 		} catch {
 			this.status = 'offline';
 		}
-		if (this.status === 'online' && !this.loadedOnce) {
-			this.loadedOnce = true;
+		if (this.status === 'online' && prev !== 'online') {
 			await this.store.refresh();
 		}
+	}
+
+	/** Release background timers held by this instance's control-plane store. */
+	dispose(): void {
+		this.store.dispose();
 	}
 }
 
@@ -71,9 +77,12 @@ export class InstancesStore {
 	}
 
 	load(): void {
-		let configs: RemoteInstanceConfig[];
+		let configs: RemoteInstanceConfig[] = [];
 		try {
-			configs = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+			const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
+			// Guard against corrupt / schema-drifted localStorage: a non-array would
+			// otherwise blow up the .map below (outside any try/catch) at startup.
+			if (Array.isArray(parsed)) configs = parsed;
 		} catch {
 			configs = [];
 		}
@@ -95,8 +104,12 @@ export class InstancesStore {
 	}
 
 	remove(id: string): void {
+		const removed = this.remotes.find((r) => r.config.id === id);
 		this.remotes = this.remotes.filter((r) => r.config.id !== id);
 		if (this.activeId === id) this.activeId = this.localId;
+		// Stop the removed instance's store timers so a spawn poll in flight doesn't
+		// keep hitting the now-disconnected server.
+		removed?.dispose();
 		this.persist();
 	}
 
@@ -113,5 +126,14 @@ export class InstancesStore {
 	private startPolling(): void {
 		if (this.pollHandle) return;
 		this.pollHandle = setInterval(() => void this.pollAll(), 15000);
+	}
+
+	/** Stop health polling and release every remote's store timers. */
+	dispose(): void {
+		if (this.pollHandle) {
+			clearInterval(this.pollHandle);
+			this.pollHandle = null;
+		}
+		for (const r of this.remotes) r.dispose();
 	}
 }

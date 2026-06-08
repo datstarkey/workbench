@@ -86,12 +86,19 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	const listeners = new Map<string, Set<(payload: unknown) => void>>();
 
+	// Exponential backoff so a server that doesn't (yet) expose `/events` — or is
+	// down — isn't hammered every 2s. Resets to the base delay on a successful open.
+	const BASE_RECONNECT_MS = 2000;
+	const MAX_RECONNECT_MS = 30000;
+	let reconnectDelay = BASE_RECONNECT_MS;
+
 	const scheduleReconnect = () => {
 		if (reconnectTimer || listeners.size === 0) return;
 		reconnectTimer = setTimeout(() => {
 			reconnectTimer = null;
 			ensureSocket();
-		}, 2000);
+		}, reconnectDelay);
+		reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_MS);
 	};
 
 	const ensureSocket = () => {
@@ -99,6 +106,9 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 		const wsUrl = base.replace(/^http/, 'ws') + '/events';
 		try {
 			ws = new WebSocket(wsUrl);
+			ws.addEventListener('open', () => {
+				reconnectDelay = BASE_RECONNECT_MS;
+			});
 			ws.addEventListener('message', (ev) => {
 				try {
 					const { event, payload } = JSON.parse(ev.data as string);

@@ -35,8 +35,14 @@ pub fn router(state: AppState) -> Router {
             "/remote/terminals",
             get(crate::terminal::terminal_list).post(crate::terminal::terminal_create),
         )
-        .route("/remote/terminals/:id/ws", get(crate::terminal::terminal_attach))
-        .route("/remote/terminals/:id", delete(crate::terminal::terminal_kill))
+        .route(
+            "/remote/terminals/:id/ws",
+            get(crate::terminal::terminal_attach),
+        )
+        .route(
+            "/remote/terminals/:id",
+            delete(crate::terminal::terminal_kill),
+        )
         .with_state(state)
 }
 
@@ -50,10 +56,26 @@ async fn index() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))
 }
 
+/// Run a blocking `workbench_core` call (git CLI, filesystem, PTY spawn) off the
+/// async executor so it never stalls a tokio worker thread under concurrent load.
+pub(crate) async fn blocking<T, F>(f: F) -> ApiResult<T>
+where
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("blocking task failed: {e}"),
+        })?
+        .map_err(ApiError::from)
+}
+
 // --- control plane: projects / worktrees / branches ---
 
 async fn list_projects() -> ApiResult<Json<Value>> {
-    let projects = workbench_core::config::load_projects()?;
+    let projects = blocking(workbench_core::config::load_projects).await?;
     Ok(Json(serde_json::to_value(projects)?))
 }
 
@@ -63,14 +85,14 @@ struct PathQuery {
 }
 
 async fn list_worktrees(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
-    let worktrees = workbench_core::git::list_worktrees(&q.path)?;
+    let worktrees = blocking(move || workbench_core::git::list_worktrees(&q.path)).await?;
     Ok(Json(serde_json::to_value(worktrees)?))
 }
 
 async fn create_worktree(Json(req): Json<CreateWorktreeRequest>) -> ApiResult<Json<String>> {
     // Returns the bare worktree path string to match the Tauri command and the
     // ControlPlaneCommands.create_worktree result type.
-    let path = workbench_core::git::create_worktree(&req)?;
+    let path = blocking(move || workbench_core::git::create_worktree(&req)).await?;
     Ok(Json(path))
 }
 
@@ -84,17 +106,20 @@ struct RemoveWorktreeBody {
 }
 
 async fn remove_worktree(Json(body): Json<RemoveWorktreeBody>) -> ApiResult<StatusCode> {
-    workbench_core::git::remove_worktree(&body.repo_path, &body.worktree_path, body.force)?;
+    blocking(move || {
+        workbench_core::git::remove_worktree(&body.repo_path, &body.worktree_path, body.force)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_branches(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
-    let branches = workbench_core::git::list_branches(&q.path)?;
+    let branches = blocking(move || workbench_core::git::list_branches(&q.path)).await?;
     Ok(Json(serde_json::to_value(branches)?))
 }
 
 async fn git_info(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
-    let info = workbench_core::git::git_info(&q.path)?;
+    let info = blocking(move || workbench_core::git::git_info(&q.path)).await?;
     Ok(Json(serde_json::to_value(info)?))
 }
 
@@ -107,12 +132,17 @@ struct ProjectPathQuery {
 }
 
 async fn discover_claude_sessions(Query(q): Query<ProjectPathQuery>) -> ApiResult<Json<Value>> {
-    let sessions = workbench_core::claude_sessions::discover_claude_sessions(&q.project_path)?;
+    let sessions = blocking(move || {
+        workbench_core::claude_sessions::discover_claude_sessions(&q.project_path)
+    })
+    .await?;
     Ok(Json(serde_json::to_value(sessions)?))
 }
 
 async fn discover_codex_sessions(Query(q): Query<ProjectPathQuery>) -> ApiResult<Json<Value>> {
-    let sessions = workbench_core::codex_sessions::discover_codex_sessions(&q.project_path)?;
+    let sessions =
+        blocking(move || workbench_core::codex_sessions::discover_codex_sessions(&q.project_path))
+            .await?;
     Ok(Json(serde_json::to_value(sessions)?))
 }
 
@@ -126,12 +156,15 @@ struct SettingsQuery {
 }
 
 async fn load_claude_settings(Query(q): Query<SettingsQuery>) -> ApiResult<Json<Value>> {
-    let value = workbench_core::settings::load_settings(&q.scope, q.project_path.as_deref())?;
+    let value = blocking(move || {
+        workbench_core::settings::load_settings(&q.scope, q.project_path.as_deref())
+    })
+    .await?;
     Ok(Json(value))
 }
 
 async fn load_workbench_settings() -> ApiResult<Json<Value>> {
-    let settings = workbench_core::config::load_workbench_settings()?;
+    let settings = blocking(workbench_core::config::load_workbench_settings).await?;
     Ok(Json(serde_json::to_value(settings)?))
 }
 
@@ -161,11 +194,22 @@ async fn remote_spawn(
     if body.project_path.trim().is_empty() {
         return Err(ApiError::bad_request("projectPath is required"));
     }
-    let session = state.spawn.spawn(
-        &body.project_path,
-        body.worktree_path.as_deref(),
-        body.name,
-    )?;
+    let spawn = state.spawn.clone();
+    let session = blocking(move || {
+        // Allowlist of registered project paths (loaded here, off the executor) so a
+        // bare project_path can only resolve to a directory Workbench manages.
+        let registered: Vec<String> = workbench_core::config::load_projects()?
+            .into_iter()
+            .map(|p| p.path)
+            .collect();
+        spawn.spawn(
+            &body.project_path,
+            body.worktree_path.as_deref(),
+            body.name,
+            &registered,
+        )
+    })
+    .await?;
     Ok(Json(serde_json::to_value(session)?))
 }
 
@@ -173,10 +217,9 @@ async fn remote_sessions(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.spawn.list()))
 }
 
-async fn remote_kill(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> ApiResult<StatusCode> {
-    state.spawn.kill(&id)?;
-    Ok(StatusCode::NO_CONTENT)
+async fn remote_kill(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    // Idempotent: a session that self-exited is reaped by its reader thread, so a
+    // delete for an unknown id is a normal race, not a 500 (matches terminal_kill).
+    state.spawn.kill(&id);
+    StatusCode::NO_CONTENT
 }

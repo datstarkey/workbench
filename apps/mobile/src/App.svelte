@@ -90,6 +90,7 @@
 	}
 
 	function disconnect() {
+		store?.dispose();
 		store = null;
 		terminals = [];
 		activeTerminalId = null;
@@ -99,7 +100,11 @@
 		if (!store) return;
 		try {
 			const res = await fetch(`${url}/remote/terminals`, { headers: authHeaders() });
-			if (res.ok) terminals = await res.json();
+			if (res.ok) {
+				const data = await res.json();
+				// Guard the {#each terminals} below: a non-array body would throw at render.
+				terminals = Array.isArray(data) ? data : [];
+			}
 		} catch {
 			/* ignore */
 		}
@@ -120,8 +125,12 @@
 			});
 			if (!res.ok) throw new Error(`create terminal failed (${res.status})`);
 			const meta: TerminalMeta = await res.json();
-			await refreshTerminals();
+			// Open the new terminal immediately, then let refreshTerminals() reconcile
+			// with the server list — otherwise a list that hasn't yet surfaced the new
+			// id leaves `activeTerminal` null and the view never opens.
+			if (!terminals.some((t) => t.id === meta.id)) terminals = [...terminals, meta];
 			activeTerminalId = meta.id;
+			await refreshTerminals();
 		} catch (e) {
 			connectError = e instanceof Error ? e.message : String(e);
 		}
@@ -152,6 +161,7 @@
 	{#key activeTerminal.id}
 		<Terminal
 			serverUrl={url}
+			{token}
 			id={activeTerminal.id}
 			name={activeTerminal.name ?? 'terminal'}
 			onClose={closeTerminal}

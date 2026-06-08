@@ -27,7 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Path, Query, State,
     },
     http::StatusCode,
     response::Response,
@@ -35,7 +35,7 @@ use axum::{
 };
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
@@ -43,6 +43,9 @@ use crate::state::AppState;
 
 /// Scrollback kept per session for replay on reattach.
 const BUFFER_CAP: usize = 256 * 1024;
+
+/// Backstop against runaway terminal creation (see MAX_REMOTE_SESSIONS).
+const MAX_TERMINALS: usize = 64;
 
 fn default_cols() -> u16 {
     80
@@ -71,6 +74,11 @@ struct TerminalSession {
     buffer: Mutex<VecDeque<u8>>,
     /// Live output fan-out to all attached clients.
     tx: broadcast::Sender<Vec<u8>>,
+    /// Flips to `false` when the shell exits (PTY EOF) or the session is killed.
+    /// Attached sockets select on this so they close instead of freezing — the
+    /// broadcast `tx` lives inside this same Arc, so `rx.recv()` can never observe
+    /// `Closed` from within the attach loop.
+    done_tx: watch::Sender<bool>,
 }
 
 #[derive(Clone, Default)]
@@ -95,6 +103,10 @@ impl TerminalManager {
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<TerminalMeta> {
+        if lock(&self.inner).len() >= MAX_TERMINALS {
+            anyhow::bail!("terminal session limit reached ({MAX_TERMINALS})");
+        }
+
         let pty = native_pty_system();
         let pair = pty.openpty(PtySize {
             rows,
@@ -134,6 +146,7 @@ impl TerminalManager {
             alive: true,
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
+        let (done_tx, _done_rx) = watch::channel(false);
 
         let session = Arc::new(TerminalSession {
             meta: Mutex::new(meta.clone()),
@@ -142,6 +155,7 @@ impl TerminalManager {
             child: Mutex::new(child),
             buffer: Mutex::new(VecDeque::new()),
             tx,
+            done_tx,
         });
 
         // Drain the PTY on a blocking thread: append to the replay buffer and
@@ -156,18 +170,22 @@ impl TerminalManager {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             let chunk = buf[..n].to_vec();
-                            {
-                                let mut b = lock(&session.buffer);
-                                b.extend(chunk.iter().copied());
-                                while b.len() > BUFFER_CAP {
-                                    b.pop_front();
-                                }
+                            // Append to the replay buffer and fan out to attached
+                            // clients while holding the buffer lock, so a client that
+                            // attaches (and subscribes under the same lock) sees each
+                            // chunk in exactly one of {replay, live stream}.
+                            let mut b = lock(&session.buffer);
+                            b.extend(chunk.iter().copied());
+                            while b.len() > BUFFER_CAP {
+                                b.pop_front();
                             }
                             let _ = session.tx.send(chunk);
                         }
                     }
                 }
                 lock(&session.meta).alive = false;
+                // Wake attached sockets so they close instead of hanging on a dead shell.
+                let _ = session.done_tx.send(true);
             });
         }
 
@@ -206,6 +224,9 @@ impl TerminalManager {
     pub fn kill(&self, id: &str) -> bool {
         if let Some(s) = lock(&self.inner).remove(id) {
             let _ = lock(&s.child).kill();
+            // Wake attached sockets so they close (the reader thread's EOF signal can
+            // race or be missed if the child was killed before producing EOF).
+            let _ = s.done_tx.send(true);
             true
         } else {
             false
@@ -235,11 +256,23 @@ pub async fn terminal_create(
     State(state): State<AppState>,
     Json(body): Json<CreateTerminalBody>,
 ) -> ApiResult<Json<TerminalMeta>> {
-    let cwd = RemoteControlManager::resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
-    let meta = state
-        .terminals
-        .create(cwd, body.name, body.command, body.cols, body.rows)?;
-    Ok(Json(meta))
+    let terminals = state.terminals.clone();
+    // openpty + fork/exec and the project-allowlist load are blocking — run them off
+    // the async executor so a slow spawn doesn't stall a tokio worker thread.
+    crate::routes::blocking(move || {
+        let registered: Vec<String> = workbench_core::config::load_projects()?
+            .into_iter()
+            .map(|p| p.path)
+            .collect();
+        let cwd = RemoteControlManager::resolve_cwd(
+            &body.project_path,
+            body.worktree_path.as_deref(),
+            &registered,
+        )?;
+        terminals.create(cwd, body.name, body.command, body.cols, body.rows)
+    })
+    .await
+    .map(Json)
 }
 
 pub async fn terminal_kill(
@@ -259,11 +292,35 @@ enum ClientMsg {
     Resize { c: u16, r: u16 },
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WsAuthQuery {
+    /// Browser WebSocket can't send an Authorization header, so the bearer token
+    /// (when the server is started with one) is carried here instead.
+    token: Option<String>,
+}
+
 pub async fn terminal_attach(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
+    Query(auth): Query<WsAuthQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
+    // This route is exempt from the global bearer middleware (a browser WebSocket
+    // can't set an Authorization header), so authenticate the ?token= query param
+    // here — same token, same constant-time compare as every other route.
+    if let Some(expected) = state.token.as_deref() {
+        let ok = auth
+            .token
+            .as_deref()
+            .is_some_and(|t| crate::auth::constant_time_eq(t.as_bytes(), expected.as_bytes()));
+        if !ok {
+            return Err(ApiError {
+                status: StatusCode::UNAUTHORIZED,
+                message: "unauthorized".to_string(),
+            });
+        }
+    }
+
     let session = state
         .terminals
         .get(&id)
@@ -272,15 +329,37 @@ pub async fn terminal_attach(
 }
 
 async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
+    // Subscribe and snapshot the scrollback under the same buffer lock the reader
+    // holds when it appends+broadcasts. This makes the handoff atomic: output
+    // produced during attach can't slip between the snapshot and the subscription
+    // (which would drop it) nor land in both (which would duplicate it).
+    let (replay, mut rx) = {
+        let buffer = lock(&session.buffer);
+        let rx = session.tx.subscribe();
+        let replay: Vec<u8> = buffer.iter().copied().collect();
+        (replay, rx)
+    };
+
     // Replay scrollback so a resumed terminal shows its history.
-    let replay: Vec<u8> = lock(&session.buffer).iter().copied().collect();
     if !replay.is_empty() && socket.send(Message::Binary(replay)).await.is_err() {
         return;
     }
 
-    let mut rx = session.tx.subscribe();
+    // Watch for shell-exit / kill so we close the socket instead of hanging: the
+    // broadcast `tx` lives inside `session`, so `rx.recv()` can't see `Closed` here.
+    let mut done_rx = session.done_tx.subscribe();
+    if *done_rx.borrow_and_update() {
+        // Already dead: history is replayed; close so the client sees it ended.
+        return;
+    }
+
     loop {
         tokio::select! {
+            _ = done_rx.changed() => {
+                // Shell exited or the session was killed → close the socket so the
+                // client surfaces the end of the session instead of freezing.
+                break;
+            }
             out = rx.recv() => {
                 match out {
                     Ok(bytes) => {

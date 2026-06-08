@@ -18,8 +18,18 @@ export class ControlPlaneStore {
 	loading = $state(false);
 	error = $state<string | null>(null);
 
+	/** Active spawn-status poll intervals, so they can be cancelled on dispose. */
+	private pollTimers = new Set<ReturnType<typeof setInterval>>();
+
 	constructor(transport: ControlPlaneTransport) {
 		this.transport = transport;
+	}
+
+	/** Stop all background polling. Call when the store is no longer used (e.g. the
+	 *  remote instance owning it is removed) so timers don't keep hitting the server. */
+	dispose() {
+		for (const t of this.pollTimers) clearInterval(t);
+		this.pollTimers.clear();
 	}
 
 	private async run<T>(fn: () => Promise<T>): Promise<T | undefined> {
@@ -76,8 +86,12 @@ export class ControlPlaneStore {
 			let tries = 0;
 			const poll = setInterval(() => {
 				void this.refreshSessions();
-				if (++tries >= 5) clearInterval(poll);
+				if (++tries >= 5) {
+					clearInterval(poll);
+					this.pollTimers.delete(poll);
+				}
 			}, 2000);
+			this.pollTimers.add(poll);
 		}
 		return session;
 	}

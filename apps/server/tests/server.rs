@@ -41,7 +41,11 @@ async fn health_sync_and_validation() {
     assert_eq!(health.text().await.unwrap(), "ok");
 
     // settings sync is a deliberate 501 seam.
-    let sync = http.put(format!("{base}/settings/sync")).send().await.unwrap();
+    let sync = http
+        .put(format!("{base}/settings/sync"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(sync.status(), 501);
 
     // empty projectPath is a client error.
@@ -63,7 +67,11 @@ async fn auth_gate() {
 
     // /health is exempt even when a token is configured.
     assert_eq!(
-        http.get(format!("{base}/health")).send().await.unwrap().status(),
+        http.get(format!("{base}/health"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
         200
     );
 
@@ -109,10 +117,19 @@ async fn spawn_list_kill_cycle() {
     let fake = write_fake_claude(tmp.path());
     std::env::set_var("WORKBENCH_CLAUDE_BIN", &fake);
 
+    // Register tmp as a Workbench project so the spawn cwd allowlist accepts it.
+    let cfg = tempfile::tempdir().unwrap();
+    std::fs::write(
+        cfg.path().join("projects.json"),
+        json!({ "projects": [{ "name": "test", "path": tmp.path() }] }).to_string(),
+    )
+    .unwrap();
+    std::env::set_var("WORKBENCH_CONFIG_DIR", cfg.path());
+
     let (handle, base) = start(None).await;
     let http = reqwest::Client::new();
 
-    // Spawn in the tempdir (a valid project path).
+    // Spawn in the registered project directory.
     let spawned: Value = http
         .post(format!("{base}/remote/spawn"))
         .json(&json!({ "projectPath": tmp.path(), "name": "test" }))
@@ -168,6 +185,7 @@ async fn spawn_list_kill_cycle() {
 
     handle.stop().await;
     std::env::remove_var("WORKBENCH_CLAUDE_BIN");
+    std::env::remove_var("WORKBENCH_CONFIG_DIR");
 }
 
 #[cfg(unix)]

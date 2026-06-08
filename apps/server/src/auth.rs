@@ -17,9 +17,11 @@ pub async fn require_bearer(
     };
 
     // The web client page and liveness check load without a token; the page's
-    // own API calls still carry the bearer token.
+    // own API calls still carry the bearer token. The terminal WebSocket upgrade
+    // is also exempt here because a browser WebSocket can't send an Authorization
+    // header — `terminal_attach` authenticates its `?token=` query param itself.
     let path = request.uri().path();
-    if path == "/" || path == "/health" {
+    if path == "/" || path == "/health" || is_terminal_ws_path(path) {
         return Ok(next.run(request).await);
     }
 
@@ -37,9 +39,16 @@ pub async fn require_bearer(
     }
 }
 
+/// `/remote/terminals/{id}/ws` — the terminal WebSocket upgrade. Exempt from the
+/// header gate (browser WS can't send `Authorization`); `terminal_attach` checks
+/// the `?token=` query param instead.
+fn is_terminal_ws_path(path: &str) -> bool {
+    path.starts_with("/remote/terminals/") && path.ends_with("/ws")
+}
+
 /// Length-independent constant-time comparison to avoid leaking the token via
 /// timing.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
