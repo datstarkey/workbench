@@ -65,7 +65,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          cd src-tauri
+          cd apps/desktop/src-tauri
           sed -i '' "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" tauri.conf.json
           echo "Set tauri.conf.json version to ${VERSION}"
 
@@ -74,9 +74,9 @@ jobs:
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
-          $conf = Get-Content src-tauri/tauri.conf.json -Raw
+          $conf = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw
           $conf = $conf -replace '"version": ".*?"', "`"version`": `"$version`""
-          Set-Content src-tauri/tauri.conf.json -Value $conf -NoNewline
+          Set-Content apps/desktop/src-tauri/tauri.conf.json -Value $conf -NoNewline
           Write-Host "Set tauri.conf.json version to $version"
 
       - uses: tauri-apps/tauri-action@v0
@@ -85,6 +85,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          projectPath: apps/desktop
           tagName: v__VERSION__
           releaseName: 'Workbench v__VERSION__'
           releaseBody: '${{ needs.changelog.outputs.body }}'

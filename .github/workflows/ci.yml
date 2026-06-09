@@ -39,7 +39,7 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop/src-tauri
 
       - name: Install system dependencies
         run: |
@@ -48,7 +48,7 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test
-        working-directory: src-tauri
+        working-directory: apps/desktop/src-tauri
 
   rust-windows:
     runs-on: windows-latest
@@ -60,8 +60,8 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop/src-tauri
 
       - name: Check Rust compiles on Windows
         run: cargo test --no-run
-        working-directory: src-tauri
+        working-directory: apps/desktop/src-tauri
