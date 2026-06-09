@@ -33,8 +33,7 @@ function isPrintable(ch: string): boolean {
 /** True if every char of `s` is printable (space included), none control. */
 function allPrintable(s: string): boolean {
 	for (const ch of s) {
-		const code = ch.charCodeAt(0);
-		if (code < 0x20 || code === 0x7f) return false;
+		if (!isPrintable(ch)) return false;
 	}
 	return true;
 }

@@ -530,12 +530,14 @@
 			container.addEventListener('copy', onCopy);
 			// A real paste legitimately delivers a multi-char run; record its
 			// timestamp so the duplicate-flush guard stands down briefly and never
-			// drops pasted text.
+			// drops pasted text. Capture phase so this runs on `container` BEFORE
+			// xterm's textarea handler emits the pasted text via onData — otherwise
+			// the guard would evaluate the paste with a stale timestamp.
 			const onPaste = () => inputDedup.notePaste(performance.now());
-			container.addEventListener('paste', onPaste);
+			container.addEventListener('paste', onPaste, true);
 			removeCopyListener = () => {
 				container.removeEventListener('copy', onCopy);
-				container.removeEventListener('paste', onPaste);
+				container.removeEventListener('paste', onPaste, true);
 			};
 
 			intersectionObserver = new IntersectionObserver(
