@@ -1,228 +1,209 @@
 /**
- * TerminalConnection — loopback WebSocket client for xterm panes.
+ * WS-backed terminal connection for xterm panes.
  *
- * Each xterm pane owns one TerminalConnection instance. On connect():
- *  1. Waits for the embedded server to be listening (boot-order gate via a
- *     module-level cached promise over server_status).
- *  2. POSTs /remote/terminals to create (or re-attach to) a server PTY.
- *  3. Opens the WS, sends an initial resize frame, then wires data/exit callbacks.
+ * Each xterm pane owns one `TerminalConnection`. It talks to the embedded
+ * server's TerminalManager via the same wire protocol as the mobile client:
+ *   client → server  text JSON  {"t":"i","d":…} input
+ *                               {"t":"r","c":…,"r":…} resize
+ *   server → client  binary     raw PTY bytes
+ *                    text JSON  {"t":"takeover"} or {"t":"exit","code":N}
  *
- * Wire protocol (same as mobile Terminal.svelte):
- *  - client → server TEXT: {"t":"i","d":"..."} input
- *  - client → server TEXT: {"t":"r","c":N,"r":N} resize
- *  - server → client BINARY: raw PTY bytes
- *  - server → client TEXT: {"t":"takeover"} (kicked by another client)
- *  - server → client TEXT: {"t":"exit","code":N} (shell exited)
+ * Boot sequence
+ * ─────────────
+ * 1. `connect()` calls `serverStatus()` to get the loopback address/token.
+ * 2. POST /remote/terminals  → receives { id, …terminalMeta }.
+ * 3. Opens WebSocket to ws://<addr>/remote/terminals/<id>/ws[?token=…].
+ * 4. On WS `open` sends an initial resize so the PTY starts at the correct size.
  *
- * One ordered WS connection preserves input order — no per-session write-chain
- * needed (unlike the old IPC path). dispose() detaches (shell survives for
- * reload-survival); the caller must call deleteTerminal() explicitly for user
- * close / tab close.
+ * Single-attach lease
+ * ───────────────────
+ * The server enforces single-attach: if a second client attaches, the first
+ * receives a {"t":"takeover"} frame then its socket is closed. `onExit` is
+ * fired with `{ reason: 'taken_over' }` in that case.
+ *
+ * PTY persistence
+ * ───────────────
+ * The PTY lives in the server process. Closing the WS (navigate away, webview
+ * reload) just detaches — the shell keeps running and can be resumed.
  */
 
-import { invoke } from '@tauri-apps/api/core';
-import { terminalWsUrl } from '@workbench/transport';
+import { serverStatus } from '$lib/server-mode';
 
-// ── boot-order gate ────────────────────────────────────────────────────────
-// The embedded server must be listening before the first terminal attaches.
-// We poll server_status (via Tauri IPC) until running=true, then cache the
-// result so subsequent panes don't re-poll.
+/** Payload delivered to the `onData` callback. */
+export type TerminalDataPayload = Uint8Array;
 
-interface ServerStatus {
-	running: boolean;
-	address: string | null;
+/** Reason a terminal session ended from the client's perspective. */
+export type ExitReason = 'ended' | 'taken_over';
+
+export interface TerminalExitInfo {
+	reason: ExitReason;
+	/** Exit code from the shell; present only when `reason === 'ended'`. */
+	code?: number;
 }
 
-const POLL_INTERVAL_MS = 100;
-const POLL_TIMEOUT_MS = 10_000;
-
-let serverReadyPromise: Promise<{ address: string; token: string | null }> | null = null;
-
-/** Returns the loopback server address once the embedded server is running. */
-function waitForServer(): Promise<{ address: string; token: string | null }> {
-	if (!serverReadyPromise) {
-		serverReadyPromise = pollUntilReady();
-	}
-	return serverReadyPromise;
+export interface ConnectOptions {
+	/** Project or worktree path the PTY should `cd` to. */
+	projectPath: string;
+	/** Override with the worktree path when applicable. */
+	worktreePath?: string;
+	/** Display name shown in terminal lists. */
+	name?: string;
+	/** Optional startup command to run after the shell starts (e.g. `claude`). */
+	command?: string;
+	/** Initial terminal width in columns. */
+	cols: number;
+	/** Initial terminal height in rows. */
+	rows: number;
 }
 
-async function pollUntilReady(): Promise<{ address: string; token: string | null }> {
-	const deadline = Date.now() + POLL_TIMEOUT_MS;
-	while (Date.now() < deadline) {
-		try {
-			const status = await invoke<ServerStatus>('server_status');
-			if (status.running && status.address) {
-				// Loopback connections never need a token (unauthenticated on 127.0.0.1).
-				return { address: `http://${status.address}`, token: null };
-			}
-		} catch {
-			// Tauri not ready yet — keep polling.
-		}
-		await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
-	}
-	throw new Error('[TerminalConnection] Timed out waiting for embedded server to start');
-}
-
-// ── types ──────────────────────────────────────────────────────────────────
-
-export interface TerminalMeta {
+/** Server-side terminal metadata returned by POST /remote/terminals. */
+interface TerminalMeta {
 	id: string;
-	name: string | null;
+	name?: string;
 	cwd: string;
 	createdAt: number;
 	alive: boolean;
 }
 
-export interface CreateServerTerminalBody {
-	projectPath: string;
-	worktreePath?: string;
-	name?: string;
-	command?: string;
-	cols: number;
-	rows: number;
-}
-
-export type ExitReason = 'taken_over' | 'ended';
-
-export interface ExitEvent {
-	reason: ExitReason;
-	/** Exit code from the shell, if available. */
-	code?: number;
-}
-
-// ── TerminalConnection ─────────────────────────────────────────────────────
-
+/**
+ * Manages a single WebSocket connection to an embedded-server terminal session.
+ *
+ * Lifecycle:
+ *   1. Construct with `onData` / `onExit` callbacks.
+ *   2. Call `connect(opts)` — async, resolves once the WS is open and the
+ *      initial resize frame has been sent.
+ *   3. Use `write()` / `resize()` to drive the PTY.
+ *   4. Call `dispose()` to close the WS (detach — PTY keeps running).
+ *   5. Listen for `onExit` to react to shell-exit / takeover.
+ */
 export class TerminalConnection {
-	/** Server-assigned terminal ID. Set after connect() resolves. */
-	serverTerminalId: string | null = null;
-
-	onData: ((bytes: Uint8Array) => void) | null = null;
-	onExit: ((event: ExitEvent) => void) | null = null;
+	/** Server-assigned terminal id, available after `connect()` resolves. */
+	terminalId: string | null = null;
 
 	private ws: WebSocket | null = null;
-	private disposed = false;
-	/** Tracks whether we received a control frame before close (to distinguish takeover vs end). */
-	private exitControlFrame: ExitEvent | null = null;
-
-	/** @param paneId Client-side pane identity (uid), passed to the server for hook correlation. */
-	constructor(private readonly paneId: string) {}
+	private readonly onData: (data: TerminalDataPayload) => void;
+	private readonly onExit: (info: TerminalExitInfo) => void;
+	private readonly onReset?: () => void;
 
 	/**
-	 * Connect to the embedded server:
-	 * 1. Wait for the server to be ready.
-	 * 2. POST /remote/terminals to create a PTY (or pass existingId to re-attach).
-	 * 3. Open the WS and send an initial resize frame.
+	 * @param onData  Called with raw PTY output bytes as they arrive.
+	 * @param onExit  Called when the session ends or is taken over.
+	 * @param onReset Called before scrollback replay (used to clear xterm's
+	 *                viewport so the replay doesn't double-print old output).
 	 */
-	async connect(body: CreateServerTerminalBody, existingId?: string): Promise<void> {
-		if (this.disposed) return;
+	constructor(
+		onData: (data: TerminalDataPayload) => void,
+		onExit: (info: TerminalExitInfo) => void,
+		onReset?: () => void
+	) {
+		this.onData = onData;
+		this.onExit = onExit;
+		this.onReset = onReset;
+	}
 
-		const { address, token } = await waitForServer();
-
-		let meta: TerminalMeta;
-		if (existingId) {
-			// Try to re-attach to the surviving server terminal.
-			try {
-				const resp = await fetch(`${address}/remote/terminals/${existingId}`);
-				if (resp.ok) {
-					meta = (await resp.json()) as TerminalMeta;
-				} else {
-					// Gone — fall through to create.
-					meta = await this.createTerminal(address, token, body);
-				}
-			} catch {
-				meta = await this.createTerminal(address, token, body);
-			}
-		} else {
-			meta = await this.createTerminal(address, token, body);
+	/**
+	 * Create a server-side PTY and open the WebSocket.
+	 *
+	 * Resolves once the socket is open and the initial resize frame has been
+	 * sent.  Rejects if the server is not running or the POST fails.
+	 */
+	async connect(opts: ConnectOptions): Promise<void> {
+		const status = await serverStatus();
+		if (!status.running || !status.address) {
+			throw new Error('embedded server is not running');
 		}
 
-		if (this.disposed) return;
-		this.serverTerminalId = meta.id;
+		const baseUrl = `http://${status.address}`;
+		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+		// Token is optional; only loopback connections are used here but we still
+		// forward it in case the embedded server was started with one.
+		const tokenQuery =
+			(status as { token?: string }).token ? `?token=${(status as { token?: string }).token}` : '';
 
-		const url = terminalWsUrl(address, meta.id, token ?? undefined);
-		const ws = new WebSocket(url);
+		// Create the terminal on the server.
+		const resp = await fetch(`${baseUrl}/remote/terminals`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({
+				projectPath: opts.projectPath,
+				worktreePath: opts.worktreePath ?? null,
+				name: opts.name ?? null,
+				command: opts.command ?? null,
+				cols: opts.cols,
+				rows: opts.rows
+			})
+		});
+		if (!resp.ok) {
+			throw new Error(`POST /remote/terminals failed: ${resp.status}`);
+		}
+
+		const meta: TerminalMeta = await resp.json();
+		this.terminalId = meta.id;
+
+		// The first binary frame from the server is scrollback replay.  Call
+		// onReset() (which clears the xterm viewport) before that frame arrives
+		// so old output isn't duplicated.
+		let firstFrame = true;
+
+		// Open the WebSocket attach endpoint.
+		const wsUrl = `ws://${status.address}/remote/terminals/${meta.id}/ws${tokenQuery}`;
+		const ws = new WebSocket(wsUrl);
 		ws.binaryType = 'arraybuffer';
 		this.ws = ws;
 
-		ws.onopen = () => {
-			if (this.disposed) {
-				ws.close();
-				return;
-			}
-			// Send initial resize so the server PTY matches xterm dimensions.
-			this.resize(body.cols, body.rows);
-		};
+		return new Promise<void>((resolve, reject) => {
+			ws.onopen = () => {
+				// Send an initial resize so the PTY starts at the correct dimensions.
+				ws.send(JSON.stringify({ t: 'r', c: opts.cols, r: opts.rows }));
+				resolve();
+			};
 
-		ws.onmessage = (event) => {
-			if (this.disposed) return;
-			if (event.data instanceof ArrayBuffer) {
-				// Binary frame: raw PTY bytes
-				this.onData?.(new Uint8Array(event.data));
-			} else if (typeof event.data === 'string') {
-				// Text control frame
-				try {
-					const msg = JSON.parse(event.data) as { t?: string; code?: number };
-					if (msg.t === 'takeover') {
-						this.exitControlFrame = { reason: 'taken_over' };
-					} else if (msg.t === 'exit') {
-						this.exitControlFrame = { reason: 'ended', code: msg.code };
+			ws.onerror = () => {
+				reject(new Error(`WebSocket error connecting to ${wsUrl}`));
+			};
+
+			ws.onmessage = (event: MessageEvent) => {
+				if (event.data instanceof ArrayBuffer) {
+					// Raw PTY output — call onReset before the first (replay) frame.
+					if (firstFrame) {
+						firstFrame = false;
+						this.onReset?.();
 					}
-				} catch {
-					// Ignore malformed text frames.
+					this.onData(new Uint8Array(event.data));
+				} else if (typeof event.data === 'string') {
+					try {
+						const msg = JSON.parse(event.data) as { t: string; code?: number };
+						if (msg.t === 'takeover') {
+							this.onExit({ reason: 'taken_over' });
+						} else if (msg.t === 'exit') {
+							this.onExit({ reason: 'ended', code: msg.code });
+						}
+					} catch {
+						// Ignore malformed text frames.
+					}
 				}
-			}
-		};
+			};
 
-		ws.onclose = () => {
-			if (this.disposed) return;
-			const event = this.exitControlFrame ?? { reason: 'ended' as const };
-			this.onExit?.(event);
-		};
-
-		ws.onerror = () => {
-			// onclose will fire after onerror — let it handle the exit signal.
-		};
-	}
-
-	private async createTerminal(
-		address: string,
-		token: string | null,
-		body: CreateServerTerminalBody
-	): Promise<TerminalMeta> {
-		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		if (token) headers['Authorization'] = `Bearer ${token}`;
-
-		const payload = {
-			projectPath: body.projectPath,
-			...(body.worktreePath ? { worktreePath: body.worktreePath } : {}),
-			...(body.name ? { name: body.name } : {}),
-			...(body.command ? { command: body.command } : {}),
-			cols: body.cols,
-			rows: body.rows,
-			// Pass paneId so the hook bridge can correlate PTY events to workspace panes.
-			paneId: this.paneId
-		};
-
-		const resp = await fetch(`${address}/remote/terminals`, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(payload)
+			ws.onclose = () => {
+				// Normal WS close (detach / shell exited) — fire onExit so the
+				// pane surfaces the end-of-session indicator.
+				this.onExit({ reason: 'ended' });
+			};
 		});
-		if (!resp.ok) {
-			const text = await resp.text().catch(() => resp.statusText);
-			throw new Error(`[TerminalConnection] POST /remote/terminals failed: ${text}`);
-		}
-		return (await resp.json()) as TerminalMeta;
 	}
 
-	/** Send input bytes to the PTY. */
+	/**
+	 * Send PTY input.  No-op if the socket is not OPEN.
+	 */
 	write(data: string): void {
 		if (this.ws?.readyState === WebSocket.OPEN) {
 			this.ws.send(JSON.stringify({ t: 'i', d: data }));
 		}
 	}
 
-	/** Notify the server PTY of a resize. */
+	/**
+	 * Send a terminal resize.  No-op if the socket is not OPEN.
+	 */
 	resize(cols: number, rows: number): void {
 		if (this.ws?.readyState === WebSocket.OPEN) {
 			this.ws.send(JSON.stringify({ t: 'r', c: cols, r: rows }));
@@ -230,53 +211,12 @@ export class TerminalConnection {
 	}
 
 	/**
-	 * Detach (close the WS). The server PTY keeps running — the session survives
-	 * a webview reload and can be re-attached. To permanently kill a terminal, call
-	 * deleteTerminal() separately.
+	 * Detach (close the WebSocket).  The PTY keeps running on the server.
 	 */
 	dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.onData = null;
-		this.onExit = null;
-		if (this.ws) {
-			this.ws.onmessage = null;
-			this.ws.onclose = null;
-			this.ws.onerror = null;
+		if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
 			this.ws.close();
-			this.ws = null;
 		}
+		this.ws = null;
 	}
-}
-
-/**
- * List all live server terminals. Used by WorkspaceStore for reload-survival
- * reconciliation on startup.
- */
-export async function listServerTerminals(): Promise<TerminalMeta[]> {
-	const { address, token } = await waitForServer();
-	const headers: Record<string, string> = {};
-	if (token) headers['Authorization'] = `Bearer ${token}`;
-	const resp = await fetch(`${address}/remote/terminals`, { headers });
-	if (!resp.ok) return [];
-	return (await resp.json()) as TerminalMeta[];
-}
-
-/**
- * Delete a server terminal (kills the PTY). Called only on explicit user close.
- */
-export async function deleteServerTerminal(id: string): Promise<void> {
-	try {
-		const { address, token } = await waitForServer();
-		const headers: Record<string, string> = {};
-		if (token) headers['Authorization'] = `Bearer ${token}`;
-		await fetch(`${address}/remote/terminals/${id}`, { method: 'DELETE', headers });
-	} catch {
-		// Best-effort: the server may have already cleaned up.
-	}
-}
-
-/** Invalidate the server-ready cache (e.g. when the server is restarted). */
-export function resetServerReadyCache(): void {
-	serverReadyPromise = null;
 }

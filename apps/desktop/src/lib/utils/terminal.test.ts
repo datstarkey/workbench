@@ -1,59 +1,178 @@
 /**
- * terminal.ts now exports:
- *  - Integration checks (checkClaudeIntegration etc.)
- *  - Native SwiftTerm IPC wrappers (createNativeTerminal etc.)
- *  - onSessionTerminalExit — kept for NativeTerminalPane (PtyManager IPC path)
+ * terminal.ts — unit tests.
  *
- * The xterm IPC layer (createTerminal / writeTerminal / resizeTerminal /
- * killTerminal / onTerminalData / onSessionTerminalData / onTerminalExit /
- * cleanupSessionInput / sessionWriteChains) has been REMOVED. xterm panes now
- * use TerminalConnection (loopback WebSocket to the embedded server).
+ * The old terminal:data / terminal:exit Tauri event-routing tests have been
+ * removed: the singleton fan-out registry (`onSessionTerminalData`,
+ * `onTerminalData`) is only used by the IPC xterm path which is being retired
+ * in favour of direct WebSocket connections (see TerminalConnection).
+ *
+ * What remains testable here:
+ *   - Native terminal IPC wrappers (createNativeTerminal, resizeNativeTerminal,
+ *     etc.) — thin `invoke` shims whose correctness is worth a smoke test.
+ *   - Integration-status helpers (checkClaudeIntegration, applyClaudeIntegration)
+ *     which are unrelated to the xterm path.
+ *
+ * xterm WS contract tests live in:
+ *   apps/desktop/src/lib/features/terminal/terminal-connection.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearListeners, listenSpy } from '../../test/tauri-mocks';
 
-describe('terminal.ts — contract verification', () => {
-	beforeEach(() => {
-		vi.resetModules();
-		clearListeners();
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { invokeSpy, clearInvokeMocks } from '../../test/tauri-mocks';
+
+beforeEach(() => {
+	clearInvokeMocks();
+});
+
+describe('native terminal IPC wrappers', () => {
+	it('createNativeTerminal invokes create_native_terminal with the correct shape', async () => {
+		invokeSpy.mockResolvedValueOnce(undefined);
+		const { createNativeTerminal } = await import('./terminal');
+
+		await createNativeTerminal({
+			sessionId: 'ses-1',
+			projectPath: '/projects/test',
+			shell: '/bin/zsh',
+			x: 0,
+			y: 0,
+			width: 800,
+			height: 600,
+			fontSize: 14
+		});
+
+		expect(invokeSpy).toHaveBeenCalledWith(
+			'create_native_terminal',
+			expect.objectContaining({
+				sessionId: 'ses-1',
+				projectPath: '/projects/test',
+				shell: '/bin/zsh',
+				fontSize: 14,
+				startupCommand: null
+			})
+		);
 	});
 
-	it('exports integration checks and native terminal wrappers', async () => {
-		const mod = await import('./terminal');
-		expect(typeof mod.checkClaudeIntegration).toBe('function');
-		expect(typeof mod.checkCodexIntegration).toBe('function');
-		expect(typeof mod.applyClaudeIntegration).toBe('function');
-		expect(typeof mod.applyCodexIntegration).toBe('function');
-		expect(typeof mod.createNativeTerminal).toBe('function');
-		expect(typeof mod.resizeNativeTerminal).toBe('function');
-		expect(typeof mod.setNativeTerminalVisible).toBe('function');
-		expect(typeof mod.killNativeTerminal).toBe('function');
-		expect(typeof mod.writeNativeTerminal).toBe('function');
-		expect(typeof mod.isNativeTerminalAvailable).toBe('function');
+	it('createNativeTerminal forwards optional startupCommand', async () => {
+		invokeSpy.mockResolvedValueOnce(undefined);
+		const { createNativeTerminal } = await import('./terminal');
+
+		await createNativeTerminal({
+			sessionId: 'ses-2',
+			projectPath: '/projects/test',
+			shell: '/bin/zsh',
+			x: 0,
+			y: 0,
+			width: 800,
+			height: 600,
+			fontSize: 14,
+			startupCommand: 'claude'
+		});
+
+		expect(invokeSpy).toHaveBeenCalledWith(
+			'create_native_terminal',
+			expect.objectContaining({ startupCommand: 'claude' })
+		);
 	});
 
-	it('still exports onSessionTerminalExit for NativeTerminalPane (PtyManager path)', async () => {
-		const mod = await import('./terminal');
-		expect(typeof mod.onSessionTerminalExit).toBe('function');
+	it('resizeNativeTerminal invokes resize_native_terminal', async () => {
+		invokeSpy.mockResolvedValueOnce(undefined);
+		const { resizeNativeTerminal } = await import('./terminal');
+
+		await resizeNativeTerminal('ses-1', 10, 20, 800, 600);
+
+		expect(invokeSpy).toHaveBeenCalledWith('resize_native_terminal', {
+			sessionId: 'ses-1',
+			x: 10,
+			y: 20,
+			width: 800,
+			height: 600
+		});
 	});
 
-	it('registers a single terminal:exit listener regardless of session subscribers', async () => {
-		const { onSessionTerminalExit } = await import('./terminal');
-		await onSessionTerminalExit('native-a', vi.fn());
-		await onSessionTerminalExit('native-b', vi.fn());
-		const exitListenCalls = listenSpy.mock.calls.filter((call) => call[0] === 'terminal:exit');
-		expect(exitListenCalls).toHaveLength(1);
+	it('killNativeTerminal invokes kill_native_terminal', async () => {
+		invokeSpy.mockResolvedValueOnce(undefined);
+		const { killNativeTerminal } = await import('./terminal');
+
+		await killNativeTerminal('ses-1');
+
+		expect(invokeSpy).toHaveBeenCalledWith('kill_native_terminal', { sessionId: 'ses-1' });
 	});
 
-	it('does NOT export the removed xterm IPC functions', async () => {
-		const mod = await import('./terminal');
-		expect((mod as Record<string, unknown>)['createTerminal']).toBeUndefined();
-		expect((mod as Record<string, unknown>)['writeTerminal']).toBeUndefined();
-		expect((mod as Record<string, unknown>)['resizeTerminal']).toBeUndefined();
-		expect((mod as Record<string, unknown>)['killTerminal']).toBeUndefined();
-		expect((mod as Record<string, unknown>)['onTerminalData']).toBeUndefined();
-		expect((mod as Record<string, unknown>)['onSessionTerminalData']).toBeUndefined();
-		expect((mod as Record<string, unknown>)['onTerminalExit']).toBeUndefined();
-		expect((mod as Record<string, unknown>)['cleanupSessionInput']).toBeUndefined();
+	it('setNativeTerminalVisible invokes set_native_terminal_visible', async () => {
+		invokeSpy.mockResolvedValueOnce(undefined);
+		const { setNativeTerminalVisible } = await import('./terminal');
+
+		await setNativeTerminalVisible('ses-1', false);
+
+		expect(invokeSpy).toHaveBeenCalledWith('set_native_terminal_visible', {
+			sessionId: 'ses-1',
+			visible: false
+		});
+	});
+
+	it('writeNativeTerminal invokes write_native_terminal', async () => {
+		invokeSpy.mockResolvedValueOnce(undefined);
+		const { writeNativeTerminal } = await import('./terminal');
+
+		await writeNativeTerminal('ses-1', 'ls\n');
+
+		expect(invokeSpy).toHaveBeenCalledWith('write_native_terminal', {
+			sessionId: 'ses-1',
+			data: 'ls\n'
+		});
+	});
+
+	it('isNativeTerminalAvailable invokes is_native_terminal_available', async () => {
+		invokeSpy.mockResolvedValueOnce(true);
+		const { isNativeTerminalAvailable } = await import('./terminal');
+
+		const result = await isNativeTerminalAvailable();
+
+		expect(invokeSpy).toHaveBeenCalledWith('is_native_terminal_available');
+		expect(result).toBe(true);
 	});
 });
+
+describe('integration-status helpers', () => {
+	it('checkClaudeIntegration invokes check_claude_integration', async () => {
+		invokeSpy.mockResolvedValueOnce({ needsChanges: false, description: 'ok' });
+		const { checkClaudeIntegration } = await import('./terminal');
+
+		const result = await checkClaudeIntegration();
+
+		expect(invokeSpy).toHaveBeenCalledWith('check_claude_integration');
+		expect(result).toEqual({ needsChanges: false, description: 'ok' });
+	});
+
+	it('checkCodexIntegration invokes check_codex_integration', async () => {
+		invokeSpy.mockResolvedValueOnce({ needsChanges: true, description: 'missing' });
+		const { checkCodexIntegration } = await import('./terminal');
+
+		const result = await checkCodexIntegration();
+
+		expect(invokeSpy).toHaveBeenCalledWith('check_codex_integration');
+		expect(result).toEqual({ needsChanges: true, description: 'missing' });
+	});
+
+	it('applyClaudeIntegration invokes apply_claude_integration', async () => {
+		invokeSpy.mockResolvedValueOnce(true);
+		const { applyClaudeIntegration } = await import('./terminal');
+
+		const result = await applyClaudeIntegration();
+
+		expect(invokeSpy).toHaveBeenCalledWith('apply_claude_integration');
+		expect(result).toBe(true);
+	});
+
+	it('applyCodexIntegration invokes apply_codex_integration', async () => {
+		invokeSpy.mockResolvedValueOnce(false);
+		const { applyCodexIntegration } = await import('./terminal');
+
+		const result = await applyCodexIntegration();
+
+		expect(invokeSpy).toHaveBeenCalledWith('apply_codex_integration');
+		expect(result).toBe(false);
+	});
+});
+
+// Suppress the unused-import lint warning: vi is used in beforeEach/it hooks
+void vi;
