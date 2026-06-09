@@ -1,0 +1,31 @@
+{
+	"name": "@workbench/transport",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Control-plane transport abstraction: TauriTransport (local IPC) and HttpTransport (remote workbench-server).",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"check": "tsc --noEmit -p tsconfig.json",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@workbench/types": "workspace:*"
+	},
+	"peerDependencies": {
+		"@tauri-apps/api": "^2"
+	},
+	"peerDependenciesMeta": {
+		"@tauri-apps/api": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"@tauri-apps/api": "catalog:",
+		"@types/node": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}

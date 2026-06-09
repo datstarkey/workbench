@@ -1,0 +1,18 @@
+{
+	"extends": "@tsconfig/svelte/tsconfig.json",
+	"compilerOptions": {
+		"target": "ES2021",
+		"module": "ESNext",
+		"resolveJsonModule": true,
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"paths": {
+			"$lib/*": ["./src/lib/*"],
+			"$components/*": ["./src/lib/components/*"],
+			"$features/*": ["./src/lib/features/*"],
+			"$stores/*": ["./src/lib/stores/*"],
+			"$types/*": ["../../packages/types/src/*"]
+		}
+	},
+	"include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
+}

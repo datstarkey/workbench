@@ -1,0 +1,29 @@
+{
+	"name": "@workbench/ui",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Shared shadcn-svelte UI primitives + cn() utility.",
+	"svelte": "./src/utils.ts",
+	"exports": {
+		".": {
+			"svelte": "./src/utils.ts",
+			"default": "./src/utils.ts"
+		},
+		"./*": {
+			"svelte": "./src/ui/*/index.ts",
+			"default": "./src/ui/*/index.ts"
+		}
+	},
+	"dependencies": {
+		"@lucide/svelte": "catalog:",
+		"bits-ui": "catalog:",
+		"clsx": "catalog:",
+		"paneforge": "^1.0.2",
+		"tailwind-merge": "catalog:",
+		"tailwind-variants": "catalog:"
+	},
+	"peerDependencies": {
+		"svelte": "^5"
+	}
+}

@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["apps/desktop/src-tauri", "apps/mobile/src-tauri", "apps/server", "crates/workbench-core"]
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+# Shared across workbench-core / desktop / server (Tauri deps are NOT here —
+# they live only in apps/desktop/src-tauri so core and server never pull tauri).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+dirs = "6"
+notify = "7"
+notify-debouncer-mini = "0.5"
+reqwest = { version = "0.12", features = ["json"] }
+chrono = "0.4"
+portable-pty = "0.8"
+libc = "0.2"
+tempfile = "3"
+# server-only
+tokio = { version = "1", default-features = false }
+axum = "0.7"
+clap = { version = "4", features = ["derive", "env"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+uuid = { version = "1", features = ["v4"] }
+workbench-core = { path = "crates/workbench-core" }

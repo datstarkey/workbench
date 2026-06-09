@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import '@workbench/theme/theme.css';
+
+/* OverlayScrollbars theme — floating auto-hiding bars matching wb chrome tokens.
+   Applied via the `overlayScrollbars()` attachment (src/lib/utils/overlay-scrollbars.ts).
+   Desktop-only: mobile has no overlay-scrollbars dependency. */
+.os-theme-wb {
+	--os-size: 10px;
+	--os-padding-perpendicular: 2px;
+	--os-padding-axis: 2px;
+	--os-track-border-radius: 9999px;
+	--os-handle-border-radius: 9999px;
+	--os-handle-min-size: 24px;
+	--os-handle-interactive-area-offset: 4px;
+	--os-track-bg: transparent;
+	--os-track-bg-hover: transparent;
+	--os-track-bg-active: transparent;
+	--os-handle-bg: var(--wb-ink-soft);
+	--os-handle-bg-hover: var(--wb-ink-mute);
+	--os-handle-bg-active: var(--wb-ink-mute);
+}
+
+/* ---- Workbench Pro chrome animations ---- */
+@keyframes wb-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.35;
+	}
+}
+.wb-pulse {
+	animation: wb-pulse 1.4s ease-in-out infinite;
+}

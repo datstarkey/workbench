@@ -1,0 +1,21 @@
+[package]
+name = "workbench-core"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+description = "Shared Workbench logic: config, git/worktree, sessions, settings, types"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
+log = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
