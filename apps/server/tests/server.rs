@@ -529,3 +529,74 @@ async fn terminal_respects_cap() {
 
     handle.stop().await;
 }
+
+/// Single-attacher lease: when a second client attaches to a terminal that
+/// already has an active attacher, the FIRST socket must receive a takeover
+/// control frame (`{"type":"takeover"}`) and then be closed.
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_single_attacher_takeover() {
+    use futures_util::StreamExt;
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+
+    let (handle, base) = start(None).await;
+    let addr = handle.addr().to_string();
+    let http = reqwest::Client::new();
+
+    // Create a terminal.
+    let meta: Value = http
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({ "projectPath": tmp.path() }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = meta["id"].as_str().expect("terminal id").to_string();
+
+    // First attacher connects.
+    let (mut ws_a, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
+            .await
+            .expect("first WS should connect");
+
+    // Second attacher connects — this triggers the lease takeover.
+    let (_ws_b, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
+            .await
+            .expect("second WS should connect");
+
+    // The FIRST socket must receive a takeover frame and then close. We scan all
+    // messages until the connection closes, looking for a text frame that
+    // deserialises to `{"type":"takeover"}`.
+    let mut got_takeover = false;
+    let kicked = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(msg)) = ws_a.next().await {
+            match msg {
+                tokio_tungstenite::tungstenite::Message::Text(t) => {
+                    let v: Value = serde_json::from_str(&t).unwrap_or_default();
+                    if v["type"] == "takeover" {
+                        got_takeover = true;
+                    }
+                }
+                tokio_tungstenite::tungstenite::Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        kicked.is_ok(),
+        "first attacher must be closed after takeover, not hang"
+    );
+    assert!(
+        got_takeover,
+        "first attacher must receive a {{\"type\":\"takeover\"}} control frame"
+    );
+
+    handle.stop().await;
+}
