@@ -16,6 +16,8 @@ import { suppressLayout } from '$features/terminal/layout-guard';
 interface WorkspaceSnapshot {
 	workspaces: ProjectWorkspace[];
 	selectedId: string | null;
+	/** Maps pane.id → server terminal ID for reload-survival re-attach. */
+	serverTerminalIds?: Record<string, string>;
 }
 
 interface AddAISessionOptions {
@@ -26,6 +28,12 @@ interface AddAISessionOptions {
 export class WorkspaceStore {
 	workspaces: ProjectWorkspace[] = $state([]);
 	private _selectedId: string | null = $state(null);
+
+	/**
+	 * Maps pane.id → server-assigned terminal ID. Persisted in the workspace
+	 * snapshot so panes can re-attach to surviving server PTYs after a reload.
+	 */
+	private serverTerminalIds: Record<string, string> = $state({});
 
 	private settingsStore = getWorkbenchSettingsStore();
 	private gitStore = getGitStore();
@@ -149,7 +157,8 @@ export class WorkspaceStore {
 	private persist() {
 		const snapshot: WorkspaceSnapshot = {
 			workspaces: this.workspaces,
-			selectedId: this.selectedId
+			selectedId: this.selectedId,
+			serverTerminalIds: this.serverTerminalIds
 		};
 		invoke('save_workspaces', { snapshot }).catch((e) => {
 			console.error('[WorkspaceStore] Failed to persist:', e);
@@ -171,9 +180,42 @@ export class WorkspaceStore {
 			if (snapshot.workspaces.length > 0) {
 				this.workspaces = snapshot.workspaces;
 				this.selectedId = snapshot.selectedId;
+				this.serverTerminalIds = snapshot.serverTerminalIds ?? {};
 			}
 		} catch (e) {
 			console.warn('[WorkspaceStore] No saved workspaces:', e);
+		}
+	}
+
+	/**
+	 * Return the persisted server terminal ID for a pane, if any.
+	 * TerminalPane uses this to attempt re-attach before creating a new PTY.
+	 */
+	getServerTerminalId(paneId: string): string | undefined {
+		return this.serverTerminalIds[paneId];
+	}
+
+	/**
+	 * Called by TerminalPane once the server PTY is assigned (create or re-attach).
+	 * Persists the mapping so a webview reload can re-attach to the same PTY.
+	 */
+	setServerTerminalId(paneId: string, serverTerminalId: string): void {
+		if (this.serverTerminalIds[paneId] === serverTerminalId) return;
+		this.serverTerminalIds = { ...this.serverTerminalIds, [paneId]: serverTerminalId };
+		this.persist();
+	}
+
+	/**
+	 * Remove server terminal ID entries for panes that no longer exist.
+	 * Called after reconcile to keep the map clean.
+	 */
+	pruneServerTerminalIds(livePaneIds: Set<string>): void {
+		const pruned = Object.fromEntries(
+			Object.entries(this.serverTerminalIds).filter(([id]) => livePaneIds.has(id))
+		);
+		if (Object.keys(pruned).length !== Object.keys(this.serverTerminalIds).length) {
+			this.serverTerminalIds = pruned;
+			this.persist();
 		}
 	}
 
