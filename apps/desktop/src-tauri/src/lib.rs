@@ -114,6 +114,7 @@ macro_rules! build_invoke_handler {
             server_control::start_server,
             server_control::stop_server,
             server_control::server_status,
+            server_control::terminal_server_status,
             $( $extra ),*
         ]
     };
@@ -147,6 +148,21 @@ pub fn run() {
             app.manage(git_watcher);
             let github_poller = GitHubPoller::new(app.handle().clone());
             app.manage(github_poller);
+
+            // Boot the always-on loopback server (127.0.0.1, ephemeral port)
+            // synchronously on the Tauri async runtime so it is listening
+            // before the webview mounts. `spawn_embedded` binds before
+            // returning, so by the time setup() returns the server is ready.
+            let sc = app.state::<server_control::ServerControl>();
+            let loopback_handle =
+                tauri::async_runtime::block_on(workbench_server::spawn_embedded(
+                    "127.0.0.1",
+                    0,
+                    None,
+                ))
+                .expect("failed to start loopback embedded server");
+            sc.set_loopback(loopback_handle);
+
             Ok(())
         });
 
