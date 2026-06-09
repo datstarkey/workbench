@@ -14,6 +14,12 @@ export interface ProjectConfig {
 	tasks?: ProjectTask[];
 }
 
+// ── Native (SwiftTerm / PtyManager) terminal types ──────────────────────────
+// These are used ONLY by the native SwiftTerm path (pty.rs / native_terminal.rs)
+// and the corresponding Tauri IPC commands (create_terminal / terminal:data /
+// terminal:exit). The xterm path no longer uses them — xterm attaches over
+// WebSocket to TerminalManager in the embedded server.
+
 export interface CreateTerminalRequest {
 	id: string;
 	projectPath: string;
@@ -38,6 +44,61 @@ export interface TerminalExitEvent {
 	exitCode: number;
 	signal?: number;
 }
+
+// ── Server terminal types (xterm over WebSocket) ─────────────────────────────
+// Used by the desktop xterm path (ws://127.0.0.1:<port>/remote/terminals/:id/ws)
+// and the mobile client. Mirror of the Rust structs in apps/server/src/terminal.rs.
+
+/**
+ * Request body for POST /remote/terminals.
+ *
+ * Desktop xterm path populates the optional desktop-parity env fields
+ * (paneId, hookSocket, zdotdir, origZdotdir) so that shell integration and
+ * the Claude hook bridge work identically to the local PtyManager path.
+ * Mobile omits them — server behaviour is unchanged for mobile.
+ */
+export interface CreateServerTerminalBody {
+	projectPath: string;
+	worktreePath?: string;
+	name?: string;
+	/** Optional command typed into the shell once it starts (e.g. `claude`). */
+	command?: string;
+	cols: number;
+	rows: number;
+	/** Opaque pane ID forwarded as CLAUDE_PANE_ID env (desktop only). */
+	paneId?: string;
+	/** Unix socket path for the Claude hook bridge — CLAUDE_HOOK_SOCKET env (desktop only). */
+	hookSocket?: string;
+	/** Custom ZDOTDIR for zsh shell integration (desktop only). */
+	zdotdir?: string;
+	/** Original ZDOTDIR restored inside the injected .zshrc (desktop only). */
+	origZdotdir?: string;
+}
+
+/**
+ * Metadata returned by POST /remote/terminals and GET /remote/terminals.
+ * Mirrors `TerminalMeta` in apps/server/src/terminal.rs.
+ */
+export interface ServerTerminalMeta {
+	id: string;
+	name?: string;
+	cwd: string;
+	/** Unix epoch milliseconds. */
+	createdAt: number;
+	alive: boolean;
+}
+
+/**
+ * Server → client control messages sent as JSON text frames over the terminal
+ * WebSocket. PTY output is still delivered as binary frames.
+ *
+ * Discriminate by frame type:
+ * - `MessageEvent.data` is an `ArrayBuffer` → raw PTY bytes (write to xterm)
+ * - `MessageEvent.data` is a `string`        → parse as `WsServerMsg` (control)
+ */
+export type WsServerMsg =
+	| { t: 'takeover' }
+	| { t: 'exit'; code: number | null };
 
 export interface TerminalActivityEvent {
 	sessionId: string;
@@ -75,6 +136,13 @@ export interface TerminalPaneState {
 	startupCommand?: string;
 	type?: SessionType;
 	claudeSessionId?: string;
+	/**
+	 * When set, this pane's xterm is backed by a server TerminalManager session
+	 * (WS path). Persisted so the pane can reattach to the same PTY after a
+	 * webview reload. Absent for panes that have not yet been created or that
+	 * use the native SwiftTerm path.
+	 */
+	serverTerminalId?: string;
 }
 
 export interface TerminalTabState {

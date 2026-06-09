@@ -8,6 +8,15 @@ import { invoke } from '@tauri-apps/api/core';
 export interface ServerStatus {
 	running: boolean;
 	address: string | null;
+	/**
+	 * Bearer token used by the embedded server, or null when no auth is
+	 * configured. The frontend uses this to build the `?token=` query
+	 * parameter for WebSocket terminal attach URLs.
+	 *
+	 * Will be populated once `server_control.rs` is extended in the
+	 * desktop-boot batch to include the token in `ServerStatus`.
+	 */
+	token: string | null;
 }
 
 export function startServer(port: number, token?: string): Promise<ServerStatus> {

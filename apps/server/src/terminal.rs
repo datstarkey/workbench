@@ -102,6 +102,12 @@ impl TerminalManager {
         Self::default()
     }
 
+    /// Create a new terminal session.
+    ///
+    /// `env_overrides` is a list of `(key, value)` pairs injected into the
+    /// PTY environment. The desktop xterm path uses this to pass `CLAUDE_PANE_ID`,
+    /// `CLAUDE_HOOK_SOCKET`, and ZDOTDIR for shell integration. Mobile leaves it
+    /// empty — behaviour is unchanged.
     pub fn create(
         &self,
         cwd: String,
@@ -109,6 +115,7 @@ impl TerminalManager {
         command: Option<String>,
         cols: u16,
         rows: u16,
+        env_overrides: Vec<(String, String)>,
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -133,6 +140,10 @@ impl TerminalManager {
             }
         }
         cmd.env("TERM", "xterm-256color");
+        // Desktop-parity env vars (CLAUDE_PANE_ID, CLAUDE_HOOK_SOCKET, ZDOTDIR, …).
+        for (k, v) in env_overrides {
+            cmd.env(k, v);
+        }
 
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -259,6 +270,24 @@ pub struct CreateTerminalBody {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
+
+    // ── Desktop-parity env fields ────────────────────────────────────
+    // These are set by the desktop xterm path so that shell integration,
+    // hook sockets, and zsh ZDOTDIR injection work identically to the
+    // existing local PtyManager path. Mobile omits them (stays None) —
+    // server behaviour is unchanged for mobile clients.
+    /// Opaque pane ID used by the desktop hook bridge (CLAUDE_PANE_ID env).
+    #[serde(default)]
+    pub pane_id: Option<String>,
+    /// Unix socket path for the Claude hook bridge (CLAUDE_HOOK_SOCKET env).
+    #[serde(default)]
+    pub hook_socket: Option<String>,
+    /// Custom ZDOTDIR injected for zsh shell integration.
+    #[serde(default)]
+    pub zdotdir: Option<String>,
+    /// Original ZDOTDIR restored inside the injected .zshrc.
+    #[serde(default)]
+    pub orig_zdotdir: Option<String>,
 }
 
 pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TerminalMeta>>> {
@@ -282,7 +311,23 @@ pub async fn terminal_create(
             body.worktree_path.as_deref(),
             &registered,
         )?;
-        terminals.create(cwd, body.name, body.command, body.cols, body.rows)
+
+        // Build desktop-parity env overrides from the optional seam fields.
+        let mut env_overrides: Vec<(String, String)> = Vec::new();
+        if let Some(pane_id) = body.pane_id {
+            env_overrides.push(("CLAUDE_PANE_ID".to_string(), pane_id));
+        }
+        if let Some(hook_socket) = body.hook_socket {
+            env_overrides.push(("CLAUDE_HOOK_SOCKET".to_string(), hook_socket));
+        }
+        if let Some(zdotdir) = body.zdotdir {
+            env_overrides.push(("ZDOTDIR".to_string(), zdotdir));
+        }
+        if let Some(orig_zdotdir) = body.orig_zdotdir {
+            env_overrides.push(("WORKBENCH_ORIG_ZDOTDIR".to_string(), orig_zdotdir));
+        }
+
+        terminals.create(cwd, body.name, body.command, body.cols, body.rows, env_overrides)
     })
     .await
     .map(Json)
@@ -294,6 +339,25 @@ pub async fn terminal_kill(
 ) -> ApiResult<StatusCode> {
     state.terminals.kill(&id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Server → client control messages, sent as JSON text frames.
+///
+/// PTY output continues to use `Message::Binary`. Clients discriminate:
+/// - `Binary` frames → raw PTY bytes to write to the terminal screen
+/// - `Text` frames   → a `ServerMsg` JSON object (control signal)
+///
+/// Wire shape: `{"t":"takeover"}` or `{"t":"exit","code":0}`.
+#[derive(Debug, Serialize)]
+#[serde(tag = "t", rename_all = "camelCase")]
+pub enum ServerMsg {
+    /// The session was taken over by another client (single-attacher lease).
+    /// The receiving client should display a notification and stop I/O.
+    #[serde(rename = "takeover")]
+    Takeover,
+    /// The shell (PTY) exited. `code` is the exit code when available.
+    #[serde(rename = "exit")]
+    Exit { code: Option<i32> },
 }
 
 #[derive(Debug, Deserialize)]
