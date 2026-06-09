@@ -1370,7 +1370,8 @@ describe('WorkspaceStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_workspaces', {
 				snapshot: {
 					workspaces: store.workspaces,
-					selectedId: store.selectedId
+					selectedId: store.selectedId,
+					serverTerminalIds: {}
 				}
 			});
 		});

@@ -1,44 +1,59 @@
+/**
+ * terminal.ts now exports:
+ *  - Integration checks (checkClaudeIntegration etc.)
+ *  - Native SwiftTerm IPC wrappers (createNativeTerminal etc.)
+ *  - onSessionTerminalExit — kept for NativeTerminalPane (PtyManager IPC path)
+ *
+ * The xterm IPC layer (createTerminal / writeTerminal / resizeTerminal /
+ * killTerminal / onTerminalData / onSessionTerminalData / onTerminalExit /
+ * cleanupSessionInput / sessionWriteChains) has been REMOVED. xterm panes now
+ * use TerminalConnection (loopback WebSocket to the embedded server).
+ */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearListeners, emitMockEvent, listenSpy } from '../../test/tauri-mocks';
+import { clearListeners, listenSpy } from '../../test/tauri-mocks';
 
-describe('terminal event routing', () => {
+describe('terminal.ts — contract verification', () => {
 	beforeEach(() => {
 		vi.resetModules();
 		clearListeners();
 	});
 
-	it('routes session data to matching listeners only', async () => {
-		const { onSessionTerminalData } = await import('./terminal');
-		const sessionA = vi.fn();
-		const sessionB = vi.fn();
-
-		const unlistenA = await onSessionTerminalData('pane-a', sessionA);
-		await onSessionTerminalData('pane-b', sessionB);
-
-		emitMockEvent('terminal:data', { sessionId: 'pane-a', data: 'hello' });
-		expect(sessionA).toHaveBeenCalledWith({ sessionId: 'pane-a', data: 'hello' });
-		expect(sessionB).not.toHaveBeenCalled();
-
-		unlistenA();
-		emitMockEvent('terminal:data', { sessionId: 'pane-a', data: 'again' });
-		expect(sessionA).toHaveBeenCalledTimes(1);
+	it('exports integration checks and native terminal wrappers', async () => {
+		const mod = await import('./terminal');
+		expect(typeof mod.checkClaudeIntegration).toBe('function');
+		expect(typeof mod.checkCodexIntegration).toBe('function');
+		expect(typeof mod.applyClaudeIntegration).toBe('function');
+		expect(typeof mod.applyCodexIntegration).toBe('function');
+		expect(typeof mod.createNativeTerminal).toBe('function');
+		expect(typeof mod.resizeNativeTerminal).toBe('function');
+		expect(typeof mod.setNativeTerminalVisible).toBe('function');
+		expect(typeof mod.killNativeTerminal).toBe('function');
+		expect(typeof mod.writeNativeTerminal).toBe('function');
+		expect(typeof mod.isNativeTerminalAvailable).toBe('function');
 	});
 
-	it('registers one tauri data listener regardless of session subscribers', async () => {
-		const { onSessionTerminalData } = await import('./terminal');
-		await onSessionTerminalData('pane-a', vi.fn());
-		await onSessionTerminalData('pane-b', vi.fn());
-
-		const dataListenCalls = listenSpy.mock.calls.filter((call) => call[0] === 'terminal:data');
-		expect(dataListenCalls).toHaveLength(1);
+	it('still exports onSessionTerminalExit for NativeTerminalPane (PtyManager path)', async () => {
+		const mod = await import('./terminal');
+		expect(typeof mod.onSessionTerminalExit).toBe('function');
 	});
 
-	it('still supports global terminal data listeners', async () => {
-		const { onTerminalData } = await import('./terminal');
-		const globalCb = vi.fn();
-		await onTerminalData(globalCb);
+	it('registers a single terminal:exit listener regardless of session subscribers', async () => {
+		const { onSessionTerminalExit } = await import('./terminal');
+		await onSessionTerminalExit('native-a', vi.fn());
+		await onSessionTerminalExit('native-b', vi.fn());
+		const exitListenCalls = listenSpy.mock.calls.filter((call) => call[0] === 'terminal:exit');
+		expect(exitListenCalls).toHaveLength(1);
+	});
 
-		emitMockEvent('terminal:data', { sessionId: 'pane-a', data: 'payload' });
-		expect(globalCb).toHaveBeenCalledWith({ sessionId: 'pane-a', data: 'payload' });
+	it('does NOT export the removed xterm IPC functions', async () => {
+		const mod = await import('./terminal');
+		expect((mod as Record<string, unknown>)['createTerminal']).toBeUndefined();
+		expect((mod as Record<string, unknown>)['writeTerminal']).toBeUndefined();
+		expect((mod as Record<string, unknown>)['resizeTerminal']).toBeUndefined();
+		expect((mod as Record<string, unknown>)['killTerminal']).toBeUndefined();
+		expect((mod as Record<string, unknown>)['onTerminalData']).toBeUndefined();
+		expect((mod as Record<string, unknown>)['onSessionTerminalData']).toBeUndefined();
+		expect((mod as Record<string, unknown>)['onTerminalExit']).toBeUndefined();
+		expect((mod as Record<string, unknown>)['cleanupSessionInput']).toBeUndefined();
 	});
 });
