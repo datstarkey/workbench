@@ -11,14 +11,18 @@
 //!   - `GET  /remote/terminals/:id/ws` → attach (replays buffer, then streams)
 //!   - `DELETE /remote/terminals/:id`  → kill a session
 //!
-//! WS wire protocol: client→server JSON text (`{"t":"i","d":..}` input,
-//! `{"t":"r","c":..,"r":..}` resize); server→client raw PTY bytes as binary
-//! frames **and** JSON control frames for lifecycle events (`ServerMsg`).
+//! WS wire protocol (same as before): client→server JSON text
+//! (`{"t":"i","d":..}` input, `{"t":"r","c":..,"r":..}` resize); server→client
+//! raw PTY bytes as binary frames. Server→client control frames (text JSON):
+//! `{"t":"takeover"}` — another client has attached (epoch bumped, old socket
+//! will be closed); `{"t":"exit","code":<n|null>}` — shell exited.
 //!
-//! Single-attacher lease: only one WebSocket client may drive input/resize at a
-//! time. When a new client attaches to an already-attached session, the OLD
-//! socket receives a `{"type":"takeover"}` control frame and is closed. The
-//! new client becomes the sole attacher.
+//! Single-attacher lease: only ONE client may drive input at a time. When a new
+//! client attaches the server:
+//!   1. Bumps the attacher epoch (watch channel).
+//!   2. Sends `{"t":"takeover"}` to the OLD socket and closes it.
+//!   3. The new client's attach loop detects its epoch matches the current one
+//!      and proceeds normally (input accepted, output streamed).
 //!
 //! Gated by the same bearer auth as every other route. NOTE: browser WebSocket
 //! can't send an `Authorization` header, so query-param auth for the WS is
@@ -26,6 +30,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -77,22 +82,6 @@ pub struct TerminalMeta {
     pub alive: bool,
 }
 
-/// Server→client control frames (sent as JSON text). Binary frames carry raw
-/// PTY output as before; these carry lifecycle events.
-///
-/// Wire shape: `{"t":"takeover"}` or `{"t":"exit","code":0}`.
-#[derive(Debug, Serialize)]
-#[serde(tag = "t", rename_all = "camelCase")]
-pub enum ServerMsg {
-    /// The session was taken over by another client (single-attacher lease).
-    /// The receiving client should display a notification and stop I/O.
-    #[serde(rename = "takeover")]
-    Takeover,
-    /// The shell (PTY) exited. `code` is the exit code when available.
-    #[serde(rename = "exit")]
-    Exit { code: Option<i32> },
-}
-
 struct TerminalSession {
     meta: Mutex<TerminalMeta>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -107,10 +96,18 @@ struct TerminalSession {
     /// broadcast `tx` lives inside this same Arc, so `rx.recv()` can never observe
     /// `Closed` from within the attach loop.
     done_tx: watch::Sender<bool>,
-    /// Single-attacher lease. Bumped each time a new client attaches. An
-    /// attached socket compares its snapshot (`my_gen`) against the current
-    /// value; when they diverge the socket knows it has been superseded.
-    attach_gen: watch::Sender<u64>,
+    /// Single-attacher lease: monotonically increasing epoch counter (atomic, so it
+    /// can be read without holding a lock). Each `attach()` call fetch-adds 1. Input
+    /// is only accepted when the attacher's ticket matches the current epoch (no newer
+    /// client has attached).
+    attacher_epoch: AtomicU64,
+    /// Notification channel: carries the epoch value so an old attacher's
+    /// `epoch_rx.changed()` fires when a new client takes over. A background receiver
+    /// (`_epoch_rx_keeper`) keeps the Sender live (watch::Sender::send() is a no-op
+    /// when there are zero receivers, which would break the epoch counter).
+    attacher_kick_tx: watch::Sender<u64>,
+    /// Kept alive purely so `attacher_kick_tx.send()` never sees zero receivers.
+    _epoch_rx_keeper: watch::Receiver<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -122,28 +119,11 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Extra environment variables forwarded from `CreateTerminalBody` into the PTY.
-pub struct EnvExtra {
-    pub pane_id: Option<String>,
-    pub hook_socket: Option<String>,
-    /// Pre-computed ZDOTDIR to inject (only for zsh login shells with no
-    /// custom command). Already validated by the caller.
-    pub zdotdir: Option<String>,
-    /// Value to set `WORKBENCH_ORIG_ZDOTDIR` to (the caller's original ZDOTDIR
-    /// or HOME fallback). Only injected when `zdotdir` is `Some`.
-    pub orig_zdotdir: Option<String>,
-}
-
 impl TerminalManager {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a new terminal session.
-    ///
-    /// `env_extra` carries optional desktop-parity env vars (`WORKBENCH_PANE_ID`,
-    /// `WORKBENCH_HOOK_SOCKET`, ZDOTDIR for shell integration). Mobile leaves it
-    /// empty — behaviour is unchanged.
     pub fn create(
         &self,
         cwd: String,
@@ -151,7 +131,8 @@ impl TerminalManager {
         command: Option<String>,
         cols: u16,
         rows: u16,
-        env_extra: EnvExtra,
+        pane_id: Option<String>,
+        hook_socket: Option<String>,
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -176,24 +157,11 @@ impl TerminalManager {
             }
         }
         cmd.env("TERM", "xterm-256color");
-
-        // Inject workbench-specific env vars from the request body.
-        if let Some(pane_id) = &env_extra.pane_id {
-            cmd.env("WORKBENCH_PANE_ID", pane_id);
+        if let Some(id) = &pane_id {
+            cmd.env("WORKBENCH_PANE_ID", id);
         }
-        if let Some(hook_socket) = &env_extra.hook_socket {
-            cmd.env("WORKBENCH_HOOK_SOCKET", hook_socket);
-        }
-        // ZDOTDIR shell integration (only for zsh login shells without a
-        // custom startup command, mirroring desktop pty.rs behaviour).
-        let is_zsh = shell.ends_with("zsh");
-        if command.is_none() && is_zsh {
-            if let Some(zdotdir) = &env_extra.zdotdir {
-                if let Some(orig) = &env_extra.orig_zdotdir {
-                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", orig);
-                }
-                cmd.env("ZDOTDIR", zdotdir);
-            }
+        if let Some(sock) = &hook_socket {
+            cmd.env("WORKBENCH_HOOK_SOCKET", sock);
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -217,7 +185,7 @@ impl TerminalManager {
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
         let (done_tx, _done_rx) = watch::channel(false);
-        let (attach_gen, _) = watch::channel::<u64>(0);
+        let (attacher_kick_tx, _epoch_rx_keeper) = watch::channel::<u64>(0);
 
         let session = Arc::new(TerminalSession {
             meta: Mutex::new(meta.clone()),
@@ -227,7 +195,9 @@ impl TerminalManager {
             buffer: Mutex::new(VecDeque::new()),
             tx,
             done_tx,
-            attach_gen,
+            attacher_epoch: AtomicU64::new(0),
+            attacher_kick_tx,
+            _epoch_rx_keeper,
         });
 
         // Drain the PTY on a blocking thread: append to the replay buffer and
@@ -323,14 +293,12 @@ pub struct CreateTerminalBody {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
-    /// Workbench pane identifier forwarded to `WORKBENCH_PANE_ID` in the shell.
+    /// Forwarded as `WORKBENCH_PANE_ID` env var into the shell so hook scripts
+    /// can identify which terminal pane they belong to.
     pub pane_id: Option<String>,
-    /// Path to the hook socket, forwarded to `WORKBENCH_HOOK_SOCKET`.
+    /// Forwarded as `WORKBENCH_HOOK_SOCKET` env var — path/address of the hook
+    /// socket the desktop sets up for `claude --hook` callbacks.
     pub hook_socket: Option<String>,
-    /// Pre-computed ZDOTDIR path for shell integration (zsh only, no command).
-    pub zdotdir: Option<String>,
-    /// Original ZDOTDIR value to set as `WORKBENCH_ORIG_ZDOTDIR` (zsh only).
-    pub orig_zdotdir: Option<String>,
 }
 
 pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TerminalMeta>>> {
@@ -354,13 +322,15 @@ pub async fn terminal_create(
             body.worktree_path.as_deref(),
             &registered,
         )?;
-        let env_extra = EnvExtra {
-            pane_id: body.pane_id,
-            hook_socket: body.hook_socket,
-            zdotdir: body.zdotdir,
-            orig_zdotdir: body.orig_zdotdir,
-        };
-        terminals.create(cwd, body.name, body.command, body.cols, body.rows, env_extra)
+        terminals.create(
+            cwd,
+            body.name,
+            body.command,
+            body.cols,
+            body.rows,
+            body.pane_id,
+            body.hook_socket,
+        )
     })
     .await
     .map(Json)
@@ -420,24 +390,30 @@ pub async fn terminal_attach(
 }
 
 async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
-    // Bump the attach generation and snapshot the scrollback under the same buffer
-    // lock that the reader thread holds when it appends+broadcasts. This makes the
-    // handoff atomic: output can't slip between the snapshot and the subscription.
-    //
-    // IMPORTANT: use `send_replace` (not `send`) — `send` is a no-op when the
-    // receiver count is zero, which is the case before the first `subscribe()`.
-    // `send_replace` always updates the stored value.
-    let (replay, mut rx, my_gen) = {
+    // --- Single-attacher lease -------------------------------------------------
+    // Fetch-add the epoch atomically. The NEW value is our ticket; the OLD value was
+    // held by any previously attached client. Then notify via the kick channel so
+    // that old attacher's `epoch_rx.changed()` wakes up and closes.
+    let my_epoch = session
+        .attacher_epoch
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    // Send the new epoch to the kick channel. The _epoch_rx_keeper receiver keeps
+    // the channel alive, so send() never returns Err (no-op when no receivers).
+    let _ = session.attacher_kick_tx.send(my_epoch);
+    let mut epoch_rx = session.attacher_kick_tx.subscribe();
+
+    // --- Scrollback replay -----------------------------------------------------
+    // Subscribe and snapshot the scrollback under the same buffer lock the reader
+    // holds when it appends+broadcasts. This makes the handoff atomic: output
+    // produced during attach can't slip between the snapshot and the subscription
+    // (which would drop it) nor land in both (which would duplicate it).
+    let (replay, mut rx) = {
         let buffer = lock(&session.buffer);
         let rx = session.tx.subscribe();
-        let my_gen = *session.attach_gen.borrow() + 1;
-        session.attach_gen.send_replace(my_gen);
         let replay: Vec<u8> = buffer.iter().copied().collect();
-        (replay, rx, my_gen)
+        (replay, rx)
     };
-
-    // Subscribe to generation changes so we can detect when we are superseded.
-    let mut gen_rx = session.attach_gen.subscribe();
 
     // Replay scrollback so a resumed terminal shows its history.
     if !replay.is_empty() && socket.send(Message::Binary(replay)).await.is_err() {
@@ -448,42 +424,38 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
     // broadcast `tx` lives inside `session`, so `rx.recv()` can't see `Closed` here.
     let mut done_rx = session.done_tx.subscribe();
     if *done_rx.borrow_and_update() {
-        // Already dead: history is replayed; close so the client sees it ended.
+        // Already dead: history is replayed; send exit frame then close.
+        let _ = socket
+            .send(Message::Text(r#"{"t":"exit","code":null}"#.to_string()))
+            .await;
+        let _ = socket.close().await;
         return;
     }
 
     loop {
         tokio::select! {
-            _ = done_rx.changed() => {
-                // Shell exited or the session was killed. Reap the exit code and
-                // send it to the client before closing so the pane can surface
-                // the "[process exited: N]" UX.
-                let code = lock(&session.child)
-                    .try_wait()
-                    .ok()
-                    .flatten()
-                    .map(|s| s.exit_code() as i32);
+            // Epoch changed → a new client has attached; we are the old one.
+            _ = epoch_rx.changed() => {
+                // Send the takeover control frame so the client knows it was displaced,
+                // then close the socket. Do NOT kill the PTY — it keeps running for the
+                // new attacher.
                 let _ = socket
-                    .send(Message::Text(
-                        serde_json::to_string(&ServerMsg::Exit { code })
-                            .unwrap_or_default(),
-                    ))
+                    .send(Message::Text(r#"{"t":"takeover"}"#.to_string()))
                     .await;
-                break;
+                // Send a WS Close frame so the client can distinguish a clean kick from
+                // a dropped connection.
+                let _ = socket.close().await;
+                return;
             }
-            _ = gen_rx.changed() => {
-                // A newer attacher has taken over. Send a takeover notice then
-                // close — the new socket is now the sole active attacher.
-                if *gen_rx.borrow() != my_gen {
-                    let _ = socket
-                        .send(Message::Text(
-                            serde_json::to_string(&ServerMsg::Takeover)
-                                .unwrap_or_default(),
-                        ))
-                        .await;
-                    let _ = socket.close().await;
-                    break;
-                }
+            _ = done_rx.changed() => {
+                // Shell exited or the session was killed → send exit frame then close
+                // so the client surfaces the end of the session instead of freezing.
+                let _ = socket
+                    .send(Message::Text(r#"{"t":"exit","code":null}"#.to_string()))
+                    .await;
+                // Explicit close so the client sees a proper WS close frame.
+                let _ = socket.close().await;
+                return;
             }
             out = rx.recv() => {
                 match out {
@@ -511,11 +483,11 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
             inbound = socket.recv() => {
                 match inbound {
                     Some(Ok(Message::Text(t))) => {
-                        if let Ok(msg) = serde_json::from_str::<ClientMsg>(&t) {
-                            // Only the current attacher may drive the PTY.
-                            if *session.attach_gen.borrow() != my_gen {
-                                continue;
-                            }
+                        // Only accept input from the current attacher (epoch guard).
+                        if session.attacher_epoch.load(Ordering::SeqCst) != my_epoch {
+                            // We've been superseded — our epoch_rx.changed() arm will
+                            // fire shortly and clean up; ignore this input.
+                        } else if let Ok(msg) = serde_json::from_str::<ClientMsg>(&t) {
                             match msg {
                                 ClientMsg::Input { d } => {
                                     let mut w = lock(&session.writer);
@@ -534,13 +506,12 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
                         }
                     }
                     Some(Ok(Message::Binary(b))) => {
-                        // Only the current attacher may write raw bytes to the PTY.
-                        if *session.attach_gen.borrow() != my_gen {
-                            continue;
+                        // Only accept raw binary input from the current attacher.
+                        if session.attacher_epoch.load(Ordering::SeqCst) == my_epoch {
+                            let mut w = lock(&session.writer);
+                            let _ = w.write_all(&b);
+                            let _ = w.flush();
                         }
-                        let mut w = lock(&session.writer);
-                        let _ = w.write_all(&b);
-                        let _ = w.flush();
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}

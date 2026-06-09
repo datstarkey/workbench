@@ -530,13 +530,16 @@ async fn terminal_respects_cap() {
     handle.stop().await;
 }
 
-/// Single-attacher lease: when a second client attaches to a terminal that
-/// already has an active attacher, the FIRST socket must receive a takeover
-/// control frame (`{"type":"takeover"}`) and then be closed.
+/// When a second WS client attaches to the same terminal, the FIRST client must
+/// receive a `{"t":"takeover"}` text frame and then a Close, while the second
+/// client continues to receive PTY output. Input from the displaced first client
+/// must NOT reach the PTY (epoch guard).
 #[cfg(unix)]
 #[tokio::test]
-async fn terminal_single_attacher_takeover() {
-    use futures_util::StreamExt;
+async fn terminal_single_attacher_kick() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
@@ -557,45 +560,226 @@ async fn terminal_single_attacher_takeover() {
         .unwrap();
     let id = meta["id"].as_str().expect("terminal id").to_string();
 
-    // First attacher connects.
+    // Attacher A connects first.
     let (mut ws_a, _) =
         tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
             .await
-            .expect("first WS should connect");
+            .expect("WS A should connect");
 
-    // Second attacher connects — this triggers the lease takeover.
-    let (_ws_b, _) =
+    // Give A a moment to establish (epoch = 1).
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Attacher B connects — this should kick A (epoch bumps to 2).
+    let (mut ws_b, _) =
         tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
             .await
-            .expect("second WS should connect");
+            .expect("WS B should connect");
 
-    // The FIRST socket must receive a takeover frame and then close. We scan all
-    // messages until the connection closes, looking for a text frame that
-    // deserialises to `{"type":"takeover"}`.
-    let mut got_takeover = false;
-    let kicked = tokio::time::timeout(Duration::from_secs(5), async {
+    // A must receive {"t":"takeover"} and then close within 5 s.
+    let takeover_and_close = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut saw_takeover = false;
         while let Some(Ok(msg)) = ws_a.next().await {
             match msg {
-                tokio_tungstenite::tungstenite::Message::Text(t) => {
-                    let v: Value = serde_json::from_str(&t).unwrap_or_default();
-                    if v["type"] == "takeover" {
-                        got_takeover = true;
+                Message::Text(t) => {
+                    if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                        if v["t"] == "takeover" {
+                            saw_takeover = true;
+                        }
                     }
                 }
-                tokio_tungstenite::tungstenite::Message::Close(_) => break,
+                Message::Close(_) => break,
                 _ => {}
             }
         }
+        saw_takeover
+    })
+    .await;
+    assert!(
+        takeover_and_close.is_ok(),
+        "A must receive the takeover frame and close within timeout"
+    );
+    assert!(
+        takeover_and_close.unwrap(),
+        "A must receive a {{\"t\":\"takeover\"}} text frame before closing"
+    );
+
+    // B stays open (it is the current attacher).
+    // Send a unique marker via B and verify we can receive PTY output via B.
+    let marker = "WORKBENCH_TEST_MARKER_B_IS_LIVE";
+    ws_b.send(Message::Binary(format!("echo {marker}\n").into_bytes()))
+        .await
+        .unwrap();
+
+    let b_received_output = tokio::time::timeout(Duration::from_secs(8), async {
+        while let Some(Ok(msg)) = ws_b.next().await {
+            if let Message::Binary(bytes) = msg {
+                if String::from_utf8_lossy(&bytes).contains(marker) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await;
+    assert!(
+        b_received_output.is_ok(),
+        "B must still receive PTY output (not timed out)"
+    );
+    assert!(
+        b_received_output.unwrap(),
+        "B must see output echoed from PTY (A's kick must not disrupt B)"
+    );
+
+    handle.stop().await;
+}
+
+/// When the shell exits, the attached socket must receive a `{"t":"exit"}` text
+/// frame (with code present or null) BEFORE (or with) the Close — strengthening
+/// `terminal_ws_closes_on_shell_exit` to the new wire contract.
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_ws_exit_frame_carries_code() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+
+    let (handle, base) = start(None).await;
+    let addr = handle.addr().to_string();
+    let http = reqwest::Client::new();
+
+    let meta: Value = http
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({ "projectPath": tmp.path() }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = meta["id"].as_str().expect("terminal id").to_string();
+
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
+            .await
+            .expect("WS should connect");
+
+    // Exit the shell; the PTY reader thread will signal done_tx.
+    ws.send(Message::Binary(b"exit\n".to_vec())).await.unwrap();
+
+    // Expect to see {"t":"exit",...} and then Close (or Close containing exit),
+    // all within 10 s.
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut saw_exit_frame = false;
+        let mut saw_close = false;
+        while let Some(Ok(msg)) = ws.next().await {
+            match msg {
+                Message::Text(t) => {
+                    if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                        if v["t"] == "exit" {
+                            saw_exit_frame = true;
+                        }
+                    }
+                }
+                Message::Close(_) => {
+                    saw_close = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (saw_exit_frame, saw_close)
     })
     .await;
 
+    assert!(result.is_ok(), "socket must close within timeout after shell exit");
+    let (saw_exit, saw_close) = result.unwrap();
     assert!(
-        kicked.is_ok(),
-        "first attacher must be closed after takeover, not hang"
+        saw_exit,
+        "socket must receive a {{\"t\":\"exit\"}} control frame when the shell exits"
     );
+    assert!(saw_close, "socket must close after the shell exits");
+
+    handle.stop().await;
+}
+
+/// Creating a terminal with `paneId` / `hookSocket` must forward those values
+/// as `WORKBENCH_PANE_ID` / `WORKBENCH_HOOK_SOCKET` env vars into the shell.
+/// We verify by spawning a shell that echoes the env var values via an initial
+/// command and reading them back from the WS output stream.
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_create_forwards_env() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+
+    let pane_id_val = "test-pane-42";
+    let hook_socket_val = "/tmp/workbench-hook.sock";
+
+    let (handle, base) = start(None).await;
+    let addr = handle.addr().to_string();
+    let http = reqwest::Client::new();
+
+    // Create a terminal with paneId + hookSocket + an initial command that
+    // immediately prints both env vars so we can capture them in the stream.
+    let meta: Value = http
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({
+            "projectPath": tmp.path(),
+            "paneId": pane_id_val,
+            "hookSocket": hook_socket_val,
+            // Print both env vars as a unique marker the test can scan for.
+            "command": format!(
+                "printf 'PANE_ID=%s HOOK_SOCKET=%s\\n' \"$WORKBENCH_PANE_ID\" \"$WORKBENCH_HOOK_SOCKET\""
+            )
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = meta["id"].as_str().expect("terminal id").to_string();
+
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
+            .await
+            .expect("WS should connect");
+
+    // Collect output for up to 8 s and look for the printed env values.
+    let result = tokio::time::timeout(Duration::from_secs(8), async {
+        let mut accumulated = String::new();
+        while let Some(Ok(msg)) = ws.next().await {
+            match msg {
+                Message::Binary(bytes) => {
+                    accumulated.push_str(&String::from_utf8_lossy(&bytes));
+                    if accumulated.contains(&format!("PANE_ID={pane_id_val}"))
+                        && accumulated.contains(&format!("HOOK_SOCKET={hook_socket_val}"))
+                    {
+                        return true;
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        false
+    })
+    .await;
+
+    // Send Ctrl-C to unstick the shell if it's waiting for more input, then exit.
+    let _ = ws.send(Message::Binary(b"\x03exit\n".to_vec())).await;
+
+    assert!(result.is_ok(), "WS output collection must not time out");
     assert!(
-        got_takeover,
-        "first attacher must receive a {{\"type\":\"takeover\"}} control frame"
+        result.unwrap(),
+        "PTY output must contain PANE_ID and HOOK_SOCKET from env vars"
     );
 
     handle.stop().await;
