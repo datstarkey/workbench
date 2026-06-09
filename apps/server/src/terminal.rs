@@ -11,13 +11,18 @@
 //!   - `GET  /remote/terminals/:id/ws` → attach (replays buffer, then streams)
 //!   - `DELETE /remote/terminals/:id`  → kill a session
 //!
-//! WS wire protocol (same as before): client→server JSON text
-//! (`{"t":"i","d":..}` input, `{"t":"r","c":..,"r":..}` resize); server→client
-//! raw PTY bytes as binary frames.
+//! WS wire protocol: client→server JSON text (`{"t":"i","d":..}` input,
+//! `{"t":"r","c":..,"r":..}` resize); server→client raw PTY bytes as binary
+//! frames **and** JSON control frames for lifecycle events (`ServerMsg`).
+//!
+//! Single-attacher lease: only one WebSocket client may drive input/resize at a
+//! time. When a new client attaches to an already-attached session, the OLD
+//! socket receives a `{"type":"takeover"}` control frame and is closed. The
+//! new client becomes the sole attacher.
 //!
 //! Gated by the same bearer auth as every other route. NOTE: browser WebSocket
-//! can't send an `Authorization` header, so query-param auth for the WS is a
-//! follow-up; the default deployment is network-secured (e.g. Tailscale).
+//! can't send an `Authorization` header, so query-param auth for the WS is
+//! supported via `?token=`.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -72,6 +77,22 @@ pub struct TerminalMeta {
     pub alive: bool,
 }
 
+/// Server→client control frames (sent as JSON text). Binary frames carry raw
+/// PTY output as before; these carry lifecycle events.
+///
+/// Wire shape: `{"t":"takeover"}` or `{"t":"exit","code":0}`.
+#[derive(Debug, Serialize)]
+#[serde(tag = "t", rename_all = "camelCase")]
+pub enum ServerMsg {
+    /// The session was taken over by another client (single-attacher lease).
+    /// The receiving client should display a notification and stop I/O.
+    #[serde(rename = "takeover")]
+    Takeover,
+    /// The shell (PTY) exited. `code` is the exit code when available.
+    #[serde(rename = "exit")]
+    Exit { code: Option<i32> },
+}
+
 struct TerminalSession {
     meta: Mutex<TerminalMeta>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -81,11 +102,15 @@ struct TerminalSession {
     buffer: Mutex<VecDeque<u8>>,
     /// Live output fan-out to all attached clients.
     tx: broadcast::Sender<Vec<u8>>,
-    /// Flips to `false` when the shell exits (PTY EOF) or the session is killed.
+    /// Flips to `true` when the shell exits (PTY EOF) or the session is killed.
     /// Attached sockets select on this so they close instead of freezing — the
     /// broadcast `tx` lives inside this same Arc, so `rx.recv()` can never observe
     /// `Closed` from within the attach loop.
     done_tx: watch::Sender<bool>,
+    /// Single-attacher lease. Bumped each time a new client attaches. An
+    /// attached socket compares its snapshot (`my_gen`) against the current
+    /// value; when they diverge the socket knows it has been superseded.
+    attach_gen: watch::Sender<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -97,6 +122,18 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Extra environment variables forwarded from `CreateTerminalBody` into the PTY.
+pub struct EnvExtra {
+    pub pane_id: Option<String>,
+    pub hook_socket: Option<String>,
+    /// Pre-computed ZDOTDIR to inject (only for zsh login shells with no
+    /// custom command). Already validated by the caller.
+    pub zdotdir: Option<String>,
+    /// Value to set `WORKBENCH_ORIG_ZDOTDIR` to (the caller's original ZDOTDIR
+    /// or HOME fallback). Only injected when `zdotdir` is `Some`.
+    pub orig_zdotdir: Option<String>,
+}
+
 impl TerminalManager {
     pub fn new() -> Self {
         Self::default()
@@ -104,9 +141,8 @@ impl TerminalManager {
 
     /// Create a new terminal session.
     ///
-    /// `env_overrides` is a list of `(key, value)` pairs injected into the
-    /// PTY environment. The desktop xterm path uses this to pass `CLAUDE_PANE_ID`,
-    /// `CLAUDE_HOOK_SOCKET`, and ZDOTDIR for shell integration. Mobile leaves it
+    /// `env_extra` carries optional desktop-parity env vars (`WORKBENCH_PANE_ID`,
+    /// `WORKBENCH_HOOK_SOCKET`, ZDOTDIR for shell integration). Mobile leaves it
     /// empty — behaviour is unchanged.
     pub fn create(
         &self,
@@ -115,7 +151,7 @@ impl TerminalManager {
         command: Option<String>,
         cols: u16,
         rows: u16,
-        env_overrides: Vec<(String, String)>,
+        env_extra: EnvExtra,
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -140,9 +176,24 @@ impl TerminalManager {
             }
         }
         cmd.env("TERM", "xterm-256color");
-        // Desktop-parity env vars (CLAUDE_PANE_ID, CLAUDE_HOOK_SOCKET, ZDOTDIR, …).
-        for (k, v) in env_overrides {
-            cmd.env(k, v);
+
+        // Inject workbench-specific env vars from the request body.
+        if let Some(pane_id) = &env_extra.pane_id {
+            cmd.env("WORKBENCH_PANE_ID", pane_id);
+        }
+        if let Some(hook_socket) = &env_extra.hook_socket {
+            cmd.env("WORKBENCH_HOOK_SOCKET", hook_socket);
+        }
+        // ZDOTDIR shell integration (only for zsh login shells without a
+        // custom startup command, mirroring desktop pty.rs behaviour).
+        let is_zsh = shell.ends_with("zsh");
+        if command.is_none() && is_zsh {
+            if let Some(zdotdir) = &env_extra.zdotdir {
+                if let Some(orig) = &env_extra.orig_zdotdir {
+                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", orig);
+                }
+                cmd.env("ZDOTDIR", zdotdir);
+            }
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -166,6 +217,7 @@ impl TerminalManager {
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
         let (done_tx, _done_rx) = watch::channel(false);
+        let (attach_gen, _) = watch::channel::<u64>(0);
 
         let session = Arc::new(TerminalSession {
             meta: Mutex::new(meta.clone()),
@@ -175,6 +227,7 @@ impl TerminalManager {
             buffer: Mutex::new(VecDeque::new()),
             tx,
             done_tx,
+            attach_gen,
         });
 
         // Drain the PTY on a blocking thread: append to the replay buffer and
@@ -270,23 +323,13 @@ pub struct CreateTerminalBody {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
-
-    // ── Desktop-parity env fields ────────────────────────────────────
-    // These are set by the desktop xterm path so that shell integration,
-    // hook sockets, and zsh ZDOTDIR injection work identically to the
-    // existing local PtyManager path. Mobile omits them (stays None) —
-    // server behaviour is unchanged for mobile clients.
-    /// Opaque pane ID used by the desktop hook bridge (CLAUDE_PANE_ID env).
-    #[serde(default)]
+    /// Workbench pane identifier forwarded to `WORKBENCH_PANE_ID` in the shell.
     pub pane_id: Option<String>,
-    /// Unix socket path for the Claude hook bridge (CLAUDE_HOOK_SOCKET env).
-    #[serde(default)]
+    /// Path to the hook socket, forwarded to `WORKBENCH_HOOK_SOCKET`.
     pub hook_socket: Option<String>,
-    /// Custom ZDOTDIR injected for zsh shell integration.
-    #[serde(default)]
+    /// Pre-computed ZDOTDIR path for shell integration (zsh only, no command).
     pub zdotdir: Option<String>,
-    /// Original ZDOTDIR restored inside the injected .zshrc.
-    #[serde(default)]
+    /// Original ZDOTDIR value to set as `WORKBENCH_ORIG_ZDOTDIR` (zsh only).
     pub orig_zdotdir: Option<String>,
 }
 
@@ -311,23 +354,13 @@ pub async fn terminal_create(
             body.worktree_path.as_deref(),
             &registered,
         )?;
-
-        // Build desktop-parity env overrides from the optional seam fields.
-        let mut env_overrides: Vec<(String, String)> = Vec::new();
-        if let Some(pane_id) = body.pane_id {
-            env_overrides.push(("CLAUDE_PANE_ID".to_string(), pane_id));
-        }
-        if let Some(hook_socket) = body.hook_socket {
-            env_overrides.push(("CLAUDE_HOOK_SOCKET".to_string(), hook_socket));
-        }
-        if let Some(zdotdir) = body.zdotdir {
-            env_overrides.push(("ZDOTDIR".to_string(), zdotdir));
-        }
-        if let Some(orig_zdotdir) = body.orig_zdotdir {
-            env_overrides.push(("WORKBENCH_ORIG_ZDOTDIR".to_string(), orig_zdotdir));
-        }
-
-        terminals.create(cwd, body.name, body.command, body.cols, body.rows, env_overrides)
+        let env_extra = EnvExtra {
+            pane_id: body.pane_id,
+            hook_socket: body.hook_socket,
+            zdotdir: body.zdotdir,
+            orig_zdotdir: body.orig_zdotdir,
+        };
+        terminals.create(cwd, body.name, body.command, body.cols, body.rows, env_extra)
     })
     .await
     .map(Json)
@@ -339,25 +372,6 @@ pub async fn terminal_kill(
 ) -> ApiResult<StatusCode> {
     state.terminals.kill(&id);
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Server → client control messages, sent as JSON text frames.
-///
-/// PTY output continues to use `Message::Binary`. Clients discriminate:
-/// - `Binary` frames → raw PTY bytes to write to the terminal screen
-/// - `Text` frames   → a `ServerMsg` JSON object (control signal)
-///
-/// Wire shape: `{"t":"takeover"}` or `{"t":"exit","code":0}`.
-#[derive(Debug, Serialize)]
-#[serde(tag = "t", rename_all = "camelCase")]
-pub enum ServerMsg {
-    /// The session was taken over by another client (single-attacher lease).
-    /// The receiving client should display a notification and stop I/O.
-    #[serde(rename = "takeover")]
-    Takeover,
-    /// The shell (PTY) exited. `code` is the exit code when available.
-    #[serde(rename = "exit")]
-    Exit { code: Option<i32> },
 }
 
 #[derive(Debug, Deserialize)]
@@ -406,16 +420,24 @@ pub async fn terminal_attach(
 }
 
 async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
-    // Subscribe and snapshot the scrollback under the same buffer lock the reader
-    // holds when it appends+broadcasts. This makes the handoff atomic: output
-    // produced during attach can't slip between the snapshot and the subscription
-    // (which would drop it) nor land in both (which would duplicate it).
-    let (replay, mut rx) = {
+    // Bump the attach generation and snapshot the scrollback under the same buffer
+    // lock that the reader thread holds when it appends+broadcasts. This makes the
+    // handoff atomic: output can't slip between the snapshot and the subscription.
+    //
+    // IMPORTANT: use `send_replace` (not `send`) — `send` is a no-op when the
+    // receiver count is zero, which is the case before the first `subscribe()`.
+    // `send_replace` always updates the stored value.
+    let (replay, mut rx, my_gen) = {
         let buffer = lock(&session.buffer);
         let rx = session.tx.subscribe();
+        let my_gen = *session.attach_gen.borrow() + 1;
+        session.attach_gen.send_replace(my_gen);
         let replay: Vec<u8> = buffer.iter().copied().collect();
-        (replay, rx)
+        (replay, rx, my_gen)
     };
+
+    // Subscribe to generation changes so we can detect when we are superseded.
+    let mut gen_rx = session.attach_gen.subscribe();
 
     // Replay scrollback so a resumed terminal shows its history.
     if !replay.is_empty() && socket.send(Message::Binary(replay)).await.is_err() {
@@ -433,9 +455,35 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
     loop {
         tokio::select! {
             _ = done_rx.changed() => {
-                // Shell exited or the session was killed → close the socket so the
-                // client surfaces the end of the session instead of freezing.
+                // Shell exited or the session was killed. Reap the exit code and
+                // send it to the client before closing so the pane can surface
+                // the "[process exited: N]" UX.
+                let code = lock(&session.child)
+                    .try_wait()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.exit_code() as i32);
+                let _ = socket
+                    .send(Message::Text(
+                        serde_json::to_string(&ServerMsg::Exit { code })
+                            .unwrap_or_default(),
+                    ))
+                    .await;
                 break;
+            }
+            _ = gen_rx.changed() => {
+                // A newer attacher has taken over. Send a takeover notice then
+                // close — the new socket is now the sole active attacher.
+                if *gen_rx.borrow() != my_gen {
+                    let _ = socket
+                        .send(Message::Text(
+                            serde_json::to_string(&ServerMsg::Takeover)
+                                .unwrap_or_default(),
+                        ))
+                        .await;
+                    let _ = socket.close().await;
+                    break;
+                }
             }
             out = rx.recv() => {
                 match out {
@@ -464,6 +512,10 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
                 match inbound {
                     Some(Ok(Message::Text(t))) => {
                         if let Ok(msg) = serde_json::from_str::<ClientMsg>(&t) {
+                            // Only the current attacher may drive the PTY.
+                            if *session.attach_gen.borrow() != my_gen {
+                                continue;
+                            }
                             match msg {
                                 ClientMsg::Input { d } => {
                                     let mut w = lock(&session.writer);
@@ -482,6 +534,10 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
                         }
                     }
                     Some(Ok(Message::Binary(b))) => {
+                        // Only the current attacher may write raw bytes to the PTY.
+                        if *session.attach_gen.borrow() != my_gen {
+                            continue;
+                        }
                         let mut w = lock(&session.writer);
                         let _ = w.write_all(&b);
                         let _ = w.flush();
