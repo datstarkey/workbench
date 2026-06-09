@@ -22,6 +22,7 @@
 	import { stripAnsi } from '$lib/utils/format';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
+	import { TerminalInputDedup } from './input-dedup';
 	import { isLayoutDisabled } from './layout-guard';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 
@@ -65,6 +66,7 @@
 	let perfLogInterval: ReturnType<typeof setInterval> | null = null;
 	const claudeSessionStore = getClaudeSessionStore();
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
+	let inputDedup: TerminalInputDedup;
 
 	// VS Code-style split-axis resize debouncing:
 	// Rows resize immediately (cheap — just add/remove viewport lines).
@@ -330,6 +332,8 @@
 
 	onMount(async () => {
 		try {
+			inputDedup = new TerminalInputDedup(sessionId, () => claudeSessionStore.paneType(sessionId));
+
 			// Wait for fonts to load so cell measurements are accurate
 			await document.fonts.ready;
 
@@ -461,9 +465,15 @@
 			});
 
 			terminal.onData((data: string) => {
+				const now = performance.now();
+				// WKWebView occasionally re-emits a just-typed run as one printable
+				// blob (xterm textarea/composition quirk). Drop the duplicate so the
+				// PTY doesn't see the text twice; the guard reports each drop.
+				if (inputDedup.isDuplicateFlush(data, now)) return;
+				inputDedup.recordSent(data, now);
 				claudeSessionStore.noteLocalInput(sessionId, data);
 				inputEventsSinceLog += 1;
-				pendingInputAtMs = performance.now();
+				pendingInputAtMs = now;
 				writeTerminal(sessionId, data);
 			});
 
@@ -518,7 +528,15 @@
 				event.preventDefault();
 			};
 			container.addEventListener('copy', onCopy);
-			removeCopyListener = () => container.removeEventListener('copy', onCopy);
+			// A real paste legitimately delivers a multi-char run; record its
+			// timestamp so the duplicate-flush guard stands down briefly and never
+			// drops pasted text.
+			const onPaste = () => inputDedup.notePaste(performance.now());
+			container.addEventListener('paste', onPaste);
+			removeCopyListener = () => {
+				container.removeEventListener('copy', onCopy);
+				container.removeEventListener('paste', onPaste);
+			};
 
 			intersectionObserver = new IntersectionObserver(
 				(entries) => {
