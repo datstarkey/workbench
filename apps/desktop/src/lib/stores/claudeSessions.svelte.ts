@@ -20,6 +20,9 @@ import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
 
 const SUBMIT_START_FALLBACK_MS = 5000;
+/** Quiet window after which a server-hosted Codex pane is marked inactive — mirrors
+ *  the local PtyManager `terminal:activity` debounce (TERMINAL_QUIET_THRESHOLD_MS). */
+const OUTPUT_QUIESCENCE_MS = 1000;
 const LOCAL_ECHO_SUPPRESS_MS = 180;
 const LOCAL_ECHO_MAX_CHARS = 4;
 const LOCAL_TYPING_SUPPRESS_MS = 2500;
@@ -40,6 +43,9 @@ export class ClaudeSessionStore {
 
 	/** Per-pane fallback timeout if no output arrives after Enter submit */
 	private submitFallbackTimeouts = new SvelteMap<string, ReturnType<typeof setTimeout>>();
+	/** Per-pane debounce that marks a server-hosted Codex pane inactive after a quiet
+	 *  window (replaces the local `terminal:activity` event for WS-backed panes). */
+	private outputQuiescenceTimers = new SvelteMap<string, ReturnType<typeof setTimeout>>();
 	/** Last timestamp when local user input was sent to a pane */
 	private lastLocalInputAt = new SvelteMap<string, number>();
 	/** Last timestamp when user typed non-submit input (no Enter/newline) */
@@ -269,6 +275,45 @@ export class ClaudeSessionStore {
 	noteLocalViewportChange(paneId: string): void {
 		if (this.paneType(paneId) !== 'codex') return;
 		this.lastViewportChangeAt.set(paneId, Date.now());
+	}
+
+	/**
+	 * Feed PTY output for a pane through the same activity/quiescence logic the
+	 * `terminal:data` + `terminal:activity` Tauri events drive for local PtyManager
+	 * panes. Server-hosted xterm panes stream output over the WebSocket and never
+	 * emit those events, so TerminalPane calls this directly to keep Claude
+	 * resume-detection and Codex in-progress/quiescence working. Mirrors the
+	 * listeners in registerListeners().
+	 */
+	noteTerminalOutput(paneId: string, data: string): void {
+		const paneType = this.paneType(paneId);
+		if (paneType === 'claude') {
+			this.handleClaudeTerminalData(paneId, data);
+			return;
+		}
+		if (paneType !== 'codex') return;
+		if (this.classifyTerminalData(paneId, data)) return;
+		// Real output → mark active and clear the submit fallback.
+		this.panesInProgress.add(paneId);
+		this.clearSubmitFallback(paneId);
+		// Replicate terminal:activity: mark inactive after a quiet window with no
+		// further output (the WS path has no backend activity debounce).
+		this.scheduleOutputQuiescence(paneId);
+	}
+
+	/** Reset the per-pane quiescence debounce; on fire, mark the Codex pane inactive. */
+	private scheduleOutputQuiescence(paneId: string): void {
+		const existing = this.outputQuiescenceTimers.get(paneId);
+		if (existing) clearTimeout(existing);
+		this.outputQuiescenceTimers.set(
+			paneId,
+			setTimeout(() => {
+				this.outputQuiescenceTimers.delete(paneId);
+				if (this.paneType(paneId) !== 'codex') return;
+				this.panesInProgress.delete(paneId);
+				this.clearSubmitFallback(paneId);
+			}, OUTPUT_QUIESCENCE_MS)
+		);
 	}
 
 	/** Clear awaiting-input state when real output arrives on a Claude pane. */

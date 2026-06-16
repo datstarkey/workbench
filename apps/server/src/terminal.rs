@@ -108,6 +108,10 @@ struct TerminalSession {
     attacher_kick_tx: watch::Sender<u64>,
     /// Kept alive purely so `attacher_kick_tx.send()` never sees zero receivers.
     _epoch_rx_keeper: watch::Receiver<u64>,
+    /// Real shell exit code, captured by the reader thread when it reaps the child
+    /// on PTY EOF (try_wait at exit-frame time often races ahead of the reap and
+    /// returns None). Read by `exit_frame`.
+    exit_code: Mutex<Option<i64>>,
 }
 
 #[derive(Clone, Default)]
@@ -124,6 +128,7 @@ impl TerminalManager {
         Self::default()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
         cwd: String,
@@ -133,6 +138,7 @@ impl TerminalManager {
         rows: u16,
         pane_id: Option<String>,
         hook_socket: Option<String>,
+        shell: Option<String>,
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -147,8 +153,13 @@ impl TerminalManager {
             pixel_height: 0,
         })?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let mut cmd = CommandBuilder::new(&shell);
+        // Prefer the caller's shell (desktop forwards the project's configured
+        // shell for parity with the local PtyManager path); fall back to $SHELL.
+        let shell_path = match shell {
+            Some(s) if !s.is_empty() => s,
+            _ => std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+        };
+        let mut cmd = CommandBuilder::new(&shell_path);
         cmd.arg("-l");
         cmd.cwd(&cwd);
         for key in ["PATH", "HOME", "USER", "LANG", "SHELL", "LOGNAME"] {
@@ -157,11 +168,27 @@ impl TerminalManager {
             }
         }
         cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         if let Some(id) = &pane_id {
             cmd.env("WORKBENCH_PANE_ID", id);
         }
         if let Some(sock) = &hook_socket {
             cmd.env("WORKBENCH_HOOK_SOCKET", sock);
+        }
+
+        // Shell integration (OSC 133): when launching a bare zsh (no startup
+        // command), point ZDOTDIR at our generated rc dir so prompt/command marks
+        // are emitted. Mirrors the desktop PtyManager path; the dir resolver lives
+        // in workbench-core so the server can call it directly (no frontend seam).
+        if command.is_none() && shell_path.contains("zsh") {
+            if let Ok(zsh_dir) = workbench_core::shell_integration::ensure_shell_integration_dir() {
+                if let Ok(orig) = std::env::var("ZDOTDIR") {
+                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", orig);
+                } else if let Ok(home) = std::env::var("HOME") {
+                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", home);
+                }
+                cmd.env("ZDOTDIR", zsh_dir.to_string_lossy().as_ref());
+            }
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -198,6 +225,7 @@ impl TerminalManager {
             attacher_epoch: AtomicU64::new(0),
             attacher_kick_tx,
             _epoch_rx_keeper,
+            exit_code: Mutex::new(None),
         });
 
         // Drain the PTY on a blocking thread: append to the replay buffer and
@@ -225,9 +253,16 @@ impl TerminalManager {
                         }
                     }
                 }
+                // Shell exited (PTY EOF): the child is a zombie now, so reap it for
+                // the real exit code and publish it BEFORE waking sockets so the exit
+                // frame can carry the code. Then sweep any detached process-group
+                // members (e.g. a backgrounded `vite &`) the shell left behind.
+                if let Ok(Some(status)) = lock(&session.child).try_wait() {
+                    *lock(&session.exit_code) = Some(status.exit_code() as i64);
+                }
                 lock(&session.meta).alive = false;
-                // Wake attached sockets so they close instead of hanging on a dead shell.
                 let _ = session.done_tx.send(true);
+                terminate_process_group(&session.child);
             });
         }
 
@@ -270,10 +305,13 @@ impl TerminalManager {
         let session = lock(&self.inner).remove(id);
         match session {
             Some(s) => {
-                let _ = lock(&s.child).kill();
-                // Wake attached sockets so they close (the reader thread's EOF signal
-                // can race or be missed if the child was killed before producing EOF).
+                // Wake attached sockets immediately (the reader thread's EOF signal can
+                // race or be missed if the child is killed before producing EOF).
                 let _ = s.done_tx.send(true);
+                // Tear down the whole process GROUP (shell + descendants) on a detached
+                // thread so this async route returns at once — the SIGTERM→grace→SIGKILL
+                // escalation must not block a tokio worker.
+                std::thread::spawn(move || terminate_process_group(&s.child));
                 true
             }
             None => false,
@@ -299,6 +337,9 @@ pub struct CreateTerminalBody {
     /// Forwarded as `WORKBENCH_HOOK_SOCKET` env var — path/address of the hook
     /// socket the desktop sets up for `claude --hook` callbacks.
     pub hook_socket: Option<String>,
+    /// Shell to launch (desktop forwards the project's configured shell). Empty /
+    /// absent falls back to `$SHELL`.
+    pub shell: Option<String>,
 }
 
 pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TerminalMeta>>> {
@@ -330,6 +371,7 @@ pub async fn terminal_create(
             body.rows,
             body.pane_id,
             body.hook_socket,
+            body.shell,
         )
     })
     .await
@@ -389,19 +431,92 @@ pub async fn terminal_attach(
     Ok(ws.on_upgrade(move |socket| attach(socket, session)))
 }
 
+/// Build the `{"t":"exit","code":<n|null>}` control frame, reading the child's real
+/// exit status if it has been reaped. Falls back to `null` when the status isn't yet
+/// available (e.g. PTY EOF observed a moment before the child is fully reaped).
+fn exit_frame(session: &TerminalSession) -> Message {
+    // Prefer the code the reader thread captured when it reaped the child; fall back
+    // to a best-effort try_wait (the child may have just become reapable).
+    let code = (*lock(&session.exit_code)).or_else(|| match lock(&session.child).try_wait() {
+        Ok(Some(status)) => Some(status.exit_code() as i64),
+        _ => None,
+    });
+    let json = match code {
+        Some(c) => format!(r#"{{"t":"exit","code":{c}}}"#),
+        None => r#"{"t":"exit","code":null}"#.to_string(),
+    };
+    Message::Text(json)
+}
+
+/// Terminate the shell AND its descendants. The PTY slave calls `setsid()`, so the
+/// child PID is its process-group id; signalling the GROUP reaps detached children
+/// (a backgrounded `vite &`, language servers) that a single-PID kill would orphan.
+/// Mirrors the desktop PtyManager path. Best-effort; the SIGTERM→grace→SIGKILL
+/// escalation blocks, so callers run it on a dedicated thread.
+#[cfg(unix)]
+fn terminate_process_group(child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>) {
+    use std::time::{Duration, Instant};
+    let pgid = match lock(child).process_id() {
+        Some(pid) => pid as libc::pid_t,
+        None => {
+            let _ = lock(child).kill();
+            return;
+        }
+    };
+    // SIGHUP + SIGTERM for a graceful shutdown of the whole group.
+    unsafe {
+        libc::killpg(pgid, libc::SIGHUP);
+        libc::killpg(pgid, libc::SIGTERM);
+    }
+    // Wait briefly for graceful exit, then SIGKILL anything still alive.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        match lock(child).try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() >= deadline => break,
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => break,
+        }
+    }
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process_group(child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>) {
+    // taskkill /T terminates the PID and its whole descendant tree.
+    match lock(child).process_id() {
+        Some(pid) => {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .output();
+        }
+        None => {
+            let _ = lock(child).kill();
+        }
+    }
+}
+
 async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
     // --- Single-attacher lease -------------------------------------------------
+    // Subscribe to the kick channel BEFORE bumping the epoch. tokio's `watch` marks
+    // the value present at subscribe time as "seen", so a receiver created AFTER our
+    // own send could miss a concurrent later attacher's send and then block on
+    // `changed()` forever — leaving the old socket attached and violating the
+    // single-attacher invariant. Subscribing first guarantees we observe every send
+    // that follows, including our own (filtered out in the `changed()` arm below).
+    let mut epoch_rx = session.attacher_kick_tx.subscribe();
     // Fetch-add the epoch atomically. The NEW value is our ticket; the OLD value was
-    // held by any previously attached client. Then notify via the kick channel so
-    // that old attacher's `epoch_rx.changed()` wakes up and closes.
+    // held by any previously attached client.
     let my_epoch = session
         .attacher_epoch
         .fetch_add(1, Ordering::SeqCst)
         + 1;
-    // Send the new epoch to the kick channel. The _epoch_rx_keeper receiver keeps
-    // the channel alive, so send() never returns Err (no-op when no receivers).
+    // Notify any previously attached client so its `epoch_rx.changed()` fires and it
+    // closes. The _epoch_rx_keeper receiver keeps the channel alive, so send() never
+    // returns Err (it is a no-op only when there are zero receivers).
     let _ = session.attacher_kick_tx.send(my_epoch);
-    let mut epoch_rx = session.attacher_kick_tx.subscribe();
 
     // --- Scrollback replay -----------------------------------------------------
     // Subscribe and snapshot the scrollback under the same buffer lock the reader
@@ -425,20 +540,23 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
     let mut done_rx = session.done_tx.subscribe();
     if *done_rx.borrow_and_update() {
         // Already dead: history is replayed; send exit frame then close.
-        let _ = socket
-            .send(Message::Text(r#"{"t":"exit","code":null}"#.to_string()))
-            .await;
+        let _ = socket.send(exit_frame(&session)).await;
         let _ = socket.close().await;
         return;
     }
 
     loop {
         tokio::select! {
-            // Epoch changed → a new client has attached; we are the old one.
+            // Epoch changed → our own send fires this once; a LATER attacher's send
+            // means we've been displaced. The atomic is the source of truth.
             _ = epoch_rx.changed() => {
-                // Send the takeover control frame so the client knows it was displaced,
-                // then close the socket. Do NOT kill the PTY — it keeps running for the
-                // new attacher.
+                if session.attacher_epoch.load(Ordering::SeqCst) == my_epoch {
+                    // Our own epoch notification — we are still the current attacher.
+                    continue;
+                }
+                // A newer client has attached; we are the old one. Send the takeover
+                // control frame so the client knows it was displaced, then close the
+                // socket. Do NOT kill the PTY — it keeps running for the new attacher.
                 let _ = socket
                     .send(Message::Text(r#"{"t":"takeover"}"#.to_string()))
                     .await;
@@ -448,11 +566,10 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
                 return;
             }
             _ = done_rx.changed() => {
-                // Shell exited or the session was killed → send exit frame then close
-                // so the client surfaces the end of the session instead of freezing.
-                let _ = socket
-                    .send(Message::Text(r#"{"t":"exit","code":null}"#.to_string()))
-                    .await;
+                // Shell exited or the session was killed → send exit frame (with the
+                // child's real exit code when available) then close so the client
+                // surfaces the end of the session instead of freezing.
+                let _ = socket.send(exit_frame(&session)).await;
                 // Explicit close so the client sees a proper WS close frame.
                 let _ = socket.close().await;
                 return;

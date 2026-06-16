@@ -76,8 +76,8 @@ class FakeWebSocket {
 
 // ── Module-level setup ────────────────────────────────────────────────────────
 
-// Stub `serverStatus` so `invoke('server_status')` returns a running server
-// with a known loopback address.
+// Stub `terminalServerStatus` so `invoke('terminal_server_status')` returns a
+// running loopback server with a known address.
 const SERVER_ADDRESS = '127.0.0.1:59000';
 
 function mockServerRunning(address = SERVER_ADDRESS, token?: string) {
@@ -102,11 +102,15 @@ function mockCreateTerminal(id = 'term-abc123'): ReturnType<typeof vi.fn> {
 // Replace the global WebSocket with our fake before each test.
 let OriginalWebSocket: typeof WebSocket;
 
-beforeEach(() => {
+beforeEach(async () => {
 	OriginalWebSocket = globalThis.WebSocket;
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	(globalThis as any).WebSocket = FakeWebSocket;
 	FakeWebSocket._last = null;
+	// resolveServer() memoizes the server info at module scope; reset it so each
+	// test re-resolves against its own mockServerRunning() stub.
+	const { __resetServerInfoCache } = await import('./terminal-connection');
+	__resetServerInfoCache();
 });
 
 afterEach(() => {
@@ -159,7 +163,7 @@ async function connectAndOpen(overrides?: Partial<typeof DEFAULT_OPTS>) {
 
 describe('TerminalConnection', () => {
 	describe('connect()', () => {
-		it('invokes server_status to discover the loopback address', async () => {
+		it('invokes terminal_server_status to discover the loopback address', async () => {
 			mockServerRunning();
 			mockCreateTerminal();
 
@@ -170,7 +174,7 @@ describe('TerminalConnection', () => {
 			FakeWebSocket._last!.openWs();
 			await p;
 
-			expect(invokeSpy).toHaveBeenCalledWith('server_status');
+			expect(invokeSpy).toHaveBeenCalledWith('terminal_server_status');
 		});
 
 		it('POSTs the correct create-terminal body', async () => {
@@ -201,10 +205,39 @@ describe('TerminalConnection', () => {
 						name: 'My shell',
 						command: 'claude',
 						cols: 100,
-						rows: 25
+						rows: 25,
+						paneId: null,
+						shell: null,
+						hookSocket: null
 					})
 				})
 			);
+		});
+
+		it('forwards paneId / shell / hookSocket env fields when provided', async () => {
+			mockServerRunning();
+			const fetchMock = mockCreateTerminal('t-env');
+
+			const { TerminalConnection } = await import('./terminal-connection');
+			const conn = new TerminalConnection(vi.fn(), vi.fn());
+			const p = conn.connect({
+				projectPath: '/projects/app',
+				cols: 80,
+				rows: 24,
+				paneId: 'pane-7',
+				shell: '/bin/zsh',
+				hookSocket: '127.0.0.1:6123'
+			});
+			await flushMicrotasks();
+			FakeWebSocket._last!.openWs();
+			await p;
+
+			const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+			expect(body).toMatchObject({
+				paneId: 'pane-7',
+				shell: '/bin/zsh',
+				hookSocket: '127.0.0.1:6123'
+			});
 		});
 
 		it('opens a WebSocket to the terminal WS endpoint using the returned id', async () => {
@@ -223,7 +256,7 @@ describe('TerminalConnection', () => {
 		});
 
 		it('sets binaryType to arraybuffer on the WebSocket', async () => {
-			const { conn: _conn, ws } = await connectAndOpen();
+			const { ws } = await connectAndOpen();
 			expect(ws.binaryType).toBe('arraybuffer');
 		});
 
@@ -351,7 +384,9 @@ describe('TerminalConnection', () => {
 
 			expect(onData).toHaveBeenCalledTimes(1);
 			expect(onData.mock.calls[0][0]).toBeInstanceOf(Uint8Array);
-			expect(Array.from(onData.mock.calls[0][0] as Uint8Array)).toEqual([0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+			expect(Array.from(onData.mock.calls[0][0] as Uint8Array)).toEqual([
+				0x48, 0x65, 0x6c, 0x6c, 0x6f
+			]);
 		});
 
 		it('fires onData for every subsequent binary frame', async () => {
@@ -473,6 +508,85 @@ describe('TerminalConnection', () => {
 			expect(() => conn.dispose()).not.toThrow();
 			// close() should have been called at most once (first dispose).
 			expect(ws.close).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe('reattach (existingId)', () => {
+		it('re-attaches to a surviving PTY without POSTing a new one', async () => {
+			mockServerRunning();
+			// GET /remote/terminals → the persisted id is still alive.
+			const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+				ok: true,
+				json: async () => [{ id: 'srv-1', name: null, cwd: '/p', createdAt: 1, alive: true }]
+			} as Response);
+
+			const { TerminalConnection } = await import('./terminal-connection');
+			const conn = new TerminalConnection(vi.fn(), vi.fn());
+			const p = conn.connect(DEFAULT_OPTS, 'srv-1');
+			await flushMicrotasks();
+			FakeWebSocket._last!.openWs();
+			await p;
+
+			// Only the GET list call — no POST create.
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(conn.terminalId).toBe('srv-1');
+			expect(FakeWebSocket._last!.url).toBe(`ws://${SERVER_ADDRESS}/remote/terminals/srv-1/ws`);
+		});
+
+		it('creates a fresh PTY when the persisted id is gone', async () => {
+			mockServerRunning();
+			const fetchMock = vi
+				.spyOn(globalThis, 'fetch')
+				// GET list → does NOT contain the persisted id.
+				.mockResolvedValueOnce({ ok: true, json: async () => [] } as Response)
+				// POST create → new terminal.
+				.mockResolvedValueOnce({
+					ok: true,
+					json: async () => ({ id: 'fresh', name: null, cwd: '/p', createdAt: 1, alive: true })
+				} as Response);
+
+			const { TerminalConnection } = await import('./terminal-connection');
+			const conn = new TerminalConnection(vi.fn(), vi.fn());
+			const p = conn.connect(DEFAULT_OPTS, 'stale-id');
+			// Two fetches (GET list miss → POST create), each with a .json() await,
+			// so flush more microtasks before the WebSocket is constructed.
+			await flushMicrotasks(12);
+			FakeWebSocket._last!.openWs();
+			await p;
+
+			expect(fetchMock).toHaveBeenCalledTimes(2); // GET list + POST create
+			expect(conn.terminalId).toBe('fresh');
+		});
+	});
+
+	describe('single onExit dispatch', () => {
+		it('fires onExit once across the exit frame and the close that follows it', async () => {
+			const { ws, onExit } = await connectAndOpen();
+
+			ws.recvText({ t: 'exit', code: 0 });
+			ws.closeWs();
+
+			expect(onExit).toHaveBeenCalledTimes(1);
+			expect(onExit).toHaveBeenCalledWith({ reason: 'ended', code: 0 });
+		});
+
+		it('keeps the takeover reason and does not downgrade to ended on close', async () => {
+			const { ws, onExit } = await connectAndOpen();
+
+			ws.recvText({ t: 'takeover' });
+			ws.closeWs();
+
+			expect(onExit).toHaveBeenCalledTimes(1);
+			expect(onExit).toHaveBeenCalledWith({ reason: 'taken_over' });
+		});
+
+		it('stays silent on the close triggered by an intentional dispose()', async () => {
+			const { conn, ws, onExit } = await connectAndOpen();
+
+			conn.dispose();
+			ws.closeWs();
+
+			expect(onExit).not.toHaveBeenCalled();
 		});
 	});
 });

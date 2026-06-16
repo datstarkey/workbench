@@ -12,6 +12,7 @@ import { newSessionCommand, resumeCommand, tryResumeCommand } from '$lib/utils/c
 import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
+import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 
 interface WorkspaceSnapshot {
 	workspaces: ProjectWorkspace[];
@@ -205,16 +206,30 @@ export class WorkspaceStore {
 		this.persist();
 	}
 
+	/** Collect every pane id contained in a workspace. */
+	private paneIdsOf(ws: ProjectWorkspace): string[] {
+		return ws.terminalTabs.flatMap((t) => t.panes.map((p) => p.id));
+	}
+
 	/**
-	 * Remove server terminal ID entries for panes that no longer exist.
-	 * Called after reconcile to keep the map clean.
+	 * Kill the server-side PTYs for panes being intentionally closed (vs a webview
+	 * reload, which only detaches). Without this the PTYs leak on the server and
+	 * count against the terminal cap. Best-effort / fire-and-forget; also drops the
+	 * persisted re-attach mappings so a stale id is never reused.
 	 */
-	pruneServerTerminalIds(livePaneIds: Set<string>): void {
-		const pruned = Object.fromEntries(
-			Object.entries(this.serverTerminalIds).filter(([id]) => livePaneIds.has(id))
-		);
-		if (Object.keys(pruned).length !== Object.keys(this.serverTerminalIds).length) {
-			this.serverTerminalIds = pruned;
+	private disposeServerTerminals(paneIds: Iterable<string>): void {
+		const next = { ...this.serverTerminalIds };
+		let changed = false;
+		for (const paneId of paneIds) {
+			const serverId = next[paneId];
+			if (serverId) {
+				void deleteServerTerminal(serverId);
+				delete next[paneId];
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.serverTerminalIds = next;
 			this.persist();
 		}
 	}
@@ -253,9 +268,11 @@ export class WorkspaceStore {
 	}
 
 	closeAllForProject(projectPath: string) {
-		const ids = this.getWorkspacesForProject(projectPath).map((w) => w.id);
+		const closing = this.getWorkspacesForProject(projectPath);
+		const ids = closing.map((w) => w.id);
 		if (ids.length === 0) return;
 
+		this.disposeServerTerminals(closing.flatMap((w) => this.paneIdsOf(w)));
 		this.workspaces = this.workspaces.filter((w) => !ids.includes(w.id));
 
 		if (this.selectedId && ids.includes(this.selectedId)) {
@@ -268,6 +285,7 @@ export class WorkspaceStore {
 		const ws = this.workspaces.find((w) => w.id === workspaceId);
 		if (!ws) return;
 
+		this.disposeServerTerminals(this.paneIdsOf(ws));
 		const idx = this.workspaces.indexOf(ws);
 		this.workspaces = this.workspaces.filter((w) => w.id !== workspaceId);
 
@@ -322,6 +340,10 @@ export class WorkspaceStore {
 	}
 
 	closeTerminalTab(workspaceId: string, tabId: string) {
+		const tab = this.workspaces
+			.find((w) => w.id === workspaceId)
+			?.terminalTabs.find((t) => t.id === tabId);
+		if (tab) this.disposeServerTerminals(tab.panes.map((p) => p.id));
 		this.updateWorkspace(workspaceId, (w) => {
 			const tabIndex = w.terminalTabs.findIndex((t) => t.id === tabId);
 			const updatedTabs = w.terminalTabs.filter((t) => t.id !== tabId);
@@ -358,10 +380,14 @@ export class WorkspaceStore {
 	}
 
 	removePane(workspaceId: string, paneId: string) {
+		let removed = false;
 		suppressLayout(() => {
 			this.updateWorkspace(workspaceId, (w) => {
 				const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
-				if (!tab || tab.panes.length <= 1) return w;
+				// Guard keeps the last pane; only remove when the active tab actually
+				// holds this pane and has more than one.
+				if (!tab || tab.panes.length <= 1 || !tab.panes.some((p) => p.id === paneId)) return w;
+				removed = true;
 				const updatedTab: TerminalTabState = {
 					...tab,
 					panes: tab.panes.filter((p) => p.id !== paneId)
@@ -372,6 +398,8 @@ export class WorkspaceStore {
 				};
 			});
 		});
+		// Kill the removed pane's server PTY so it doesn't leak.
+		if (removed) this.disposeServerTerminals([paneId]);
 	}
 
 	/** Add a new AI session tab (Claude or Codex) */
@@ -498,6 +526,14 @@ export class WorkspaceStore {
 	}
 
 	restartAISession(workspaceId: string, tabId: string) {
+		// Restart mints a fresh tab with new pane ids, so the old tab's server PTYs
+		// would leak (no close path runs for them). Kill them first.
+		const oldTab = this.workspaces
+			.find((w) => w.id === workspaceId)
+			?.terminalTabs.find((t) => t.id === tabId);
+		if (oldTab && isAISessionType(oldTab.type)) {
+			this.disposeServerTerminals(oldTab.panes.map((p) => p.id));
+		}
 		this.updateWorkspace(workspaceId, (w) => {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);
 			if (!tab || !isAISessionType(tab.type)) return w;

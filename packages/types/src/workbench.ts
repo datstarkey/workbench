@@ -52,10 +52,11 @@ export interface TerminalExitEvent {
 /**
  * Request body for POST /remote/terminals.
  *
- * Desktop xterm path populates the optional desktop-parity env fields
- * (paneId, hookSocket, zdotdir, origZdotdir) so that shell integration and
- * the Claude hook bridge work identically to the local PtyManager path.
- * Mobile omits them — server behaviour is unchanged for mobile.
+ * Desktop xterm path populates the optional desktop-parity fields (paneId,
+ * hookSocket, shell) so the Claude/Codex hook bridge and the project shell work
+ * identically to the local PtyManager path. ZDOTDIR shell-integration is applied
+ * server-side (the resolver lives in workbench-core), so it is NOT a wire field.
+ * Mobile omits the optional fields — server behaviour is unchanged for mobile.
  */
 export interface CreateServerTerminalBody {
 	projectPath: string;
@@ -65,14 +66,12 @@ export interface CreateServerTerminalBody {
 	command?: string;
 	cols: number;
 	rows: number;
-	/** Opaque pane ID forwarded as CLAUDE_PANE_ID env (desktop only). */
+	/** Opaque pane ID forwarded as WORKBENCH_PANE_ID env (desktop only). */
 	paneId?: string;
-	/** Unix socket path for the Claude hook bridge — CLAUDE_HOOK_SOCKET env (desktop only). */
+	/** Hook-bridge address forwarded as WORKBENCH_HOOK_SOCKET env (desktop only). */
 	hookSocket?: string;
-	/** Custom ZDOTDIR for zsh shell integration (desktop only). */
-	zdotdir?: string;
-	/** Original ZDOTDIR restored inside the injected .zshrc (desktop only). */
-	origZdotdir?: string;
+	/** Project-configured shell to launch; empty/absent falls back to $SHELL. */
+	shell?: string;
 }
 
 /**
@@ -96,9 +95,7 @@ export interface ServerTerminalMeta {
  * - `MessageEvent.data` is an `ArrayBuffer` → raw PTY bytes (write to xterm)
  * - `MessageEvent.data` is a `string`        → parse as `WsServerMsg` (control)
  */
-export type WsServerMsg =
-	| { t: 'takeover' }
-	| { t: 'exit'; code: number | null };
+export type WsServerMsg = { t: 'takeover' } | { t: 'exit'; code: number | null };
 
 export interface TerminalActivityEvent {
 	sessionId: string;

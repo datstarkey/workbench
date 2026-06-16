@@ -10,13 +10,14 @@
 	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
-	import { TerminalConnection, deleteServerTerminal } from './terminal-connection';
+	import { TerminalConnection } from './terminal-connection';
 	import { stripAnsi } from '$lib/utils/format';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
 	import { TerminalInputDedup } from './input-dedup';
 	import { isLayoutDisabled } from './layout-guard';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
+	import { terminalHookSocket } from '$lib/server-mode';
 
 	let {
 		sessionId: paneId,
@@ -55,8 +56,6 @@
 	let resizeObserver: ResizeObserver | null = null;
 	let resizeRAFId: number | null = null;
 	let intersectionObserver: IntersectionObserver | null = null;
-	let exited = false;
-	let takenOver = false;
 	let searchAddon = $state<SearchAddon | null>(null);
 	let searchOpen = $state(false);
 	let shellState: ShellIntegrationState | null = null;
@@ -272,10 +271,20 @@
 			pendingInputAtMs = null;
 		}
 
-		// Decode for claude-retry scan (only first 2KB matters)
+		// Feed AI-pane output through the activity/quiescence tracker. Server-hosted
+		// panes stream over the WS and don't emit the terminal:data events the store
+		// listens to for local panes, so drive it here. Decode once (shell panes skip
+		// it) and reuse the decoded text for the claude-retry scan.
+		const paneType = claudeSessionStore.paneType(paneId);
+		let decoded: string | null = null;
+		if (paneType !== null) {
+			decoded = new TextDecoder().decode(bytes);
+			claudeSessionStore.noteTerminalOutput(paneId, decoded);
+		}
+
+		// Scan early output for a Claude CLI session error to auto-retry.
 		if (startupCommand?.startsWith('claude') && !claudeRetryCmd && earlyOutput.length < 2048) {
-			const text = new TextDecoder().decode(bytes);
-			detectClaudeRetry(text);
+			detectClaudeRetry(decoded ?? new TextDecoder().decode(bytes));
 		}
 
 		if (inPerformanceMode()) {
@@ -502,49 +511,52 @@
 
 			// Create the WS connection. On (re)attach the server replays scrollback —
 			// reset xterm first to avoid double-rendering into the still-mounted terminal.
-			conn = new TerminalConnection(paneId);
-
-			conn.onData = (bytes: Uint8Array) => {
-				writeTerminalData(bytes);
-			};
-
-			conn.onExit = ({ reason, code }) => {
-				if (reason === 'taken_over') {
-					// Another client stole this terminal — show a banner but don't
-					// mark as exited so the user can reconnect if needed.
-					takenOver = true;
-					terminal?.writeln('\r\n\x1b[33m[opened elsewhere]\x1b[0m');
-				} else {
-					// Shell ended (or WS closed without a prior control frame).
-					exited = true;
-					if (code != null) {
+			conn = new TerminalConnection(
+				(bytes: Uint8Array) => {
+					writeTerminalData(bytes);
+				},
+				({ reason, code }: { reason: string; code?: number }) => {
+					if (reason === 'taken_over') {
+						// Another client took over this terminal — show a banner. The PTY
+						// keeps running so the user can reconnect by re-focusing this pane.
+						terminal?.writeln('\r\n\x1b[33m[opened elsewhere]\x1b[0m');
+					} else if (code != null) {
 						terminal?.writeln(`\r\n[process exited: ${code}]`);
 					} else {
 						terminal?.writeln('\r\n[session ended]');
 					}
+				},
+				() => {
+					// Reset xterm before the server replays scrollback (re-attach path).
+					terminal?.reset();
 				}
-			};
+			);
 
-			// Reset xterm before the server replays scrollback (re-attach path).
-			if (existingServerTerminalId) {
-				terminal.reset();
-			}
+			// Forward the hook-bridge socket so server-hosted claude/codex panes fire
+			// the hook bridge (activity/quiescence) exactly like local PTYs.
+			const hookSocket = (await terminalHookSocket()) ?? undefined;
 
 			await conn.connect(
 				{
-					projectPath: cwd ?? project.path,
+					// projectPath MUST be the registered project — the server's
+					// resolve_cwd rejects an unregistered path; a worktree rides along in
+					// worktreePath (and is validated against the project's worktrees).
+					projectPath: project.path,
 					...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 					name: paneId,
 					command: startupCommand,
 					cols: terminal.cols,
-					rows: terminal.rows
+					rows: terminal.rows,
+					paneId,
+					shell: project.shell,
+					hookSocket
 				},
 				existingServerTerminalId
 			);
 
 			// Notify workspace store of the assigned server terminal ID.
-			if (conn.serverTerminalId) {
-				onServerTerminalIdChange?.(paneId, conn.serverTerminalId);
+			if (conn.terminalId) {
+				onServerTerminalIdChange?.(paneId, conn.terminalId);
 			}
 
 			// VS Code-style resize: use ResizeObserver but with smart

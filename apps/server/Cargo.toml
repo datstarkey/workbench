@@ -23,6 +23,11 @@ uuid = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Process-GROUP termination (kill the shell + its descendants) on Unix — parity
+# with the desktop PtyManager so closing a terminal doesn't orphan child processes.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 reqwest = { workspace = true }
 tempfile = { workspace = true }

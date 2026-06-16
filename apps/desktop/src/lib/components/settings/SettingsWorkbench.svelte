@@ -30,7 +30,7 @@
 
 	let nativeAvailable = $state(false);
 	let ghAuthenticated: boolean | null = $state(null);
-	let server: ServerStatus = $state({ running: false, address: null });
+	let server: ServerStatus = $state({ running: false, address: null, token: null });
 	let serverError: string | null = $state(null);
 
 	onMount(async () => {
@@ -73,7 +73,7 @@
 				server = await startServer(port);
 			} catch (e) {
 				serverError = e instanceof Error ? e.message : String(e);
-				server = { running: false, address: null };
+				server = { running: false, address: null, token: null };
 			}
 		}
 	}

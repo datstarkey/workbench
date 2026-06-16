@@ -37,6 +37,9 @@
 				{active}
 				{cwd}
 				startupCommand={pane.startupCommand}
+				existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
+				onServerTerminalIdChange={(paneId, serverTerminalId) =>
+					workspaceStore.setServerTerminalId(paneId, serverTerminalId)}
 			/>
 			{#if panes.length > 1}
 				<button

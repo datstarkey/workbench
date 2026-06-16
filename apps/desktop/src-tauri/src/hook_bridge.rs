@@ -188,7 +188,19 @@ fn should_emit_project_refresh_for_hook(hook: &Value) -> bool {
 /// Emit a project refresh event. Caller must verify `should_emit_project_refresh_for_hook` first.
 fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
     let pty_manager = handle.state::<PtyManager>();
-    let Some(project_path) = pty_manager.project_path_for_session(pane_id) else {
+    // Resolve the project to refresh. Local PtyManager panes are looked up by
+    // pane id; server-hosted xterm panes (loopback PTY) aren't in that map, so
+    // fall back to the `cwd` the hook itself reports — which works for any PTY
+    // backend and is strictly more general.
+    let Some(project_path) = pty_manager.project_path_for_session(pane_id).or_else(|| {
+        // Server-hosted panes aren't in the PtyManager map; fall back to the hook's
+        // reported cwd, normalized to the git repo root so the refresh keys on the
+        // same path the local PtyManager path uses (which resolves via git rev-parse)
+        // — a subdir/worktree cwd would otherwise key a project no store recognizes.
+        hook.get("cwd")
+            .and_then(|v| v.as_str())
+            .and_then(crate::pty::resolve_repo_root)
+    }) else {
         return;
     };
     let dispatcher = handle.state::<RefreshDispatcher>();

@@ -78,6 +78,7 @@ macro_rules! build_invoke_handler {
             commands::apply_codex_integration,
             commands::get_hook_logs,
             commands::clear_hook_logs,
+            commands::terminal_hook_socket,
             commands::is_native_terminal_available,
             git_commands::git_status,
             git_commands::git_log,
@@ -154,14 +155,19 @@ pub fn run() {
             // before the webview mounts. `spawn_embedded` binds before
             // returning, so by the time setup() returns the server is ready.
             let sc = app.state::<server_control::ServerControl>();
-            let loopback_handle =
-                tauri::async_runtime::block_on(workbench_server::spawn_embedded(
-                    "127.0.0.1",
-                    0,
-                    None,
-                ))
-                .expect("failed to start loopback embedded server");
-            sc.set_loopback(loopback_handle);
+            match tauri::async_runtime::block_on(workbench_server::spawn_embedded(
+                "127.0.0.1",
+                0,
+                None,
+            )) {
+                Ok(handle) => sc.set_loopback(handle),
+                // Degrade instead of aborting launch: terminals will fail to connect
+                // (surfaced per-pane) but the rest of the app still works. A hard
+                // panic here would take down the whole window on a transient bind
+                // failure (port exhaustion, sandbox), which terminals never used to
+                // require.
+                Err(e) => log::error!("failed to start loopback embedded server: {e}"),
+            }
 
             Ok(())
         });

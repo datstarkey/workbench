@@ -58,7 +58,7 @@ fn update_activity_state(
     }
 }
 
-fn resolve_repo_root(path: &str) -> Option<String> {
+pub(crate) fn resolve_repo_root(path: &str) -> Option<String> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(path)

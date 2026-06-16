@@ -384,6 +384,14 @@ pub fn get_hook_logs(hook_bridge: State<'_, HookBridgeState>) -> Result<Vec<Hook
     Ok(hook_bridge.get_logs())
 }
 
+/// The hook-bridge socket address (`127.0.0.1:<port>`) the frontend forwards to
+/// the embedded server so server-hosted xterm panes set `WORKBENCH_HOOK_SOCKET`
+/// and the Claude/Codex hook bridge fires for them — parity with local PTYs.
+#[tauri::command]
+pub fn terminal_hook_socket(hook_bridge: State<'_, HookBridgeState>) -> Option<String> {
+    hook_bridge.socket_path().map(str::to_string)
+}
+
 #[tauri::command]
 pub fn clear_hook_logs(
     hook_bridge: State<'_, HookBridgeState>,
