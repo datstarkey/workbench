@@ -10,34 +10,38 @@
 	import '@xterm/xterm/css/xterm.css';
 	import type { ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
-	import {
-		createTerminal,
-		writeTerminal,
-		resizeTerminal,
-		killTerminal,
-		cleanupSessionInput,
-		onSessionTerminalData,
-		onSessionTerminalExit
-	} from '$lib/utils/terminal';
+	import { TerminalConnection } from './terminal-connection';
 	import { stripAnsi } from '$lib/utils/format';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
 	import { TerminalInputDedup } from './input-dedup';
 	import { isLayoutDisabled } from './layout-guard';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
+	import { terminalHookSocket } from '$lib/server-mode';
 
 	let {
-		sessionId,
+		sessionId: paneId,
 		project,
 		active,
 		startupCommand,
-		cwd
+		cwd,
+		existingServerTerminalId,
+		onServerTerminalIdChange
 	}: {
+		/**
+		 * Stable pane identity (uid). Previously the Tauri PTY session ID; now used
+		 * as the loopback pane identity forwarded to the server for hook correlation.
+		 * Kept as `sessionId` for caller compatibility (TerminalGrid passes pane.id here).
+		 */
 		sessionId: string;
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
 		cwd?: string;
+		/** If the workspace persisted a server terminal ID, try to re-attach on mount. */
+		existingServerTerminalId?: string;
+		/** Notify the workspace store when our server terminal ID changes (create / re-attach). */
+		onServerTerminalIdChange?: (paneId: string, serverTerminalId: string) => void;
 	} = $props();
 
 	// VS Code pattern: if WebGL fails once, all future terminals skip it
@@ -48,12 +52,10 @@
 	let fitAddon: FitAddon | null = null;
 	let webglAddon: WebglAddon | null = null;
 	let webLinksLoaded = false;
-	let unlistenData: (() => void) | null = null;
-	let unlistenExit: (() => void) | null = null;
+	let conn: TerminalConnection | null = null;
 	let resizeObserver: ResizeObserver | null = null;
 	let resizeRAFId: number | null = null;
 	let intersectionObserver: IntersectionObserver | null = null;
-	let exited = false;
 	let searchAddon = $state<SearchAddon | null>(null);
 	let searchOpen = $state(false);
 	let shellState: ShellIntegrationState | null = null;
@@ -93,7 +95,7 @@
 
 	// Offscreen terminals still need periodic flushing
 	let outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
-	let offscreenQueue = '';
+	let offscreenQueue: Uint8Array | null = null;
 
 	let removeCopyListener: (() => void) | null = null;
 
@@ -101,9 +103,9 @@
 	let earlyOutput = '';
 	let claudeRetryCmd = '';
 
-	function detectClaudeRetry(data: string): void {
+	function detectClaudeRetry(text: string): void {
 		if (!startupCommand?.startsWith('claude') || claudeRetryCmd) return;
-		earlyOutput += data;
+		earlyOutput += text;
 		if (earlyOutput.length > 2048) {
 			earlyOutput = '';
 			return;
@@ -117,7 +119,7 @@
 			claudeRetryCmd = retryCmd;
 			earlyOutput = '';
 			setTimeout(() => {
-				writeTerminal(sessionId, `${retryCmd}\n`);
+				conn?.write(`${retryCmd}\n`);
 			}, 500);
 		}
 	}
@@ -235,7 +237,7 @@
 				: 0;
 
 		console.info('[TerminalPerf]', {
-			sessionId,
+			paneId,
 			performanceMode: inPerformanceMode(),
 			outputEvents: outputEventsSinceLog,
 			outputBytes: outputBytesSinceLog,
@@ -254,30 +256,53 @@
 		inputLatencyTotalMsSinceLog = 0;
 	}
 
-	// VS Code pattern: write data directly to xterm with a callback.
-	// Active terminals get immediate writes. Offscreen terminals batch
-	// into a queue flushed on a timer to avoid wasted rendering work.
-	function writeTerminalData(data: string) {
+	/**
+	 * Write PTY bytes into xterm. Accepts Uint8Array from the WS binary frame.
+	 * For active terminals: write directly. For offscreen: batch into a queue
+	 * flushed on a timer to avoid wasted rendering work.
+	 */
+	function writeTerminalData(bytes: Uint8Array) {
 		outputEventsSinceLog += 1;
-		outputBytesSinceLog += data.length;
+		outputBytesSinceLog += bytes.length;
 
-		if (pendingInputAtMs !== null && data.length > 0) {
+		if (pendingInputAtMs !== null && bytes.length > 0) {
 			inputLatencySamplesSinceLog += 1;
 			inputLatencyTotalMsSinceLog += performance.now() - pendingInputAtMs;
 			pendingInputAtMs = null;
 		}
 
-		detectClaudeRetry(data);
+		// Feed AI-pane output through the activity/quiescence tracker. Server-hosted
+		// panes stream over the WS and don't emit the terminal:data events the store
+		// listens to for local panes, so drive it here. Decode once (shell panes skip
+		// it) and reuse the decoded text for the claude-retry scan.
+		const paneType = claudeSessionStore.paneType(paneId);
+		let decoded: string | null = null;
+		if (paneType !== null) {
+			decoded = new TextDecoder().decode(bytes);
+			claudeSessionStore.noteTerminalOutput(paneId, decoded);
+		}
+
+		// Scan early output for a Claude CLI session error to auto-retry.
+		if (startupCommand?.startsWith('claude') && !claudeRetryCmd && earlyOutput.length < 2048) {
+			detectClaudeRetry(decoded ?? new TextDecoder().decode(bytes));
+		}
 
 		if (inPerformanceMode()) {
 			// Offscreen: batch into queue, flush on timer
-			offscreenQueue += data;
+			if (offscreenQueue === null) {
+				offscreenQueue = bytes;
+			} else {
+				const merged = new Uint8Array(offscreenQueue.length + bytes.length);
+				merged.set(offscreenQueue);
+				merged.set(bytes, offscreenQueue.length);
+				offscreenQueue = merged;
+			}
 			if (!outputFlushTimer) {
 				outputFlushTimer = setTimeout(() => {
 					outputFlushTimer = null;
-					if (!terminal || offscreenQueue.length === 0) return;
+					if (!terminal || offscreenQueue === null) return;
 					const batched = offscreenQueue;
-					offscreenQueue = '';
+					offscreenQueue = null;
 					const start = performance.now();
 					terminal.write(batched);
 					outputFlushesSinceLog += 1;
@@ -289,7 +314,7 @@
 
 		// Active terminal: write directly with callback (VS Code pattern)
 		const start = performance.now();
-		terminal?.write(data, () => {
+		terminal?.write(bytes, () => {
 			outputFlushesSinceLog += 1;
 			outputFlushMsSinceLog += performance.now() - start;
 		});
@@ -309,9 +334,9 @@
 				fitTerminal();
 			}
 			// Flush offscreen buffer if there's data waiting
-			if (offscreenQueue.length > 0) {
+			if (offscreenQueue !== null && offscreenQueue.length > 0) {
 				const batched = offscreenQueue;
-				offscreenQueue = '';
+				offscreenQueue = null;
 				terminal.write(batched);
 			}
 		}
@@ -332,7 +357,7 @@
 
 	onMount(async () => {
 		try {
-			inputDedup = new TerminalInputDedup(sessionId, () => claudeSessionStore.paneType(sessionId));
+			inputDedup = new TerminalInputDedup(paneId, () => claudeSessionStore.paneType(paneId));
 
 			// Wait for fonts to load so cell measurements are accurate
 			await document.fonts.ready;
@@ -382,15 +407,15 @@
 				// (e.g. to clear a selection) which makes it feel unresponsive in TUIs.
 				if (event.key === 'Escape') {
 					if (event.type === 'keydown') {
-						const isAI = claudeSessionStore.paneType(sessionId) !== null;
-						writeTerminal(sessionId, isAI ? '\x1b\x1b' : '\x1b');
+						const isAI = claudeSessionStore.paneType(paneId) !== null;
+						conn?.write(isAI ? '\x1b\x1b' : '\x1b');
 					}
 					return intercept(event);
 				}
 				// Always forward Ctrl+C as interrupt.
 				if (event.key === 'c' && event.ctrlKey && !event.shiftKey && !event.metaKey) {
 					if (event.type === 'keydown') {
-						writeTerminal(sessionId, '\x03');
+						conn?.write('\x03');
 					}
 					return intercept(event);
 				}
@@ -402,7 +427,7 @@
 					!event.metaKey
 				) {
 					if (event.type === 'keydown') {
-						const paneType = claudeSessionStore.paneType(sessionId);
+						const paneType = claudeSessionStore.paneType(paneId);
 						// Codex: Ctrl+J (LF).
 						// Claude: ESC+CR — same sequence VS Code's `/terminal-setup`
 						// keybinding sends; avoids bracketed-paste doubling.
@@ -414,7 +439,7 @@
 								: paneType === 'claude'
 									? '\x1b\r'
 									: '\x1b[200~\n\x1b[201~';
-						writeTerminal(sessionId, seq);
+						conn?.write(seq);
 					}
 					return intercept(event);
 				}
@@ -460,8 +485,9 @@
 				if (cols <= 0 || rows <= 0) return;
 				lastCols = cols;
 				lastRows = rows;
-				claudeSessionStore.noteLocalViewportChange(sessionId);
-				void resizeTerminal(sessionId, cols, rows);
+				claudeSessionStore.noteLocalViewportChange(paneId);
+				// Guard on readyState===OPEN is inside conn.resize()
+				conn?.resize(cols, rows);
 			});
 
 			terminal.onData((data: string) => {
@@ -471,35 +497,67 @@
 				// PTY doesn't see the text twice; the guard reports each drop.
 				if (inputDedup.isDuplicateFlush(data, now)) return;
 				inputDedup.recordSent(data, now);
-				claudeSessionStore.noteLocalInput(sessionId, data);
+				claudeSessionStore.noteLocalInput(paneId, data);
 				inputEventsSinceLog += 1;
 				pendingInputAtMs = now;
-				writeTerminal(sessionId, data);
+				conn?.write(data);
 			});
 
-			unlistenData = await onSessionTerminalData(sessionId, (event) => {
-				writeTerminalData(event.data);
-			});
-
-			unlistenExit = await onSessionTerminalExit(sessionId, (event) => {
-				exited = true;
-				terminal?.writeln(`\r\n[process exited: ${event.exitCode}]`);
-			});
-
-			// Fit before creating PTY so it starts with the correct size.
+			// Fit before connecting PTY so it starts with the correct size.
 			fitTerminal();
 			if (terminal.cols <= 0 || terminal.rows <= 0) {
 				terminal.resize(lastCols > 0 ? lastCols : 80, lastRows > 0 ? lastRows : 24);
 			}
 
-			await createTerminal({
-				id: sessionId,
-				projectPath: cwd ?? project.path,
-				shell: project.shell || '',
-				cols: terminal.cols,
-				rows: terminal.rows,
-				startupCommand
-			});
+			// Create the WS connection. On (re)attach the server replays scrollback —
+			// reset xterm first to avoid double-rendering into the still-mounted terminal.
+			conn = new TerminalConnection(
+				(bytes: Uint8Array) => {
+					writeTerminalData(bytes);
+				},
+				({ reason, code }: { reason: string; code?: number }) => {
+					if (reason === 'taken_over') {
+						// Another client took over this terminal — show a banner. The PTY
+						// keeps running so the user can reconnect by re-focusing this pane.
+						terminal?.writeln('\r\n\x1b[33m[opened elsewhere]\x1b[0m');
+					} else if (code != null) {
+						terminal?.writeln(`\r\n[process exited: ${code}]`);
+					} else {
+						terminal?.writeln('\r\n[session ended]');
+					}
+				},
+				() => {
+					// Reset xterm before the server replays scrollback (re-attach path).
+					terminal?.reset();
+				}
+			);
+
+			// Forward the hook-bridge socket so server-hosted claude/codex panes fire
+			// the hook bridge (activity/quiescence) exactly like local PTYs.
+			const hookSocket = (await terminalHookSocket()) ?? undefined;
+
+			await conn.connect(
+				{
+					// projectPath MUST be the registered project — the server's
+					// resolve_cwd rejects an unregistered path; a worktree rides along in
+					// worktreePath (and is validated against the project's worktrees).
+					projectPath: project.path,
+					...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
+					name: paneId,
+					command: startupCommand,
+					cols: terminal.cols,
+					rows: terminal.rows,
+					paneId,
+					shell: project.shell,
+					hookSocket
+				},
+				existingServerTerminalId
+			);
+
+			// Notify workspace store of the assigned server terminal ID.
+			if (conn.terminalId) {
+				onServerTerminalIdChange?.(paneId, conn.terminalId);
+			}
 
 			// VS Code-style resize: use ResizeObserver but with smart
 			// split-axis debouncing instead of a flat 500ms delay
@@ -519,7 +577,7 @@
 			// legitimate trailing whitespace (e.g. in code) is preserved.
 			// CRLF-safe: xterm joins lines with \r\n on Windows.
 			const onCopy = (event: ClipboardEvent) => {
-				if (claudeSessionStore.paneType(sessionId) === null) return;
+				if (claudeSessionStore.paneType(paneId) === null) return;
 				const data = event.clipboardData?.getData('text/plain');
 				if (!data) return;
 				const cleaned = data.replace(/[ \t]+(?=\r?\n|$)/g, '');
@@ -545,7 +603,7 @@
 					const entry = entries[0];
 					terminalInView = Boolean(entry?.isIntersecting && entry.intersectionRatio > 0);
 					if (!active || !documentVisible || !terminalInView) return;
-					claudeSessionStore.noteLocalViewportChange(sessionId);
+					claudeSessionStore.noteLocalViewportChange(paneId);
 					fitTerminal();
 				},
 				{ threshold: 0.01 }
@@ -555,7 +613,7 @@
 			const onVisibilityChange = () => {
 				documentVisible = document.visibilityState === 'visible';
 				if (!active || !documentVisible || !terminalInView) return;
-				claudeSessionStore.noteLocalViewportChange(sessionId);
+				claudeSessionStore.noteLocalViewportChange(paneId);
 				flushPendingResize();
 				fitTerminal();
 			};
@@ -578,18 +636,16 @@
 		if (perfLogInterval) clearInterval(perfLogInterval);
 		removeVisibilityListener?.();
 		removeCopyListener?.();
-		unlistenData?.();
-		unlistenExit?.();
 		resizeObserver?.disconnect();
 		intersectionObserver?.disconnect();
-		cleanupSessionInput(sessionId);
 		shellState?.dispose();
 		searchAddon?.dispose();
 		webglAddon?.dispose();
 		terminal?.dispose();
-		if (!exited) {
-			void killTerminal(sessionId);
-		}
+		// Detach only — the PTY keeps running in the server so it survives a
+		// webview reload. Callers must call deleteServerTerminal(id) explicitly
+		// when the user intentionally closes the tab.
+		conn?.dispose();
 	});
 </script>
 
