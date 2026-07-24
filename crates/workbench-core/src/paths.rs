@@ -33,10 +33,6 @@ pub fn codex_config_dir() -> PathBuf {
     home_dir().join(".codex")
 }
 
-pub fn agents_dir() -> PathBuf {
-    home_dir().join(".agents")
-}
-
 /// Build a PATH that includes common CLI tool locations.
 /// macOS/Linux GUI apps get a minimal PATH that excludes package manager bins,
 /// so spawned commands like `gh` fail unless we enrich it.
@@ -150,49 +146,12 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove a file, directory, or symlink if it exists.
-/// Uses `symlink_metadata` so broken symlinks are detected and removed.
-pub fn remove_path_if_exists(path: &Path) -> Result<()> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e.into()),
-    };
-    if meta.is_dir() && !meta.file_type().is_symlink() {
-        fs::remove_dir_all(path)?;
-    } else {
-        fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
 /// Copy a file, creating parent directories as needed.
 pub fn copy_file(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::copy(src, dst)?;
-    Ok(())
-}
-
-/// Recursively copy a directory, skipping symlinks.
-/// Suitable for copying workspace files (env, config) to worktrees.
-pub fn copy_dir_skip_symlinks(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let dest_path = dst.join(entry.file_name());
-        let meta = fs::symlink_metadata(&source_path)?;
-
-        if meta.file_type().is_symlink() {
-            continue;
-        } else if meta.is_dir() {
-            copy_dir_skip_symlinks(&source_path, &dest_path)?;
-        } else if meta.is_file() {
-            copy_file(&source_path, &dest_path)?;
-        }
-    }
     Ok(())
 }
 
@@ -322,51 +281,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
     }
 
-    // --- remove_path_if_exists ---
-
-    #[test]
-    fn test_remove_path_if_exists_file() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("removeme.txt");
-        fs::write(&path, "bye").unwrap();
-        assert!(path.exists());
-        remove_path_if_exists(&path).unwrap();
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn test_remove_path_if_exists_directory() {
-        let dir = tempdir().unwrap();
-        let sub = dir.path().join("subdir");
-        fs::create_dir_all(sub.join("inner")).unwrap();
-        fs::write(sub.join("inner").join("file.txt"), "data").unwrap();
-        assert!(sub.exists());
-        remove_path_if_exists(&sub).unwrap();
-        assert!(!sub.exists());
-    }
-
-    #[test]
-    fn test_remove_path_if_exists_nonexistent() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("ghost.txt");
-        assert!(remove_path_if_exists(&path).is_ok());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_remove_path_if_exists_broken_symlink() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempdir().unwrap();
-        let link = dir.path().join("broken_link");
-        symlink(dir.path().join("nonexistent"), &link).unwrap();
-        assert!(fs::symlink_metadata(&link).is_ok()); // link entry exists
-        assert!(!link.exists()); // but target does not
-
-        remove_path_if_exists(&link).unwrap();
-        assert!(!fs::symlink_metadata(&link).is_ok()); // link removed
-    }
-
     // --- copy_file ---
 
     #[test]
@@ -387,44 +301,6 @@ mod tests {
         fs::write(&src, "deep copy").unwrap();
         copy_file(&src, &dst).unwrap();
         assert_eq!(fs::read_to_string(&dst).unwrap(), "deep copy");
-    }
-
-    // --- copy_dir_skip_symlinks ---
-
-    #[test]
-    fn test_copy_dir_skip_symlinks_copies_files() {
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("src");
-        let dst = dir.path().join("dst");
-        fs::create_dir_all(src.join("sub")).unwrap();
-        fs::write(src.join("root.txt"), "root").unwrap();
-        fs::write(src.join("sub").join("nested.txt"), "nested").unwrap();
-
-        copy_dir_skip_symlinks(&src, &dst).unwrap();
-
-        assert_eq!(fs::read_to_string(dst.join("root.txt")).unwrap(), "root");
-        assert_eq!(
-            fs::read_to_string(dst.join("sub").join("nested.txt")).unwrap(),
-            "nested"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_copy_dir_skip_symlinks_skips_symlinks() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempdir().unwrap();
-        let src = dir.path().join("src");
-        let dst = dir.path().join("dst");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(src.join("real.txt"), "real").unwrap();
-        symlink(src.join("real.txt"), src.join("link.txt")).unwrap();
-
-        copy_dir_skip_symlinks(&src, &dst).unwrap();
-
-        assert!(dst.join("real.txt").exists());
-        assert!(!dst.join("link.txt").exists());
     }
 
     // --- ensure_script ---
