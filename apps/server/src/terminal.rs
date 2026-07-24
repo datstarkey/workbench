@@ -253,16 +253,13 @@ impl TerminalManager {
                         }
                     }
                 }
-                // Shell exited (PTY EOF): the child is a zombie now, so reap it for
-                // the real exit code and publish it BEFORE waking sockets so the exit
-                // frame can carry the code. Then sweep any detached process-group
-                // members (e.g. a backgrounded `vite &`) the shell left behind.
-                if let Ok(Some(status)) = lock(&session.child).try_wait() {
-                    *lock(&session.exit_code) = Some(status.exit_code() as i64);
-                }
+                // Shell exited (PTY EOF). Sweep the process group (SIGTERM the children
+                // BEFORE the leader is reaped, so killpg never targets a freed PID) and
+                // capture the leader's real exit code in the same pass, publishing it
+                // before waking sockets so the exit frame carries the code.
+                terminate_process_group(&session);
                 lock(&session.meta).alive = false;
                 let _ = session.done_tx.send(true);
-                terminate_process_group(&session.child);
             });
         }
 
@@ -311,7 +308,7 @@ impl TerminalManager {
                 // Tear down the whole process GROUP (shell + descendants) on a detached
                 // thread so this async route returns at once — the SIGTERM→grace→SIGKILL
                 // escalation must not block a tokio worker.
-                std::thread::spawn(move || terminate_process_group(&s.child));
+                std::thread::spawn(move || terminate_process_group(&s));
                 true
             }
             None => false,
@@ -437,7 +434,12 @@ pub async fn terminal_attach(
 fn exit_frame(session: &TerminalSession) -> Message {
     // Prefer the code the reader thread captured when it reaped the child; fall back
     // to a best-effort try_wait (the child may have just become reapable).
-    let code = (*lock(&session.exit_code)).or_else(|| match lock(&session.child).try_wait() {
+    //
+    // Copy the recorded code out and drop the exit_code guard BEFORE touching the
+    // child lock: terminate_process_group acquires child→exit_code, so holding
+    // exit_code across the try_wait here would be a lock-order inversion (deadlock).
+    let recorded = *lock(&session.exit_code);
+    let code = recorded.or_else(|| match lock(&session.child).try_wait() {
         Ok(Some(status)) => Some(status.exit_code() as i64),
         _ => None,
     });
@@ -448,31 +450,46 @@ fn exit_frame(session: &TerminalSession) -> Message {
     Message::Text(json)
 }
 
-/// Terminate the shell AND its descendants. The PTY slave calls `setsid()`, so the
+/// Terminate the shell AND its descendants, capturing the leader's exit code into
+/// `session.exit_code` when it is reaped. The PTY slave calls `setsid()`, so the
 /// child PID is its process-group id; signalling the GROUP reaps detached children
 /// (a backgrounded `vite &`, language servers) that a single-PID kill would orphan.
+///
+/// Signal-BEFORE-reap is load-bearing: the group is signalled while the leader still
+/// holds the pgid, so `killpg` never targets a freed (and possibly recycled) PID.
 /// Mirrors the desktop PtyManager path. Best-effort; the SIGTERM→grace→SIGKILL
-/// escalation blocks, so callers run it on a dedicated thread.
+/// escalation blocks, so callers run it on a dedicated thread or the reader thread.
 #[cfg(unix)]
-fn terminate_process_group(child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>) {
+fn terminate_process_group(session: &TerminalSession) {
     use std::time::{Duration, Instant};
-    let pgid = match lock(child).process_id() {
+    let pgid = match lock(&session.child).process_id() {
         Some(pid) => pid as libc::pid_t,
-        None => {
-            let _ = lock(child).kill();
-            return;
-        }
+        None => return,
     };
-    // SIGHUP + SIGTERM for a graceful shutdown of the whole group.
+    // SIGHUP + SIGTERM the whole group FIRST — before any try_wait reaps the leader
+    // and frees its PID. On a natural exit the leader is already a zombie (still
+    // occupying the pgid), so this reaches surviving children without racing a reap.
     unsafe {
         libc::killpg(pgid, libc::SIGHUP);
         libc::killpg(pgid, libc::SIGTERM);
     }
-    // Wait briefly for graceful exit, then SIGKILL anything still alive.
+    // Wait briefly for graceful exit (reaping the leader for its real code), then
+    // SIGKILL anything still alive.
     let deadline = Instant::now() + Duration::from_millis(500);
     loop {
-        match lock(child).try_wait() {
-            Ok(Some(_)) => return,
+        // Bind the try_wait result so the child guard (a scrutinee temporary that
+        // would otherwise live for the whole match) is dropped before we sleep or
+        // take the exit_code lock — exit_frame takes exit_code first, so holding
+        // child across it would invert the lock order.
+        let reaped = lock(&session.child).try_wait();
+        match reaped {
+            Ok(Some(status)) => {
+                let mut code = lock(&session.exit_code);
+                if code.is_none() {
+                    *code = Some(status.exit_code() as i64);
+                }
+                return;
+            }
             Ok(None) if Instant::now() >= deadline => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(25)),
             Err(_) => break,
@@ -484,16 +501,22 @@ fn terminate_process_group(child: &Mutex<Box<dyn portable_pty::Child + Send + Sy
 }
 
 #[cfg(windows)]
-fn terminate_process_group(child: &Mutex<Box<dyn portable_pty::Child + Send + Sync>>) {
+fn terminate_process_group(session: &TerminalSession) {
     // taskkill /T terminates the PID and its whole descendant tree.
-    match lock(child).process_id() {
+    let pid = lock(&session.child).process_id();
+    match pid {
         Some(pid) => {
             let _ = std::process::Command::new("taskkill")
                 .args(["/T", "/F", "/PID", &pid.to_string()])
                 .output();
         }
-        None => {
-            let _ = lock(child).kill();
+        None => return,
+    }
+    let reaped = lock(&session.child).try_wait();
+    if let Ok(Some(status)) = reaped {
+        let mut code = lock(&session.exit_code);
+        if code.is_none() {
+            *code = Some(status.exit_code() as i64);
         }
     }
 }
@@ -509,10 +532,7 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
     let mut epoch_rx = session.attacher_kick_tx.subscribe();
     // Fetch-add the epoch atomically. The NEW value is our ticket; the OLD value was
     // held by any previously attached client.
-    let my_epoch = session
-        .attacher_epoch
-        .fetch_add(1, Ordering::SeqCst)
-        + 1;
+    let my_epoch = session.attacher_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     // Notify any previously attached client so its `epoch_rx.changed()` fires and it
     // closes. The _epoch_rx_keeper receiver keeps the channel alive, so send() never
     // returns Err (it is a no-op only when there are zero receivers).
