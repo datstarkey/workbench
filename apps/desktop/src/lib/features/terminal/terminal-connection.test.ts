@@ -19,6 +19,18 @@ import { invokeSpy, clearInvokeMocks } from '../../../test/tauri-mocks';
 
 // ── Fake WebSocket ────────────────────────────────────────────────────────────
 
+/** Node only grew a global `CloseEvent` in v23; a minimal stand-in carrying the
+ * fields TerminalConnection reads keeps this suite runnable on older runtimes. */
+class FakeCloseEvent extends Event {
+	readonly code: number;
+	readonly reason: string;
+	constructor(type: string, init: { code?: number; reason?: string } = {}) {
+		super(type);
+		this.code = init.code ?? 1000;
+		this.reason = init.reason ?? '';
+	}
+}
+
 /** Minimal WebSocket fake that tracks construction args and exposes event hooks. */
 class FakeWebSocket {
 	static readonly CONNECTING = 0 as const;
@@ -70,7 +82,7 @@ class FakeWebSocket {
 	/** Simulate WS close (detach / shell exited). */
 	closeWs(code = 1000, reason = ''): void {
 		this.readyState = FakeWebSocket.CLOSED;
-		this.onclose?.(new CloseEvent('close', { code, reason }));
+		this.onclose?.(new FakeCloseEvent('close', { code, reason }) as CloseEvent);
 	}
 }
 
