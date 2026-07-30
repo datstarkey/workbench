@@ -72,6 +72,7 @@ macro_rules! build_invoke_handler {
             commands::clone_repo,
             commands::delete_branch,
             commands::open_url,
+            commands::send_fallback_notification,
             commands::check_claude_integration,
             commands::check_codex_integration,
             commands::apply_claude_integration,

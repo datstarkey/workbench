@@ -955,8 +955,31 @@ describe('WorkspaceStore', () => {
 			expect(ctx).toEqual({
 				workspaceId: 'ws-a',
 				tabId: 'tab-1',
-				projectPath: '/projects/test'
+				projectPath: '/projects/test',
+				cwd: '/projects/test'
 			});
+		});
+
+		it('reports the worktree path as cwd for a worktree workspace', () => {
+			// Session JSONL is keyed by the directory the pane actually runs in, so a
+			// worktree tab must not resolve to its parent project path.
+			const tab = makeTab({
+				id: 'tab-1',
+				type: 'claude',
+				panes: [{ id: 'pane-1', type: 'claude' }]
+			});
+			const ws = makeWorkspace({
+				id: 'ws-a',
+				projectPath: '/projects/test',
+				worktreePath: '/projects/test-feature',
+				terminalTabs: [tab]
+			});
+			store.workspaces = [ws];
+
+			const ctx = store.findAIPaneContext('pane-1', 'claude');
+
+			expect(ctx?.cwd).toBe('/projects/test-feature');
+			expect(ctx?.projectPath).toBe('/projects/test');
 		});
 
 		it('returns null for unknown pane', () => {

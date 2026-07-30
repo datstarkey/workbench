@@ -162,6 +162,15 @@ describe('ClaudeSessionStore', () => {
 	});
 
 	describe('claude:hook events', () => {
+		const discoverCalls = () =>
+			invokeSpy.mock.calls.filter(([cmd]) => cmd === 'discover_claude_sessions').length;
+
+		/** Wait until `count` discoveries have been issued *and* their continuations ran. */
+		async function settleDiscovery(count: number) {
+			await vi.waitFor(() => expect(discoverCalls()).toBe(count));
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
 		function setupClaudePane() {
 			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
 				{
@@ -268,6 +277,153 @@ describe('ClaudeSessionStore', () => {
 				'Session abcd1234',
 				'claude'
 			);
+		});
+
+		it('recovers the real label once the first user message exists on disk', async () => {
+			setupClaudePane();
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test',
+				cwd: '/test'
+			});
+			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
+			// SessionStart fires before the user has typed anything, so discovery finds
+			// the session with no label yet.
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Session abcd1234', timestamp: '' }
+			]);
+
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				sessionId,
+				hookEventName: 'SessionStart',
+				hookPayload: {}
+			});
+			// Let that first discovery fully settle before the next event, so the
+			// "no label yet" result is actually recorded — otherwise the second event
+			// races it and this passes for the wrong reason.
+			await settleDiscovery(1);
+			expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
+				'pane-1',
+				'Session abcd1234',
+				'claude'
+			);
+
+			// The first prompt writes the user message, so a later hook must retry rather
+			// than staying on the fallback for the rest of the session.
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Fix the polling bug', timestamp: '' }
+			]);
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				sessionId,
+				hookEventName: 'UserPromptSubmit',
+				hookPayload: {}
+			});
+
+			await vi.waitFor(() =>
+				expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
+					'pane-1',
+					'Fix the polling bug',
+					'claude'
+				)
+			);
+		});
+
+		it('does not rediscover on every hook once a label is resolved', async () => {
+			setupClaudePane();
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test',
+				cwd: '/test'
+			});
+			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Already named', timestamp: '' }
+			]);
+
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				sessionId,
+				hookEventName: 'SessionStart',
+				hookPayload: {}
+			});
+			await settleDiscovery(1);
+			expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
+				'pane-1',
+				'Already named',
+				'claude'
+			);
+
+			for (const hookEventName of ['UserPromptSubmit', 'Stop', 'PostToolUse']) {
+				emitMockEvent('claude:hook', {
+					paneId: 'pane-1',
+					sessionId,
+					hookEventName,
+					hookPayload: {}
+				});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
+
+			// A resolved label is served from cache, so no further directory scans.
+			expect(discoverCalls()).toBe(1);
+		});
+
+		it('does not rescan the session directory on frequent non-label hooks', async () => {
+			setupClaudePane();
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test',
+				cwd: '/test'
+			});
+			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Session abcd1234', timestamp: '' }
+			]);
+
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				sessionId,
+				hookEventName: 'SessionStart',
+				hookPayload: {}
+			});
+			await settleDiscovery(1);
+
+			// PostToolUse fires constantly; it can't have created a label, so it must not
+			// trigger discovery.
+			for (let i = 0; i < 5; i++) {
+				emitMockEvent('claude:hook', {
+					paneId: 'pane-1',
+					sessionId,
+					hookEventName: 'PostToolUse',
+					hookPayload: {}
+				});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
+
+			expect(discoverCalls()).toBe(1);
+		});
+
+		it('stops retrying discovery after the attempt cap', async () => {
+			setupClaudePane();
+			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
+				projectPath: '/test',
+				cwd: '/test'
+			});
+			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Session abcd1234', timestamp: '' }
+			]);
+
+			for (let i = 0; i < 12; i++) {
+				emitMockEvent('claude:hook', {
+					paneId: 'pane-1',
+					sessionId,
+					hookEventName: 'UserPromptSubmit',
+					hookPayload: {}
+				});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
+
+			// Retries are bounded, so a session that never gets a label stops rescanning.
+			expect(discoverCalls()).toBe(6);
 		});
 
 		it('ignores events for non-claude panes', () => {
@@ -500,7 +656,8 @@ describe('ClaudeSessionStore', () => {
 			mockInvoke('discover_codex_sessions', () => sessions);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			emitMockEvent('codex:notify', {
@@ -555,7 +712,8 @@ describe('ClaudeSessionStore', () => {
 			mockInvoke('discover_claude_sessions', () => sessions);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			emitMockEvent('claude:hook', {
@@ -595,7 +753,8 @@ describe('ClaudeSessionStore', () => {
 			);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			// First session event
@@ -637,7 +796,8 @@ describe('ClaudeSessionStore', () => {
 			]);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			emitMockEvent('codex:notify', {
