@@ -108,8 +108,15 @@ fn is_supported_github_host(host: &str) -> bool {
     false
 }
 
+/// List PRs **without** `statusCheckRollup`.
+///
+/// Measured via `rateLimit { cost }`: this query is 1 GraphQL point without the
+/// rollup and 2 with it, on top of 1 more point per open PR for the per-PR check
+/// detail this replaces — so a repo with 10 open PRs went from ~12 points a poll
+/// to 1. Check state is backfilled from workflow runs (REST) in
+/// [`get_project_status`]; per-check detail is fetched on demand via [`list_pr_checks`].
 pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
-    let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup,mergeStateStatus";
+    let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,mergeStateStatus";
     let result = gh_output(
         &[
             "pr", "list", "--state", "all", "--limit", "100", "--json", fields,
@@ -247,30 +254,41 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
         (vec![], vec![])
     };
     let branch_runs = group_runs_by_branch(workflow_runs);
+    let prs = backfill_pr_checks_from_runs(prs, &branch_runs);
 
-    // Pre-fetch checks for all open PRs in parallel
-    let pr_checks: HashMap<u64, Vec<GitHubCheckDetail>> = std::thread::scope(|s| {
-        let handles: Vec<_> = prs
-            .iter()
-            .filter(|pr| pr.state == "OPEN")
-            .map(|pr| {
-                let path = path;
-                s.spawn(move || (pr.number, list_pr_checks(path, pr.number)))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok())
-            .filter_map(|(num, result)| result.ok().map(|checks| (num, checks)))
-            .collect()
-    });
-
+    // `pr_checks` is populated on demand (see `list_pr_checks`) rather than pre-fetched
+    // for every open PR — one GraphQL call per PR per poll was pure duplication of the
+    // rollup, and the detail is only ever rendered for the PR the sidebar is showing.
     GitHubProjectStatus {
         remote,
         prs,
         branch_runs,
-        pr_checks,
+        pr_checks: HashMap::new(),
     }
+}
+
+/// Fill each PR's `checks_status` from its branch's workflow runs.
+///
+/// Replaces the GraphQL `statusCheckRollup` with the equivalent signal derived from
+/// `gh run list` (REST, effectively free), so the PR/CI badges keep working.
+fn backfill_pr_checks_from_runs(
+    prs: Vec<GitHubPR>,
+    branch_runs: &HashMap<String, GitHubBranchRuns>,
+) -> Vec<GitHubPR> {
+    prs.into_iter()
+        .map(|mut pr| {
+            if let Some(runs) = branch_runs.get(&pr.head_ref_name) {
+                pr.checks_status = runs.status.clone();
+                pr.actions = derive_pr_actions(
+                    &pr.state,
+                    pr.is_draft,
+                    pr.merge_state_status.as_deref(),
+                    &pr.checks_status,
+                );
+            }
+            pr
+        })
+        .collect()
 }
 
 fn parse_pr_json(v: &serde_json::Value) -> Result<GitHubPR> {

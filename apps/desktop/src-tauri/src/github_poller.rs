@@ -8,12 +8,12 @@ use tauri::{AppHandle, Emitter};
 use crate::github;
 use crate::trello_automation;
 use crate::types::{
-    GitHubCheckDetail, GitHubCheckTransitionEvent, GitHubProjectStatus, GitHubProjectStatusEvent,
+    GitHubCheckTransitionEvent, GitHubProjectStatus, GitHubProjectStatusEvent, GitHubWorkflowRun,
     TrelloMergeActionAppliedEvent,
 };
 
-const FAST_POLL_INTERVAL: Duration = Duration::from_secs(15);
-const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(90);
+const FAST_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(180);
 const WORKER_TICK: Duration = Duration::from_millis(500);
 const IN_FLIGHT_BACKOFF: Duration = Duration::from_secs(5);
 
@@ -200,20 +200,24 @@ impl Drop for GitHubPoller {
     }
 }
 
+/// Fast-poll only while a branch we actually surface is mid-run.
+///
+/// Scoped to branches with an open PR (plus the checked-out branches the sidebar
+/// shows) rather than every branch in `gh run list` — otherwise one stale queued
+/// run on a long-abandoned branch pins the project to the fast interval forever.
 fn status_has_pending(status: &GitHubProjectStatus) -> bool {
-    if status
-        .branch_runs
-        .values()
-        .any(|branch| branch.status.pending > 0)
-    {
-        return true;
-    }
+    let open_pr_branches: HashSet<&str> = status
+        .prs
+        .iter()
+        .filter(|pr| pr.state == "OPEN")
+        .map(|pr| pr.head_ref_name.as_str())
+        .collect();
 
     status
-        .pr_checks
-        .values()
-        .flatten()
-        .any(|check| check.bucket == "pending")
+        .branch_runs
+        .iter()
+        .filter(|(branch, _)| open_pr_branches.contains(branch.as_str()))
+        .any(|(_, runs)| runs.status.pending > 0)
 }
 
 fn detect_merged_pr_transitions_and_update(
@@ -273,6 +277,11 @@ where
     events
 }
 
+/// Detect pending → pass/fail transitions so the frontend can toast them.
+///
+/// Driven by workflow runs (`gh run list`, REST) rather than per-PR check detail,
+/// which is a GraphQL call and no longer part of the poll. Scoped to branches with
+/// an open PR to keep notification volume the same as before.
 fn detect_check_transitions_and_update(
     state: &Arc<Mutex<PollerState>>,
     project_path: &str,
@@ -283,22 +292,25 @@ fn detect_check_transitions_and_update(
     let mut seen_keys = HashSet::new();
     let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
 
-    for (pr_number, checks) in &status.pr_checks {
-        let key = pr_key(project_path, *pr_number);
+    for pr in status.prs.iter().filter(|pr| pr.state == "OPEN") {
+        let Some(branch) = status.branch_runs.get(&pr.head_ref_name) else {
+            continue;
+        };
+        let key = pr_key(project_path, pr.number);
         seen_keys.insert(key.clone());
 
         if let Some(old_buckets) = guard.previous_check_buckets.get(&key) {
-            transitions.extend(check_transitions_for_pr(
+            transitions.extend(run_transitions_for_pr(
                 old_buckets,
-                checks,
+                &branch.runs,
                 project_path,
-                *pr_number,
+                pr.number,
             ));
         }
 
         guard
             .previous_check_buckets
-            .insert(key, build_bucket_map(checks));
+            .insert(key, build_bucket_map(&branch.runs));
     }
 
     guard
@@ -308,25 +320,39 @@ fn detect_check_transitions_and_update(
     transitions
 }
 
-fn check_transitions_for_pr(
+/// Bucket a workflow run using the same vocabulary `gh pr checks` emits, so the
+/// frontend's bucket handling is unchanged.
+fn run_bucket(run: &GitHubWorkflowRun) -> &'static str {
+    if run.status != "completed" {
+        return "pending";
+    }
+    match run.conclusion.as_deref() {
+        Some("success") | Some("skipped") | Some("neutral") => "pass",
+        Some("cancelled") => "cancel",
+        Some(_) => "fail",
+        None => "pending",
+    }
+}
+
+fn run_transitions_for_pr(
     old_buckets: &HashMap<String, String>,
-    checks: &[GitHubCheckDetail],
+    runs: &[GitHubWorkflowRun],
     project_path: &str,
     pr_number: u64,
 ) -> Vec<GitHubCheckTransitionEvent> {
     let mut transitions = Vec::new();
 
-    for check in checks {
-        let key = format!("{}::{}", check.name, check.workflow);
-        let Some(previous) = old_buckets.get(&key) else {
+    for run in runs {
+        let bucket = run_bucket(run);
+        let Some(previous) = old_buckets.get(&run.name) else {
             continue;
         };
-        if previous == "pending" && (check.bucket == "pass" || check.bucket == "fail") {
+        if previous == "pending" && (bucket == "pass" || bucket == "fail") {
             transitions.push(GitHubCheckTransitionEvent {
                 project_path: project_path.to_string(),
                 pr_number,
-                name: check.name.clone(),
-                bucket: check.bucket.clone(),
+                name: run.name.clone(),
+                bucket: bucket.to_string(),
             });
         }
     }
@@ -334,15 +360,12 @@ fn check_transitions_for_pr(
     transitions
 }
 
-fn build_bucket_map(checks: &[GitHubCheckDetail]) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for check in checks {
-        map.insert(
-            format!("{}::{}", check.name, check.workflow),
-            check.bucket.clone(),
-        );
-    }
-    map
+/// `group_runs_by_branch` keeps only the latest run per workflow name, so the
+/// workflow name alone is a stable per-branch key.
+fn build_bucket_map(runs: &[GitHubWorkflowRun]) -> HashMap<String, String> {
+    runs.iter()
+        .map(|run| (run.name.clone(), run_bucket(run).to_string()))
+        .collect()
 }
 
 fn pr_key(project_path: &str, pr_number: u64) -> String {
@@ -355,13 +378,28 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        apply_trello_merge_actions, build_bucket_map, check_transitions_for_pr,
-        detect_merged_pr_transitions_and_update, status_has_pending, PollProjectState, PollerState,
+        apply_trello_merge_actions, build_bucket_map, detect_merged_pr_transitions_and_update,
+        run_transitions_for_pr, status_has_pending, PollProjectState, PollerState,
     };
     use crate::types::{
-        GitHubBranchRuns, GitHubCheckDetail, GitHubChecksStatus, GitHubPR, GitHubPRActions,
-        GitHubProjectStatus,
+        GitHubBranchRuns, GitHubChecksStatus, GitHubPR, GitHubPRActions, GitHubProjectStatus,
+        GitHubWorkflowRun,
     };
+
+    fn make_run(name: &str, status: &str, conclusion: Option<&str>) -> GitHubWorkflowRun {
+        GitHubWorkflowRun {
+            id: 1,
+            name: name.to_string(),
+            display_title: format!("{name} run"),
+            head_branch: "feature/x".to_string(),
+            status: status.to_string(),
+            conclusion: conclusion.map(String::from),
+            url: String::new(),
+            event: "push".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
 
     fn checks_status(pending: u32) -> GitHubChecksStatus {
         GitHubChecksStatus {
@@ -393,10 +431,10 @@ mod tests {
     }
 
     #[test]
-    fn status_has_pending_true_for_branch_runs() {
+    fn status_has_pending_true_for_branch_with_open_pr() {
         let mut branch_runs = HashMap::new();
         branch_runs.insert(
-            "main".to_string(),
+            "feature/x".to_string(),
             GitHubBranchRuns {
                 status: checks_status(1),
                 runs: vec![],
@@ -404,7 +442,7 @@ mod tests {
         );
         let status = GitHubProjectStatus {
             remote: None,
-            prs: vec![],
+            prs: vec![make_pr(42, "feature/x", "OPEN")],
             branch_runs,
             pr_checks: HashMap::new(),
         };
@@ -413,29 +451,45 @@ mod tests {
     }
 
     #[test]
-    fn status_has_pending_true_for_pr_checks() {
-        let mut pr_checks = HashMap::new();
-        pr_checks.insert(
-            42,
-            vec![GitHubCheckDetail {
-                name: "CI".to_string(),
-                bucket: "pending".to_string(),
-                workflow: "build".to_string(),
-                link: "".to_string(),
-                started_at: None,
-                completed_at: None,
-                description: "".to_string(),
-            }],
+    fn status_has_pending_ignores_branches_without_an_open_pr() {
+        // A stale queued run on an abandoned branch must not pin the project to the
+        // fast poll interval forever.
+        let mut branch_runs = HashMap::new();
+        branch_runs.insert(
+            "abandoned".to_string(),
+            GitHubBranchRuns {
+                status: checks_status(1),
+                runs: vec![],
+            },
         );
-
         let status = GitHubProjectStatus {
             remote: None,
-            prs: vec![],
-            branch_runs: HashMap::new(),
-            pr_checks,
+            prs: vec![make_pr(42, "feature/x", "OPEN")],
+            branch_runs,
+            pr_checks: HashMap::new(),
         };
 
-        assert!(status_has_pending(&status));
+        assert!(!status_has_pending(&status));
+    }
+
+    #[test]
+    fn status_has_pending_ignores_merged_pr_branches() {
+        let mut branch_runs = HashMap::new();
+        branch_runs.insert(
+            "feature/x".to_string(),
+            GitHubBranchRuns {
+                status: checks_status(1),
+                runs: vec![],
+            },
+        );
+        let status = GitHubProjectStatus {
+            remote: None,
+            prs: vec![make_pr(42, "feature/x", "MERGED")],
+            branch_runs,
+            pr_checks: HashMap::new(),
+        };
+
+        assert!(!status_has_pending(&status));
     }
 
     #[test]
@@ -451,19 +505,11 @@ mod tests {
     }
 
     #[test]
-    fn check_transition_detects_pending_to_pass() {
-        let old = HashMap::from([(String::from("CI::build"), String::from("pending"))]);
-        let checks = vec![GitHubCheckDetail {
-            name: "CI".to_string(),
-            bucket: "pass".to_string(),
-            workflow: "build".to_string(),
-            link: "".to_string(),
-            started_at: None,
-            completed_at: None,
-            description: "".to_string(),
-        }];
+    fn run_transition_detects_pending_to_pass() {
+        let old = HashMap::from([(String::from("CI"), String::from("pending"))]);
+        let runs = vec![make_run("CI", "completed", Some("success"))];
 
-        let transitions = check_transitions_for_pr(&old, &checks, "/repo", 1);
+        let transitions = run_transitions_for_pr(&old, &runs, "/repo", 1);
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].project_path, "/repo");
         assert_eq!(transitions[0].pr_number, 1);
@@ -472,19 +518,40 @@ mod tests {
     }
 
     #[test]
-    fn check_transition_ignores_non_pending_previous_state() {
-        let old = HashMap::from([(String::from("CI::build"), String::from("pass"))]);
-        let checks = vec![GitHubCheckDetail {
-            name: "CI".to_string(),
-            bucket: "fail".to_string(),
-            workflow: "build".to_string(),
-            link: "".to_string(),
-            started_at: None,
-            completed_at: None,
-            description: "".to_string(),
-        }];
+    fn run_transition_detects_pending_to_fail() {
+        let old = HashMap::from([(String::from("CI"), String::from("pending"))]);
+        let runs = vec![make_run("CI", "completed", Some("failure"))];
 
-        let transitions = check_transitions_for_pr(&old, &checks, "/repo", 1);
+        let transitions = run_transitions_for_pr(&old, &runs, "/repo", 1);
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].bucket, "fail");
+    }
+
+    #[test]
+    fn run_transition_ignores_non_pending_previous_state() {
+        let old = HashMap::from([(String::from("CI"), String::from("pass"))]);
+        let runs = vec![make_run("CI", "completed", Some("failure"))];
+
+        let transitions = run_transitions_for_pr(&old, &runs, "/repo", 1);
+        assert!(transitions.is_empty());
+    }
+
+    #[test]
+    fn run_transition_ignores_still_running_workflows() {
+        let old = HashMap::from([(String::from("CI"), String::from("pending"))]);
+        let runs = vec![make_run("CI", "in_progress", None)];
+
+        let transitions = run_transitions_for_pr(&old, &runs, "/repo", 1);
+        assert!(transitions.is_empty());
+    }
+
+    #[test]
+    fn run_transition_ignores_cancelled_workflows() {
+        // `cancel` is neither pass nor fail — cancelling a run shouldn't toast.
+        let old = HashMap::from([(String::from("CI"), String::from("pending"))]);
+        let runs = vec![make_run("CI", "completed", Some("cancelled"))];
+
+        let transitions = run_transitions_for_pr(&old, &runs, "/repo", 1);
         assert!(transitions.is_empty());
     }
 
@@ -556,17 +623,13 @@ mod tests {
     }
 
     #[test]
-    fn build_bucket_map_uses_name_and_workflow_key() {
-        let checks = vec![GitHubCheckDetail {
-            name: "lint".to_string(),
-            bucket: "pending".to_string(),
-            workflow: "ci".to_string(),
-            link: "".to_string(),
-            started_at: None,
-            completed_at: None,
-            description: "".to_string(),
-        }];
-        let map = build_bucket_map(&checks);
-        assert_eq!(map.get("lint::ci"), Some(&"pending".to_string()));
+    fn build_bucket_map_keys_by_workflow_name() {
+        let runs = vec![
+            make_run("lint", "in_progress", None),
+            make_run("build", "completed", Some("success")),
+        ];
+        let map = build_bucket_map(&runs);
+        assert_eq!(map.get("lint"), Some(&"pending".to_string()));
+        assert_eq!(map.get("build"), Some(&"pass".to_string()));
     }
 }

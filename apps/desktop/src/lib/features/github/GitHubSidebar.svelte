@@ -11,6 +11,7 @@
 	import BranchRunsHeader from './BranchRunsHeader.svelte';
 	import CheckItem from './CheckItem.svelte';
 	import { onDestroy } from 'svelte';
+	import { watch } from 'runed';
 	import { invoke } from '@tauri-apps/api/core';
 	import { toast } from 'svelte-sonner';
 
@@ -107,6 +108,23 @@
 		if (Date.now() - (githubStore.lastRefreshedAt[activeProjectPath] ?? 0) < 2000) return;
 		githubStore.refreshProject(activeProjectPath);
 	});
+
+	// Per-check detail is the one GraphQL-heavy call left, so fetch it only for the PR
+	// on screen — and only when it changes or its (free, REST-derived) CI summary moves,
+	// which keeps detail live during a run without re-fetching on every poll.
+	let checksFetchKey = $derived(
+		activePr && activeProjectPath
+			? `${activeProjectPath}::${activePr.number}::${activePr.checksStatus.overall}:${activePr.checksStatus.passing}/${activePr.checksStatus.total}`
+			: null
+	);
+
+	watch(
+		() => checksFetchKey,
+		() => {
+			if (!activeProjectPath || !activePr) return;
+			void githubStore.loadPrChecks(activeProjectPath, activePr.number);
+		}
+	);
 
 	onDestroy(() => {
 		githubStore.clearSidebarOverride();

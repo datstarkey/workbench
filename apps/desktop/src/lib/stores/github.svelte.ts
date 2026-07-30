@@ -21,6 +21,19 @@ type CheckNotification = {
 	prNumber: number;
 };
 
+/**
+ * Local file edits can't change GitHub state, so they must never cost an API call.
+ * The same event still drives the (local, free) git refresh in GitStore.
+ */
+const EDIT_ONLY_TRIGGERS = new Set([
+	'post-tool-use-write',
+	'post-tool-use-edit',
+	'post-tool-use-notebook-edit'
+]);
+
+/** Floor between hook/watcher-driven GitHub fetches for a given project. */
+const HOOK_REFRESH_THROTTLE_MS = 60_000;
+
 export class GitHubStore {
 	private workspaces = getWorkspaceStore();
 	private git = getGitStore();
@@ -111,10 +124,11 @@ export class GitHubStore {
 	// Not reactive — internal bookkeeping only
 	private trackedProjectsFingerprint = '';
 	lastRefreshedAt: Record<string, number> = {};
+	private lastHookRefreshAt: Record<string, number> = {};
 
 	constructor() {
 		listen<ProjectRefreshRequestedEvent>('project:refresh-requested', (event) => {
-			void this.refreshProject(event.payload.projectPath);
+			this.handleRefreshRequest(event.payload);
 		});
 		listen<GitHubProjectStatusEvent>('github:project-status', (event) => {
 			this.applyProjectStatus(event.payload.projectPath, event.payload.status);
@@ -156,6 +170,18 @@ export class GitHubStore {
 		return this.remoteByProject[projectPath]?.htmlUrl ?? null;
 	}
 
+	/**
+	 * Apply the hook/watcher refresh policy before spending an API call. Explicit
+	 * user actions call `refreshProject` directly and are never throttled.
+	 */
+	private handleRefreshRequest(payload: ProjectRefreshRequestedEvent): void {
+		if (EDIT_ONLY_TRIGGERS.has(payload.trigger)) return;
+		const now = Date.now();
+		if (now - (this.lastHookRefreshAt[payload.projectPath] ?? 0) < HOOK_REFRESH_THROTTLE_MS) return;
+		this.lastHookRefreshAt[payload.projectPath] = now;
+		void this.refreshProject(payload.projectPath);
+	}
+
 	async refreshProject(projectPath: string): Promise<void> {
 		if (this.ghAvailable !== true) return;
 		try {
@@ -175,21 +201,22 @@ export class GitHubStore {
 			[projectPath]: status.branchRuns
 		};
 
+		// `prChecks` is no longer part of the poll payload — `loadPrChecks` fills it on
+		// demand. Prune only entries whose PR has disappeared, so on-demand detail
+		// isn't wiped by every poll.
 		const prefix = `${projectPath}::`;
 		const nextChecksByPr = { ...this.checksByPr };
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain utility set for key tracking
-		const incomingKeys = new Set<string>();
+		const liveKeys = new Set(status.prs.map((pr) => this.prKey(projectPath, pr.number)));
 
 		for (const [prNum, checks] of Object.entries(status.prChecks)) {
 			const prNumber = Number(prNum);
 			if (!Number.isFinite(prNumber)) continue;
-			const key = this.prKey(projectPath, prNumber);
-			incomingKeys.add(key);
-			nextChecksByPr[key] = checks;
+			nextChecksByPr[this.prKey(projectPath, prNumber)] = checks;
 		}
 
 		for (const key of Object.keys(nextChecksByPr)) {
-			if (key.startsWith(prefix) && !incomingKeys.has(key)) {
+			if (key.startsWith(prefix) && !liveKeys.has(key)) {
 				delete nextChecksByPr[key];
 			}
 		}
@@ -223,6 +250,23 @@ export class GitHubStore {
 
 	getPrChecks(projectPath: string, prNumber: number): GitHubCheckDetail[] | undefined {
 		return this.checksByPr[this.prKey(projectPath, prNumber)];
+	}
+
+	/**
+	 * Fetch per-check detail for one PR. This is the only GraphQL-heavy GitHub call
+	 * left on a UI path, so it runs only for the PR the sidebar is actually showing.
+	 */
+	async loadPrChecks(projectPath: string, prNumber: number): Promise<void> {
+		if (this.ghAvailable !== true) return;
+		try {
+			const checks = await invoke<GitHubCheckDetail[]>('github_list_pr_checks', {
+				projectPath,
+				prNumber
+			});
+			this.checksByPr = { ...this.checksByPr, [this.prKey(projectPath, prNumber)]: checks };
+		} catch (e) {
+			console.warn('[GitHubStore] Failed to load PR checks:', e);
+		}
 	}
 
 	showBranch(projectPath: string, branch: string): void {

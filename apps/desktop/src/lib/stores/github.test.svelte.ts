@@ -642,7 +642,24 @@ describe('GitHubStore', () => {
 			});
 		});
 
-		it('requests refresh after successive events', async () => {
+		it('throttles successive events within the window to a single refresh', async () => {
+			store.ghAvailable = true;
+
+			for (let i = 0; i < 3; i++) {
+				emitMockEvent('project:refresh-requested', {
+					projectPath: '/project',
+					source: 'git-watcher',
+					trigger: 'git-dir-change'
+				});
+				await Promise.resolve();
+				await Promise.resolve();
+			}
+
+			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(calls).toHaveLength(1);
+		});
+
+		it('refreshes again once the throttle window has elapsed', async () => {
 			store.ghAvailable = true;
 
 			emitMockEvent('project:refresh-requested', {
@@ -652,6 +669,9 @@ describe('GitHubStore', () => {
 			});
 			await Promise.resolve();
 			await Promise.resolve();
+
+			vi.advanceTimersByTime(60_001);
+
 			emitMockEvent('project:refresh-requested', {
 				projectPath: '/project',
 				source: 'git-watcher',
@@ -662,6 +682,93 @@ describe('GitHubStore', () => {
 
 			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
 			expect(calls).toHaveLength(2);
+		});
+
+		it('throttles each project independently', async () => {
+			store.ghAvailable = true;
+
+			for (const projectPath of ['/project-a', '/project-b']) {
+				emitMockEvent('project:refresh-requested', {
+					projectPath,
+					source: 'git-watcher',
+					trigger: 'git-dir-change'
+				});
+				await Promise.resolve();
+				await Promise.resolve();
+			}
+
+			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(calls).toHaveLength(2);
+		});
+
+		it.each(['post-tool-use-write', 'post-tool-use-edit', 'post-tool-use-notebook-edit'])(
+			'never spends an API call on the %s trigger',
+			async (trigger) => {
+				store.ghAvailable = true;
+
+				emitMockEvent('project:refresh-requested', {
+					projectPath: '/project',
+					source: 'claude-hook',
+					trigger
+				});
+				await Promise.resolve();
+				await Promise.resolve();
+
+				expect(invokeSpy).not.toHaveBeenCalledWith('github_refresh_project', expect.anything());
+			}
+		);
+	});
+
+	// ─── loadPrChecks ───────────────────────────────────────────
+
+	describe('loadPrChecks', () => {
+		it('stores fetched checks under the project/PR key', async () => {
+			store.ghAvailable = true;
+			const checks = [
+				{
+					name: 'CI',
+					bucket: 'pass' as const,
+					workflow: 'build',
+					link: '',
+					startedAt: null,
+					completedAt: null,
+					description: ''
+				}
+			];
+			mockInvoke('github_list_pr_checks', () => checks);
+
+			await store.loadPrChecks('/project', 42);
+
+			expect(invokeSpy).toHaveBeenCalledWith('github_list_pr_checks', {
+				projectPath: '/project',
+				prNumber: 42
+			});
+			expect(store.getPrChecks('/project', 42)).toEqual(checks);
+		});
+
+		it('skips the call when gh is unavailable', async () => {
+			store.ghAvailable = false;
+
+			await store.loadPrChecks('/project', 42);
+
+			expect(invokeSpy).not.toHaveBeenCalledWith('github_list_pr_checks', expect.anything());
+		});
+
+		it('survives a poll that reports no prChecks', async () => {
+			store.ghAvailable = true;
+			mockInvoke('github_list_pr_checks', () => []);
+			await store.loadPrChecks('/project', 42);
+
+			emitMockEvent('github:project-status', {
+				projectPath: '/project',
+				status: makeProjectStatus({
+					prs: [makePR({ number: 42 })],
+					prChecks: {}
+				})
+			});
+			await Promise.resolve();
+
+			expect(store.getPrChecks('/project', 42)).toEqual([]);
 		});
 	});
 });

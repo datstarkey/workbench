@@ -283,6 +283,16 @@ pub fn github_update_pr_branch(
     Ok(true)
 }
 
+/// Fetch per-check detail for a single PR. Called on demand by the GitHub sidebar —
+/// this is a GraphQL call, so it is deliberately not part of the background poll.
+#[tauri::command(async)]
+pub fn github_list_pr_checks(
+    project_path: String,
+    pr_number: u64,
+) -> Result<Vec<crate::types::GitHubCheckDetail>, String> {
+    github::list_pr_checks(&project_path, pr_number).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 pub fn github_rerun_workflow(
     project_path: String,
