@@ -27,6 +27,9 @@ const LOCAL_ECHO_SUPPRESS_MS = 180;
 const LOCAL_ECHO_MAX_CHARS = 4;
 const LOCAL_TYPING_SUPPRESS_MS = 2500;
 const LOCAL_VIEWPORT_SUPPRESS_MS = 700;
+/** Bound on session-label discovery retries, so a session that genuinely never gets a
+ *  label (no user message on disk) stops rescanning the session directory. */
+const MAX_LABEL_DISCOVERY_ATTEMPTS = 6;
 
 export class ClaudeSessionStore {
 	/** Set of terminal pane IDs currently producing output (clears from backend activity events) */
@@ -56,8 +59,10 @@ export class ClaudeSessionStore {
 	private latestClaudeSessionByPane = new SvelteMap<string, string>();
 	/** Latest Codex session ID observed for each pane from notify events */
 	private latestCodexSessionByPane = new SvelteMap<string, string>();
-	/** Cache of sessionId → resolved label. `null` means discovery ran but no label found yet. */
-	private resolvedSessionLabels = new SvelteMap<string, string | null>();
+	/** Cache of sessionId → resolved label. Only ever holds labels we actually found. */
+	private resolvedSessionLabels = new SvelteMap<string, string>();
+	/** Discovery attempts per sessionId, so an unlabelled session retries but stays bounded. */
+	private labelDiscoveryAttempts = new SvelteMap<string, number>();
 	/** Reference to workspace store for Claude pane detection */
 	private workspaces: WorkspaceStore;
 	/** Reference to project store for opening projects */
@@ -420,7 +425,11 @@ export class ClaudeSessionStore {
 		if (event.sessionId) {
 			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
 			this.latestClaudeSessionByPane.set(paneId, event.sessionId);
-			void this.syncLabelFromSession(paneId, event.sessionId, 'claude');
+			// Only these two can have produced a first user message; retrying on every
+			// hook would rescan the session directory on each PostToolUse.
+			const canRetryLabel =
+				event.hookEventName === 'UserPromptSubmit' || event.hookEventName === 'Stop';
+			void this.syncLabelFromSession(paneId, event.sessionId, 'claude', canRetryLabel);
 		}
 
 		switch (event.hookEventName) {
@@ -453,7 +462,8 @@ export class ClaudeSessionStore {
 	private async syncLabelFromSession(
 		paneId: string,
 		sessionId: string,
-		type: 'claude' | 'codex'
+		type: 'claude' | 'codex',
+		allowRetry = false
 	): Promise<void> {
 		const fallback = `Session ${sessionId.slice(0, 8)}`;
 
@@ -464,15 +474,17 @@ export class ClaudeSessionStore {
 			return;
 		}
 
-		// If we already tried discovery once and got no label (cached === null), skip further attempts.
-		// The label will appear naturally when the user opens the resume menu.
-		if (cached === null) {
-			this.workspaces.updateAITabLabelByPaneId(paneId, fallback, type);
-			return;
-		}
-
-		// First time seeing this sessionId — set fallback and attempt discovery.
 		this.workspaces.updateAITabLabelByPaneId(paneId, fallback, type);
+
+		// A session's label is its first user message, which doesn't exist yet when the
+		// first hook (SessionStart) fires — so the initial discovery always misses.
+		// Caching that miss permanently left every tab showing `Session a1b2c3d4` for the
+		// rest of the session. Retry on later events that could have created the label,
+		// bounded so an genuinely unlabelled session doesn't rescan forever.
+		const attempts = this.labelDiscoveryAttempts.get(sessionId) ?? 0;
+		if (attempts > 0 && !allowRetry) return;
+		if (attempts >= MAX_LABEL_DISCOVERY_ATTEMPTS) return;
+		this.labelDiscoveryAttempts.set(sessionId, attempts + 1);
 
 		const ctx = this.workspaces.findAIPaneContext(paneId, type);
 		if (!ctx) return;
@@ -488,10 +500,8 @@ export class ClaudeSessionStore {
 		const match = sessions.find((s) => s.sessionId === sessionId);
 		if (match?.label) {
 			this.resolvedSessionLabels.set(sessionId, match.label);
+			this.labelDiscoveryAttempts.delete(sessionId);
 			this.workspaces.updateAITabLabelByPaneId(paneId, match.label, type);
-		} else {
-			// Mark as attempted so subsequent hook events for this session skip discovery.
-			this.resolvedSessionLabels.set(sessionId, null);
 		}
 	}
 
@@ -502,7 +512,12 @@ export class ClaudeSessionStore {
 		if (event.sessionId) {
 			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'codex');
 			this.latestCodexSessionByPane.set(paneId, event.sessionId);
-			void this.syncLabelFromSession(paneId, event.sessionId, 'codex');
+			void this.syncLabelFromSession(
+				paneId,
+				event.sessionId,
+				'codex',
+				event.notifyEvent === 'agent-turn-complete'
+			);
 		}
 
 		// Codex notify currently delivers completion/approval style events.
