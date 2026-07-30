@@ -229,11 +229,14 @@ fn status_context_bucket(state: &str) -> &'static str {
     }
 }
 
-pub fn list_workflow_runs(path: &str) -> Vec<GitHubWorkflowRun> {
-    let fields =
-        "databaseId,name,displayTitle,headBranch,status,conclusion,url,event,createdAt,updatedAt";
-    let result = gh_output(&["run", "list", "--limit", "200", "--json", fields], path);
+const WORKFLOW_RUN_FIELDS: &str =
+    "databaseId,name,displayTitle,headBranch,status,conclusion,url,event,createdAt,updatedAt";
 
+/// Cap on targeted per-branch top-up queries per poll, so a repo with an unusual
+/// number of worktrees or open PRs can't turn one poll into a request burst.
+const MAX_BRANCH_BACKFILLS: usize = 25;
+
+fn parse_run_list(result: Result<String>) -> Vec<GitHubWorkflowRun> {
     match result {
         Ok(json_str) => {
             if json_str.is_empty() {
@@ -242,6 +245,100 @@ pub fn list_workflow_runs(path: &str) -> Vec<GitHubWorkflowRun> {
             serde_json::from_str(&json_str).unwrap_or_default()
         }
         Err(_) => vec![],
+    }
+}
+
+pub fn list_workflow_runs(path: &str) -> Vec<GitHubWorkflowRun> {
+    parse_run_list(gh_output(
+        &["run", "list", "--limit", "200", "--json", WORKFLOW_RUN_FIELDS],
+        path,
+    ))
+}
+
+/// Runs for a single branch. `gh run list` without `--branch` is repo-wide and
+/// windowed, so this is how we guarantee coverage for a branch we actually display.
+pub fn list_workflow_runs_for_branch(path: &str, branch: &str) -> Vec<GitHubWorkflowRun> {
+    parse_run_list(gh_output(
+        &[
+            "run",
+            "list",
+            "--branch",
+            branch,
+            "--limit",
+            "20",
+            "--json",
+            WORKFLOW_RUN_FIELDS,
+        ],
+        path,
+    ))
+}
+
+/// Branches whose CI status is actually surfaced: every worktree's checked-out
+/// branch (the sidebar renders a badge per worktree) plus every open PR's head.
+fn branches_of_interest(worktree_branches: Vec<String>, prs: &[GitHubPR]) -> Vec<String> {
+    let mut branches: Vec<String> = worktree_branches;
+    branches.extend(
+        prs.iter()
+            .filter(|pr| pr.state == "OPEN")
+            .map(|pr| pr.head_ref_name.clone()),
+    );
+    branches.retain(|b| !b.trim().is_empty());
+    branches.sort();
+    branches.dedup();
+    branches
+}
+
+/// Fill in branches the repo-wide run window missed.
+///
+/// `gh run list` returns the most recent 200 runs across the whole repo, so on a busy
+/// repo a branch we display can have no entry at all and silently report "no CI".
+/// Runs are REST (5000/hr, largely unused), so a targeted query per missing branch is
+/// cheap insurance against a wrong badge.
+fn backfill_missing_branch_runs(
+    path: &str,
+    prs: &[GitHubPR],
+    branch_runs: &mut HashMap<String, GitHubBranchRuns>,
+) {
+    let worktree_branches = crate::git::list_worktrees(path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|wt| wt.branch)
+        .collect();
+
+    let mut missing: Vec<String> = branches_of_interest(worktree_branches, prs)
+        .into_iter()
+        .filter(|branch| !branch_runs.contains_key(branch))
+        .collect();
+
+    if missing.len() > MAX_BRANCH_BACKFILLS {
+        log::warn!(
+            "[github] {} branches missing from the run window for {path}; only topping up {}",
+            missing.len(),
+            MAX_BRANCH_BACKFILLS
+        );
+        missing.truncate(MAX_BRANCH_BACKFILLS);
+    }
+    if missing.is_empty() {
+        return;
+    }
+
+    let fetched: Vec<Vec<GitHubWorkflowRun>> = std::thread::scope(|s| {
+        let handles: Vec<_> = missing
+            .iter()
+            .map(|branch| s.spawn(move || list_workflow_runs_for_branch(path, branch)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+
+    for runs in fetched {
+        // Reuse the shared grouping so per-workflow dedup and status derivation match
+        // the repo-wide path exactly.
+        for (branch, entry) in group_runs_by_branch(runs) {
+            branch_runs.entry(branch).or_insert(entry);
+        }
     }
 }
 
@@ -344,7 +441,10 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
     } else {
         ((vec![], HashMap::new()), vec![])
     };
-    let branch_runs = group_runs_by_branch(workflow_runs);
+    let mut branch_runs = group_runs_by_branch(workflow_runs);
+    if remote.is_some() {
+        backfill_missing_branch_runs(path, &prs, &mut branch_runs);
+    }
 
     GitHubProjectStatus {
         remote,
@@ -997,5 +1097,61 @@ mod tests {
     fn parse_check_detail_skips_nodes_without_a_name() {
         let node = serde_json::json!({ "__typename": "CheckRun", "status": "COMPLETED" });
         assert!(parse_check_detail(&node).is_none());
+    }
+
+    fn pr_on_branch(number: u64, branch: &str, state: &str) -> GitHubPR {
+        GitHubPR {
+            number,
+            title: String::new(),
+            state: state.to_string(),
+            url: String::new(),
+            is_draft: false,
+            head_ref_name: branch.to_string(),
+            review_decision: None,
+            checks_status: derive_overall_status(0, 0, 0),
+            merge_state_status: None,
+            actions: GitHubPRActions {
+                can_merge: false,
+                can_mark_ready: false,
+                can_update_branch: false,
+            },
+        }
+    }
+
+    #[test]
+    fn branches_of_interest_covers_worktrees_and_open_prs() {
+        let branches = branches_of_interest(
+            vec!["main".to_string(), "feature/wt".to_string()],
+            &[
+                pr_on_branch(1, "feature/pr", "OPEN"),
+                pr_on_branch(2, "feature/old", "MERGED"),
+                pr_on_branch(3, "feature/shut", "CLOSED"),
+            ],
+        );
+
+        // Worktree branches and open-PR heads only — a merged or closed PR's branch
+        // is no longer displayed, so it doesn't earn a top-up query.
+        assert_eq!(branches, vec!["feature/pr", "feature/wt", "main"]);
+    }
+
+    #[test]
+    fn branches_of_interest_dedups_a_worktree_that_also_has_a_pr() {
+        let branches = branches_of_interest(
+            vec!["main".to_string(), "feature/x".to_string()],
+            &[pr_on_branch(1, "feature/x", "OPEN")],
+        );
+
+        assert_eq!(branches, vec!["feature/x", "main"]);
+    }
+
+    #[test]
+    fn branches_of_interest_drops_blank_branches() {
+        // Detached-HEAD worktrees report an empty branch.
+        let branches = branches_of_interest(
+            vec!["".to_string(), "   ".to_string(), "main".to_string()],
+            &[],
+        );
+
+        assert_eq!(branches, vec!["main"]);
     }
 }
