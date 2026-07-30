@@ -108,7 +108,10 @@ fn is_supported_github_host(host: &str) -> bool {
     false
 }
 
-pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
+/// PRs paired with per-PR check detail, keyed by PR number.
+type PrsWithChecks = (Vec<GitHubPR>, HashMap<u64, Vec<GitHubCheckDetail>>);
+
+fn fetch_pr_json(path: &str) -> Result<Vec<serde_json::Value>> {
     let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup,mergeStateStatus";
     let result = gh_output(
         &[
@@ -118,10 +121,7 @@ pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
     );
 
     match result {
-        Ok(json_str) => {
-            let arr: Vec<serde_json::Value> = serde_json::from_str(&json_str)?;
-            arr.iter().map(parse_pr_json).collect()
-        }
+        Ok(json_str) => Ok(serde_json::from_str(&json_str)?),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("not a git repository") || msg.contains("no GitHub remotes") {
@@ -130,6 +130,102 @@ pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
                 Err(e)
             }
         }
+    }
+}
+
+pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
+    fetch_pr_json(path)?.iter().map(parse_pr_json).collect()
+}
+
+/// PRs **and** their per-check detail, both read out of a single `gh pr list` response.
+///
+/// The rollup already carries every field `gh pr checks` returns, so fanning out one
+/// extra GraphQL call per open PR on every poll was pure duplication — measured at
+/// 1 point per open PR per poll, against a 5000/hr budget.
+pub fn list_project_prs_with_checks(path: &str) -> Result<PrsWithChecks> {
+    let raw = fetch_pr_json(path)?;
+    let prs = raw.iter().map(parse_pr_json).collect::<Result<Vec<_>>>()?;
+
+    let pr_checks = raw
+        .iter()
+        .filter(|v| v["state"].as_str().unwrap_or("OPEN") == "OPEN")
+        .filter_map(|v| {
+            let number = v["number"].as_u64()?;
+            let nodes = v.get("statusCheckRollup")?.as_array()?;
+            Some((number, nodes.iter().filter_map(parse_check_detail).collect()))
+        })
+        .collect();
+
+    Ok((prs, pr_checks))
+}
+
+/// Map one `statusCheckRollup` node to the shape — and bucket vocabulary — that
+/// `gh pr checks` emits, so frontend bucket handling is unchanged.
+fn parse_check_detail(node: &serde_json::Value) -> Option<GitHubCheckDetail> {
+    let is_status_context =
+        node.get("__typename").and_then(|v| v.as_str()) == Some("StatusContext");
+
+    let (name, bucket, link, description) = if is_status_context {
+        let state = node.get("state").and_then(|v| v.as_str()).unwrap_or("");
+        (
+            node.get("context").and_then(|v| v.as_str())?.to_string(),
+            status_context_bucket(state),
+            str_field(node, "targetUrl"),
+            str_field(node, "description"),
+        )
+    } else {
+        let status = node.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let conclusion = node.get("conclusion").and_then(|v| v.as_str());
+        (
+            node.get("name").and_then(|v| v.as_str())?.to_string(),
+            check_run_bucket(status, conclusion),
+            str_field(node, "detailsUrl"),
+            String::new(),
+        )
+    };
+
+    Some(GitHubCheckDetail {
+        name,
+        bucket: bucket.to_string(),
+        workflow: str_field(node, "workflowName"),
+        link,
+        started_at: node
+            .get("startedAt")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        completed_at: node
+            .get("completedAt")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        description,
+    })
+}
+
+fn str_field(node: &serde_json::Value, key: &str) -> String {
+    node.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn check_run_bucket(status: &str, conclusion: Option<&str>) -> &'static str {
+    if !status.eq_ignore_ascii_case("completed") {
+        return "pending";
+    }
+    let conclusion = conclusion.unwrap_or("").to_ascii_uppercase();
+    match conclusion.as_str() {
+        "SUCCESS" | "NEUTRAL" => "pass",
+        "SKIPPED" => "skipping",
+        "CANCELLED" => "cancel",
+        _ => "fail",
+    }
+}
+
+fn status_context_bucket(state: &str) -> &'static str {
+    match state.to_ascii_uppercase().as_str() {
+        "SUCCESS" => "pass",
+        "PENDING" | "EXPECTED" => "pending",
+        _ => "fail",
     }
 }
 
@@ -228,42 +324,27 @@ fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
 pub fn get_project_status(path: &str) -> GitHubProjectStatus {
     let remote = get_github_remote(path).ok();
 
-    // Fetch PRs and workflow runs in parallel — they're independent `gh` CLI calls
-    let (prs, workflow_runs) = if remote.is_some() {
+    // Fetch PRs and workflow runs in parallel — they're independent `gh` CLI calls.
+    // PR check detail comes back in the same response as the PRs themselves, so no
+    // per-PR follow-up call is needed.
+    let ((prs, pr_checks), workflow_runs) = if remote.is_some() {
         std::thread::scope(|s| {
             let prs_handle = s.spawn(|| {
-                list_project_prs(path).unwrap_or_else(|e| {
+                list_project_prs_with_checks(path).unwrap_or_else(|e| {
                     log::warn!("[github] Failed to list PRs for {path}: {e}");
-                    vec![]
+                    (vec![], HashMap::new())
                 })
             });
             let runs_handle = s.spawn(|| list_workflow_runs(path));
             (
-                prs_handle.join().unwrap_or_default(),
+                prs_handle.join().unwrap_or_else(|_| (vec![], HashMap::new())),
                 runs_handle.join().unwrap_or_default(),
             )
         })
     } else {
-        (vec![], vec![])
+        ((vec![], HashMap::new()), vec![])
     };
     let branch_runs = group_runs_by_branch(workflow_runs);
-
-    // Pre-fetch checks for all open PRs in parallel
-    let pr_checks: HashMap<u64, Vec<GitHubCheckDetail>> = std::thread::scope(|s| {
-        let handles: Vec<_> = prs
-            .iter()
-            .filter(|pr| pr.state == "OPEN")
-            .map(|pr| {
-                let path = path;
-                s.spawn(move || (pr.number, list_pr_checks(path, pr.number)))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok())
-            .filter_map(|(num, result)| result.ok().map(|checks| (num, checks)))
-            .collect()
-    });
 
     GitHubProjectStatus {
         remote,
@@ -846,5 +927,75 @@ mod tests {
     fn group_runs_by_branch_empty() {
         let grouped = group_runs_by_branch(vec![]);
         assert!(grouped.is_empty());
+    }
+
+    // The rollup replaces per-PR `gh pr checks`, so it must reproduce that command's
+    // fields and bucket vocabulary exactly — the frontend switches on `bucket`.
+
+    #[test]
+    fn parse_check_detail_maps_a_check_run() {
+        let node = serde_json::json!({
+            "__typename": "CheckRun",
+            "name": "rust",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-07-24T10:24:24Z",
+            "completedAt": "2026-07-24T10:27:27Z",
+            "detailsUrl": "https://github.com/o/r/actions/runs/1/job/2",
+            "workflowName": "CI"
+        });
+
+        let detail = parse_check_detail(&node).expect("check run should parse");
+        assert_eq!(detail.name, "rust");
+        assert_eq!(detail.bucket, "pass");
+        assert_eq!(detail.workflow, "CI");
+        assert_eq!(detail.link, "https://github.com/o/r/actions/runs/1/job/2");
+        assert_eq!(detail.started_at.as_deref(), Some("2026-07-24T10:24:24Z"));
+        assert_eq!(detail.completed_at.as_deref(), Some("2026-07-24T10:27:27Z"));
+        assert_eq!(detail.description, "");
+    }
+
+    #[test]
+    fn parse_check_detail_maps_a_status_context() {
+        let node = serde_json::json!({
+            "__typename": "StatusContext",
+            "context": "vercel",
+            "state": "FAILURE",
+            "targetUrl": "https://vercel.com/deploy/1",
+            "description": "Deploy failed"
+        });
+
+        let detail = parse_check_detail(&node).expect("status context should parse");
+        assert_eq!(detail.name, "vercel");
+        assert_eq!(detail.bucket, "fail");
+        assert_eq!(detail.link, "https://vercel.com/deploy/1");
+        assert_eq!(detail.description, "Deploy failed");
+    }
+
+    #[test]
+    fn check_run_bucket_matches_gh_vocabulary() {
+        assert_eq!(check_run_bucket("IN_PROGRESS", None), "pending");
+        assert_eq!(check_run_bucket("QUEUED", None), "pending");
+        assert_eq!(check_run_bucket("COMPLETED", Some("SUCCESS")), "pass");
+        assert_eq!(check_run_bucket("COMPLETED", Some("NEUTRAL")), "pass");
+        assert_eq!(check_run_bucket("COMPLETED", Some("SKIPPED")), "skipping");
+        assert_eq!(check_run_bucket("COMPLETED", Some("CANCELLED")), "cancel");
+        assert_eq!(check_run_bucket("COMPLETED", Some("FAILURE")), "fail");
+        assert_eq!(check_run_bucket("COMPLETED", Some("TIMED_OUT")), "fail");
+    }
+
+    #[test]
+    fn status_context_bucket_matches_gh_vocabulary() {
+        assert_eq!(status_context_bucket("SUCCESS"), "pass");
+        assert_eq!(status_context_bucket("PENDING"), "pending");
+        assert_eq!(status_context_bucket("EXPECTED"), "pending");
+        assert_eq!(status_context_bucket("FAILURE"), "fail");
+        assert_eq!(status_context_bucket("ERROR"), "fail");
+    }
+
+    #[test]
+    fn parse_check_detail_skips_nodes_without_a_name() {
+        let node = serde_json::json!({ "__typename": "CheckRun", "status": "COMPLETED" });
+        assert!(parse_check_detail(&node).is_none());
     }
 }

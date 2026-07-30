@@ -21,6 +21,19 @@ type CheckNotification = {
 	prNumber: number;
 };
 
+/**
+ * Local file edits can't change GitHub state, so they must never cost an API call.
+ * The same event still drives the (local, free) git refresh in GitStore.
+ */
+const EDIT_ONLY_TRIGGERS = new Set([
+	'post-tool-use-write',
+	'post-tool-use-edit',
+	'post-tool-use-notebook-edit'
+]);
+
+/** Floor between hook/watcher-driven GitHub fetches for a given project. */
+const HOOK_REFRESH_THROTTLE_MS = 60_000;
+
 export class GitHubStore {
 	private workspaces = getWorkspaceStore();
 	private git = getGitStore();
@@ -111,10 +124,12 @@ export class GitHubStore {
 	// Not reactive — internal bookkeeping only
 	private trackedProjectsFingerprint = '';
 	lastRefreshedAt: Record<string, number> = {};
+	private lastHookRefreshAt: Record<string, number> = {};
+	private pendingHookRefresh: Record<string, ReturnType<typeof setTimeout>> = {};
 
 	constructor() {
 		listen<ProjectRefreshRequestedEvent>('project:refresh-requested', (event) => {
-			void this.refreshProject(event.payload.projectPath);
+			this.handleRefreshRequest(event.payload);
 		});
 		listen<GitHubProjectStatusEvent>('github:project-status', (event) => {
 			this.applyProjectStatus(event.payload.projectPath, event.payload.status);
@@ -154,6 +169,36 @@ export class GitHubStore {
 
 	getRemoteUrl(projectPath: string): string | null {
 		return this.remoteByProject[projectPath]?.htmlUrl ?? null;
+	}
+
+	/**
+	 * Throttle hook/watcher-driven fetches to one per project per window, but keep a
+	 * trailing edge: in a stage → commit → push burst the *last* event is the one that
+	 * changed GitHub state, so dropping it would leave the UI stale until the slow poll.
+	 * Explicit user actions call `refreshProject` directly and are never throttled.
+	 */
+	private handleRefreshRequest(payload: ProjectRefreshRequestedEvent): void {
+		if (EDIT_ONLY_TRIGGERS.has(payload.trigger)) return;
+		const { projectPath } = payload;
+		const elapsed = Date.now() - (this.lastHookRefreshAt[projectPath] ?? 0);
+
+		if (elapsed >= HOOK_REFRESH_THROTTLE_MS) {
+			void this.runHookRefresh(projectPath);
+			return;
+		}
+		if (this.pendingHookRefresh[projectPath]) return;
+		this.pendingHookRefresh[projectPath] = setTimeout(() => {
+			delete this.pendingHookRefresh[projectPath];
+			void this.runHookRefresh(projectPath);
+		}, HOOK_REFRESH_THROTTLE_MS - elapsed);
+	}
+
+	private async runHookRefresh(projectPath: string): Promise<void> {
+		// Stamp only once a fetch can actually happen — otherwise an event arriving
+		// during the startup `gh` probe burns the whole window on a no-op.
+		if (this.ghAvailable !== true) return;
+		this.lastHookRefreshAt[projectPath] = Date.now();
+		await this.refreshProject(projectPath);
 	}
 
 	async refreshProject(projectPath: string): Promise<void> {

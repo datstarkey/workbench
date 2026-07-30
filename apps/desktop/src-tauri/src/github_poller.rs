@@ -12,8 +12,8 @@ use crate::types::{
     TrelloMergeActionAppliedEvent,
 };
 
-const FAST_POLL_INTERVAL: Duration = Duration::from_secs(15);
-const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(90);
+const FAST_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(180);
 const WORKER_TICK: Duration = Duration::from_millis(500);
 const IN_FLIGHT_BACKOFF: Duration = Duration::from_secs(5);
 

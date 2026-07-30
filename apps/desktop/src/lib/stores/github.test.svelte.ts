@@ -642,7 +642,31 @@ describe('GitHubStore', () => {
 			});
 		});
 
-		it('requests refresh after successive events', async () => {
+		it('collapses a burst into one immediate refresh plus one trailing refresh', async () => {
+			store.ghAvailable = true;
+
+			for (let i = 0; i < 4; i++) {
+				emitMockEvent('project:refresh-requested', {
+					projectPath: '/project',
+					source: 'git-watcher',
+					trigger: 'git-dir-change'
+				});
+				await Promise.resolve();
+				await Promise.resolve();
+			}
+
+			const immediate = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(immediate).toHaveLength(1);
+
+			// The last event of a stage -> commit -> push burst is the one that actually
+			// changed GitHub state, so it must still land rather than being dropped.
+			await vi.advanceTimersByTimeAsync(60_001);
+
+			const settled = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(settled).toHaveLength(2);
+		});
+
+		it('does not schedule a trailing refresh when no event was suppressed', async () => {
 			store.ghAvailable = true;
 
 			emitMockEvent('project:refresh-requested', {
@@ -652,6 +676,41 @@ describe('GitHubStore', () => {
 			});
 			await Promise.resolve();
 			await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(60_001);
+
+			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(calls).toHaveLength(1);
+		});
+
+		it('throttles each project independently', async () => {
+			store.ghAvailable = true;
+
+			for (const projectPath of ['/project-a', '/project-b']) {
+				emitMockEvent('project:refresh-requested', {
+					projectPath,
+					source: 'git-watcher',
+					trigger: 'git-dir-change'
+				});
+				await Promise.resolve();
+				await Promise.resolve();
+			}
+
+			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(calls).toHaveLength(2);
+		});
+
+		it('does not burn the throttle window while gh availability is unknown', async () => {
+			store.ghAvailable = null;
+
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/project',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+
+			store.ghAvailable = true;
 			emitMockEvent('project:refresh-requested', {
 				projectPath: '/project',
 				source: 'git-watcher',
@@ -661,7 +720,25 @@ describe('GitHubStore', () => {
 			await Promise.resolve();
 
 			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
-			expect(calls).toHaveLength(2);
+			expect(calls).toHaveLength(1);
 		});
+
+		it.each(['post-tool-use-write', 'post-tool-use-edit', 'post-tool-use-notebook-edit'])(
+			'never spends an API call on the %s trigger',
+			async (trigger) => {
+				store.ghAvailable = true;
+
+				emitMockEvent('project:refresh-requested', {
+					projectPath: '/project',
+					source: 'claude-hook',
+					trigger
+				});
+				await Promise.resolve();
+				await Promise.resolve();
+				await vi.advanceTimersByTimeAsync(60_001);
+
+				expect(invokeSpy).not.toHaveBeenCalledWith('github_refresh_project', expect.anything());
+			}
+		);
 	});
 });
