@@ -125,6 +125,7 @@ export class GitHubStore {
 	private trackedProjectsFingerprint = '';
 	lastRefreshedAt: Record<string, number> = {};
 	private lastHookRefreshAt: Record<string, number> = {};
+	private pendingHookRefresh: Record<string, ReturnType<typeof setTimeout>> = {};
 
 	constructor() {
 		listen<ProjectRefreshRequestedEvent>('project:refresh-requested', (event) => {
@@ -171,15 +172,33 @@ export class GitHubStore {
 	}
 
 	/**
-	 * Apply the hook/watcher refresh policy before spending an API call. Explicit
-	 * user actions call `refreshProject` directly and are never throttled.
+	 * Throttle hook/watcher-driven fetches to one per project per window, but keep a
+	 * trailing edge: in a stage → commit → push burst the *last* event is the one that
+	 * changed GitHub state, so dropping it would leave the UI stale until the slow poll.
+	 * Explicit user actions call `refreshProject` directly and are never throttled.
 	 */
 	private handleRefreshRequest(payload: ProjectRefreshRequestedEvent): void {
 		if (EDIT_ONLY_TRIGGERS.has(payload.trigger)) return;
-		const now = Date.now();
-		if (now - (this.lastHookRefreshAt[payload.projectPath] ?? 0) < HOOK_REFRESH_THROTTLE_MS) return;
-		this.lastHookRefreshAt[payload.projectPath] = now;
-		void this.refreshProject(payload.projectPath);
+		const { projectPath } = payload;
+		const elapsed = Date.now() - (this.lastHookRefreshAt[projectPath] ?? 0);
+
+		if (elapsed >= HOOK_REFRESH_THROTTLE_MS) {
+			void this.runHookRefresh(projectPath);
+			return;
+		}
+		if (this.pendingHookRefresh[projectPath]) return;
+		this.pendingHookRefresh[projectPath] = setTimeout(() => {
+			delete this.pendingHookRefresh[projectPath];
+			void this.runHookRefresh(projectPath);
+		}, HOOK_REFRESH_THROTTLE_MS - elapsed);
+	}
+
+	private async runHookRefresh(projectPath: string): Promise<void> {
+		// Stamp only once a fetch can actually happen — otherwise an event arriving
+		// during the startup `gh` probe burns the whole window on a no-op.
+		if (this.ghAvailable !== true) return;
+		this.lastHookRefreshAt[projectPath] = Date.now();
+		await this.refreshProject(projectPath);
 	}
 
 	async refreshProject(projectPath: string): Promise<void> {
@@ -201,22 +220,21 @@ export class GitHubStore {
 			[projectPath]: status.branchRuns
 		};
 
-		// `prChecks` is no longer part of the poll payload — `loadPrChecks` fills it on
-		// demand. Prune only entries whose PR has disappeared, so on-demand detail
-		// isn't wiped by every poll.
 		const prefix = `${projectPath}::`;
 		const nextChecksByPr = { ...this.checksByPr };
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- plain utility set for key tracking
-		const liveKeys = new Set(status.prs.map((pr) => this.prKey(projectPath, pr.number)));
+		const incomingKeys = new Set<string>();
 
 		for (const [prNum, checks] of Object.entries(status.prChecks)) {
 			const prNumber = Number(prNum);
 			if (!Number.isFinite(prNumber)) continue;
-			nextChecksByPr[this.prKey(projectPath, prNumber)] = checks;
+			const key = this.prKey(projectPath, prNumber);
+			incomingKeys.add(key);
+			nextChecksByPr[key] = checks;
 		}
 
 		for (const key of Object.keys(nextChecksByPr)) {
-			if (key.startsWith(prefix) && !liveKeys.has(key)) {
+			if (key.startsWith(prefix) && !incomingKeys.has(key)) {
 				delete nextChecksByPr[key];
 			}
 		}
@@ -250,23 +268,6 @@ export class GitHubStore {
 
 	getPrChecks(projectPath: string, prNumber: number): GitHubCheckDetail[] | undefined {
 		return this.checksByPr[this.prKey(projectPath, prNumber)];
-	}
-
-	/**
-	 * Fetch per-check detail for one PR. This is the only GraphQL-heavy GitHub call
-	 * left on a UI path, so it runs only for the PR the sidebar is actually showing.
-	 */
-	async loadPrChecks(projectPath: string, prNumber: number): Promise<void> {
-		if (this.ghAvailable !== true) return;
-		try {
-			const checks = await invoke<GitHubCheckDetail[]>('github_list_pr_checks', {
-				projectPath,
-				prNumber
-			});
-			this.checksByPr = { ...this.checksByPr, [this.prKey(projectPath, prNumber)]: checks };
-		} catch (e) {
-			console.warn('[GitHubStore] Failed to load PR checks:', e);
-		}
 	}
 
 	showBranch(projectPath: string, branch: string): void {

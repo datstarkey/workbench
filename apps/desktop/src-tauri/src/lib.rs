@@ -63,7 +63,6 @@ macro_rules! build_invoke_handler {
             commands::github_set_tracked_projects,
             commands::github_refresh_project,
             commands::github_update_pr_branch,
-            commands::github_list_pr_checks,
             commands::github_rerun_workflow,
             commands::github_mark_pr_ready,
             commands::github_merge_pr,

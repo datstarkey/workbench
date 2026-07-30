@@ -642,10 +642,10 @@ describe('GitHubStore', () => {
 			});
 		});
 
-		it('throttles successive events within the window to a single refresh', async () => {
+		it('collapses a burst into one immediate refresh plus one trailing refresh', async () => {
 			store.ghAvailable = true;
 
-			for (let i = 0; i < 3; i++) {
+			for (let i = 0; i < 4; i++) {
 				emitMockEvent('project:refresh-requested', {
 					projectPath: '/project',
 					source: 'git-watcher',
@@ -655,11 +655,18 @@ describe('GitHubStore', () => {
 				await Promise.resolve();
 			}
 
-			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
-			expect(calls).toHaveLength(1);
+			const immediate = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(immediate).toHaveLength(1);
+
+			// The last event of a stage -> commit -> push burst is the one that actually
+			// changed GitHub state, so it must still land rather than being dropped.
+			await vi.advanceTimersByTimeAsync(60_001);
+
+			const settled = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(settled).toHaveLength(2);
 		});
 
-		it('refreshes again once the throttle window has elapsed', async () => {
+		it('does not schedule a trailing refresh when no event was suppressed', async () => {
 			store.ghAvailable = true;
 
 			emitMockEvent('project:refresh-requested', {
@@ -669,19 +676,10 @@ describe('GitHubStore', () => {
 			});
 			await Promise.resolve();
 			await Promise.resolve();
-
-			vi.advanceTimersByTime(60_001);
-
-			emitMockEvent('project:refresh-requested', {
-				projectPath: '/project',
-				source: 'git-watcher',
-				trigger: 'git-dir-change'
-			});
-			await Promise.resolve();
-			await Promise.resolve();
+			await vi.advanceTimersByTimeAsync(60_001);
 
 			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
-			expect(calls).toHaveLength(2);
+			expect(calls).toHaveLength(1);
 		});
 
 		it('throttles each project independently', async () => {
@@ -701,6 +699,30 @@ describe('GitHubStore', () => {
 			expect(calls).toHaveLength(2);
 		});
 
+		it('does not burn the throttle window while gh availability is unknown', async () => {
+			store.ghAvailable = null;
+
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/project',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+
+			store.ghAvailable = true;
+			emitMockEvent('project:refresh-requested', {
+				projectPath: '/project',
+				source: 'git-watcher',
+				trigger: 'git-dir-change'
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const calls = invokeSpy.mock.calls.filter(([cmd]) => cmd === 'github_refresh_project');
+			expect(calls).toHaveLength(1);
+		});
+
 		it.each(['post-tool-use-write', 'post-tool-use-edit', 'post-tool-use-notebook-edit'])(
 			'never spends an API call on the %s trigger',
 			async (trigger) => {
@@ -713,62 +735,10 @@ describe('GitHubStore', () => {
 				});
 				await Promise.resolve();
 				await Promise.resolve();
+				await vi.advanceTimersByTimeAsync(60_001);
 
 				expect(invokeSpy).not.toHaveBeenCalledWith('github_refresh_project', expect.anything());
 			}
 		);
-	});
-
-	// ─── loadPrChecks ───────────────────────────────────────────
-
-	describe('loadPrChecks', () => {
-		it('stores fetched checks under the project/PR key', async () => {
-			store.ghAvailable = true;
-			const checks = [
-				{
-					name: 'CI',
-					bucket: 'pass' as const,
-					workflow: 'build',
-					link: '',
-					startedAt: null,
-					completedAt: null,
-					description: ''
-				}
-			];
-			mockInvoke('github_list_pr_checks', () => checks);
-
-			await store.loadPrChecks('/project', 42);
-
-			expect(invokeSpy).toHaveBeenCalledWith('github_list_pr_checks', {
-				projectPath: '/project',
-				prNumber: 42
-			});
-			expect(store.getPrChecks('/project', 42)).toEqual(checks);
-		});
-
-		it('skips the call when gh is unavailable', async () => {
-			store.ghAvailable = false;
-
-			await store.loadPrChecks('/project', 42);
-
-			expect(invokeSpy).not.toHaveBeenCalledWith('github_list_pr_checks', expect.anything());
-		});
-
-		it('survives a poll that reports no prChecks', async () => {
-			store.ghAvailable = true;
-			mockInvoke('github_list_pr_checks', () => []);
-			await store.loadPrChecks('/project', 42);
-
-			emitMockEvent('github:project-status', {
-				projectPath: '/project',
-				status: makeProjectStatus({
-					prs: [makePR({ number: 42 })],
-					prChecks: {}
-				})
-			});
-			await Promise.resolve();
-
-			expect(store.getPrChecks('/project', 42)).toEqual([]);
-		});
 	});
 });

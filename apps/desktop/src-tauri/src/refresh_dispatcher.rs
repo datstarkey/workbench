@@ -8,6 +8,46 @@ use tauri::{AppHandle, Emitter};
 
 use crate::types::ProjectRefreshRequestedEvent;
 
+/// Triggers that reflect a purely local file edit. Kept in sync with the frontend's
+/// `EDIT_ONLY_TRIGGERS` — consumers that cost an API call skip these.
+fn is_edit_trigger(trigger: &str) -> bool {
+    matches!(
+        trigger,
+        "post-tool-use-write" | "post-tool-use-edit" | "post-tool-use-notebook-edit"
+    )
+}
+
+/// Record a refresh request against the pending entry, returning its new generation.
+/// Shared by the live path and the test helper so both coalesce identically.
+fn record_request(
+    pending: &mut HashMap<String, PendingRefresh>,
+    project_path: String,
+    source: &str,
+    trigger: &str,
+) -> u64 {
+    let entry = pending
+        .entry(project_path)
+        .or_insert_with(|| PendingRefresh {
+            generation: 0,
+            source: source.to_string(),
+            trigger: trigger.to_string(),
+            last_emitted_at: None,
+        });
+
+    // Within an unemitted window, never let a file-edit trigger overwrite a git/gh
+    // one: consumers drop edit triggers, so a `git push` sandwiched between two Write
+    // hooks would otherwise be coalesced away entirely.
+    let masks_stronger_trigger =
+        entry.generation > 0 && is_edit_trigger(trigger) && !is_edit_trigger(&entry.trigger);
+
+    entry.generation += 1;
+    entry.source = source.to_string();
+    if !masks_stronger_trigger {
+        entry.trigger = trigger.to_string();
+    }
+    entry.generation
+}
+
 struct PendingRefresh {
     generation: u64,
     source: String,
@@ -60,17 +100,8 @@ impl RefreshDispatcher {
 
         let should_emit_now = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            let entry = pending
-                .entry(project_path.clone())
-                .or_insert_with(|| PendingRefresh {
-                    generation: 0,
-                    source: source.to_string(),
-                    trigger: trigger.to_string(),
-                    last_emitted_at: None,
-                });
-            entry.generation += 1;
-            entry.source = source.to_string();
-            entry.trigger = trigger.to_string();
+            record_request(&mut pending, project_path.clone(), source, trigger);
+            let entry = &pending[&project_path];
 
             // Leading edge: emit immediately if outside debounce window
             match entry.last_emitted_at {
@@ -199,18 +230,7 @@ impl RefreshDispatcher {
     #[cfg(test)]
     fn enqueue_request(&self, project_path: String, source: &str, trigger: &str) -> u64 {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = pending
-            .entry(project_path)
-            .or_insert_with(|| PendingRefresh {
-                generation: 0,
-                source: source.to_string(),
-                trigger: trigger.to_string(),
-                last_emitted_at: None,
-            });
-        entry.generation += 1;
-        entry.source = source.to_string();
-        entry.trigger = trigger.to_string();
-        entry.generation
+        record_request(&mut pending, project_path, source, trigger)
     }
 
     #[cfg(test)]
@@ -264,6 +284,39 @@ mod tests {
         assert_eq!(latest.project_path, "/repo");
         assert_eq!(latest.source, "claude-hook");
         assert_eq!(latest.trigger, "post-tool-use-bash");
+    }
+
+    #[test]
+    fn edit_trigger_does_not_mask_a_pending_git_trigger() {
+        let dispatcher = RefreshDispatcher::new();
+        let project_path = "/repo".to_string();
+
+        dispatcher.enqueue_request(project_path.clone(), "git-watcher", "git-dir-change");
+        let latest = dispatcher.enqueue_request(
+            project_path.clone(),
+            "claude-hook",
+            "post-tool-use-write",
+        );
+
+        let payload = dispatcher
+            .take_payload_if_latest(project_path.as_str(), latest)
+            .expect("latest generation should emit");
+        assert_eq!(payload.trigger, "git-dir-change");
+    }
+
+    #[test]
+    fn git_trigger_still_overwrites_a_pending_edit_trigger() {
+        let dispatcher = RefreshDispatcher::new();
+        let project_path = "/repo".to_string();
+
+        dispatcher.enqueue_request(project_path.clone(), "claude-hook", "post-tool-use-write");
+        let latest =
+            dispatcher.enqueue_request(project_path.clone(), "git-watcher", "git-dir-change");
+
+        let payload = dispatcher
+            .take_payload_if_latest(project_path.as_str(), latest)
+            .expect("latest generation should emit");
+        assert_eq!(payload.trigger, "git-dir-change");
     }
 
     #[test]
