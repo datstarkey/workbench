@@ -331,6 +331,41 @@ pub fn open_url(url: String) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Post a notification via `osascript`, for builds the notification plugin can't use.
+///
+/// `UNUserNotificationCenter` refuses to register an ad-hoc-signed app, so on an
+/// unsigned build the plugin reports "no permission" and notifications silently never
+/// appear. `osascript` posts under Script Editor's identity instead, which needs no
+/// code-signing. Once the app ships with a Developer ID signature this can go away.
+///
+/// Title and body are passed as script *arguments*, never interpolated into the
+/// source — project and tab names are attacker-adjacent input (they come from paths
+/// and file contents) and would otherwise allow AppleScript injection.
+#[tauri::command(async)]
+pub fn send_fallback_notification(title: String, body: String) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        const SCRIPT: &str = "on run argv\n\
+             display notification (item 1 of argv) with title (item 2 of argv)\n\
+             end run";
+        let status = std::process::Command::new("osascript")
+            .args(["-e", SCRIPT, &body, &title])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("osascript exited with {status}"));
+        }
+        Ok(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Other platforms don't gate notifications on code signing, so the plugin
+        // path already works and this should never be reached.
+        let _ = (title, body);
+        Ok(false)
+    }
+}
+
 // GitHub clone + PR actions
 
 #[tauri::command(async)]

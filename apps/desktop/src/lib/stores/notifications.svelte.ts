@@ -5,6 +5,7 @@ import {
 	onAction
 } from '@tauri-apps/plugin-notification';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { SvelteMap } from 'svelte/reactivity';
 import type { ClaudeSessionStore } from './claudeSessions.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
@@ -80,22 +81,34 @@ export class NotificationStore {
 	}
 
 	private async notifyAwaitingInput(paneId: string): Promise<void> {
-		if (!this.enabled) return;
 		// Suppress only when the user is actively looking at THIS pane —
 		// other panes still get notified even when the window is focused.
 		if ((await this.isWindowFocused()) && this.isPaneActive(paneId)) return;
 		const ctx = this.findContext(paneId);
 		if (!ctx) return;
-		const notificationId = this.hashId(paneId);
-		this.idToPane.set(notificationId, paneId);
+
+		const title = `${ctx.projectName} — needs input`;
+		const body = `${ctx.tabLabel} is waiting for your response`;
+
+		if (this.enabled) {
+			const notificationId = this.hashId(paneId);
+			this.idToPane.set(notificationId, paneId);
+			try {
+				sendNotification({ id: notificationId, title, body });
+				return;
+			} catch (e) {
+				console.warn('[NotificationStore] Failed to send notification:', e);
+			}
+		}
+
+		// An ad-hoc-signed build can't register with UNUserNotificationCenter, so the
+		// plugin reports no permission and every notification is silently dropped.
+		// Fall back to osascript, which needs no code signing. Click-to-focus is lost
+		// on this path — the notification isn't ours to route.
 		try {
-			sendNotification({
-				id: notificationId,
-				title: `${ctx.projectName} — needs input`,
-				body: `${ctx.tabLabel} is waiting for your response`
-			});
+			await invoke('send_fallback_notification', { title, body });
 		} catch (e) {
-			console.warn('[NotificationStore] Failed to send notification:', e);
+			console.warn('[NotificationStore] Fallback notification failed:', e);
 		}
 	}
 
