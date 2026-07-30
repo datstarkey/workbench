@@ -12,6 +12,10 @@ import type { WorkspaceStore } from './workspaces.svelte';
 
 export class NotificationStore {
 	private enabled = false;
+	/** True only when the platform refused to tell us — the unsigned-build signature. */
+	private permissionUnavailable = false;
+	/** Awaited before notifying, so early events don't race the probe. */
+	private permissionReady: Promise<void>;
 	private workspaces: WorkspaceStore;
 	/** Map notification id (numeric hash) → paneId for click routing. */
 	private idToPane = new SvelteMap<number, string>();
@@ -19,7 +23,7 @@ export class NotificationStore {
 	constructor(workspaces: WorkspaceStore, sessions: ClaudeSessionStore) {
 		this.workspaces = workspaces;
 
-		void this.ensurePermission();
+		this.permissionReady = this.ensurePermission();
 
 		onAction((notification) => {
 			const id = typeof notification.id === 'number' ? notification.id : NaN;
@@ -45,8 +49,12 @@ export class NotificationStore {
 			}
 			this.enabled = granted;
 		} catch (e) {
-			console.warn('[NotificationStore] Failed to check permission:', e);
+			// The plugin threw rather than answering — on macOS this is what an
+			// ad-hoc-signed build looks like, because UNUserNotificationCenter won't
+			// register it at all. A clean `denied` is a user decision and is respected.
+			console.warn('[NotificationStore] Notification permission unavailable:', e);
 			this.enabled = false;
+			this.permissionUnavailable = true;
 		}
 	}
 
@@ -81,6 +89,9 @@ export class NotificationStore {
 	}
 
 	private async notifyAwaitingInput(paneId: string): Promise<void> {
+		// Don't race the permission probe: an event during startup would otherwise take
+		// the degraded fallback path even on a build where the plugin works.
+		await this.permissionReady;
 		// Suppress only when the user is actively looking at THIS pane —
 		// other panes still get notified even when the window is focused.
 		if ((await this.isWindowFocused()) && this.isPaneActive(paneId)) return;
@@ -99,12 +110,17 @@ export class NotificationStore {
 			} catch (e) {
 				console.warn('[NotificationStore] Failed to send notification:', e);
 			}
+		} else if (!this.permissionUnavailable) {
+			// Permission was cleanly denied — that's the user's OS-level choice, and
+			// routing around it via osascript would override them.
+			return;
 		}
 
 		// An ad-hoc-signed build can't register with UNUserNotificationCenter, so the
-		// plugin reports no permission and every notification is silently dropped.
-		// Fall back to osascript, which needs no code signing. Click-to-focus is lost
-		// on this path — the notification isn't ours to route.
+		// plugin can't answer at all and every notification is silently dropped.
+		// Fall back to osascript, which needs no code signing. This path is degraded:
+		// no notification id (banners stack rather than replace) and no click-to-focus,
+		// since the notification isn't ours to route. Both return with signing (#83).
 		try {
 			await invoke('send_fallback_notification', { title, body });
 		} catch (e) {

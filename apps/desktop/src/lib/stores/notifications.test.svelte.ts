@@ -89,9 +89,9 @@ describe('NotificationStore', () => {
 		expect(invokeSpy).not.toHaveBeenCalledWith('send_fallback_notification', expect.anything());
 	});
 
-	it('falls back to osascript when the plugin has no permission', async () => {
-		// An ad-hoc-signed build can't register with UNUserNotificationCenter, so the
-		// plugin reports denied and every notification would otherwise be dropped.
+	it('respects an explicit permission denial instead of routing around it', async () => {
+		// A clean `denied` is the user's OS-level choice. Falling back to osascript here
+		// would override them, which is different from the unsigned-build case below.
 		isPermissionGranted.mockResolvedValue(false);
 		requestPermission.mockResolvedValue('denied');
 
@@ -103,10 +103,49 @@ describe('NotificationStore', () => {
 		await settle();
 
 		expect(sendNotification).not.toHaveBeenCalled();
+		expect(invokeSpy).not.toHaveBeenCalledWith('send_fallback_notification', expect.anything());
+	});
+
+	it('sends the right title and body on the fallback path', async () => {
+		isPermissionGranted.mockRejectedValue(new Error('unavailable'));
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+		const { sessions, holder } = mockSessions();
+		new NotificationStore(mockWorkspaces(), sessions);
+		await settle();
+
+		holder.fire?.(PANE);
+		await settle();
+
 		expect(invokeSpy).toHaveBeenCalledWith('send_fallback_notification', {
 			title: 'Workbench — needs input',
 			body: 'Claude 1 is waiting for your response'
 		});
+		warn.mockRestore();
+	});
+
+	it('does not take the degraded fallback while the permission probe is still pending', async () => {
+		// An awaiting-input event during startup must wait for the probe, not assume
+		// the plugin is unusable and lose click-to-focus on a build where it works.
+		let resolveProbe: (v: boolean) => void = () => {};
+		isPermissionGranted.mockReturnValue(
+			new Promise<boolean>((resolve) => {
+				resolveProbe = resolve;
+			})
+		);
+
+		const { sessions, holder } = mockSessions();
+		new NotificationStore(mockWorkspaces(), sessions);
+
+		holder.fire?.(PANE);
+		await settle();
+		expect(invokeSpy).not.toHaveBeenCalledWith('send_fallback_notification', expect.anything());
+
+		resolveProbe(true);
+		await settle();
+
+		expect(sendNotification).toHaveBeenCalled();
+		expect(invokeSpy).not.toHaveBeenCalledWith('send_fallback_notification', expect.anything());
 	});
 
 	it('falls back when the permission probe itself throws', async () => {

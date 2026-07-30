@@ -491,17 +491,34 @@ export class ClaudeSessionStore {
 
 		const latestByPane =
 			type === 'codex' ? this.latestCodexSessionByPane : this.latestClaudeSessionByPane;
-		const sessions =
-			type === 'codex'
-				? await this.discoverCodexSessions(ctx.projectPath)
-				: await this.discoverSessions(ctx.projectPath);
+		// Read-only lookup: `discoverSessions` also overwrites the store-wide resume
+		// list, which a retry loop would yank out from under another project's landing
+		// page. Label sync must not have that side effect.
+		const sessions = await this.peekSessions(ctx.cwd, type);
 		if (latestByPane.get(paneId) !== sessionId) return;
 
+		// The backend substitutes `Session <id>` when the JSONL has no user message yet
+		// (`session_utils::fallback_label`), so a label equal to our own fallback means
+		// "not named yet" — treating it as resolved is what made this retry inert.
 		const match = sessions.find((s) => s.sessionId === sessionId);
-		if (match?.label) {
+		if (match?.label && match.label !== fallback) {
 			this.resolvedSessionLabels.set(sessionId, match.label);
 			this.labelDiscoveryAttempts.delete(sessionId);
 			this.workspaces.updateAITabLabelByPaneId(paneId, match.label, type);
+		}
+	}
+
+	/** Discover sessions without touching the shared `discovered*Sessions` state. */
+	private async peekSessions(
+		cwd: string,
+		type: 'claude' | 'codex'
+	): Promise<DiscoveredClaudeSession[]> {
+		const command = type === 'codex' ? 'discover_codex_sessions' : 'discover_claude_sessions';
+		try {
+			return await invoke<DiscoveredClaudeSession[]>(command, { projectPath: cwd });
+		} catch (e) {
+			console.error('[ClaudeSessionStore] Failed to discover sessions for label:', e);
+			return [];
 		}
 	}
 

@@ -9,6 +9,7 @@ import {
 } from '$types/workbench';
 import { invoke } from '$lib/transport';
 import { newSessionCommand, resumeCommand, tryResumeCommand } from '$lib/utils/claude';
+import { effectivePath } from '$lib/utils/path';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
@@ -494,15 +495,25 @@ export class WorkspaceStore {
 	}
 
 	/** Find workspace/tab context for an AI pane. */
+	/**
+	 * `cwd` is the worktree-aware path the pane actually runs in — session JSONL is
+	 * keyed by that, not by the parent project, so a worktree tab would otherwise look
+	 * up the wrong encoded directory.
+	 */
 	findAIPaneContext(
 		paneId: string,
 		type: SessionType = 'claude'
-	): { workspaceId: string; tabId: string; projectPath: string } | null {
+	): { workspaceId: string; tabId: string; projectPath: string; cwd: string } | null {
 		for (const ws of this.workspaces) {
 			for (const tab of ws.terminalTabs) {
 				if (tab.type !== type) continue;
 				if (tab.panes.some((p) => p.id === paneId)) {
-					return { workspaceId: ws.id, tabId: tab.id, projectPath: ws.projectPath };
+					return {
+						workspaceId: ws.id,
+						tabId: tab.id,
+						projectPath: ws.projectPath,
+						cwd: effectivePath(ws)
+					};
 				}
 			}
 		}

@@ -282,12 +282,15 @@ describe('ClaudeSessionStore', () => {
 		it('recovers the real label once the first user message exists on disk', async () => {
 			setupClaudePane();
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
 			// SessionStart fires before the user has typed anything, so discovery finds
 			// the session with no label yet.
-			mockInvoke('discover_claude_sessions', () => [{ sessionId, label: '', timestamp: '' }]);
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Session abcd1234', timestamp: '' }
+			]);
 
 			emitMockEvent('claude:hook', {
 				paneId: 'pane-1',
@@ -329,7 +332,8 @@ describe('ClaudeSessionStore', () => {
 		it('does not rediscover on every hook once a label is resolved', async () => {
 			setupClaudePane();
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
 			mockInvoke('discover_claude_sessions', () => [
@@ -366,10 +370,13 @@ describe('ClaudeSessionStore', () => {
 		it('does not rescan the session directory on frequent non-label hooks', async () => {
 			setupClaudePane();
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
-			mockInvoke('discover_claude_sessions', () => [{ sessionId, label: '', timestamp: '' }]);
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Session abcd1234', timestamp: '' }
+			]);
 
 			emitMockEvent('claude:hook', {
 				paneId: 'pane-1',
@@ -397,10 +404,13 @@ describe('ClaudeSessionStore', () => {
 		it('stops retrying discovery after the attempt cap', async () => {
 			setupClaudePane();
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 			const sessionId = 'abcd1234-5678-9012-3456-789012345678';
-			mockInvoke('discover_claude_sessions', () => [{ sessionId, label: '', timestamp: '' }]);
+			mockInvoke('discover_claude_sessions', () => [
+				{ sessionId, label: 'Session abcd1234', timestamp: '' }
+			]);
 
 			for (let i = 0; i < 12; i++) {
 				emitMockEvent('claude:hook', {
@@ -646,7 +656,8 @@ describe('ClaudeSessionStore', () => {
 			mockInvoke('discover_codex_sessions', () => sessions);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			emitMockEvent('codex:notify', {
@@ -701,7 +712,8 @@ describe('ClaudeSessionStore', () => {
 			mockInvoke('discover_claude_sessions', () => sessions);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			emitMockEvent('claude:hook', {
@@ -741,7 +753,8 @@ describe('ClaudeSessionStore', () => {
 			);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			// First session event
@@ -783,7 +796,8 @@ describe('ClaudeSessionStore', () => {
 			]);
 
 			(mockWorkspaceStore.findAIPaneContext as ReturnType<typeof vi.fn>).mockReturnValue({
-				projectPath: '/test'
+				projectPath: '/test',
+				cwd: '/test'
 			});
 
 			emitMockEvent('codex:notify', {

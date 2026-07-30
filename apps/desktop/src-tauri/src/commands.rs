@@ -341,6 +341,12 @@ pub fn open_url(url: String) -> Result<bool, String> {
 /// Title and body are passed as script *arguments*, never interpolated into the
 /// source — project and tab names are attacker-adjacent input (they come from paths
 /// and file contents) and would otherwise allow AppleScript injection.
+///
+/// The `--` is load-bearing, not decoration: without it a body beginning with `-e` is
+/// consumed as another `osascript` option and its value parsed as AppleScript source.
+/// A tab label of `-e` plus a title of `property p : (do shell script "…")` executes
+/// that shell command — verified — because a property initializer runs at load time
+/// and so coexists with the `on run` handler.
 #[tauri::command(async)]
 pub fn send_fallback_notification(title: String, body: String) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
@@ -349,7 +355,7 @@ pub fn send_fallback_notification(title: String, body: String) -> Result<bool, S
              display notification (item 1 of argv) with title (item 2 of argv)\n\
              end run";
         let status = std::process::Command::new("osascript")
-            .args(["-e", SCRIPT, &body, &title])
+            .args(["-e", SCRIPT, "--", &body, &title])
             .status()
             .map_err(|e| e.to_string())?;
         if !status.success() {
