@@ -519,7 +519,7 @@ pub fn list_repos() -> Result<Vec<GitHubRepo>> {
     serde_json::from_str(&json).map_err(|e| {
         anyhow::anyhow!(
             "Failed to parse repo list: {e}\nResponse: {}",
-            &json[..json.len().min(500)]
+            crate::text::truncate_bytes(&json, 500)
         )
     })
 }

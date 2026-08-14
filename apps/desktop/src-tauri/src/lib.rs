@@ -3,7 +3,7 @@
 // throughout the desktop crate keep resolving without per-file edits.
 pub use workbench_core::{
     claude_sessions, codex_config, codex_sessions, config, git, github, paths, session_utils,
-    settings, shell, shell_integration, trello, trello_automation, types,
+    settings, shell, shell_integration, text, trello, trello_automation, types,
 };
 
 mod commands;
