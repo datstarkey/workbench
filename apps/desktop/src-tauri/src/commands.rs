@@ -99,7 +99,7 @@ pub fn open_in_vscode(path: String) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
         // Use `open -a` which works regardless of PATH (Tauri .app doesn't inherit shell PATH)
-        std::process::Command::new("open")
+        crate::shell::command("open")
             .args(["-a", "Visual Studio Code", &path])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -107,14 +107,14 @@ pub fn open_in_vscode(path: String) -> Result<bool, String> {
     #[cfg(target_os = "windows")]
     {
         // VS Code installs `code.cmd` — launching via cmd /c finds it on PATH
-        std::process::Command::new("cmd")
+        crate::shell::command("cmd")
             .args(["/c", "code", &path])
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("code")
+        crate::shell::command("code")
             .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::process::Command;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,17 +20,6 @@ enum ActivitySignal {
     Data,
     Timeout,
     Disconnected,
-}
-
-fn default_shell() -> String {
-    #[cfg(unix)]
-    {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
-    }
-    #[cfg(windows)]
-    {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".to_string())
-    }
 }
 
 fn update_activity_state(
@@ -59,7 +47,7 @@ fn update_activity_state(
 }
 
 pub(crate) fn resolve_repo_root(path: &str) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::shell::command("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(path)
         .env("PATH", crate::paths::enriched_path())
@@ -130,7 +118,7 @@ fn terminate_process_tree(child: &mut (dyn portable_pty::Child + Send)) {
 #[cfg(windows)]
 fn terminate_process_tree(child: &mut (dyn portable_pty::Child + Send)) {
     if let Some(pid) = child.process_id() {
-        let _ = Command::new("taskkill")
+        let _ = crate::shell::command("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
             .output();
     } else {
@@ -220,51 +208,19 @@ impl PtyManager {
         let pair = pty_system.openpty(size).context("Failed to open PTY")?;
 
         let shell_path = if shell.is_empty() {
-            default_shell()
+            crate::shell::default_shell()
         } else {
             shell
         };
 
         let mut cmd = CommandBuilder::new(&shell_path);
-        #[cfg(unix)]
-        cmd.arg("-l");
+        for arg in crate::shell::login_args() {
+            cmd.arg(arg);
+        }
         cmd.cwd(&project_path);
 
-        if let Ok(path) = std::env::var("PATH") {
-            cmd.env("PATH", path);
-        }
-        #[cfg(unix)]
-        {
-            if let Ok(home) = std::env::var("HOME") {
-                cmd.env("HOME", home);
-            }
-            if let Ok(user) = std::env::var("USER") {
-                cmd.env("USER", user);
-            }
-            cmd.env("TERM", "xterm-256color");
-            cmd.env("COLORTERM", "truecolor");
-            cmd.env(
-                "LANG",
-                std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
-            );
-        }
-        #[cfg(windows)]
-        {
-            if let Ok(userprofile) = std::env::var("USERPROFILE") {
-                cmd.env("USERPROFILE", userprofile);
-            }
-            if let Ok(username) = std::env::var("USERNAME") {
-                cmd.env("USERNAME", username);
-            }
-            if let Ok(appdata) = std::env::var("APPDATA") {
-                cmd.env("APPDATA", appdata);
-            }
-            if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-                cmd.env("LOCALAPPDATA", localappdata);
-            }
-            if let Ok(systemroot) = std::env::var("SystemRoot") {
-                cmd.env("SystemRoot", systemroot);
-            }
+        for (key, val) in crate::shell::inherited_env() {
+            cmd.env(key, val);
         }
         cmd.env("WORKBENCH_PANE_ID", session_id.clone());
         if let Some(socket_path) = hook_socket_path {
@@ -563,23 +519,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_shell_returns_nonempty() {
-        let shell = default_shell();
-        assert!(!shell.is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn default_shell_unix_returns_shell_path() {
-        let shell = default_shell();
-        // Should be a path like /bin/zsh or /bin/bash
-        assert!(
-            shell.starts_with('/') || shell.contains("sh"),
-            "Unexpected Unix shell: {shell}"
-        );
-    }
-
-    #[test]
     fn update_activity_state_emits_active_on_first_data() {
         let (active, event) = update_activity_state("pane-1", false, ActivitySignal::Data);
         assert!(active);
@@ -642,16 +581,5 @@ mod tests {
         assert!(result);
         let second = rx.recv().unwrap();
         assert_eq!(second, "second");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn default_shell_windows_returns_known_shell() {
-        let shell = default_shell();
-        let lower = shell.to_lowercase();
-        assert!(
-            lower.contains("cmd") || lower.contains("powershell") || lower.contains("pwsh"),
-            "Unexpected Windows shell: {shell}"
-        );
     }
 }

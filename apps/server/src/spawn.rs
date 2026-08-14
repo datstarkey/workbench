@@ -144,12 +144,9 @@ impl RemoteControlManager {
         cmd.cwd(&cwd);
         // Inherit a usable environment so `claude` resolves on PATH and finds the
         // user's credentials/home.
-        for key in ["PATH", "HOME", "USER", "LANG", "SHELL", "LOGNAME"] {
-            if let Ok(val) = std::env::var(key) {
-                cmd.env(key, val);
-            }
+        for (key, val) in workbench_core::shell::inherited_env() {
+            cmd.env(key, val);
         }
-        cmd.env("TERM", "xterm-256color");
 
         let child = pair
             .slave

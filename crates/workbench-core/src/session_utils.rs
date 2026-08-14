@@ -16,11 +16,8 @@ pub fn is_skippable_user_message(trimmed: &str) -> bool {
 pub fn truncate_label(text: &str) -> String {
     let first_line = text.lines().next().unwrap_or(text);
     if first_line.len() > SESSION_LABEL_MAX_LENGTH {
-        let mut end = SESSION_LABEL_MAX_LENGTH - 3;
-        while end > 0 && !first_line.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}...", &first_line[..end])
+        let head = crate::text::truncate_bytes(first_line, SESSION_LABEL_MAX_LENGTH - 3);
+        format!("{head}...")
     } else {
         first_line.to_string()
     }
@@ -28,7 +25,7 @@ pub fn truncate_label(text: &str) -> String {
 
 /// Generate a fallback label from a session ID (first 8 chars).
 pub fn fallback_label(session_id: &str) -> String {
-    format!("Session {}", &session_id[..8.min(session_id.len())])
+    format!("Session {}", crate::text::truncate_bytes(session_id, 8))
 }
 
 /// Extract text from a content field (string or array of content blocks).

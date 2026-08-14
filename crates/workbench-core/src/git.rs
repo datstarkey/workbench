@@ -1,7 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
@@ -12,7 +11,7 @@ use crate::types::{
 };
 
 pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = crate::shell::command("git")
         .args(args)
         .current_dir(cwd)
         .env("PATH", crate::paths::enriched_path())

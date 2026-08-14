@@ -154,21 +154,20 @@ impl TerminalManager {
         })?;
 
         // Prefer the caller's shell (desktop forwards the project's configured
-        // shell for parity with the local PtyManager path); fall back to $SHELL.
+        // shell for parity with the local PtyManager path); fall back to the
+        // platform default.
         let shell_path = match shell {
             Some(s) if !s.is_empty() => s,
-            _ => std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+            _ => workbench_core::shell::default_shell(),
         };
         let mut cmd = CommandBuilder::new(&shell_path);
-        cmd.arg("-l");
-        cmd.cwd(&cwd);
-        for key in ["PATH", "HOME", "USER", "LANG", "SHELL", "LOGNAME"] {
-            if let Ok(val) = std::env::var(key) {
-                cmd.env(key, val);
-            }
+        for arg in workbench_core::shell::login_args() {
+            cmd.arg(arg);
         }
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
+        cmd.cwd(&cwd);
+        for (key, val) in workbench_core::shell::inherited_env() {
+            cmd.env(key, val);
+        }
         if let Some(id) = &pane_id {
             cmd.env("WORKBENCH_PANE_ID", id);
         }
@@ -335,7 +334,7 @@ pub struct CreateTerminalBody {
     /// socket the desktop sets up for `claude --hook` callbacks.
     pub hook_socket: Option<String>,
     /// Shell to launch (desktop forwards the project's configured shell). Empty /
-    /// absent falls back to `$SHELL`.
+    /// absent falls back to the platform default (`workbench_core::shell`).
     pub shell: Option<String>,
 }
 
@@ -506,7 +505,7 @@ fn terminate_process_group(session: &TerminalSession) {
     let pid = lock(&session.child).process_id();
     match pid {
         Some(pid) => {
-            let _ = std::process::Command::new("taskkill")
+            let _ = workbench_core::shell::command("taskkill")
                 .args(["/T", "/F", "/PID", &pid.to_string()])
                 .output();
         }

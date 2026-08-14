@@ -161,10 +161,6 @@ impl NativeTerminalManager {
             .remove(session_id)
     }
 
-    fn default_shell() -> String {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &self,
@@ -195,26 +191,20 @@ impl NativeTerminalManager {
         let pair = pty_system.openpty(size).context("Failed to open PTY")?;
 
         let shell_path = if shell.is_empty() {
-            Self::default_shell()
+            crate::shell::default_shell()
         } else {
             shell
         };
 
         let mut cmd = CommandBuilder::new(&shell_path);
-        cmd.arg("-l");
+        for arg in crate::shell::login_args() {
+            cmd.arg(arg);
+        }
         cmd.cwd(&project_path);
 
-        if let Ok(path) = std::env::var("PATH") {
-            cmd.env("PATH", path);
+        for (key, val) in crate::shell::inherited_env() {
+            cmd.env(key, val);
         }
-        if let Ok(home) = std::env::var("HOME") {
-            cmd.env("HOME", home);
-        }
-        if let Ok(user) = std::env::var("USER") {
-            cmd.env("USER", user);
-        }
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
         cmd.env(
             "LANG",
             std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),

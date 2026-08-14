@@ -244,7 +244,7 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
             Ok(envelope) => envelope,
             Err(e) => {
                 let truncated = if line.len() > 200 {
-                    format!("{}…", &line[..200])
+                    format!("{}…", crate::text::truncate_bytes(&line, 200))
                 } else {
                     line.clone()
                 };
@@ -288,7 +288,7 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
                                 .and_then(|v| v.as_str())
                             {
                                 let display = if cmd.len() > 80 {
-                                    format!("{}…", &cmd[..80])
+                                    format!("{}…", crate::text::truncate_bytes(cmd, 80))
                                 } else {
                                     cmd.to_string()
                                 };
