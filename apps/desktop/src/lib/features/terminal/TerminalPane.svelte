@@ -203,9 +203,30 @@
 		return workbenchSettingsStore.terminalPerformanceMode === 'always';
 	}
 
+	/**
+	 * Open a terminal link in the user's browser.
+	 *
+	 * Used for both link kinds xterm surfaces. Regex-matched plain URLs go through
+	 * WebLinksAddon; http(s) OSC 8 hyperlinks (emitted by `gh`, `npm`, `claude`, …)
+	 * are handled by xterm core's OscLinkProvider, which — with no `linkHandler`
+	 * set — falls back to `confirm()` + `window.open()`. Both fail under Tauri: the
+	 * dialog plugin replaces `window.confirm` with an async invoke of
+	 * `plugin:dialog|confirm`, a command it never registers, so the click died in
+	 * an ACL rejection (an unhandled promise rejection, not even a visible error).
+	 *
+	 * Catch rather than fire-and-forget: `shell.open` rejects when the URL has no
+	 * OS handler or falls outside the shell scope, and an uncaught rejection here
+	 * would reproduce the invisible failure this replaced.
+	 */
+	function openLink(_event: MouseEvent, uri: string): void {
+		open(uri).catch((error) => {
+			console.error('[TerminalPane] Failed to open link:', uri, error);
+		});
+	}
+
 	function ensureWebLinksAddon() {
 		if (!terminal || webLinksLoaded) return;
-		terminal.loadAddon(new WebLinksAddon((_event, uri) => open(uri)));
+		terminal.loadAddon(new WebLinksAddon(openLink));
 		webLinksLoaded = true;
 	}
 
@@ -364,7 +385,14 @@
 
 			terminal = new Terminal({
 				...terminalOptions,
-				scrollback: inPerformanceMode() ? SCROLLBACK_PERFORMANCE : SCROLLBACK_NORMAL
+				scrollback: inPerformanceMode() ? SCROLLBACK_PERFORMANCE : SCROLLBACK_NORMAL,
+				// Set unconditionally — unlike WebLinksAddon, OSC 8 links are handled by
+				// xterm core, so they need this even in performance mode. Only http(s)
+				// OSC 8 links reach us: OscLinkProvider drops other schemes unless the
+				// handler sets `allowNonHttpProtocols`, which we deliberately don't —
+				// it would hand terminal-controlled URIs (`file:`, Windows `ms-*:`) to
+				// the OS opener, and any opt-in needs its own scheme allowlist first.
+				linkHandler: { activate: openLink }
 			});
 			fitAddon = new FitAddon();
 			terminal.loadAddon(fitAddon);
