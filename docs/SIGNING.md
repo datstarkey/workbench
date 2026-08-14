@@ -105,23 +105,54 @@ Six secrets drive `.github/workflows/release.yml`. Set them from the CLI —
 export the certificate to a `.p12` first (Keychain Access → right-click the
 **private key** under "Developer ID Application" → Export → `.p12`, set a password).
 
+Identifiers — safe to pass inline:
+
 ```sh
-gh secret set APPLE_CERTIFICATE < <(base64 -i ~/Downloads/Certificates.p12 | tr -d '\n')
-gh secret set APPLE_CERTIFICATE_PASSWORD          # the .p12 export password
-gh secret set APPLE_SIGNING_IDENTITY              # "Developer ID Application: Starkey Digital ltd (2MFPW59LV6)"
-gh secret set APPLE_API_KEY                       # Key ID
-gh secret set APPLE_API_ISSUER                    # Issuer ID
-gh secret set APPLE_API_KEY_P8 < <(base64 -i ~/.appstoreconnect/private_keys/AuthKey_XXXX.p8 | tr -d '\n')
+gh secret set APPLE_SIGNING_IDENTITY --body 'Developer ID Application: Starkey Digital ltd (2MFPW59LV6)'
+gh secret set APPLE_API_KEY          --body 'XSL34F6XM9'
+gh secret set APPLE_API_ISSUER       --body '8c8343a9-5575-4f63-8757-d65bc0f8491f'
 ```
 
-The `tr -d '\n'` matters — macOS `base64` wraps at 76 columns and the workflow
-decodes with `base64 --decode`, which tolerates it, but a single line keeps the
-secret diff-clean.
+Key material — piped or prompted, never inline, so it stays out of shell history:
 
-Delete the `.p12` afterwards; it contains the exportable private key.
+```sh
+base64 -i ~/Desktop/developerID.p12 | tr -d '\n' | gh secret set APPLE_CERTIFICATE
+gh secret set APPLE_CERTIFICATE_PASSWORD          # prompts; the .p12 export password
+base64 -i ~/.appstoreconnect/private_keys/AuthKey_XSL34F6XM9.p8 | tr -d '\n' | gh secret set APPLE_API_KEY_P8
+```
+
+The `tr -d '\n'` matters — macOS `base64` wraps at 76 columns. The workflow decodes
+with `base64 --decode`, which tolerates wrapping, but a single line keeps the secret
+diff-clean.
+
+`rm ~/Desktop/developerID.p12` afterwards; it holds the exportable private key.
 
 The workflow degrades rather than fails: no `APPLE_CERTIFICATE` → unsigned build
 with a CI warning; certificate but no `APPLE_API_KEY_P8` → signed but un-notarized.
+
+## Why the DMG is notarized separately
+
+Tauri notarizes and staples the `.app`, then builds the `.dmg` and only **signs** it —
+it never submits the DMG. But Gatekeeper assesses the container the user actually
+downloads, so that isn't enough:
+
+```
+$ spctl -a -t open --context context:primary-signature Workbench_0.2.0_universal.dmg
+rejected                              # ← before
+source=Unnotarized Developer ID
+```
+
+Both `build-signed.sh` and the release workflow therefore run `notarytool submit` +
+`stapler staple` against the DMG after the Tauri build, which flips it to
+`accepted / source=Notarized Developer ID`.
+
+In CI this has to happen _after_ `tauri-action`, which has already uploaded the
+unstapled DMG — so the step re-uploads with `gh release upload --clobber`. That is
+safe only because the release stays a **draft** until the `publish` job. If the draft
+behaviour ever changes, this step must move before the upload instead.
+
+The updater tarball needs no equivalent step: it wraps the already-stapled `.app`, and
+the updater replaces the bundle in place.
 
 ## Entitlements
 
