@@ -30,10 +30,38 @@ Verify it landed:
 
 ```sh
 security find-identity -v -p codesigning
-# 1) ABC123… "Developer ID Application: Your Name (TEAMID1234)"
+# 1) ABC123… "Developer ID Application: Starkey Digital ltd (2MFPW59LV6)"
 ```
 
-The quoted string is `APPLE_SIGNING_IDENTITY`. The parenthesised suffix is your Team ID.
+The quoted string is `APPLE_SIGNING_IDENTITY`; `2MFPW59LV6` is the Team ID.
+
+If Xcode reports **"failed to retrieve teams"**, see [Troubleshooting](#troubleshooting) —
+the web portal route below works even when Xcode's team fetch is broken.
+
+<details>
+<summary>Manual route (no Xcode)</summary>
+
+```sh
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout ~/Desktop/developerID.key \
+  -out ~/Desktop/developerID.certSigningRequest \
+  -subj "/emailAddress=jake.starkey@starkeydigital.com/CN=Starkey Digital ltd/C=GB"
+```
+
+Upload the `.certSigningRequest` at
+https://developer.apple.com/account/resources/certificates/add → **Developer ID Application**,
+download the resulting `.cer`, then combine key + cert into the keychain:
+
+```sh
+openssl x509 -in ~/Downloads/developerID_application.cer -inform DER -out /tmp/devid.pem -outform PEM
+openssl pkcs12 -export -inkey ~/Desktop/developerID.key -in /tmp/devid.pem -out ~/Desktop/developerID.p12
+security import ~/Desktop/developerID.p12 -k ~/Library/Keychains/login.keychain-db
+```
+
+That `.p12` is also exactly what `APPLE_CERTIFICATE` wants, so this route skips the
+Keychain Access export in §4.
+
+</details>
 
 > Keep the private key. If you lose it, the certificate is dead — you must revoke
 > and reissue, and Apple caps you at 5 Developer ID certificates per account.
@@ -80,7 +108,7 @@ export the certificate to a `.p12` first (Keychain Access → right-click the
 ```sh
 gh secret set APPLE_CERTIFICATE < <(base64 -i ~/Downloads/Certificates.p12 | tr -d '\n')
 gh secret set APPLE_CERTIFICATE_PASSWORD          # the .p12 export password
-gh secret set APPLE_SIGNING_IDENTITY              # "Developer ID Application: … (TEAMID1234)"
+gh secret set APPLE_SIGNING_IDENTITY              # "Developer ID Application: Starkey Digital ltd (2MFPW59LV6)"
 gh secret set APPLE_API_KEY                       # Key ID
 gh secret set APPLE_API_ISSUER                    # Issuer ID
 gh secret set APPLE_API_KEY_P8 < <(base64 -i ~/.appstoreconnect/private_keys/AuthKey_XXXX.p8 | tr -d '\n')
@@ -120,3 +148,26 @@ weakening of the hardened runtime and Apple reviews them for notarization.
   not support anything older, so the old value was a claim the binary couldn't honour.
 - Certificates expire after 5 years; notarization of already-stapled builds keeps
   working after expiry, but new builds do not.
+
+## Troubleshooting
+
+**Xcode: "failed to retrieve teams" / no teams listed.** In rough order of likelihood:
+
+1. **Membership activated or renewed within the last few hours.** Apple's provisioning
+   backend propagates separately from the billing system that sends the confirmation
+   email, so Xcode can see an empty team list for a while after activation. Wait, then
+   `Xcode → Settings → Accounts → −` and re-add the Apple ID (a restart alone often
+   isn't enough — the empty team list is cached).
+2. **Unaccepted Program License Agreement.** A renewal frequently ships a new PLA, and
+   until it's accepted the API Xcode calls returns nothing rather than an error. Sign in
+   at https://developer.apple.com/account — a banner appears if one is pending. This is
+   the most common cause that _doesn't_ resolve on its own.
+3. **Stale auth session.** Sign out of Xcode's Accounts pane entirely, quit Xcode, sign
+   back in.
+
+The web portal is authoritative: if https://developer.apple.com/account/resources/certificates
+lists your team and lets you add a certificate, the membership is live and the problem is
+local to Xcode — use the manual CSR route in §1 and ignore Xcode entirely.
+
+**Team ID:** `2MFPW59LV6` (Starkey Digital ltd). Not a secret — it's embedded in the
+signature of every build you ship.
