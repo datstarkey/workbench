@@ -79,6 +79,50 @@ jobs:
           Set-Content apps/desktop/src-tauri/tauri.conf.json -Value $conf -NoNewline
           Write-Host "Set tauri.conf.json version to $version"
 
+      # The Tauri CLI reads APPLE_* from the environment and imports the certificate
+      # into a throwaway keychain itself. Exporting them here (rather than on the
+      # tauri-action step) lets us skip signing entirely when the secrets are absent —
+      # an *empty* APPLE_CERTIFICATE is not the same as an unset one and would abort
+      # the build.
+      - name: Configure Apple code signing
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          # Both halves or neither. A certificate without its password imports as an
+          # empty-password PKCS#12 and aborts the build partway through, which is a
+          # worse outcome than the unsigned build we'd produce with neither set.
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            echo "::warning::APPLE_CERTIFICATE/_PASSWORD not both set — shipping an UNSIGNED macOS build"
+            exit 0
+          fi
+          {
+            echo "APPLE_CERTIFICATE<<__WB_EOF__"
+            echo "$APPLE_CERTIFICATE"
+            echo "__WB_EOF__"
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+          } >> "$GITHUB_ENV"
+
+          # Same rule for the notarization credentials — all three or none.
+          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_ISSUER" ]; then
+            echo "::warning::notarization credentials incomplete — signing but NOT notarizing"
+            exit 0
+          fi
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          {
+            echo "APPLE_API_KEY=$APPLE_API_KEY"
+            echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+            echo "APPLE_API_KEY_PATH=$KEY_PATH"
+          } >> "$GITHUB_ENV"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,6 +137,30 @@ jobs:
           prerelease: false
           tauriScript: bunx tauri
           args: ${{ matrix.args }}
+
+      # Tauri notarizes and staples the .app but only *signs* the .dmg, and Gatekeeper
+      # assesses the container the user downloads — an unnotarized DMG still warns on
+      # open even when the app inside is stapled. Runs after tauri-action, so the
+      # stapled DMG has to replace the asset it already uploaded; safe because the
+      # release stays a draft until the publish job.
+      - name: Notarize and staple the DMG
+        if: runner.os == 'macOS' && env.APPLE_API_KEY_PATH != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG=$(find target/universal-apple-darwin/release/bundle/dmg -maxdepth 1 -name '*.dmg' | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::error::no DMG found to notarize"
+            exit 1
+          fi
+          xcrun notarytool submit "$DMG" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$DMG"
+          spctl -a -vvv -t open --context context:primary-signature "$DMG"
+          gh release upload "${{ github.ref_name }}" "$DMG" --clobber --repo "${{ github.repository }}"
 
   publish:
     needs: [changelog, build]

@@ -20,6 +20,11 @@ apps/desktop/src-tauri/SwiftTermBridge/.build/
 .env
 .env.*
 !.env.example
+signing.env
+*.p12
+*.p8
+*.cer
+*.certSigningRequest
 
 # OS files
 .DS_Store
