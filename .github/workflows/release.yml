@@ -94,8 +94,11 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
-          if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "::warning::APPLE_CERTIFICATE is not set — shipping an UNSIGNED macOS build"
+          # Both halves or neither. A certificate without its password imports as an
+          # empty-password PKCS#12 and aborts the build partway through, which is a
+          # worse outcome than the unsigned build we'd produce with neither set.
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            echo "::warning::APPLE_CERTIFICATE/_PASSWORD not both set — shipping an UNSIGNED macOS build"
             exit 0
           fi
           {
@@ -106,8 +109,9 @@ jobs:
             echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
           } >> "$GITHUB_ENV"
 
-          if [ -z "$APPLE_API_KEY_P8" ]; then
-            echo "::warning::APPLE_API_KEY_P8 is not set — signing but NOT notarizing"
+          # Same rule for the notarization credentials — all three or none.
+          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_ISSUER" ]; then
+            echo "::warning::notarization credentials incomplete — signing but NOT notarizing"
             exit 0
           fi
           KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
