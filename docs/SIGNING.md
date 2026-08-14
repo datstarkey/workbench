@@ -127,8 +127,16 @@ diff-clean.
 
 `rm ~/Desktop/developerID.p12` afterwards; it holds the exportable private key.
 
-The workflow degrades rather than fails: no `APPLE_CERTIFICATE` → unsigned build
-with a CI warning; certificate but no `APPLE_API_KEY_P8` → signed but un-notarized.
+> **A secret can exist but be empty.** `gh secret set NAME` without `--body` reads the
+> value from stdin, and with no TTY attached (a script, a non-interactive shell) it
+> stores an empty string. `gh secret list` shows it as present either way. This shipped
+> v0.27.0 publicly unsigned. Always use `--body` or a pipe, never the bare prompting
+> form, and confirm the CI log shows `***` rather than a blank after the variable name.
+
+The workflow **fails** if any of the six is empty or unset — it only ever runs on a
+`v*` tag, so every run is a release and an unsigned artifact is never the right answer.
+To ship unsigned deliberately (expired certificate, Apple outage), set the repository
+variable `ALLOW_UNSIGNED_RELEASE=true`.
 
 ## Why the DMG is notarized separately
 

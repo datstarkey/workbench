@@ -80,10 +80,17 @@ jobs:
           Write-Host "Set tauri.conf.json version to $version"
 
       # The Tauri CLI reads APPLE_* from the environment and imports the certificate
-      # into a throwaway keychain itself. Exporting them here (rather than on the
-      # tauri-action step) lets us skip signing entirely when the secrets are absent —
-      # an *empty* APPLE_CERTIFICATE is not the same as an unset one and would abort
-      # the build.
+      # into a throwaway keychain itself, so nothing here touches `security`.
+      #
+      # This workflow only ever runs on a v* tag, so every run is a release build and
+      # a missing credential is a hard failure. v0.27.0 shipped publicly unsigned
+      # because this step used to warn and continue: `gh secret set` without a TTY
+      # stores an *empty* string, `gh secret list` still showed the secret as present,
+      # and the release published green. Fail loudly instead — an aborted release is
+      # cheap, a public unsigned build claiming to be signed is not.
+      #
+      # To ship unsigned deliberately (expired certificate, Apple outage), set repo
+      # variable ALLOW_UNSIGNED_RELEASE=true.
       - name: Configure Apple code signing
         if: runner.os == 'macOS'
         env:
@@ -93,14 +100,25 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          ALLOW_UNSIGNED: ${{ vars.ALLOW_UNSIGNED_RELEASE }}
         run: |
-          # Both halves or neither. A certificate without its password imports as an
-          # empty-password PKCS#12 and aborts the build partway through, which is a
-          # worse outcome than the unsigned build we'd produce with neither set.
-          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
-            echo "::warning::APPLE_CERTIFICATE/_PASSWORD not both set — shipping an UNSIGNED macOS build"
-            exit 0
+          missing=""
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_P8; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+
+          if [ -n "$missing" ]; then
+            if [ "$ALLOW_UNSIGNED" = "true" ]; then
+              echo "::warning::empty or unset:$missing — ALLOW_UNSIGNED_RELEASE is set, shipping UNSIGNED"
+              exit 0
+            fi
+            echo "::error::empty or unset:$missing"
+            echo "::error::Refusing to publish an unsigned release. See docs/SIGNING.md §4."
+            echo "::error::A secret can exist but be empty — 'gh secret set' without a TTY stores ''."
+            exit 1
           fi
+
           {
             echo "APPLE_CERTIFICATE<<__WB_EOF__"
             echo "$APPLE_CERTIFICATE"
@@ -108,12 +126,6 @@ jobs:
             echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
             echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
           } >> "$GITHUB_ENV"
-
-          # Same rule for the notarization credentials — all three or none.
-          if [ -z "$APPLE_API_KEY_P8" ] || [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_ISSUER" ]; then
-            echo "::warning::notarization credentials incomplete — signing but NOT notarizing"
-            exit 0
-          fi
           KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
           printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
           chmod 600 "$KEY_PATH"
