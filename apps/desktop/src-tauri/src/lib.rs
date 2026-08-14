@@ -13,6 +13,10 @@ mod github_poller;
 mod hook_bridge;
 mod menu;
 #[cfg(target_os = "macos")]
+mod native_notification_commands;
+#[cfg(target_os = "macos")]
+mod native_notifications;
+#[cfg(target_os = "macos")]
 mod native_terminal;
 #[cfg(target_os = "macos")]
 mod native_terminal_commands;
@@ -72,7 +76,6 @@ macro_rules! build_invoke_handler {
             commands::clone_repo,
             commands::delete_branch,
             commands::open_url,
-            commands::send_fallback_notification,
             commands::check_claude_integration,
             commands::check_codex_integration,
             commands::apply_claude_integration,
@@ -151,6 +154,11 @@ pub fn run() {
             let github_poller = GitHubPoller::new(app.handle().clone());
             app.manage(github_poller);
 
+            // Before the app finishes launching: macOS drops click responses for any
+            // notification delivered before the delegate is installed.
+            #[cfg(target_os = "macos")]
+            native_notifications::init(app.handle().clone());
+
             // Boot the always-on loopback server (127.0.0.1, ephemeral port)
             // synchronously on the Tauri async runtime so it is listening
             // before the webview mounts. `spawn_embedded` binds before
@@ -183,6 +191,8 @@ pub fn run() {
                 native_terminal_commands::set_native_terminal_visible,
                 native_terminal_commands::kill_native_terminal,
                 native_terminal_commands::write_native_terminal,
+                native_notification_commands::is_native_notification_available,
+                native_notification_commands::send_native_notification,
             ));
     }
 
