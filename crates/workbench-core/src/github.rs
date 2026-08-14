@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
@@ -9,7 +8,7 @@ use crate::types::{
 };
 
 fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
-    let output = Command::new("gh")
+    let output = crate::shell::command("gh")
         .args(args)
         .current_dir(cwd)
         .env("PATH", crate::paths::enriched_path())
@@ -26,7 +25,7 @@ fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
 
 pub fn is_gh_available() -> bool {
     let home = dirs::home_dir().unwrap_or_default();
-    Command::new("gh")
+    crate::shell::command("gh")
         .args(["auth", "status"])
         .current_dir(home)
         .env("PATH", crate::paths::enriched_path())
@@ -541,14 +540,14 @@ pub fn fetch_pr_branch(path: &str, branch: &str) -> Result<()> {
 pub fn open_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
+        crate::shell::command("open")
             .arg(url)
             .spawn()
             .context("Failed to open URL")?;
     }
     #[cfg(target_os = "linux")]
     {
-        Command::new("xdg-open")
+        crate::shell::command("xdg-open")
             .arg(url)
             .spawn()
             .context("Failed to open URL")?;
@@ -556,7 +555,7 @@ pub fn open_url(url: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         // Empty title ("") prevents `start` from misinterpreting URLs with special chars
-        Command::new("cmd")
+        crate::shell::command("cmd")
             .args(["/c", "start", "\"\"", url])
             .spawn()
             .context("Failed to open URL")?;
