@@ -8,6 +8,7 @@
 	"scripts": {
 		"dev": "tauri dev",
 		"build": "tauri build",
+		"build:signed": "bash scripts/build-signed.sh",
 		"check": "svelte-check --tsconfig ./tsconfig.json",
 		"lint": "eslint .",
 		"bench:terminal": "bash scripts/terminal-bench.sh",

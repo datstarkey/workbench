@@ -36,6 +36,7 @@ Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-
 - **Tag format:** `v`-prefixed semver (e.g. `v0.18.0`).
 - **Changelog location:** `changelog/RELEASE_{version}.md`.
 - **Release flow:** write changelog → commit → tag → push commit + tag → let CI publish the release.
+- **macOS signing/notarization:** see `docs/SIGNING.md`. Driven by `APPLE_*` GitHub secrets; the release workflow degrades to an unsigned build (with a CI warning) when they're absent. Local signed builds: `bun run --cwd apps/desktop build:signed` + a `signing.env` at the repo root.
 
 ## Workflow
 

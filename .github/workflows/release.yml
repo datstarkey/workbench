@@ -79,6 +79,46 @@ jobs:
           Set-Content apps/desktop/src-tauri/tauri.conf.json -Value $conf -NoNewline
           Write-Host "Set tauri.conf.json version to $version"
 
+      # The Tauri CLI reads APPLE_* from the environment and imports the certificate
+      # into a throwaway keychain itself. Exporting them here (rather than on the
+      # tauri-action step) lets us skip signing entirely when the secrets are absent —
+      # an *empty* APPLE_CERTIFICATE is not the same as an unset one and would abort
+      # the build.
+      - name: Configure Apple code signing
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::warning::APPLE_CERTIFICATE is not set — shipping an UNSIGNED macOS build"
+            exit 0
+          fi
+          {
+            echo "APPLE_CERTIFICATE<<__WB_EOF__"
+            echo "$APPLE_CERTIFICATE"
+            echo "__WB_EOF__"
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+          } >> "$GITHUB_ENV"
+
+          if [ -z "$APPLE_API_KEY_P8" ]; then
+            echo "::warning::APPLE_API_KEY_P8 is not set — signing but NOT notarizing"
+            exit 0
+          fi
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          {
+            echo "APPLE_API_KEY=$APPLE_API_KEY"
+            echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+            echo "APPLE_API_KEY_PATH=$KEY_PATH"
+          } >> "$GITHUB_ENV"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

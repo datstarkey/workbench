@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Hardened runtime is on (Tauri's `bundle.macOS.hardenedRuntime` default) because
+	  notarization requires it. Deliberately minimal: the app is NOT sandboxed, so
+	  file access, spawning shells/PTYs and binding the control-plane port need no
+	  entitlement. Swift is statically linked, so library validation stays enabled.
+
+	  Apple Events is the one exception — `send_fallback_notification` and the native
+	  terminal helpers drive `osascript`, which hardened runtime blocks without it.
+	-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
