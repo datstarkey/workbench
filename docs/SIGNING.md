@@ -10,11 +10,11 @@ unsigned. Only tagged CI releases and `bun run build:signed` sign.
 
 ## What produces what
 
-| Artifact                         | Signed                               | Notarized                                                    |
-| -------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
-| `Workbench.app`                  | yes, hardened runtime + entitlements | yes, stapled                                                 |
-| `Workbench_x.y.z_*.dmg`          | yes                                  | not separately — the stapled app inside satisfies Gatekeeper |
-| `Workbench.app.tar.gz` (updater) | derived from the signed app          | inherits the staple                                          |
+| Artifact                         | Signed                               | Notarized                                    |
+| -------------------------------- | ------------------------------------ | -------------------------------------------- |
+| `Workbench.app`                  | yes, hardened runtime + entitlements | yes, stapled                                 |
+| `Workbench_x.y.z_*.dmg`          | yes                                  | yes, stapled — as a separate step, see below |
+| `Workbench.app.tar.gz` (updater) | derived from the signed app          | inherits the staple                          |
 
 Windows is **not** signed yet — the NSIS installer still trips SmartScreen.
 
@@ -93,7 +93,7 @@ bun run --cwd apps/desktop build:signed
 Notarization adds 2–10 minutes to the build. Verify the result:
 
 ```sh
-APP="apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/Workbench.app"
+APP="target/universal-apple-darwin/release/bundle/macos/Workbench.app"
 codesign -dv --verbose=4 "$APP"        # expect: Authority=Developer ID Application, flags=…(runtime)
 spctl -a -vvv -t install "$APP"        # expect: accepted / source=Notarized Developer ID
 xcrun stapler validate "$APP"          # expect: The validate action worked!

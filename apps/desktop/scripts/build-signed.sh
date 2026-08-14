@@ -34,4 +34,21 @@ if [[ -z "${APPLE_API_KEY_PATH:-}" || ! -f "${APPLE_API_KEY_PATH:-}" ]]; then
 fi
 
 cd "$REPO_ROOT/apps/desktop"
-exec bunx tauri build --target universal-apple-darwin "$@"
+bunx tauri build --target universal-apple-darwin "$@"
+
+# Tauri notarizes and staples the .app but only *signs* the .dmg — and Gatekeeper
+# assesses the container the user actually downloads. Without this the DMG reports
+# "Unnotarized Developer ID" and still warns on open.
+if [[ -n "${APPLE_API_KEY_PATH:-}" ]]; then
+	DMG=$(find "$REPO_ROOT/target/universal-apple-darwin/release/bundle/dmg" -name '*.dmg' -maxdepth 1 2>/dev/null | head -1)
+	if [[ -n "$DMG" ]]; then
+		echo "Notarizing $(basename "$DMG")"
+		xcrun notarytool submit "$DMG" \
+			--key "$APPLE_API_KEY_PATH" \
+			--key-id "$APPLE_API_KEY" \
+			--issuer "$APPLE_API_ISSUER" \
+			--wait
+		xcrun stapler staple "$DMG"
+		spctl -a -vvv -t open --context context:primary-signature "$DMG"
+	fi
+fi
