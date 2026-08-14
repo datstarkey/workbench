@@ -42,4 +42,20 @@ void swift_term_write(const char *session_id, const char *text);
 // Destroy the terminal view and clean up
 void swift_term_destroy(const char *session_id);
 
+// MARK: - Notifications (UNUserNotificationCenter)
+
+// action_callback(context, identifier) — called when the user clicks a notification
+typedef void (*WBNotificationActionCallback)(void *context, const char *identifier);
+
+// Whether notifications can work at all. False when the executable has no bundle
+// identifier (i.e. `tauri dev`), where UNUserNotificationCenter would raise.
+bool wb_notifications_available(void);
+
+// Install the delegate and request authorization. Call during app setup, before the
+// app finishes launching, or click responses are dropped.
+bool wb_notifications_init(WBNotificationActionCallback callback, void *context);
+
+// Post a notification. `identifier` is the replace key and is returned on click.
+bool wb_notification_send(const char *identifier, const char *title, const char *body);
+
 #endif

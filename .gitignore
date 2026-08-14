@@ -50,3 +50,6 @@ Library/
 
 # Stale root-level Tauri build artifacts (real crate lives in apps/desktop/src-tauri)
 /src-tauri/
+
+# Claude Code worktrees (nested git repos)
+.claude/worktrees/
