@@ -283,6 +283,62 @@ fn remove_legacy_hooks(hooks_obj: &mut serde_json::Map<String, Value>) -> bool {
     changed
 }
 
+/// True if a command invokes the Workbench hook bridge, however it was quoted
+/// or whichever path separators it used.
+fn is_workbench_hook_command(command: &str) -> bool {
+    command
+        .to_ascii_lowercase()
+        .replace('\\', "/")
+        .contains("workbench-hook-bridge")
+}
+
+/// Drop Workbench bridge registrations that differ from the command we write
+/// today — notably the older unquoted Windows form, whose backslashes the shell
+/// ate. Left alone these accumulate next to the good entry and fail on every
+/// single event, so re-registering is not enough on its own.
+fn remove_outdated_workbench_hooks(
+    hooks_obj: &mut serde_json::Map<String, Value>,
+    current_command: &str,
+) -> bool {
+    let mut changed = false;
+
+    for (_event_name, entries) in hooks_obj.iter_mut() {
+        let Some(arr) = entries.as_array_mut() else {
+            continue;
+        };
+
+        // Prune stale commands nested in each entry's `hooks` array...
+        for entry in arr.iter_mut() {
+            let Some(hooks) = entry.get_mut("hooks").and_then(|v| v.as_array_mut()) else {
+                continue;
+            };
+            let before = hooks.len();
+            hooks.retain(|hook| {
+                let cmd = hook.get("command").and_then(|v| v.as_str()).unwrap_or_default();
+                !is_workbench_hook_command(cmd) || cmd == current_command
+            });
+            changed |= hooks.len() != before;
+        }
+
+        // ...then drop stale top-level entries, and any entry we just emptied.
+        let before = arr.len();
+        arr.retain(|entry| {
+            if let Some(cmd) = entry.get("command").and_then(|v| v.as_str()) {
+                if is_workbench_hook_command(cmd) && cmd != current_command {
+                    return false;
+                }
+            }
+            entry
+                .get("hooks")
+                .and_then(|v| v.as_array())
+                .is_none_or(|hooks| !hooks.is_empty())
+        });
+        changed |= arr.len() != before;
+    }
+
+    changed
+}
+
 fn ensure_event_hooks(
     hooks_obj: &mut serde_json::Map<String, Value>,
     event_name: &str,
@@ -333,6 +389,7 @@ fn ensure_event_hooks(
     changed
 }
 
+#[cfg(not(windows))]
 fn path_needs_quoting(path: &str) -> bool {
     path.chars().any(|c| c.is_whitespace() || c == '\'')
 }
@@ -354,11 +411,12 @@ fn hook_command_for_script(script_path: &Path) -> String {
     let path = script_path.to_string_lossy();
     #[cfg(windows)]
     {
-        let file_arg = if path_needs_quoting(&path) {
-            quote_for_powershell(&path)
-        } else {
-            path.to_string()
-        };
+        // Claude Code hands hook commands to a POSIX shell, which strips
+        // unquoted backslashes — `C:\Users\me\...` arrives as `C:Usersme...`
+        // and PowerShell rejects it. So always quote (never conditionally), and
+        // normalise to forward slashes, which PowerShell and the Win32 API both
+        // accept, so the path survives whichever shell ends up running it.
+        let file_arg = quote_for_powershell(&path.replace('\\', "/"));
         format!(
             "powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File {}",
             file_arg
@@ -448,6 +506,7 @@ pub fn ensure_workbench_hook_integration() -> Result<()> {
     let mut changed = remove_legacy_hooks(hooks_obj);
 
     let command = hook_command_for_script(&script_path);
+    changed |= remove_outdated_workbench_hooks(hooks_obj, &command);
     for (event, matcher) in WORKBENCH_HOOK_EVENTS {
         changed |= ensure_event_hooks(hooks_obj, event, &command, *matcher);
     }
@@ -590,7 +649,8 @@ mod tests {
         let path = PathBuf::from("C:\\Users\\test user\\.claude\\hooks\\workbench-hook-bridge.ps1");
         let cmd = hook_command_for_script(&path);
         assert!(
-            cmd.contains("-File 'C:\\Users\\test user\\.claude\\hooks\\workbench-hook-bridge.ps1'")
+            cmd.contains("-File 'C:/Users/test user/.claude/hooks/workbench-hook-bridge.ps1'"),
+            "{cmd}"
         );
     }
 
@@ -683,6 +743,90 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some(current_cmd.as_str())
         );
+    }
+
+    /// Claude Code runs the command through a POSIX shell, so an unquoted
+    /// backslash path arrives as `C:Usersme...` and PowerShell rejects it.
+    #[cfg(windows)]
+    #[test]
+    fn hook_command_for_script_windows_survives_shell_unescaping() {
+        let cmd = hook_command_for_script(&PathBuf::from(
+            "C:\\Users\\a b\\.claude\\hooks\\workbench-hook-bridge.ps1",
+        ));
+        assert!(
+            !cmd.contains('\\'),
+            "no backslash may survive for a shell to eat: {cmd}"
+        );
+        assert!(
+            cmd.ends_with("-File 'C:/Users/a b/.claude/hooks/workbench-hook-bridge.ps1'"),
+            "path must stay quoted so spaces remain one argument: {cmd}"
+        );
+    }
+
+    /// A path with no spaces used to skip quoting entirely — the exact case
+    /// that broke, since backslashes still needed protecting.
+    #[cfg(windows)]
+    #[test]
+    fn hook_command_for_script_windows_quotes_even_without_spaces() {
+        let cmd = hook_command_for_script(&PathBuf::from(
+            "C:\\Users\\jakes\\.claude\\hooks\\workbench-hook-bridge.ps1",
+        ));
+        assert!(
+            cmd.ends_with("-File 'C:/Users/jakes/.claude/hooks/workbench-hook-bridge.ps1'"),
+            "{cmd}"
+        );
+    }
+
+    #[test]
+    fn remove_outdated_workbench_hooks_drops_stale_bridge_commands() {
+        let mut hooks_obj = serde_json::Map::new();
+        hooks_obj.insert(
+            "Stop".to_string(),
+            serde_json::json!([
+                { "hooks": [{ "type": "command", "command": "pwsh -File C:\\x\\workbench-hook-bridge.ps1" }] },
+                { "hooks": [{ "type": "command", "command": "pwsh -File 'C:/x/workbench-hook-bridge.ps1'" }] },
+                { "hooks": [{ "type": "command", "command": "/usr/local/bin/other-hook" }] },
+            ]),
+        );
+
+        assert!(remove_outdated_workbench_hooks(
+            &mut hooks_obj,
+            "pwsh -File 'C:/x/workbench-hook-bridge.ps1'"
+        ));
+
+        let commands: Vec<&str> = hooks_obj["Stop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|e| e["hooks"].as_array().unwrap())
+            .map(|h| h["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                "pwsh -File 'C:/x/workbench-hook-bridge.ps1'",
+                "/usr/local/bin/other-hook"
+            ],
+            "stale bridge entry should go, current and unrelated ones stay"
+        );
+    }
+
+    #[test]
+    fn remove_outdated_workbench_hooks_is_noop_when_current() {
+        let mut hooks_obj = serde_json::Map::new();
+        hooks_obj.insert(
+            "Stop".to_string(),
+            serde_json::json!([
+                { "hooks": [{ "type": "command", "command": "cmd workbench-hook-bridge.sh" }] },
+                { "hooks": [{ "type": "command", "command": "/usr/local/bin/other-hook" }] },
+            ]),
+        );
+
+        assert!(!remove_outdated_workbench_hooks(
+            &mut hooks_obj,
+            "cmd workbench-hook-bridge.sh"
+        ));
+        assert_eq!(hooks_obj["Stop"].as_array().unwrap().len(), 2);
     }
 
     #[test]

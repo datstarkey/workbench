@@ -119,7 +119,8 @@
 			claudeRetryCmd = retryCmd;
 			earlyOutput = '';
 			setTimeout(() => {
-				conn?.write(`${retryCmd}\n`);
+				// CR is what Enter sends; a Windows console ignores a bare LF.
+				conn?.write(`${retryCmd}\r`);
 			}, 500);
 		}
 	}

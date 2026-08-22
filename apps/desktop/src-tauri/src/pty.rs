@@ -450,8 +450,13 @@ impl PtyManager {
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(STARTUP_COMMAND_DELAY_MS));
                 if let Ok(mut sess) = session_ref.lock() {
-                    let cmd_with_newline = format!("{}\n", cmd_str);
+                    // Submit with CR, not LF — CR is what pressing Enter sends.
+                    // Unix ttys translate CR to NL on input, but a Windows
+                    // console only accepts CR, so a bare LF leaves the command
+                    // sitting on the prompt unsubmitted.
+                    let cmd_with_newline = format!("{}\r", cmd_str);
                     let _ = sess.writer.write_all(cmd_with_newline.as_bytes());
+                    let _ = sess.writer.flush();
                 }
             });
         }

@@ -99,11 +99,13 @@ pub fn enriched_path() -> OsString {
 
 /// Encode a project path for use as a filename-safe identifier.
 /// Replaces path separators and drive letter colons with `-`.
+///
+/// This must match the Claude CLI's own encoding exactly — it is what locates
+/// `~/.claude/projects/<encoded-path>/`. Note that a Windows path yields a
+/// doubled dash for the drive prefix (`C:\Users` -> `C--Users`), because the
+/// colon and the separator each become their own `-`.
 pub fn encode_project_path(project_path: &str) -> String {
-    project_path
-        .replace('\\', "-")
-        .replace('/', "-")
-        .replace(':', "")
+    project_path.replace(['\\', '/', ':'], "-")
 }
 
 /// Write a script file to disk, creating parent dirs and setting executable
@@ -210,6 +212,16 @@ mod tests {
         );
     }
 
+    /// Pins the exact directory name the Claude CLI creates for a Windows
+    /// project, since session discovery silently returns nothing on a mismatch.
+    #[test]
+    fn encode_project_path_matches_claude_cli_windows_layout() {
+        assert_eq!(
+            encode_project_path("C:\\Users\\jakes\\Documents\\GitHub\\workbench"),
+            "C--Users-jakes-Documents-GitHub-workbench"
+        );
+    }
+
     #[test]
     fn encode_project_path_empty_string() {
         assert_eq!(encode_project_path(""), "");
@@ -237,20 +249,20 @@ mod tests {
     fn encode_project_path_windows_backslashes() {
         assert_eq!(
             encode_project_path("C:\\Users\\jake\\project"),
-            "C-Users-jake-project"
+            "C--Users-jake-project"
         );
     }
 
     #[test]
     fn encode_project_path_windows_drive_letter() {
-        assert_eq!(encode_project_path("D:\\repos\\my-app"), "D-repos-my-app");
+        assert_eq!(encode_project_path("D:\\repos\\my-app"), "D--repos-my-app");
     }
 
     #[test]
     fn encode_project_path_mixed_separators() {
         assert_eq!(
             encode_project_path("C:\\Users/jake\\project"),
-            "C-Users-jake-project"
+            "C--Users-jake-project"
         );
     }
 
