@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
+	import { watch } from 'runed';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -346,8 +347,10 @@
 
 	// On tab switch: flush pending resizes synchronously, fit terminal,
 	// and flush any buffered offscreen data
-	$effect(() => {
-		if (active && fitAddon && terminal) {
+	watch(
+		() => active,
+		() => {
+			if (!active || !fitAddon || !terminal) return;
 			flushPendingResize();
 			// With overlay model, the container maintains dimensions when hidden
 			// (visibility:hidden instead of display:none). Only re-fit if
@@ -364,20 +367,19 @@
 				terminal.write(batched);
 			}
 		}
-	});
+	);
 
-	$effect(() => {
-		void active;
-		void documentVisible;
-		void terminalInView;
-		void workbenchSettingsStore.terminalPerformanceMode;
-		const performanceMode = inPerformanceMode();
-		if (terminal) {
-			terminal.options.scrollback = performanceMode ? SCROLLBACK_PERFORMANCE : SCROLLBACK_NORMAL;
-			if (!performanceMode) ensureWebLinksAddon();
+	watch(
+		() => [active, documentVisible, terminalInView, workbenchSettingsStore.terminalPerformanceMode],
+		() => {
+			const performanceMode = inPerformanceMode();
+			if (terminal) {
+				terminal.options.scrollback = performanceMode ? SCROLLBACK_PERFORMANCE : SCROLLBACK_NORMAL;
+				if (!performanceMode) ensureWebLinksAddon();
+			}
+			clearFlushSchedule();
 		}
-		clearFlushSchedule();
-	});
+	);
 
 	onMount(async () => {
 		try {
