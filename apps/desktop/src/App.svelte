@@ -52,7 +52,7 @@
 	import { listen } from '@tauri-apps/api/event';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { startServer } from '$lib/server-mode';
-	import { onMount, untrack } from 'svelte';
+	import { onMount } from 'svelte';
 	import { watch } from 'runed';
 	import { Toaster, toast } from 'svelte-sonner';
 
@@ -123,15 +123,20 @@
 	);
 
 	// Update macOS dock badge with count of sessions awaiting user input
-	$effect(() => {
-		const count = claudeSessionStore.panesAwaitingInput.size;
-		getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
-	});
+	watch(
+		() => claudeSessionStore.panesAwaitingInput.size,
+		(count) => {
+			getCurrentWindow().setBadgeCount(count > 0 ? count : undefined);
+		}
+	);
 
 	// Sync tracked projects for backend GitHub polling
-	$effect(() => {
-		void githubStore.syncTrackedProjects();
-	});
+	watch(
+		() => [githubStore.ghAvailable, githubStore.trackedProjectPaths],
+		() => {
+			void githubStore.syncTrackedProjects();
+		}
+	);
 
 	// Refresh git/GitHub data when switching workspaces (throttled to 2s)
 	let lastSwitchRefresh = 0;
@@ -144,18 +149,18 @@
 	});
 
 	// Sync githubStore.sidebarOpen → pane expand/collapse (imperative DOM API)
-	$effect(() => {
-		const open = githubStore.sidebarOpen;
-		untrack(() => {
+	watch(
+		() => githubStore.sidebarOpen,
+		(open) => {
 			if (open) {
 				githubSidebarPane?.expand();
 			} else {
 				githubSidebarPane?.collapse();
 			}
-		});
-	});
+		}
+	);
 
-	// Register check completion toast handler (non-reactive callback, no $effect needed)
+	// Register check completion toast handler (non-reactive callback)
 	githubStore.onCheckComplete((n) => {
 		if (n.bucket === 'pass') {
 			toast.success(`${n.name} passed`);

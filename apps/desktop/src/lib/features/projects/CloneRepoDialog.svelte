@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { watch } from 'runed';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
@@ -76,14 +77,16 @@
 		reposError = null;
 	}
 
-	// $effect is appropriate here — network request is an external side effect.
 	// onOpenChange is only fired by user interactions, not programmatic open changes.
-	$effect(() => {
-		if (open) {
-			resetState();
-			loadRepos();
+	watch(
+		() => open,
+		(isOpen) => {
+			if (isOpen) {
+				resetState();
+				loadRepos();
+			}
 		}
-	});
+	);
 
 	async function loadRepos() {
 		loadingRepos = true;

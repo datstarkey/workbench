@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { watch } from 'runed';
 	import { onDestroy, onMount } from 'svelte';
 	import type { ProjectConfig } from '$types/workbench';
 	import { TERMINAL_BG } from '$lib/terminal-config';
@@ -66,20 +67,23 @@
 	// Show/hide based on active state AND overlay state.
 	// Also re-measure and resize when becoming active, since the container
 	// may have been display:none (class:hidden) when first mounted.
-	$effect(() => {
-		if (!created || exited) return;
-		const shouldBeVisible = active && !overlayOpen;
-		void setNativeTerminalVisible(sessionId, shouldBeVisible);
-		if (active && container) {
-			requestAnimationFrame(() => {
-				const rect = container.getBoundingClientRect();
-				if (rect.width > 0 && rect.height > 0) {
-					const nsRect = domToNSView(rect);
-					void resizeNativeTerminal(sessionId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
-				}
-			});
+	watch(
+		() => [created, exited, active, overlayOpen],
+		() => {
+			if (!created || exited) return;
+			const shouldBeVisible = active && !overlayOpen;
+			void setNativeTerminalVisible(sessionId, shouldBeVisible);
+			if (active && container) {
+				requestAnimationFrame(() => {
+					const rect = container.getBoundingClientRect();
+					if (rect.width > 0 && rect.height > 0) {
+						const nsRect = domToNSView(rect);
+						void resizeNativeTerminal(sessionId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
+					}
+				});
+			}
 		}
-	});
+	);
 
 	onMount(async () => {
 		try {

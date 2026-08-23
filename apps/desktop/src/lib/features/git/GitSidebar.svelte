@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { watch } from 'runed';
 	import { ScrollArea } from '@workbench/ui/scroll-area';
 	import { Separator } from '@workbench/ui/separator';
 	import { getGitStore, getWorkspaceStore } from '$stores/context';
@@ -20,11 +21,14 @@
 	let stashes = $derived(activePath ? (gitStore.stashByProject[activePath] ?? []) : []);
 
 	// Fetch git data when active path changes (network side effect)
-	$effect(() => {
-		if (!activePath) return;
-		if (Date.now() - (gitStore.lastRefreshedAt[activePath] ?? 0) < 2000) return;
-		gitStore.refreshGitState(activePath);
-	});
+	watch(
+		() => activePath,
+		(path) => {
+			if (!path) return;
+			if (Date.now() - (gitStore.lastRefreshedAt[path] ?? 0) < 2000) return;
+			gitStore.refreshGitState(path);
+		}
+	);
 </script>
 
 {#if activePath && status}
