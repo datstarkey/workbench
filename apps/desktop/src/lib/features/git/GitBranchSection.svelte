@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { watch } from 'runed';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
@@ -19,10 +20,12 @@
 	let showInput = $state(false);
 	let newBranchName = $state('');
 
-	$effect(() => {
-		void path;
-		loadBranches();
-	});
+	watch(
+		() => path,
+		() => {
+			loadBranches();
+		}
+	);
 
 	async function loadBranches() {
 		try {

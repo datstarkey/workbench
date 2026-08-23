@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { watch } from 'runed';
 	import { Button } from '@workbench/ui/button';
 	import { Checkbox } from '@workbench/ui/checkbox';
 	import { Separator } from '@workbench/ui/separator';
@@ -189,13 +190,16 @@
 	}
 
 	// Load columns/labels for already-configured boards (network side effect)
-	$effect(() => {
-		for (const board of boards) {
-			if (!columnsByBoard[board.boardId]) {
-				loadColumnsAndLabels(board.boardId);
+	watch(
+		() => boards,
+		(current) => {
+			for (const board of current) {
+				if (!columnsByBoard[board.boardId]) {
+					loadColumnsAndLabels(board.boardId);
+				}
 			}
 		}
-	});
+	);
 </script>
 
 {#snippet labelChip(boardId: string, labelId: string, onRemove: () => void)}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { watch } from 'runed';
 	import { getTrelloStore } from '$stores/context';
 	import { Separator } from '@workbench/ui/separator';
 	import BoardEmptyState from './BoardEmptyState.svelte';
@@ -11,11 +12,14 @@
 	let boardDataList = $derived(trelloStore.activeBoardData);
 
 	// Fetch board data when active project changes (network side effect)
-	$effect(() => {
-		if (projectPath && boards.length > 0) {
-			trelloStore.refreshAllBoards(projectPath);
+	watch(
+		() => [projectPath, boards],
+		() => {
+			if (projectPath && boards.length > 0) {
+				trelloStore.refreshAllBoards(projectPath);
+			}
 		}
-	});
+	);
 </script>
 
 {#if boards.length === 0}

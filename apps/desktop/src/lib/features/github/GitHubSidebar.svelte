@@ -11,6 +11,7 @@
 	import BranchRunsHeader from './BranchRunsHeader.svelte';
 	import CheckItem from './CheckItem.svelte';
 	import { onDestroy } from 'svelte';
+	import { watch } from 'runed';
 	import { invoke } from '@tauri-apps/api/core';
 	import { toast } from 'svelte-sonner';
 
@@ -102,11 +103,14 @@
 	}
 
 	// Trigger data fetch when sidebar target changes (external side effect -- network requests)
-	$effect(() => {
-		if (!activeProjectPath) return;
-		if (Date.now() - (githubStore.lastRefreshedAt[activeProjectPath] ?? 0) < 2000) return;
-		githubStore.refreshProject(activeProjectPath);
-	});
+	watch(
+		() => activeProjectPath,
+		(path) => {
+			if (!path) return;
+			if (Date.now() - (githubStore.lastRefreshedAt[path] ?? 0) < 2000) return;
+			githubStore.refreshProject(path);
+		}
+	);
 
 	onDestroy(() => {
 		githubStore.clearSidebarOverride();
