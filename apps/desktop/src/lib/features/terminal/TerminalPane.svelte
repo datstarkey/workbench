@@ -15,6 +15,7 @@
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
 	import { TerminalInputDedup } from './input-dedup';
+	import { installTextareaResidueGuard } from './textarea-residue';
 	import { isLayoutDisabled } from './layout-guard';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 	import { terminalHookSocket } from '$lib/server-mode';
@@ -98,6 +99,7 @@
 	let offscreenQueue: Uint8Array | null = null;
 
 	let removeCopyListener: (() => void) | null = null;
+	let removeResidueGuard: (() => void) | null = null;
 
 	// Buffer early output to detect Claude CLI errors for auto-retry
 	let earlyOutput = '';
@@ -497,6 +499,7 @@
 			// VS Code: open terminal first, THEN load WebGL addon
 			// (WebGL needs the canvas element to exist)
 			terminal.open(container);
+			if (terminal.textarea) removeResidueGuard = installTextareaResidueGuard(terminal.textarea);
 
 			// Load addons that require the canvas element to exist
 			loadWebGlAddon();
@@ -665,6 +668,7 @@
 		if (perfLogInterval) clearInterval(perfLogInterval);
 		removeVisibilityListener?.();
 		removeCopyListener?.();
+		removeResidueGuard?.();
 		resizeObserver?.disconnect();
 		intersectionObserver?.disconnect();
 		shellState?.dispose();
