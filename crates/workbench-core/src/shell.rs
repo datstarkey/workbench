@@ -3,6 +3,7 @@
 //! and every `git`/`gh` invocation.
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::process::Command;
 
 /// A `std::process::Command` that never flashes a console window.
@@ -100,6 +101,18 @@ pub fn inherited_env() -> Vec<(&'static str, String)> {
     env
 }
 
+/// Submit a command line to a shell running in a PTY.
+///
+/// Terminated with CR, not LF: CR is what pressing Enter actually sends. Unix
+/// ttys map it to NL on input, while a Windows console only submits on CR — a
+/// bare LF leaves the command sitting at the prompt, unexecuted. Every startup
+/// command goes through here so the two can't drift apart again.
+pub fn submit_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
+    writer.write_all(line.as_bytes())?;
+    writer.write_all(b"\r")?;
+    writer.flush()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +135,13 @@ mod tests {
         let shell = default_shell().to_lowercase();
         assert!(shell.contains("cmd") || shell.contains("powershell") || shell.contains("pwsh"));
         assert!(login_args().is_empty());
+    }
+
+    #[test]
+    fn submit_line_terminates_with_cr() {
+        let mut out: Vec<u8> = Vec::new();
+        submit_line(&mut out, "claude").unwrap();
+        assert_eq!(out, b"claude\r");
     }
 
     #[test]

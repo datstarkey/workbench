@@ -434,11 +434,7 @@ impl NativeTerminalManager {
                 std::thread::sleep(Duration::from_millis(STARTUP_COMMAND_DELAY_MS));
                 if let Ok(sess) = session_ref.lock() {
                     if let Ok(mut w) = sess.writer.lock() {
-                        // CR, not LF — see the matching note in pty.rs: a Windows
-                        // console only submits on CR, and Unix ttys map CR to NL.
-                        let cmd_with_newline = format!("{}\r", cmd_str);
-                        let _ = w.write_all(cmd_with_newline.as_bytes());
-                        let _ = w.flush();
+                        let _ = crate::shell::submit_line(&mut **w, &cmd_str);
                     }
                 }
             });

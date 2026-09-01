@@ -32,7 +32,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
     extract::{
@@ -53,6 +53,12 @@ use crate::state::AppState;
 
 /// Scrollback kept per session for replay on reattach.
 const BUFFER_CAP: usize = 256 * 1024;
+
+/// Shell-readiness window for the startup command (see `wait_for_shell_prompt`).
+const STARTUP_FLOOR: Duration = Duration::from_millis(300);
+const STARTUP_QUIET: Duration = Duration::from_millis(150);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
+const STARTUP_POLL: Duration = Duration::from_millis(20);
 
 /// Backstop against runaway terminal creation (see RemoteControlManager).
 /// Overridable via `WORKBENCH_MAX_TERMINALS` (defaults to 64).
@@ -262,13 +268,15 @@ impl TerminalManager {
             });
         }
 
-        // Optionally run an initial command (e.g. `claude`). PTY input is
-        // buffered, so writing before the shell is ready is fine.
-        if let Some(cmd) = &command {
-            let mut w = lock(&session.writer);
-            let _ = w.write_all(cmd.as_bytes());
-            let _ = w.write_all(b"\n");
-            let _ = w.flush();
+        // Optionally run an initial command (e.g. `claude`), once the shell is
+        // actually reading input.
+        if let Some(cmd) = command {
+            let session = session.clone();
+            std::thread::spawn(move || {
+                wait_for_shell_prompt(&session);
+                let mut w = lock(&session.writer);
+                let _ = workbench_core::shell::submit_line(&mut **w, &cmd);
+            });
         }
 
         lock(&self.inner).insert(id, session);
@@ -449,6 +457,37 @@ fn exit_frame(session: &TerminalSession) -> Message {
     Message::Text(json)
 }
 
+/// Block until a freshly spawned shell is ready for input: a settling delay,
+/// then its startup output (banner, prompt) going quiet.
+///
+/// Windows is why this exists. cmd.exe and PSReadLine drain the console input
+/// buffer while they initialise, so a startup command written into a shell that
+/// has only just spawned is swallowed and the pane sits at an idle prompt — the
+/// "startup command never ran" bug. Waiting for output to go quiet (rather than
+/// sleeping a fixed interval) also covers a slow PowerShell profile; the floor
+/// covers the ConPTY preamble, which arrives before the shell has printed
+/// anything and would otherwise read as a prompt. Capped, so a shell that never
+/// prints still gets its command.
+fn wait_for_shell_prompt(session: &TerminalSession) {
+    std::thread::sleep(STARTUP_FLOOR);
+
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    let mut last_len = 0;
+    let mut quiet = Duration::ZERO;
+    while Instant::now() < deadline {
+        let len = lock(&session.buffer).len();
+        if len != last_len {
+            last_len = len;
+            quiet = Duration::ZERO;
+        } else if len > 0 && quiet >= STARTUP_QUIET {
+            return;
+        } else {
+            quiet += STARTUP_POLL;
+        }
+        std::thread::sleep(STARTUP_POLL);
+    }
+}
+
 /// Terminate the shell AND its descendants, capturing the leader's exit code into
 /// `session.exit_code` when it is reaped. The PTY slave calls `setsid()`, so the
 /// child PID is its process-group id; signalling the GROUP reaps detached children
@@ -460,7 +499,6 @@ fn exit_frame(session: &TerminalSession) -> Message {
 /// escalation blocks, so callers run it on a dedicated thread or the reader thread.
 #[cfg(unix)]
 fn terminate_process_group(session: &TerminalSession) {
-    use std::time::{Duration, Instant};
     let pgid = match lock(&session.child).process_id() {
         Some(pid) => pid as libc::pid_t,
         None => return,
