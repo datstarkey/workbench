@@ -417,6 +417,10 @@ export interface WorkbenchSettings {
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
 	claudePermissionMode: ClaudePermissionMode;
+	/** Wrap Claude launches in @anthropic-ai/sandbox-runtime. */
+	sandboxRuntimeEnabled: boolean;
+	/** Domains the sandbox runtime permits egress to. */
+	sandboxAllowedDomains: string[];
 	cloneBaseDir?: string | null;
 	accentColor?: AccentColor;
 	serverMode?: boolean;

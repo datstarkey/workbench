@@ -108,6 +108,24 @@ async fn ensure_started(
 // Tauri commands
 // ---------------------------------------------------------------------------
 
+/// Error surfaced when server mode would hand a sandboxed session an escape.
+pub const SANDBOX_NEEDS_TOKEN: &str =
+    "Sandbox runtime is on: server mode requires a token. Without one, a sandboxed \
+     Claude session can reach the control plane over loopback and spawn an \
+     unsandboxed process.";
+
+/// Whether the LAN server may start given the sandbox setting and the token.
+///
+/// srt allows local binding and does not filter loopback, so a sandboxed session
+/// can reach a control-plane server on this machine and `POST /remote/spawn` —
+/// which spawns a process *outside* the sandbox. A token closes that hole, so an
+/// unauthenticated server is refused outright rather than merely warned about.
+///
+/// Enforced here, in the Rust command, so no frontend caller can bypass it.
+fn sandbox_allows_server(sandbox_enabled: bool, token: Option<&str>) -> bool {
+    !sandbox_enabled || token.is_some_and(|t| !t.trim().is_empty())
+}
+
 /// Start the LAN server (opt-in server mode). Has no effect on the loopback
 /// server.
 #[tauri::command]
@@ -117,6 +135,15 @@ pub async fn start_server(
     port: u16,
     token: Option<String>,
 ) -> Result<ServerStatus, String> {
+    // Read the setting from disk rather than trusting the caller: this is a
+    // security gate, and the frontend is not the only possible caller.
+    let sandbox_enabled = workbench_core::config::load_workbench_settings()
+        .map(|s| s.sandbox_runtime_enabled)
+        .unwrap_or(false);
+    if !sandbox_allows_server(sandbox_enabled, token.as_deref()) {
+        return Err(SANDBOX_NEEDS_TOKEN.to_string());
+    }
+
     let bind = bind.unwrap_or_else(|| "0.0.0.0".to_string());
     let address = ensure_started(&state.lan, &bind, port, token).await?;
     Ok(ServerStatus {
@@ -300,4 +327,26 @@ mod tests {
         // LAN must be gone.
         assert!(!server_status(app.state()).running);
     }
+
+    /// srt does not filter loopback, so a tokenless control plane is an escape
+    /// hatch out of the sandbox: refuse rather than warn.
+    #[test]
+    fn tokenless_server_is_refused_while_the_sandbox_is_on() {
+        assert!(!sandbox_allows_server(true, None));
+        assert!(!sandbox_allows_server(true, Some("")));
+        assert!(!sandbox_allows_server(true, Some("   ")));
+    }
+
+    #[test]
+    fn a_token_lets_server_mode_run_alongside_the_sandbox() {
+        assert!(sandbox_allows_server(true, Some("s3cret")));
+    }
+
+    /// Without the sandbox the gate does not apply — server mode is unchanged.
+    #[test]
+    fn server_mode_is_unrestricted_when_the_sandbox_is_off() {
+        assert!(sandbox_allows_server(false, None));
+        assert!(sandbox_allows_server(false, Some("s3cret")));
+    }
+
 }

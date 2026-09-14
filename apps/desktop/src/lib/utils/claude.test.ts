@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	CLAUDE_NEW_SESSION_COMMAND,
 	CODEX_NEW_SESSION_COMMAND,
@@ -7,7 +7,9 @@ import {
 	extractPromptArg,
 	newSessionCommandWithPrompt,
 	newSessionCommand,
-	resumeCommand
+	resumeCommand,
+	applyClaudeLaunchOptions,
+	SANDBOX_RUNTIME_PACKAGE
 } from './claude';
 import type { ClaudePermissionMode } from '$types/workbench';
 
@@ -248,5 +250,222 @@ describe('extractPromptArg', () => {
 		const promptArg = extractPromptArg('claude', built);
 		expect(promptArg).toBeDefined();
 		expect(`${newSessionCommand('claude', opts)} ${promptArg}`).toBe(built);
+	});
+});
+
+describe('sandbox runtime wrapper', () => {
+	const sessionId = '12345678-1234-1234-1234-123456789abc';
+	const settingsPath = '/Users/u/.workbench/sandbox-runtime.json';
+	const opts = { sandboxSettingsPath: settingsPath } as const;
+	const prefix = `npx --yes ${SANDBOX_RUNTIME_PACKAGE} --settings '${settingsPath}' --`;
+
+	it('wraps a new-session command', () => {
+		expect(newSessionCommand('claude', opts)).toBe(`${prefix} claude`);
+	});
+
+	it('wraps a resume command', () => {
+		expect(claudeResumeCommand(sessionId, opts)).toBe(`${prefix} claude --resume ${sessionId}`);
+	});
+
+	/**
+	 * srt parses its own options anywhere in the argument list, so the separator
+	 * is what stops it eating `--permission-mode`'s neighbours or a `--resume`.
+	 */
+	it('puts the -- separator between srt and the wrapped binary', () => {
+		expect(newSessionCommand('claude', opts)).toContain(' -- claude');
+	});
+
+	it('orders the wrapper before the permission-mode flag', () => {
+		expect(newSessionCommand('claude', { ...opts, permissionMode: 'bypassPermissions' })).toBe(
+			`${prefix} claude --permission-mode bypassPermissions`
+		);
+	});
+
+	it('never wraps codex', () => {
+		expect(newSessionCommand('codex', opts)).toBe(CODEX_NEW_SESSION_COMMAND);
+		expect(resumeCommand('codex', sessionId, opts)).toBe(`codex resume ${sessionId}`);
+	});
+
+	it('does not wrap when no settings path is configured', () => {
+		expect(newSessionCommand('claude', { sandboxSettingsPath: '' })).toBe('claude');
+		expect(newSessionCommand('claude', {})).toBe('claude');
+	});
+
+	it('shell-quotes a settings path containing a space', () => {
+		const spaced = '/Users/u/My Files/sandbox-runtime.json';
+		expect(newSessionCommand('claude', { sandboxSettingsPath: spaced })).toBe(
+			`npx --yes ${SANDBOX_RUNTIME_PACKAGE} --settings '${spaced}' -- claude`
+		);
+	});
+
+	it('recovers the prompt from a wrapped command', () => {
+		expect(extractPromptArg('claude', `${prefix} claude 'Review this PR'`)).toBe(
+			"'Review this PR'"
+		);
+	});
+
+	it('recovers the prompt from a wrapped command with a quoted, spaced path', () => {
+		const spaced = '/Users/u/My Files/sandbox-runtime.json';
+		const built = newSessionCommandWithPrompt('claude', 'Review this PR', {
+			sandboxSettingsPath: spaced
+		});
+		expect(extractPromptArg('claude', built)).toBe("'Review this PR'");
+	});
+
+	it('round-trips a wrapped command built with a prompt and a mode', () => {
+		const full = { ...opts, permissionMode: 'bypassPermissions' } as const;
+		const built = newSessionCommandWithPrompt('claude', "it's broken", full);
+		const promptArg = extractPromptArg('claude', built);
+		expect(promptArg).toBeDefined();
+		expect(`${newSessionCommand('claude', full)} ${promptArg}`).toBe(built);
+	});
+
+	it('leaves an unwrapped command alone when recovering the prompt', () => {
+		expect(extractPromptArg('claude', "claude 'Review this PR'")).toBe("'Review this PR'");
+	});
+
+	it('yields no prompt for a wrapped command that has none', () => {
+		expect(extractPromptArg('claude', `${prefix} claude`)).toBeUndefined();
+	});
+});
+
+describe('sandbox runtime wrapper hardening', () => {
+	const settingsPath = '/Users/u/.workbench/sandbox-runtime.json';
+	const opts = { sandboxSettingsPath: settingsPath } as const;
+	const prefix = `npx --yes ${SANDBOX_RUNTIME_PACKAGE} --settings '${settingsPath}' --`;
+
+	/** An upstream release must not be able to change sandbox semantics silently. */
+	it('pins the wrapper to an exact version', () => {
+		expect(SANDBOX_RUNTIME_PACKAGE).toBe('@anthropic-ai/sandbox-runtime@0.0.76');
+		expect(newSessionCommand('claude', opts)).toContain('@anthropic-ai/sandbox-runtime@0.0.76');
+	});
+
+	/** Commands persisted before the pin landed carry no version. */
+	it('strips an unversioned wrapper written by an earlier build', () => {
+		const legacy =
+			"npx --yes @anthropic-ai/sandbox-runtime --settings '/old/path.json' -- claude 'Review'";
+		expect(extractPromptArg('claude', legacy)).toBe("'Review'");
+	});
+
+	it('strips a wrapper pinned to a different version', () => {
+		const other =
+			"npx --yes @anthropic-ai/sandbox-runtime@9.9.9 --settings '/old/path.json' -- claude 'Review'";
+		expect(extractPromptArg('claude', other)).toBe("'Review'");
+	});
+
+	/** srt's native Windows support is alpha, so the builder refuses to wrap there. */
+	it('does not wrap on Windows even when a settings path is given', async () => {
+		vi.resetModules();
+		vi.stubGlobal('navigator', {
+			userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+		});
+		try {
+			const win = await import('./claude');
+			expect(win.newSessionCommand('claude', { sandboxSettingsPath: 'C:\\wb\\srt.json' })).toBe(
+				'claude'
+			);
+			expect(
+				win.claudeResumeCommand('12345678-1234-1234-1234-123456789abc', {
+					sandboxSettingsPath: 'C:\\wb\\srt.json',
+					permissionMode: 'bypassPermissions'
+				})
+			).toBe(
+				'claude --permission-mode bypassPermissions --resume 12345678-1234-1234-1234-123456789abc'
+			);
+		} finally {
+			vi.unstubAllGlobals();
+			vi.resetModules();
+		}
+	});
+
+	describe('applyClaudeLaunchOptions', () => {
+		it('wraps a bare claude command', () => {
+			expect(applyClaudeLaunchOptions('claude', opts)).toBe(`${prefix} claude`);
+		});
+
+		it('keeps the arguments of an explicit claude command', () => {
+			expect(applyClaudeLaunchOptions("claude 'run the tests'", opts)).toBe(
+				`${prefix} claude 'run the tests'`
+			);
+		});
+
+		it('adds a permission-mode flag', () => {
+			expect(applyClaudeLaunchOptions('claude', { permissionMode: 'plan' })).toBe(
+				'claude --permission-mode plan'
+			);
+		});
+
+		/**
+		 * A permission flag the user wrote themselves is their decision: apply the
+		 * sandbox wrapper, but do not override the posture they chose.
+		 */
+		it("preserves a user's own permission-mode flag instead of overriding it", () => {
+			expect(
+				applyClaudeLaunchOptions('claude --permission-mode plan', {
+					permissionMode: 'acceptEdits'
+				})
+			).toBe('claude --permission-mode plan');
+		});
+
+		it("wraps but does not re-flag a command carrying the user's own mode", () => {
+			expect(
+				applyClaudeLaunchOptions('claude --permission-mode plan', {
+					...opts,
+					permissionMode: 'acceptEdits'
+				})
+			).toBe(`${prefix} claude --permission-mode plan`);
+		});
+
+		it('leaves --dangerously-skip-permissions alone', () => {
+			expect(
+				applyClaudeLaunchOptions('claude --dangerously-skip-permissions', {
+					permissionMode: 'plan'
+				})
+			).toBe('claude --dangerously-skip-permissions');
+			expect(
+				applyClaudeLaunchOptions('claude --allow-dangerously-skip-permissions', {
+					...opts,
+					permissionMode: 'plan'
+				})
+			).toBe(`${prefix} claude --allow-dangerously-skip-permissions`);
+		});
+
+		/** Never silently discard what the user wrote, even when unparseable. */
+		it('keeps an unparseable remainder verbatim rather than dropping it', () => {
+			expect(applyClaudeLaunchOptions("claude --permission-mode bogus 'Review'", opts)).toBe(
+				`${prefix} claude --permission-mode bogus 'Review'`
+			);
+		});
+
+		it('does not treat a bare word containing a flag name as a permission flag', () => {
+			expect(
+				applyClaudeLaunchOptions("claude 'explain --permission-mode'", {
+					permissionMode: 'plan'
+				})
+			).toBe("claude --permission-mode plan 'explain --permission-mode'");
+		});
+
+		it('rewraps an already-wrapped command rather than nesting wrappers', () => {
+			const once = applyClaudeLaunchOptions('claude', opts);
+			expect(applyClaudeLaunchOptions(once, opts)).toBe(once);
+			expect(applyClaudeLaunchOptions(once, opts).match(/npx/g)).toHaveLength(1);
+		});
+
+		it('unwraps when no settings path is supplied', () => {
+			expect(applyClaudeLaunchOptions(`${prefix} claude 'x'`, {})).toBe("claude 'x'");
+		});
+
+		it('leaves a non-claude command untouched', () => {
+			expect(applyClaudeLaunchOptions('bun run dev', opts)).toBe('bun run dev');
+			expect(applyClaudeLaunchOptions('echo claude', opts)).toBe('echo claude');
+			expect(applyClaudeLaunchOptions('claudefoo', opts)).toBe('claudefoo');
+		});
+
+		it('preserves a resume flag', () => {
+			const id = '12345678-1234-1234-1234-123456789abc';
+			expect(applyClaudeLaunchOptions(`claude --resume ${id}`, opts)).toBe(
+				`${prefix} claude --resume ${id}`
+			);
+		});
 	});
 });

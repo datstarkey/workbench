@@ -13,6 +13,8 @@ import {
 	newSessionCommand,
 	resumeCommand,
 	tryResumeCommand,
+	applyClaudeLaunchOptions,
+	warnMissingSandboxSettingsPath,
 	type ClaudeLaunchOptions
 } from '$lib/utils/claude';
 import { effectivePath } from '$lib/utils/path';
@@ -49,7 +51,16 @@ export class WorkspaceStore {
 	private switchCallbacks: Array<(projectPath: string) => void> = [];
 
 	private get claudeLaunchOptions(): ClaudeLaunchOptions {
-		return { permissionMode: this.settingsStore.claudePermissionMode };
+		const sandboxSettingsPath = this.settingsStore.sandboxSettingsPath;
+		// Enabled but unresolved means the backend could not write the settings
+		// file; launching unwrapped is the safe-to-run fallback, but say so.
+		if (this.settingsStore.sandboxRuntimeEnabled && !sandboxSettingsPath) {
+			warnMissingSandboxSettingsPath();
+		}
+		return {
+			permissionMode: this.settingsStore.claudePermissionMode,
+			sandboxSettingsPath
+		};
 	}
 
 	get selectedId(): string | null {
@@ -420,8 +431,14 @@ export class WorkspaceStore {
 		this.updateWorkspace(workspaceId, (w) => {
 			const count = w.terminalTabs.filter((t) => t.type === type).length;
 			const label = options?.label?.trim() || `${labelPrefix} ${count + 1}`;
-			const startupCommand =
-				options?.startupCommand?.trim() || newSessionCommand(type, this.claudeLaunchOptions);
+			const explicit = options?.startupCommand?.trim();
+			// A project/task startup command of `claude …` must still pick up the
+			// sandbox wrapper and permission mode, or both settings are bypassed.
+			const startupCommand = explicit
+				? type === 'codex'
+					? explicit
+					: applyClaudeLaunchOptions(explicit, this.claudeLaunchOptions)
+				: newSessionCommand(type, this.claudeLaunchOptions);
 			const newTab = this.createAITab(label, '', startupCommand, type);
 			tabId = newTab.id;
 			return {

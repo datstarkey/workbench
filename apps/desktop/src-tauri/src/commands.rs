@@ -12,6 +12,7 @@ use crate::github_poller::GitHubPoller;
 use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::{HookBridgeState, HookLogEntry};
 use crate::pty::PtyManager;
+use crate::sandbox_runtime;
 use crate::settings;
 use crate::types::GitHubProjectStatusEvent;
 use crate::types::{
@@ -26,8 +27,14 @@ pub fn list_projects() -> Result<Vec<ProjectConfig>, String> {
 }
 
 #[tauri::command]
-pub fn save_projects(projects: Vec<ProjectConfig>) -> Result<bool, String> {
+pub fn save_projects(
+    projects: Vec<ProjectConfig>,
+    hook_bridge: State<'_, HookBridgeState>,
+) -> Result<bool, String> {
     config::save_projects(&projects).map_err(|e| e.to_string())?;
+    // Project roots are the sandbox's writable set, so a newly added project has
+    // to reach the srt settings file before its first Claude launch.
+    refresh_sandbox_runtime_settings(None, &hook_bridge);
     Ok(true)
 }
 
@@ -224,9 +231,68 @@ pub fn load_workbench_settings() -> Result<WorkbenchSettings, String> {
 }
 
 #[tauri::command]
-pub fn save_workbench_settings(settings: WorkbenchSettings) -> Result<bool, String> {
+pub fn save_workbench_settings(
+    settings: WorkbenchSettings,
+    hook_bridge: State<'_, HookBridgeState>,
+) -> Result<bool, String> {
     config::save_workbench_settings(&settings).map_err(|e| e.to_string())?;
+    refresh_sandbox_runtime_settings(Some(&settings), &hook_bridge);
     Ok(true)
+}
+
+/// Regenerate the `srt` settings file and return its absolute path.
+///
+/// Writes rather than just resolving the path, and fails loudly: the frontend
+/// wraps launch commands with whatever path this returns, so handing back a path
+/// to a file that does not exist would produce a `claude` command srt refuses to
+/// run. On `Err` the frontend launches unwrapped instead.
+#[tauri::command]
+pub fn sandbox_runtime_settings_path(
+    hook_bridge: State<'_, HookBridgeState>,
+) -> Result<String, String> {
+    let settings = config::load_workbench_settings().map_err(|e| e.to_string())?;
+    let projects = config::load_projects().map_err(|e| e.to_string())?;
+    let path = sandbox_runtime::write_settings(&settings, &projects, hook_bridge.socket_path())
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Regenerate `~/.workbench/sandbox-runtime.json` from the current settings,
+/// the registered projects, and the live hook-bridge port.
+///
+/// Pass `settings` when the caller already has them (a save that has not been
+/// re-read yet); otherwise they are loaded from disk. Failures are logged, not
+/// propagated — a stale sandbox file must not fail a settings save, and
+/// `sandbox_runtime_settings_path` is the path that gates actual wrapping.
+pub fn refresh_sandbox_runtime_settings(
+    settings: Option<&WorkbenchSettings>,
+    hook_bridge: &HookBridgeState,
+) {
+    let loaded;
+    let settings = match settings {
+        Some(s) => s,
+        None => match config::load_workbench_settings() {
+            Ok(s) => {
+                loaded = s;
+                &loaded
+            }
+            Err(e) => {
+                log::warn!("[sandbox-runtime] Failed to load settings: {e}");
+                return;
+            }
+        },
+    };
+
+    let projects = config::load_projects().unwrap_or_else(|e| {
+        // Degrade to cwd-only writes rather than skipping the file entirely.
+        log::warn!("[sandbox-runtime] Failed to load projects: {e}");
+        Vec::new()
+    });
+
+    if let Err(e) = sandbox_runtime::write_settings(settings, &projects, hook_bridge.socket_path())
+    {
+        log::warn!("[sandbox-runtime] Failed to write settings file: {e}");
+    }
 }
 
 // GitHub integration commands
