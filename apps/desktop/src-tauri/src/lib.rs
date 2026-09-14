@@ -2,8 +2,8 @@
 // crate root so existing `crate::config`, `crate::git`, `crate::types`, … paths
 // throughout the desktop crate keep resolving without per-file edits.
 pub use workbench_core::{
-    claude_sessions, codex_config, codex_sessions, config, git, github, paths, session_utils,
-    settings, shell, shell_integration, text, trello, trello_automation, types,
+    claude_sessions, codex_config, codex_sessions, config, git, github, paths, sandbox_runtime,
+    session_utils, settings, shell, shell_integration, text, trello, trello_automation, types,
 };
 
 mod commands;
@@ -62,6 +62,7 @@ macro_rules! build_invoke_handler {
             commands::discover_codex_sessions,
             commands::load_workbench_settings,
             commands::save_workbench_settings,
+            commands::sandbox_runtime_settings_path,
             commands::github_is_available,
             commands::github_get_remote,
             commands::github_set_tracked_projects,
@@ -148,6 +149,9 @@ pub fn run() {
             let handle = app.handle().clone();
             menu::build(&handle).expect("failed to build menu");
             let bridge = HookBridgeState::new(handle.clone());
+            // The sandbox-runtime settings file has to name the hook bridge's
+            // loopback port, which is ephemeral and only known once it is bound.
+            commands::refresh_sandbox_runtime_settings(None, &bridge);
             app.manage(bridge);
             let git_watcher = GitWatcher::new(handle);
             app.manage(git_watcher);

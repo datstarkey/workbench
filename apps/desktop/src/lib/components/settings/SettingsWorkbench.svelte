@@ -7,6 +7,7 @@
 	import { Separator } from '@workbench/ui/separator';
 	import SettingsSelect from './SettingsSelect.svelte';
 	import SettingsToggle from './SettingsToggle.svelte';
+	import EditableStringList from './EditableStringList.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 	import {
 		applyClaudeIntegration,
@@ -14,6 +15,7 @@
 		isNativeTerminalAvailable
 	} from '$lib/utils/terminal';
 	import { selectFolder } from '$lib/utils/dialog';
+	import { IS_WINDOWS } from '$lib/utils/claude';
 	import { startServer, stopServer, serverStatus, type ServerStatus } from '$lib/server-mode';
 	import { invoke } from '@tauri-apps/api/core';
 	import type {
@@ -29,10 +31,41 @@
 
 	const store = getWorkbenchSettingsStore();
 
+	// Bypass is only confined when the wrapper will actually be applied.
+	const sandboxRuntimeActive = $derived(store.sandboxSettingsPath !== undefined);
+
 	let nativeAvailable = $state(false);
 	let ghAuthenticated: boolean | null = $state(null);
 	let server: ServerStatus = $state({ running: false, address: null, token: null });
 	let serverError: string | null = $state(null);
+
+	/**
+	 * srt allows local binding and does not filter loopback, so a sandboxed
+	 * session can reach an unauthenticated control-plane server on this machine
+	 * and `POST /remote/spawn` an unsandboxed process. `start_server` refuses
+	 * this combination outright; this line explains why it will not start.
+	 */
+	const tokenlessServerMode = $derived(store.serverMode && !server.token);
+
+	/**
+	 * Turning the sandbox on stops a running server rather than leaving that
+	 * escape open. Stopping (not refusing the toggle) is the simpler of the two:
+	 * this UI never sends a token, so a running LAN server is necessarily
+	 * tokenless and could not be restarted under the sandbox anyway.
+	 */
+	async function toggleSandboxRuntime(checked: boolean) {
+		store.set('sandboxRuntimeEnabled', checked);
+		if (!checked || !server.running) return;
+		serverError = null;
+		try {
+			server = await stopServer();
+			store.set('serverMode', false);
+			serverError =
+				'Server mode was stopped: it cannot run untokenized while the sandbox runtime is on.';
+		} catch (e) {
+			serverError = e instanceof Error ? e.message : String(e);
+		}
+	}
 
 	onMount(async () => {
 		try {
@@ -203,11 +236,57 @@
 		/>
 
 		{#if store.claudePermissionMode === 'bypassPermissions'}
-			<p class="text-xs text-wb-warn">
-				Bypass skips every permission check. The Bash sandbox only covers shell commands, not file
-				tools, MCP servers or hooks. Prefer Auto mode unless Claude runs inside a container or
-				sandbox runtime.
-			</p>
+			{#if sandboxRuntimeActive}
+				<p class="text-xs text-muted-foreground">
+					Bypass skips every permission check, but the sandbox runtime confines the whole session to
+					this project.
+				</p>
+			{:else}
+				<p class="text-xs text-wb-warn">
+					Bypass skips every permission check. The Bash sandbox only covers shell commands, not file
+					tools, MCP servers or hooks. Prefer Auto mode unless Claude runs inside a container or
+					sandbox runtime.
+				</p>
+			{/if}
+		{/if}
+
+		{#if !IS_WINDOWS}
+			<SettingsToggle
+				label="Run Claude in sandbox runtime"
+				description="Wraps claude in @anthropic-ai/sandbox-runtime so file tools, MCP servers and hooks are all confined to this project. First launch downloads @anthropic-ai/sandbox-runtime via npx and needs registry access. Needs Node (npx); on Linux also bubblewrap, socat and ripgrep."
+				checked={store.sandboxRuntimeEnabled}
+				onCheckedChange={toggleSandboxRuntime}
+			/>
+
+			{#if store.sandboxRuntimeEnabled}
+				<div>
+					<p class="text-sm font-medium">Sandbox allowed domains</p>
+					<p class="mt-1 text-xs text-muted-foreground">
+						Network egress is denied by default. Anthropic's own hosts are pre-filled; add anything
+						else the session needs.
+					</p>
+					<EditableStringList
+						items={store.sandboxAllowedDomains}
+						onAdd={(v) => store.addSandboxAllowedDomain(v)}
+						onRemove={(v) => store.removeSandboxAllowedDomain(v)}
+						placeholder="e.g. github.com"
+						badgeVariant="secondary"
+					/>
+					<p class="mt-2 text-xs text-muted-foreground">
+						Writable: project folders, /tmp, and Claude's own session state under ~/.claude.
+						Everything else read-only. Unreadable: ~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.config/gh,
+						~/.docker, ~/.kube. Claude cannot edit its own or the project's hooks, plugins, skills,
+						agents, commands or MCP servers.
+					</p>
+				</div>
+
+				{#if tokenlessServerMode}
+					<p class="text-xs text-wb-warn">
+						Server mode without a token lets a sandboxed session spawn unsandboxed processes via the
+						local control plane, so it will not start. Set a token.
+					</p>
+				{/if}
+			{/if}
 		{/if}
 	</div>
 

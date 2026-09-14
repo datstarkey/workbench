@@ -13,7 +13,10 @@ import type {
 	WorktreeStrategy
 } from '$types/workbench';
 import { invoke } from '$lib/transport';
-import { isClaudePermissionMode } from '$lib/utils/claude';
+// Desktop-local, like terminal IO: the srt settings file lives on this machine,
+// so this one call must never be routed to a remote instance's control plane.
+import { invoke as invokeLocal } from '@tauri-apps/api/core';
+import { IS_WINDOWS, isClaudePermissionMode } from '$lib/utils/claude';
 
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<
@@ -35,6 +38,14 @@ export class WorkbenchSettingsStore {
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
 	claudePermissionMode: ClaudePermissionMode = $state<ClaudePermissionMode>('default');
+	sandboxRuntimeEnabled = $state(false);
+	sandboxAllowedDomains: string[] = $state([]);
+	/**
+	 * Absolute path of the generated srt settings file, resolved once from Rust.
+	 * Empty when the backend could not provide it, in which case launches are not
+	 * wrapped.
+	 */
+	sandboxRuntimeSettingsPath = $state('');
 	cloneBaseDir: string | null = $state(null);
 	accentColor: AccentColor = $state<AccentColor>('violet');
 	serverMode = $state(false);
@@ -43,6 +54,16 @@ export class WorkbenchSettingsStore {
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
+
+	/**
+	 * The srt settings file Claude launches should be wrapped with, or undefined
+	 * to launch unwrapped. Native Windows support in sandbox-runtime is alpha, so
+	 * the wrapper is Unix-only.
+	 */
+	get sandboxSettingsPath(): string | undefined {
+		if (!this.sandboxRuntimeEnabled || IS_WINDOWS) return undefined;
+		return this.sandboxRuntimeSettingsPath || undefined;
+	}
 
 	readonly runnableActions = $derived.by(() =>
 		this.agentActions
@@ -67,6 +88,10 @@ export class WorkbenchSettingsStore {
 		this.claudePermissionMode = isClaudePermissionMode(settings.claudePermissionMode)
 			? settings.claudePermissionMode
 			: 'default';
+		this.sandboxRuntimeEnabled = settings.sandboxRuntimeEnabled ?? false;
+		this.sandboxAllowedDomains = Array.isArray(settings.sandboxAllowedDomains)
+			? settings.sandboxAllowedDomains
+			: [];
 		this.cloneBaseDir = settings.cloneBaseDir ?? null;
 		this.accentColor = settings.accentColor ?? 'violet';
 		this.serverMode = settings.serverMode ?? false;
@@ -74,6 +99,16 @@ export class WorkbenchSettingsStore {
 		this.settingsWindowBounds = settings.settingsWindowBounds ?? null;
 		this.loaded = true;
 		this.dirty = false;
+
+		// Resolved separately: the path is a backend-owned location, not a setting,
+		// and the command writes the file before returning it. A failure here only
+		// means launches go unwrapped, so it must not fail load().
+		try {
+			this.sandboxRuntimeSettingsPath = await invokeLocal<string>('sandbox_runtime_settings_path');
+		} catch (e) {
+			this.sandboxRuntimeSettingsPath = '';
+			console.warn('[workbench-settings] sandbox_runtime_settings_path failed', e);
+		}
 	}
 
 	async save() {
@@ -91,6 +126,18 @@ export class WorkbenchSettingsStore {
 	set<K extends SettableField>(field: K, value: WorkbenchSettings[K]): void {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		(this as any)[field] = value;
+		this.dirty = true;
+	}
+
+	addSandboxAllowedDomain(domain: string) {
+		const value = domain.trim();
+		if (!value || this.sandboxAllowedDomains.includes(value)) return;
+		this.sandboxAllowedDomains = [...this.sandboxAllowedDomains, value];
+		this.dirty = true;
+	}
+
+	removeSandboxAllowedDomain(domain: string) {
+		this.sandboxAllowedDomains = this.sandboxAllowedDomains.filter((d) => d !== domain);
 		this.dirty = true;
 	}
 
@@ -151,6 +198,8 @@ export class WorkbenchSettingsStore {
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,
 			claudePermissionMode: this.claudePermissionMode,
+			sandboxRuntimeEnabled: this.sandboxRuntimeEnabled,
+			sandboxAllowedDomains: this.sandboxAllowedDomains,
 			cloneBaseDir: this.cloneBaseDir,
 			accentColor: this.accentColor,
 			serverMode: this.serverMode,

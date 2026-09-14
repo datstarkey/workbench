@@ -2,7 +2,11 @@ import { invoke } from '$lib/transport';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { stripAnsi } from '$lib/utils/format';
-import { newSessionCommandWithPrompt, type ClaudeLaunchOptions } from '$lib/utils/claude';
+import {
+	newSessionCommandWithPrompt,
+	warnMissingSandboxSettingsPath,
+	type ClaudeLaunchOptions
+} from '$lib/utils/claude';
 import { getWorkbenchSettingsStore } from './context';
 import {
 	isAISessionType,
@@ -73,7 +77,16 @@ export class ClaudeSessionStore {
 	private settingsStore = getWorkbenchSettingsStore();
 
 	private get claudeLaunchOptions(): ClaudeLaunchOptions {
-		return { permissionMode: this.settingsStore.claudePermissionMode };
+		const sandboxSettingsPath = this.settingsStore.sandboxSettingsPath;
+		// Enabled but unresolved means the backend could not write the settings
+		// file; launching unwrapped is the safe-to-run fallback, but say so.
+		if (this.settingsStore.sandboxRuntimeEnabled && !sandboxSettingsPath) {
+			warnMissingSandboxSettingsPath();
+		}
+		return {
+			permissionMode: this.settingsStore.claudePermissionMode,
+			sandboxSettingsPath
+		};
 	}
 
 	/** Callbacks invoked when a pane transitions into awaiting-input state */

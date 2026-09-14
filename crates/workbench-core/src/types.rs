@@ -330,6 +330,10 @@ pub struct WorkbenchSettings {
     pub worktree_custom_branch: String,
     #[serde(default = "default_claude_permission_mode")]
     pub claude_permission_mode: String,
+    #[serde(default)]
+    pub sandbox_runtime_enabled: bool,
+    #[serde(default = "default_sandbox_allowed_domains")]
+    pub sandbox_allowed_domains: Vec<String>,
     #[serde(default = "default_terminal_renderer")]
     pub terminal_renderer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -385,6 +389,10 @@ fn default_claude_permission_mode() -> String {
     "default".to_string()
 }
 
+fn default_sandbox_allowed_domains() -> Vec<String> {
+    crate::sandbox_runtime::default_allowed_domains()
+}
+
 impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
@@ -400,6 +408,8 @@ impl Default for WorkbenchSettings {
             worktree_start_point: default_worktree_start_point(),
             worktree_custom_branch: String::new(),
             claude_permission_mode: default_claude_permission_mode(),
+            sandbox_runtime_enabled: false,
+            sandbox_allowed_domains: default_sandbox_allowed_domains(),
             terminal_renderer: default_terminal_renderer(),
             clone_base_dir: None,
             accent_color: default_accent_color(),

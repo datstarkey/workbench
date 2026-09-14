@@ -1,6 +1,8 @@
 import { invokeSpy, mockInvoke, clearInvokeMocks } from '../../test/tauri-mocks';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WorkbenchSettingsStore } from './workbench-settings.svelte';
+import { createMockTransport, createTauriTransport } from '@workbench/transport';
+import { setTransport } from '$lib/transport';
 import type { AgentAction, WorkbenchSettings } from '$types/workbench';
 
 let uidCounter = 0;
@@ -21,6 +23,8 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 		terminalRenderer: 'xterm',
 		agentActions: [],
 		claudePermissionMode: 'default',
+		sandboxRuntimeEnabled: false,
+		sandboxAllowedDomains: [],
 		...overrides
 	};
 }
@@ -255,6 +259,8 @@ describe('WorkbenchSettingsStore', () => {
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
 					claudePermissionMode: 'default',
+					sandboxRuntimeEnabled: false,
+					sandboxAllowedDomains: [],
 					cloneBaseDir: null,
 					accentColor: 'violet',
 					serverMode: false,
@@ -511,6 +517,8 @@ describe('WorkbenchSettingsStore', () => {
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
 					claudePermissionMode: 'default',
+					sandboxRuntimeEnabled: false,
+					sandboxAllowedDomains: [],
 					cloneBaseDir: null,
 					accentColor: 'violet',
 					serverMode: false,
@@ -567,6 +575,87 @@ describe('WorkbenchSettingsStore', () => {
 			store.set('cloneBaseDir', null);
 			expect(store.cloneBaseDir).toBeNull();
 			expect(store.dirty).toBe(true);
+		});
+	});
+
+	// ─── Sandbox runtime gate ───────────────────────────────
+
+	describe('sandboxSettingsPath', () => {
+		const settingsPath = '/Users/u/.workbench/sandbox-runtime.json';
+
+		async function loadWith(enabled: boolean, path: string | Error) {
+			mockInvoke('load_workbench_settings', () => makeSettings({ sandboxRuntimeEnabled: enabled }));
+			mockInvoke('sandbox_runtime_settings_path', () => {
+				if (path instanceof Error) throw path;
+				return path;
+			});
+			await store.load();
+		}
+
+		it('is undefined when the setting is disabled, even with a resolved path', async () => {
+			await loadWith(false, settingsPath);
+
+			expect(store.sandboxRuntimeSettingsPath).toBe(settingsPath);
+			expect(store.sandboxSettingsPath).toBeUndefined();
+		});
+
+		it('is the path when the setting is enabled and the path resolved', async () => {
+			await loadWith(true, settingsPath);
+
+			expect(store.sandboxSettingsPath).toBe(settingsPath);
+		});
+
+		/** The backend returns Err when it could not write the file. */
+		it('is undefined when enabled but the path could not be resolved', async () => {
+			await loadWith(true, new Error('permission denied'));
+
+			expect(store.sandboxRuntimeSettingsPath).toBe('');
+			expect(store.sandboxSettingsPath).toBeUndefined();
+		});
+
+		it('is undefined when enabled but the backend returned an empty path', async () => {
+			await loadWith(true, '');
+
+			expect(store.sandboxSettingsPath).toBeUndefined();
+		});
+
+		it('does not fail load() when the path command errors', async () => {
+			await loadWith(true, new Error('boom'));
+
+			expect(store.loaded).toBe(true);
+			expect(store.dirty).toBe(false);
+		});
+
+		/**
+		 * The srt settings file is on this machine, so the call must not be
+		 * routable to a remote instance's control plane.
+		 */
+		it('resolves the path with a desktop-local invoke, not the transport', async () => {
+			const transport = createMockTransport();
+			const transportCalls: string[] = [];
+			const realInvoke = transport.invoke.bind(transport);
+			transport.invoke = (async (name: string, args: unknown) => {
+				transportCalls.push(name);
+				return realInvoke(name as never, args as never);
+			}) as typeof transport.invoke;
+			transport.mockInvoke('load_workbench_settings', () =>
+				makeSettings({ sandboxRuntimeEnabled: true })
+			);
+			setTransport(transport);
+			mockInvoke('sandbox_runtime_settings_path', () => settingsPath);
+
+			try {
+				await store.load();
+			} finally {
+				setTransport(createTauriTransport());
+			}
+
+			expect(store.sandboxSettingsPath).toBe(settingsPath);
+			// Settings themselves go through the transport...
+			expect(transportCalls).toContain('load_workbench_settings');
+			// ...but the path does not.
+			expect(transportCalls).not.toContain('sandbox_runtime_settings_path');
+			expect(invokeSpy).toHaveBeenCalledWith('sandbox_runtime_settings_path');
 		});
 	});
 });

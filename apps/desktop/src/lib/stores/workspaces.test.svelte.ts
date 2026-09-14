@@ -1,6 +1,7 @@
 import { invokeSpy, clearInvokeMocks } from '../../test/tauri-mocks';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WorkspaceStore } from './workspaces.svelte';
+import { SANDBOX_RUNTIME_PACKAGE } from '$lib/utils/claude';
 import type {
 	ProjectConfig,
 	ProjectWorkspace,
@@ -20,7 +21,9 @@ const mockGitStore = {
 	branchByProject: {} as Record<string, string>
 };
 const mockWorkbenchSettingsStore = {
-	claudePermissionMode: 'default'
+	claudePermissionMode: 'default',
+	sandboxRuntimeEnabled: false,
+	sandboxSettingsPath: undefined as string | undefined
 };
 vi.mock('./context', () => ({
 	getGitStore: () => mockGitStore,
@@ -61,6 +64,8 @@ describe('WorkspaceStore', () => {
 		uidCounter = 0;
 		mockGitStore.branchByProject = {};
 		mockWorkbenchSettingsStore.claudePermissionMode = 'default';
+		mockWorkbenchSettingsStore.sandboxRuntimeEnabled = false;
+		mockWorkbenchSettingsStore.sandboxSettingsPath = undefined;
 		store = new WorkspaceStore();
 	});
 
@@ -1523,6 +1528,249 @@ describe('WorkspaceStore', () => {
 			store.ensureShape();
 
 			expect(startupCommand()).toBe("codex 'Find DRY violations'");
+		});
+	});
+
+	// ─── Sandbox runtime wrapper ────────────────────────────
+
+	describe('ensureShape sandbox runtime wrapper', () => {
+		const sessionId = '12345678-1234-1234-1234-123456789abc';
+		const settingsPath = '/Users/u/.workbench/sandbox-runtime.json';
+		const prefix = `npx --yes ${SANDBOX_RUNTIME_PACKAGE} --settings '${settingsPath}' --`;
+
+		function seedPane(pane: TerminalPaneState, type: SessionType = 'claude') {
+			const tab: TerminalTabState = {
+				id: 'tab-1',
+				label: 'AI 1',
+				split: 'horizontal',
+				type,
+				panes: [pane]
+			};
+			store.workspaces = [
+				makeWorkspace({ id: 'ws-a', terminalTabs: [tab], activeTerminalTabId: 'tab-1' })
+			];
+		}
+
+		function startupCommand(): string | undefined {
+			return store.workspaces[0].terminalTabs[0].panes[0].startupCommand;
+		}
+
+		it('wraps a promptless new-session command when the setting is turned on', () => {
+			seedPane({ id: 'pane-1', type: 'claude', startupCommand: 'claude' });
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`${prefix} claude`);
+		});
+
+		it('unwraps a persisted command when the setting is turned off', () => {
+			seedPane({ id: 'pane-1', type: 'claude', startupCommand: `${prefix} claude` });
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe('claude');
+		});
+
+		it('keeps a persisted command untouched while the setting stays on', () => {
+			seedPane({ id: 'pane-1', type: 'claude', startupCommand: `${prefix} claude` });
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`${prefix} claude`);
+		});
+
+		it('preserves an initial prompt across the wrapper being added', () => {
+			seedPane({ id: 'pane-1', type: 'claude', startupCommand: "claude 'Review this PR'" });
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`${prefix} claude 'Review this PR'`);
+		});
+
+		it('preserves an initial prompt across the wrapper being removed', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				startupCommand: `${prefix} claude 'Review this PR'`
+			});
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe("claude 'Review this PR'");
+		});
+
+		it('combines the wrapper with a permission-mode flag', () => {
+			seedPane({ id: 'pane-1', type: 'claude', startupCommand: 'claude' });
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`${prefix} claude --permission-mode bypassPermissions`);
+		});
+
+		it('rewrites a wrapped resume command when the setting is turned off', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				claudeSessionId: sessionId,
+				startupCommand: `${prefix} claude --resume ${sessionId}`
+			});
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`claude --resume ${sessionId}`);
+		});
+
+		it('wraps a resume command when the setting is turned on', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				claudeSessionId: sessionId,
+				startupCommand: `claude --resume ${sessionId}`
+			});
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`${prefix} claude --resume ${sessionId}`);
+		});
+
+		it('never wraps codex, which has no sandbox-runtime support', () => {
+			seedPane(
+				{ id: 'pane-1', type: 'codex', startupCommand: "codex 'Find DRY violations'" },
+				'codex'
+			);
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe("codex 'Find DRY violations'");
+		});
+
+		/** Commands persisted before the version was pinned must still normalise. */
+		it('rewrites an unversioned wrapper written by an earlier build', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				startupCommand:
+					"npx --yes @anthropic-ai/sandbox-runtime --settings '/old/path.json' -- claude 'Review this PR'"
+			});
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`${prefix} claude 'Review this PR'`);
+		});
+	});
+
+	// ─── Explicit startup commands ──────────────────────────
+
+	describe('addAISession startup commands', () => {
+		const settingsPath = '/Users/u/.workbench/sandbox-runtime.json';
+		const prefix = `npx --yes ${SANDBOX_RUNTIME_PACKAGE} --settings '${settingsPath}' --`;
+
+		function seedWorkspace() {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+		}
+
+		function startupCommand(): string | undefined {
+			const tab = store.workspaces[0].terminalTabs[0];
+			return tab.panes[0].startupCommand;
+		}
+
+		/**
+		 * A project startup command or task of `claude …` used to launch bare,
+		 * bypassing both the sandbox wrapper and the permission mode.
+		 */
+		it('wraps an explicit bare claude startup command', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.addAISession('ws-a', 'claude', { startupCommand: 'claude' });
+
+			expect(startupCommand()).toBe(`${prefix} claude`);
+		});
+
+		it('wraps an explicit claude startup command and keeps its arguments', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.addAISession('ws-a', 'claude', { startupCommand: "claude 'run the tests'" });
+
+			expect(startupCommand()).toBe(`${prefix} claude 'run the tests'`);
+		});
+
+		it('adds the permission mode to an explicit claude startup command', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
+
+			store.addAISession('ws-a', 'claude', { startupCommand: 'claude' });
+
+			expect(startupCommand()).toBe('claude --permission-mode bypassPermissions');
+		});
+
+		/** A mode the user wrote into the startup command is their decision. */
+		it('preserves a permission-mode flag the startup command already carries', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.claudePermissionMode = 'acceptEdits';
+
+			store.addAISession('ws-a', 'claude', {
+				startupCommand: 'claude --permission-mode plan'
+			});
+
+			expect(startupCommand()).toBe('claude --permission-mode plan');
+		});
+
+		it('still wraps a startup command that carries its own permission mode', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+			mockWorkbenchSettingsStore.claudePermissionMode = 'acceptEdits';
+
+			store.addAISession('ws-a', 'claude', {
+				startupCommand: 'claude --permission-mode plan'
+			});
+
+			expect(startupCommand()).toBe(`${prefix} claude --permission-mode plan`);
+		});
+
+		it('leaves an explicit claude command unwrapped when the setting is off', () => {
+			seedWorkspace();
+
+			store.addAISession('ws-a', 'claude', { startupCommand: "claude 'run the tests'" });
+
+			expect(startupCommand()).toBe("claude 'run the tests'");
+		});
+
+		/** Only a Claude launch is rebuilt; arbitrary shell commands pass through. */
+		it('leaves a non-claude startup command untouched', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.addAISession('ws-a', 'claude', { startupCommand: 'bun run dev' });
+
+			expect(startupCommand()).toBe('bun run dev');
+		});
+
+		it('does not rewrite a command that merely mentions claude', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.addAISession('ws-a', 'claude', { startupCommand: 'echo claude' });
+
+			expect(startupCommand()).toBe('echo claude');
+		});
+
+		it('leaves an explicit codex startup command untouched', () => {
+			seedWorkspace();
+			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+
+			store.addAISession('ws-a', 'codex', { startupCommand: "codex 'audit'" });
+
+			expect(startupCommand()).toBe("codex 'audit'");
 		});
 	});
 });
