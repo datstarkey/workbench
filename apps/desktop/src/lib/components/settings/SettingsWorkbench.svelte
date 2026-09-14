@@ -18,6 +18,7 @@
 	import { invoke } from '@tauri-apps/api/core';
 	import type {
 		AccentColor,
+		ClaudePermissionMode,
 		TerminalPerformanceMode,
 		TerminalRenderer,
 		WorktreeStartPoint,
@@ -105,6 +106,14 @@
 		{ value: 'auto', label: 'Auto (offscreen only)' },
 		{ value: 'always', label: 'Always prioritize throughput' }
 	];
+	const claudePermissionModeOptions = [
+		{ value: 'default', label: 'Default' },
+		{ value: 'acceptEdits', label: 'Accept Edits' },
+		{ value: 'plan', label: 'Plan' },
+		{ value: 'dontAsk', label: "Don't Ask" },
+		{ value: 'auto', label: 'Auto' },
+		{ value: 'bypassPermissions', label: 'Bypass Permissions' }
+	];
 
 	async function pickCloneDir() {
 		const dir = await selectFolder(
@@ -184,12 +193,22 @@
 			onCheckedChange={(v) => store.set('trelloEnabled', v)}
 		/>
 
-		<SettingsToggle
-			label="Happy Coder"
-			description="Use the happy CLI instead of claude, enabling remote sessions from your phone."
-			checked={store.useHappyCoder}
-			onCheckedChange={(v) => store.set('useHappyCoder', v)}
+		<SettingsSelect
+			label="Claude permission mode"
+			description="Passed as --permission-mode when launching Claude. Project-level bypassPermissions/auto in .claude/settings.json is ignored by Claude Code since v2.1.257, so set it here."
+			options={claudePermissionModeOptions}
+			value={store.claudePermissionMode}
+			onValueChange={(v) => store.set('claudePermissionMode', v as ClaudePermissionMode)}
+			triggerClass="w-48"
 		/>
+
+		{#if store.claudePermissionMode === 'bypassPermissions'}
+			<p class="text-xs text-wb-warn">
+				Bypass skips every permission check. The Bash sandbox only covers shell commands, not file
+				tools, MCP servers or hooks. Prefer Auto mode unless Claude runs inside a container or
+				sandbox runtime.
+			</p>
+		{/if}
 	</div>
 
 	<Separator />

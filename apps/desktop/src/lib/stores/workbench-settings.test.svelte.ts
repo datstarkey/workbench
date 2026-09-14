@@ -20,7 +20,7 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 		terminalTelemetryEnabled: false,
 		terminalRenderer: 'xterm',
 		agentActions: [],
-		useHappyCoder: false,
+		claudePermissionMode: 'default',
 		...overrides
 	};
 }
@@ -70,6 +70,37 @@ describe('WorkbenchSettingsStore', () => {
 			expect(store.terminalTelemetryEnabled).toBe(true);
 			expect(store.agentActions).toHaveLength(1);
 			expect(store.agentActions[0].name).toBe('Review');
+		});
+
+		it('keeps a valid claudePermissionMode from disk', async () => {
+			mockInvoke('load_workbench_settings', () =>
+				makeSettings({ claudePermissionMode: 'bypassPermissions' })
+			);
+
+			await store.load();
+
+			expect(store.claudePermissionMode).toBe('bypassPermissions');
+		});
+
+		it('falls back to default for an unknown claudePermissionMode on disk', async () => {
+			mockInvoke('load_workbench_settings', () => ({
+				...makeSettings(),
+				claudePermissionMode: 'bogus-mode'
+			}));
+
+			await store.load();
+
+			expect(store.claudePermissionMode).toBe('default');
+		});
+
+		it('falls back to default when claudePermissionMode is absent', async () => {
+			const settings = makeSettings();
+			delete (settings as Partial<WorkbenchSettings>).claudePermissionMode;
+			mockInvoke('load_workbench_settings', () => settings);
+
+			await store.load();
+
+			expect(store.claudePermissionMode).toBe('default');
 		});
 
 		it('sets loaded and clears dirty', async () => {
@@ -223,7 +254,7 @@ describe('WorkbenchSettingsStore', () => {
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
-					useHappyCoder: false,
+					claudePermissionMode: 'default',
 					cloneBaseDir: null,
 					accentColor: 'violet',
 					serverMode: false,
@@ -479,7 +510,7 @@ describe('WorkbenchSettingsStore', () => {
 					agentActions: store.agentActions,
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
-					useHappyCoder: false,
+					claudePermissionMode: 'default',
 					cloneBaseDir: null,
 					accentColor: 'violet',
 					serverMode: false,

@@ -328,8 +328,8 @@ pub struct WorkbenchSettings {
     pub worktree_start_point: String,
     #[serde(default)]
     pub worktree_custom_branch: String,
-    #[serde(default)]
-    pub use_happy_coder: bool,
+    #[serde(default = "default_claude_permission_mode")]
+    pub claude_permission_mode: String,
     #[serde(default = "default_terminal_renderer")]
     pub terminal_renderer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,6 +381,10 @@ fn default_terminal_renderer() -> String {
     "xterm".to_string()
 }
 
+fn default_claude_permission_mode() -> String {
+    "default".to_string()
+}
+
 impl Default for WorkbenchSettings {
     fn default() -> Self {
         Self {
@@ -395,7 +399,7 @@ impl Default for WorkbenchSettings {
             worktree_fetch_before_create: true,
             worktree_start_point: default_worktree_start_point(),
             worktree_custom_branch: String::new(),
-            use_happy_coder: false,
+            claude_permission_mode: default_claude_permission_mode(),
             terminal_renderer: default_terminal_renderer(),
             clone_base_dir: None,
             accent_color: default_accent_color(),

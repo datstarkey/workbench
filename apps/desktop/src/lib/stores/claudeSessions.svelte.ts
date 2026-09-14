@@ -2,7 +2,7 @@ import { invoke } from '$lib/transport';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { stripAnsi } from '$lib/utils/format';
-import { newSessionCommandWithPrompt } from '$lib/utils/claude';
+import { newSessionCommandWithPrompt, type ClaudeLaunchOptions } from '$lib/utils/claude';
 import { getWorkbenchSettingsStore } from './context';
 import {
 	isAISessionType,
@@ -71,6 +71,10 @@ export class ClaudeSessionStore {
 	private integrationApproval: IntegrationApprovalStore;
 	/** Reference to workbench settings store */
 	private settingsStore = getWorkbenchSettingsStore();
+
+	private get claudeLaunchOptions(): ClaudeLaunchOptions {
+		return { permissionMode: this.settingsStore.claudePermissionMode };
+	}
 
 	/** Callbacks invoked when a pane transitions into awaiting-input state */
 	private awaitingInputCallbacks: Array<(paneId: string) => void> = [];
@@ -182,10 +186,9 @@ export class ClaudeSessionStore {
 	/** Start an agent action for a project (opens project/workspace if needed). */
 	startAgentActionByProject(projectPath: string, action: AgentAction, type: 'claude' | 'codex') {
 		this.projects.openProject(projectPath);
-		const useHappy = this.settingsStore.useHappyCoder;
 		this.workspaces.addAIByProject(projectPath, type, {
 			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt, useHappy)
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.claudeLaunchOptions)
 		});
 	}
 
@@ -226,10 +229,9 @@ export class ClaudeSessionStore {
 		action: AgentAction,
 		type: 'claude' | 'codex'
 	) {
-		const useHappy = this.settingsStore.useHappyCoder;
 		this.workspaces.addAISession(ws.id, type, {
 			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt, useHappy)
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.claudeLaunchOptions)
 		});
 	}
 

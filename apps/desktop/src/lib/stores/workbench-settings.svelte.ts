@@ -3,6 +3,7 @@ import type {
 	AccentColor,
 	AgentAction,
 	AgentActionTarget,
+	ClaudePermissionMode,
 	SessionType,
 	SettingsWindowBounds,
 	TerminalPerformanceMode,
@@ -12,6 +13,7 @@ import type {
 	WorktreeStrategy
 } from '$types/workbench';
 import { invoke } from '$lib/transport';
+import { isClaudePermissionMode } from '$lib/utils/claude';
 
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<
@@ -32,7 +34,7 @@ export class WorkbenchSettingsStore {
 	agentActions: AgentAction[] = $state([]);
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
-	useHappyCoder = $state(false);
+	claudePermissionMode: ClaudePermissionMode = $state<ClaudePermissionMode>('default');
 	cloneBaseDir: string | null = $state(null);
 	accentColor: AccentColor = $state<AccentColor>('violet');
 	serverMode = $state(false);
@@ -62,7 +64,9 @@ export class WorkbenchSettingsStore {
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
 		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
-		this.useHappyCoder = settings.useHappyCoder ?? false;
+		this.claudePermissionMode = isClaudePermissionMode(settings.claudePermissionMode)
+			? settings.claudePermissionMode
+			: 'default';
 		this.cloneBaseDir = settings.cloneBaseDir ?? null;
 		this.accentColor = settings.accentColor ?? 'violet';
 		this.serverMode = settings.serverMode ?? false;
@@ -146,7 +150,7 @@ export class WorkbenchSettingsStore {
 			agentActions: this.agentActions,
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,
-			useHappyCoder: this.useHappyCoder,
+			claudePermissionMode: this.claudePermissionMode,
 			cloneBaseDir: this.cloneBaseDir,
 			accentColor: this.accentColor,
 			serverMode: this.serverMode,
