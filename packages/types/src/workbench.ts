@@ -385,6 +385,15 @@ export type AccentColor = 'violet' | 'tideline' | 'ember' | 'moss' | 'iris';
 
 export type AgentActionTarget = 'claude' | 'codex' | 'both';
 
+/** Modes accepted by the Claude CLI's `--permission-mode` flag. */
+export type ClaudePermissionMode =
+	| 'default'
+	| 'acceptEdits'
+	| 'plan'
+	| 'dontAsk'
+	| 'auto'
+	| 'bypassPermissions';
+
 export interface AgentAction {
 	id: string;
 	name: string;
@@ -407,7 +416,7 @@ export interface WorkbenchSettings {
 	agentActions: AgentAction[];
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
-	useHappyCoder: boolean;
+	claudePermissionMode: ClaudePermissionMode;
 	cloneBaseDir?: string | null;
 	accentColor?: AccentColor;
 	serverMode?: boolean;

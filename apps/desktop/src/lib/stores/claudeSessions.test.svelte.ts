@@ -9,7 +9,7 @@ import {
 } from '../../test/tauri-mocks';
 import { ClaudeSessionStore } from './claudeSessions.svelte';
 vi.mock('./context', () => ({
-	getWorkbenchSettingsStore: () => ({ useHappyCoder: false })
+	getWorkbenchSettingsStore: () => ({ claudePermissionMode: 'default' })
 }));
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';

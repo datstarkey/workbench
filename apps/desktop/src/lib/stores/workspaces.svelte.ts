@@ -8,7 +8,13 @@ import {
 	type TerminalTabState
 } from '$types/workbench';
 import { invoke } from '$lib/transport';
-import { newSessionCommand, resumeCommand, tryResumeCommand } from '$lib/utils/claude';
+import {
+	extractPromptArg,
+	newSessionCommand,
+	resumeCommand,
+	tryResumeCommand,
+	type ClaudeLaunchOptions
+} from '$lib/utils/claude';
 import { effectivePath } from '$lib/utils/path';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
@@ -42,8 +48,8 @@ export class WorkspaceStore {
 
 	private switchCallbacks: Array<(projectPath: string) => void> = [];
 
-	private get useHappy(): boolean {
-		return this.settingsStore.useHappyCoder;
+	private get claudeLaunchOptions(): ClaudeLaunchOptions {
+		return { permissionMode: this.settingsStore.claudePermissionMode };
 	}
 
 	get selectedId(): string | null {
@@ -415,7 +421,7 @@ export class WorkspaceStore {
 			const count = w.terminalTabs.filter((t) => t.type === type).length;
 			const label = options?.label?.trim() || `${labelPrefix} ${count + 1}`;
 			const startupCommand =
-				options?.startupCommand?.trim() || newSessionCommand(type, this.useHappy);
+				options?.startupCommand?.trim() || newSessionCommand(type, this.claudeLaunchOptions);
 			const newTab = this.createAITab(label, '', startupCommand, type);
 			tabId = newTab.id;
 			return {
@@ -460,7 +466,7 @@ export class WorkspaceStore {
 					if (p.id !== paneId || p.claudeSessionId === sessionId) return p;
 					tabChanged = true;
 					changed = true;
-					const cmd = tryResumeCommand(type, sessionId);
+					const cmd = tryResumeCommand(type, sessionId, this.claudeLaunchOptions);
 					return {
 						...p,
 						claudeSessionId: sessionId,
@@ -551,8 +557,8 @@ export class WorkspaceStore {
 			const type = tab.type;
 			const sessionId = tab.panes[0]?.claudeSessionId;
 			const command = sessionId
-				? resumeCommand(type, sessionId, this.useHappy)
-				: newSessionCommand(type, this.useHappy);
+				? resumeCommand(type, sessionId, this.claudeLaunchOptions)
+				: newSessionCommand(type, this.claudeLaunchOptions);
 			const newTab = this.createAITab(tab.label, sessionId ?? '', command, type);
 			return {
 				...w,
@@ -572,7 +578,7 @@ export class WorkspaceStore {
 			const newTab = this.createAITab(
 				label,
 				sessionId,
-				resumeCommand(type, sessionId, this.useHappy),
+				resumeCommand(type, sessionId, this.claudeLaunchOptions),
 				type
 			);
 			return {
@@ -691,20 +697,19 @@ export class WorkspaceStore {
 			const fixedPanes = tab.panes.map((pane) => {
 				const isAI = isAISessionType(pane.type);
 				if (isAI && pane.claudeSessionId) {
-					const cmd = resumeCommand(pane.type!, pane.claudeSessionId, this.useHappy);
+					const cmd = resumeCommand(pane.type!, pane.claudeSessionId, this.claudeLaunchOptions);
 					if (pane.startupCommand !== cmd) {
 						changed = true;
 						return { ...pane, startupCommand: cmd };
 					}
 				} else if (isAI && !pane.claudeSessionId) {
-					const cmd = newSessionCommand(pane.type!, this.useHappy);
-					// Preserve explicit initial prompt invocations (e.g. `claude 'review ...'`).
-					// Safe because we control startupCommand values — they are always built via
-					// newSessionCommand() or agentActionCommand(), so `startsWith(cmd + ' ')` is
-					// a reliable check for whether an initial prompt arg is appended.
-					const current = pane.startupCommand?.trim();
-					const hasPromptArg = current?.startsWith(`${cmd} `) ?? false;
-					if (pane.startupCommand !== cmd && !hasPromptArg) {
+					// Rebuild from the binary alone, so a changed permission mode adds or drops
+					// the flag while any initial prompt argument (e.g. `claude 'review ...'`)
+					// survives. Unrecognised commands normalise back to the bare base.
+					const base = newSessionCommand(pane.type!, this.claudeLaunchOptions);
+					const promptArg = extractPromptArg(pane.type!, pane.startupCommand);
+					const cmd = promptArg ? `${base} ${promptArg}` : base;
+					if (pane.startupCommand !== cmd) {
 						changed = true;
 						return { ...pane, startupCommand: cmd };
 					}

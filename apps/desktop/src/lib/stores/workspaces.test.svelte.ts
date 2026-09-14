@@ -1,7 +1,13 @@
 import { invokeSpy, clearInvokeMocks } from '../../test/tauri-mocks';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WorkspaceStore } from './workspaces.svelte';
-import type { ProjectConfig, ProjectWorkspace, TerminalTabState } from '$types/workbench';
+import type {
+	ProjectConfig,
+	ProjectWorkspace,
+	SessionType,
+	TerminalPaneState,
+	TerminalTabState
+} from '$types/workbench';
 
 // Mock uid to produce predictable IDs
 let uidCounter = 0;
@@ -14,7 +20,7 @@ const mockGitStore = {
 	branchByProject: {} as Record<string, string>
 };
 const mockWorkbenchSettingsStore = {
-	useHappyCoder: false
+	claudePermissionMode: 'default'
 };
 vi.mock('./context', () => ({
 	getGitStore: () => mockGitStore,
@@ -54,6 +60,7 @@ describe('WorkspaceStore', () => {
 	beforeEach(() => {
 		uidCounter = 0;
 		mockGitStore.branchByProject = {};
+		mockWorkbenchSettingsStore.claudePermissionMode = 'default';
 		store = new WorkspaceStore();
 	});
 
@@ -1397,6 +1404,125 @@ describe('WorkspaceStore', () => {
 					serverTerminalIds: {}
 				}
 			});
+		});
+	});
+
+	// ─── ensureShape × permission mode ──────────────────────
+
+	describe('ensureShape permission mode', () => {
+		const sessionId = '12345678-1234-1234-1234-123456789abc';
+
+		function seedPane(pane: TerminalPaneState, type: SessionType = 'claude') {
+			const tab: TerminalTabState = {
+				id: 'tab-1',
+				label: 'AI 1',
+				split: 'horizontal',
+				type,
+				panes: [pane]
+			};
+			store.workspaces = [
+				makeWorkspace({ id: 'ws-a', terminalTabs: [tab], activeTerminalTabId: 'tab-1' })
+			];
+		}
+
+		function startupCommand(): string | undefined {
+			return store.workspaces[0].terminalTabs[0].panes[0].startupCommand;
+		}
+
+		it('inserts the flag and keeps a prompt persisted under the default mode', () => {
+			seedPane({ id: 'pane-1', type: 'claude', startupCommand: "claude 'Review this PR'" });
+			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe("claude --permission-mode bypassPermissions 'Review this PR'");
+		});
+
+		it('removes a stale flag and keeps the prompt when the mode returns to default', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				startupCommand: "claude --permission-mode bypassPermissions 'Review this PR'"
+			});
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe("claude 'Review this PR'");
+		});
+
+		it('swaps one mode flag for another without touching the prompt', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				startupCommand: "claude --permission-mode plan 'Review this PR'"
+			});
+			mockWorkbenchSettingsStore.claudePermissionMode = 'acceptEdits';
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe("claude --permission-mode acceptEdits 'Review this PR'");
+		});
+
+		it('adds the flag to a promptless new-session command', () => {
+			seedPane({ id: 'pane-1', type: 'claude', startupCommand: 'claude' });
+			mockWorkbenchSettingsStore.claudePermissionMode = 'dontAsk';
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe('claude --permission-mode dontAsk');
+		});
+
+		it('normalises a command carrying an unknown mode back to the base', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				startupCommand: "claude --permission-mode bogus 'Review this PR'"
+			});
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe('claude');
+		});
+
+		it('adds the flag to a resume command', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				claudeSessionId: sessionId,
+				startupCommand: `claude --resume ${sessionId}`
+			});
+			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(
+				`claude --permission-mode bypassPermissions --resume ${sessionId}`
+			);
+		});
+
+		it('strips the flag from a resume command when the mode returns to default', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				claudeSessionId: sessionId,
+				startupCommand: `claude --permission-mode bypassPermissions --resume ${sessionId}`
+			});
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe(`claude --resume ${sessionId}`);
+		});
+
+		it('leaves codex commands unflagged while a claude mode is set', () => {
+			seedPane(
+				{ id: 'pane-1', type: 'codex', startupCommand: "codex 'Find DRY violations'" },
+				'codex'
+			);
+			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe("codex 'Find DRY violations'");
 		});
 	});
 });
