@@ -180,6 +180,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 
 - New sessions: `CLAUDE_NEW_SESSION_COMMAND` constant — just `claude` with no flags (CLI assigns session ID)
 - Resume sessions: `claudeResumeCommand(sessionId)` → `claude --resume <uuid>` (validates UUID before shell interpolation)
+- **Permission mode** (`claudePermissionMode`): `permissionModeFlag()` in `claude.ts` renders ` --permission-mode <mode>` for every non-default mode **except** `bypassPermissions`, which renders ` --dangerously-skip-permissions` — the CLI's canonical spelling for that posture (it rejects `--permission-mode bypassPermissions`). `extractPromptArg` strips either form after the binary, so commands persisted by an earlier build (carrying `--permission-mode bypassPermissions`) still parse and get rewritten onto the new flag instead of normalising back to a bare `claude`. `applyClaudeLaunchOptions` treats both spellings, plus `--allow-dangerously-skip-permissions`, as "the user already chose a posture" and leaves them alone.
 - Commands typed into shell (not executed directly) — CLI errors don't trigger `terminal:exit`. Detect errors by buffering early terminal output, not process exit.
 - Session data: `~/.claude/projects/<encoded-path>/<session-id>.jsonl` (path encoding: `/` → `-`)
 - JSONL format: JSON objects with `type` ("user"/"assistant"), `message.content[]`, `sessionId`, `timestamp`. First user message = session label.

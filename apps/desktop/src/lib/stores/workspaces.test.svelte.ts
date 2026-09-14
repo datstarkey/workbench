@@ -1440,7 +1440,25 @@ describe('WorkspaceStore', () => {
 
 			store.ensureShape();
 
-			expect(startupCommand()).toBe("claude --permission-mode bypassPermissions 'Review this PR'");
+			expect(startupCommand()).toBe("claude --dangerously-skip-permissions 'Review this PR'");
+		});
+
+		/**
+		 * Bypass used to persist as `--permission-mode bypassPermissions`; such a
+		 * command must be parsed and rewritten onto the canonical flag, not
+		 * normalised back to a bare `claude` and lose its prompt.
+		 */
+		it('rewrites a legacy bypass command onto the canonical flag', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				startupCommand: "claude --permission-mode bypassPermissions 'Review this PR'"
+			});
+			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
+
+			store.ensureShape();
+
+			expect(startupCommand()).toBe("claude --dangerously-skip-permissions 'Review this PR'");
 		});
 
 		it('removes a stale flag and keeps the prompt when the mode returns to default', () => {
@@ -1500,9 +1518,7 @@ describe('WorkspaceStore', () => {
 
 			store.ensureShape();
 
-			expect(startupCommand()).toBe(
-				`claude --permission-mode bypassPermissions --resume ${sessionId}`
-			);
+			expect(startupCommand()).toBe(`claude --dangerously-skip-permissions --resume ${sessionId}`);
 		});
 
 		it('strips the flag from a resume command when the mode returns to default', () => {
@@ -1602,14 +1618,14 @@ describe('WorkspaceStore', () => {
 			expect(startupCommand()).toBe("claude 'Review this PR'");
 		});
 
-		it('combines the wrapper with a permission-mode flag', () => {
+		it('combines the wrapper with a permission flag', () => {
 			seedPane({ id: 'pane-1', type: 'claude', startupCommand: 'claude' });
 			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
 			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
 
 			store.ensureShape();
 
-			expect(startupCommand()).toBe(`${prefix} claude --permission-mode bypassPermissions`);
+			expect(startupCommand()).toBe(`${prefix} claude --dangerously-skip-permissions`);
 		});
 
 		it('rewrites a wrapped resume command when the setting is turned off', () => {
@@ -1710,7 +1726,7 @@ describe('WorkspaceStore', () => {
 
 			store.addAISession('ws-a', 'claude', { startupCommand: 'claude' });
 
-			expect(startupCommand()).toBe('claude --permission-mode bypassPermissions');
+			expect(startupCommand()).toBe('claude --dangerously-skip-permissions');
 		});
 
 		/** A mode the user wrote into the startup command is their decision. */

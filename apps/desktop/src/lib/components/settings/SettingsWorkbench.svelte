@@ -228,7 +228,7 @@
 
 		<SettingsSelect
 			label="Claude permission mode"
-			description="Passed as --permission-mode when launching Claude. Project-level bypassPermissions/auto in .claude/settings.json is ignored by Claude Code since v2.1.257, so set it here."
+			description="Passed as --permission-mode when launching Claude (bypass passes --dangerously-skip-permissions). Project-level bypassPermissions/auto in .claude/settings.json is ignored by Claude Code since v2.1.257, so set it here."
 			options={claudePermissionModeOptions}
 			value={store.claudePermissionMode}
 			onValueChange={(v) => store.set('claudePermissionMode', v as ClaudePermissionMode)}

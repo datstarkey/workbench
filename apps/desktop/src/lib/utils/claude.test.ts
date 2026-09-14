@@ -134,24 +134,41 @@ describe('newSessionCommandWithPrompt', () => {
 describe('permission mode', () => {
 	const validId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
-	it('appends --permission-mode to a new session command', () => {
+	it('appends the permission flag to a new session command', () => {
 		expect(newSessionCommand('claude', { permissionMode: 'bypassPermissions' })).toBe(
-			'claude --permission-mode bypassPermissions'
+			'claude --dangerously-skip-permissions'
 		);
 	});
 
-	it('appends --permission-mode before --resume', () => {
+	it('appends the permission flag before --resume', () => {
 		expect(resumeCommand('claude', validId, { permissionMode: 'bypassPermissions' })).toBe(
-			`claude --permission-mode bypassPermissions --resume ${validId}`
+			`claude --dangerously-skip-permissions --resume ${validId}`
 		);
 	});
 
-	it('appends --permission-mode before an initial prompt', () => {
+	it('appends the permission flag before an initial prompt', () => {
 		expect(
 			newSessionCommandWithPrompt('claude', 'Fix the build', {
 				permissionMode: 'bypassPermissions'
 			})
-		).toBe("claude --permission-mode bypassPermissions 'Fix the build'");
+		).toBe("claude --dangerously-skip-permissions 'Fix the build'");
+	});
+
+	/**
+	 * The CLI has no `--permission-mode bypassPermissions`; the posture is spelled
+	 * as its own flag, so rendering the mode name would launch a broken command.
+	 */
+	it('renders bypassPermissions as --dangerously-skip-permissions, never as a mode', () => {
+		for (const built of [
+			newSessionCommand('claude', { permissionMode: 'bypassPermissions' }),
+			resumeCommand('claude', validId, { permissionMode: 'bypassPermissions' }),
+			newSessionCommandWithPrompt('claude', 'Fix the build', {
+				permissionMode: 'bypassPermissions'
+			})
+		]) {
+			expect(built).toContain('--dangerously-skip-permissions');
+			expect(built).not.toContain('--permission-mode');
+		}
 	});
 
 	it('omits the flag for the "default" mode', () => {
@@ -220,15 +237,43 @@ describe('extractPromptArg', () => {
 		expect(extractPromptArg('codex', "codex 'Find DRY violations'")).toBe("'Find DRY violations'");
 	});
 
-	it('strips a permission-mode flag before the prompt', () => {
+	it('strips a permission flag before the prompt', () => {
+		expect(extractPromptArg('claude', "claude --permission-mode plan 'Review'")).toBe("'Review'");
+		expect(extractPromptArg('claude', "claude --dangerously-skip-permissions 'Review'")).toBe(
+			"'Review'"
+		);
+	});
+
+	/** Persisted before bypass was spelled as its own flag. */
+	it('strips a legacy --permission-mode bypassPermissions flag', () => {
 		expect(extractPromptArg('claude', "claude --permission-mode bypassPermissions 'Review'")).toBe(
 			"'Review'"
 		);
-		expect(extractPromptArg('claude', "claude --permission-mode plan 'Review'")).toBe("'Review'");
 	});
 
-	it('returns undefined when only a permission-mode flag follows the binary', () => {
+	/**
+	 * A command persisted by an earlier build must parse, so ensureShape rebuilds
+	 * it onto the canonical flag instead of normalising the prompt away.
+	 */
+	it('round-trips a legacy bypass command onto --dangerously-skip-permissions', () => {
+		const legacy = "claude --permission-mode bypassPermissions 'Review'";
+		const promptArg = extractPromptArg('claude', legacy);
+		expect(promptArg).toBe("'Review'");
+		expect(
+			`${newSessionCommand('claude', { permissionMode: 'bypassPermissions' })} ${promptArg}`
+		).toBe("claude --dangerously-skip-permissions 'Review'");
+	});
+
+	it('returns undefined when only a permission flag follows the binary', () => {
 		expect(extractPromptArg('claude', 'claude --permission-mode acceptEdits')).toBeUndefined();
+		expect(extractPromptArg('claude', 'claude --dangerously-skip-permissions')).toBeUndefined();
+	});
+
+	/** The bare bypass flag must not match a longer token that starts with it. */
+	it('does not strip a flag that merely starts with the bypass flag name', () => {
+		expect(extractPromptArg('claude', 'claude --dangerously-skip-permissions-not-really')).toBe(
+			'--dangerously-skip-permissions-not-really'
+		);
 	});
 
 	it('returns undefined for an unknown permission mode', () => {
@@ -275,9 +320,9 @@ describe('sandbox runtime wrapper', () => {
 		expect(newSessionCommand('claude', opts)).toContain(' -- claude');
 	});
 
-	it('orders the wrapper before the permission-mode flag', () => {
+	it('orders the wrapper before the permission flag', () => {
 		expect(newSessionCommand('claude', { ...opts, permissionMode: 'bypassPermissions' })).toBe(
-			`${prefix} claude --permission-mode bypassPermissions`
+			`${prefix} claude --dangerously-skip-permissions`
 		);
 	});
 
@@ -369,9 +414,7 @@ describe('sandbox runtime wrapper hardening', () => {
 					sandboxSettingsPath: 'C:\\wb\\srt.json',
 					permissionMode: 'bypassPermissions'
 				})
-			).toBe(
-				'claude --permission-mode bypassPermissions --resume 12345678-1234-1234-1234-123456789abc'
-			);
+			).toBe('claude --dangerously-skip-permissions --resume 12345678-1234-1234-1234-123456789abc');
 		} finally {
 			vi.unstubAllGlobals();
 			vi.resetModules();

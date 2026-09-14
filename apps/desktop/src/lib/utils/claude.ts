@@ -37,12 +37,21 @@ export function isClaudePermissionMode(value: unknown): value is ClaudePermissio
 }
 
 /**
- * Render the `--permission-mode` flag, or '' when the mode is absent, 'default',
- * or unrecognised. Settings JSON is user-editable on disk, so the value is
- * checked against the allowlist before being interpolated into a shell command.
+ * The bypass mode's canonical CLI flag. `--permission-mode bypassPermissions` is
+ * not how the CLI spells it, so the mode is rendered as its own flag instead.
+ */
+const BYPASS_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
+
+/**
+ * Render the permission flag, or '' when the mode is absent, 'default', or
+ * unrecognised. `bypassPermissions` becomes `--dangerously-skip-permissions`;
+ * every other non-default mode becomes `--permission-mode <mode>`. Settings JSON
+ * is user-editable on disk, so the value is checked against the allowlist before
+ * being interpolated into a shell command.
  */
 function permissionModeFlag(mode: ClaudePermissionMode | undefined): string {
 	if (!mode || mode === 'default' || !isClaudePermissionMode(mode)) return '';
+	if (mode === 'bypassPermissions') return ` ${BYPASS_PERMISSIONS_FLAG}`;
 	return ` --permission-mode ${mode}`;
 }
 
@@ -184,11 +193,23 @@ function stripSandboxPrefix(command: string): string {
 }
 
 /**
+ * Matches whichever permission flag a build may have written directly after the
+ * binary: `--permission-mode <mode>`, or the bypass mode's own
+ * `--dangerously-skip-permissions`. The lookahead stops the bare flag matching a
+ * longer token that merely starts with it.
+ */
+const LEADING_PERMISSION_FLAG_RE = new RegExp(
+	`^(?:--permission-mode[ \\t]+(\\S+)|${BYPASS_PERMISSIONS_FLAG}(?=[ \\t]|$))[ \\t]*`
+);
+
+/**
  * Recover the initial-prompt argument from a persisted launch command, ignoring
- * the binary, any sandbox-runtime wrapper, and any `--permission-mode` flag
- * written by an earlier build. Returns undefined when the command is not a
- * recognisable launch of `type`'s binary, so callers normalise it back to a
- * freshly built command.
+ * the binary, any sandbox-runtime wrapper, and any permission flag written by an
+ * earlier build — including a `--permission-mode bypassPermissions` from before
+ * that mode rendered as `--dangerously-skip-permissions`, so such a command is
+ * parsed and then rewritten rather than discarded. Returns undefined when the
+ * command is not a recognisable launch of `type`'s binary, so callers normalise
+ * it back to a freshly built command.
  */
 export function extractPromptArg(
 	type: SessionType,
@@ -202,9 +223,10 @@ export function extractPromptArg(
 
 	let rest = trimmed.slice(binary.length + 1).trimStart();
 	if (type !== 'codex') {
-		const flag = /^--permission-mode[ \t]+(\S+)[ \t]*/.exec(rest);
+		const flag = LEADING_PERMISSION_FLAG_RE.exec(rest);
 		// An unknown mode means we did not write this command; normalise it away.
-		if (flag && !isClaudePermissionMode(flag[1])) return undefined;
+		// The bare bypass flag carries no mode to check (group 1 is undefined).
+		if (flag && flag[1] !== undefined && !isClaudePermissionMode(flag[1])) return undefined;
 		if (flag) rest = rest.slice(flag[0].length);
 	}
 	return rest.length > 0 ? rest : undefined;
@@ -219,7 +241,11 @@ export function extractPromptArg(
  * would launch unwrapped and unflagged, silently bypassing both settings.
  * Commands that are not a Claude launch are returned untouched.
  */
-/** Flags that already decide permissions; adding `--permission-mode` would fight them. */
+/**
+ * Flags that already decide permissions — both spellings of the bypass posture
+ * included — so applying the configured mode over them would fight the user's
+ * own choice.
+ */
 const PERMISSION_FLAG_RE =
 	/(?:^|\s)--(?:permission-mode|dangerously-skip-permissions|allow-dangerously-skip-permissions)(?=\s|=|$)/;
 
