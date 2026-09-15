@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-install-downloaded"
+description = "Enables the install_downloaded command without any pre-configured scope."
+commands.allow = ["install_downloaded"]
+
+[[permission]]
+identifier = "deny-install-downloaded"
+description = "Denies the install_downloaded command without any pre-configured scope."
+commands.deny = ["install_downloaded"]

@@ -1,0 +1,14 @@
+[package]
+name = "tauri-plugin-apk-updater"
+version = "0.1.0"
+description = "Download, verify and install a Workbench APK update (Android only)"
+license = "AGPL-3.0-or-later"
+edition = "2021"
+publish = false
+links = "tauri-plugin-apk-updater"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = "2"
