@@ -63,6 +63,15 @@ jobs:
         with:
           shared-key: ${{ matrix.cache-key }}
 
+      # The bundler downloads NSIS from GitHub on every clean runner; v0.28.0 failed on
+      # a 504 from that one request. Reuse the copy it keeps in %LOCALAPPDATA%\tauri.
+      - name: Cache Tauri bundler tools
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: tauri-bundler-tools-${{ runner.os }}-v1
+
       - name: Install frontend dependencies
         run: bun install
 
