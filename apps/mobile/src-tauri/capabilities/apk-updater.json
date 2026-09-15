@@ -1,0 +1,8 @@
+{
+	"$schema": "../gen/schemas/mobile-schema.json",
+	"identifier": "apk-updater",
+	"description": "In-app APK updater: the plugin is only built for Android.",
+	"platforms": ["android"],
+	"windows": ["main"],
+	"permissions": ["apk-updater:default"]
+}
