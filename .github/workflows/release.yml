@@ -198,7 +198,10 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # The default package list includes `tools`, which current cmdline-tools no longer ship.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       # r28+ links 16 KB page-aligned binaries by default. Same version as the local builds.
       - name: Install Android NDK
