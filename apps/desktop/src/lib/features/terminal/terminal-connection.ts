@@ -336,7 +336,8 @@ export class TerminalConnection {
 			};
 
 			ws.onerror = () => {
-				reject(new Error(`WebSocket error connecting to ${wsUrl}`));
+				// Strip ?token= so the credential never lands in UI text or error reports.
+				reject(new Error(`WebSocket error connecting to ${wsUrl.split('?')[0]}`));
 			};
 
 			ws.onmessage = (event: MessageEvent) => {

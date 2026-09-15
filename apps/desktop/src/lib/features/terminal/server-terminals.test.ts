@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ProjectWorkspace } from '$types/workbench';
 import {
 	adoptableTerminals,
@@ -71,21 +71,23 @@ describe('paneDisplayName', () => {
 });
 
 describe('TerminalAdoptionPoller', () => {
-	let deps: AdoptionPollerDeps & {
-		listTerminals: ReturnType<typeof vi.fn>;
-		adopt: ReturnType<typeof vi.fn>;
-		onAdopted: ReturnType<typeof vi.fn>;
-	};
+	let listTerminals: Mock<AdoptionPollerDeps['listTerminals']>;
+	let adopt: Mock<AdoptionPollerDeps['adopt']>;
+	let onAdopted: Mock<(terminal: AdoptableTerminal) => void>;
+	let deps: AdoptionPollerDeps;
 	let poller: TerminalAdoptionPoller;
 
 	beforeEach(() => {
 		vi.useFakeTimers();
+		listTerminals = vi.fn(async () => [term('known'), term('foreign')]);
+		adopt = vi.fn(() => true);
+		onAdopted = vi.fn();
 		deps = {
-			listTerminals: vi.fn(async () => [term('known'), term('foreign')]),
+			listTerminals,
 			isClaimed: () => false,
 			knownIds: () => ['known'],
-			adopt: vi.fn(() => true),
-			onAdopted: vi.fn(),
+			adopt,
+			onAdopted,
 			intervalMs: 1000
 		};
 		poller = new TerminalAdoptionPoller(deps);
@@ -99,44 +101,44 @@ describe('TerminalAdoptionPoller', () => {
 
 	it('adopts unknown terminals and reports each adoption', async () => {
 		await poller.tick();
-		expect(deps.adopt).toHaveBeenCalledTimes(1);
-		expect(deps.adopt).toHaveBeenCalledWith(expect.objectContaining({ id: 'foreign' }));
-		expect(deps.onAdopted).toHaveBeenCalledWith(expect.objectContaining({ id: 'foreign' }));
+		expect(adopt).toHaveBeenCalledTimes(1);
+		expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ id: 'foreign' }));
+		expect(onAdopted).toHaveBeenCalledWith(expect.objectContaining({ id: 'foreign' }));
 	});
 
 	it('does not report a terminal no workspace could host', async () => {
-		deps.adopt.mockReturnValue(false);
+		adopt.mockReturnValue(false);
 		await poller.tick();
-		expect(deps.onAdopted).not.toHaveBeenCalled();
+		expect(onAdopted).not.toHaveBeenCalled();
 	});
 
 	it('skips a round when the list is unavailable', async () => {
-		deps.listTerminals.mockResolvedValue(null);
+		listTerminals.mockResolvedValue(null);
 		await poller.tick();
-		expect(deps.adopt).not.toHaveBeenCalled();
+		expect(adopt).not.toHaveBeenCalled();
 	});
 
 	it('does not poll while the window is hidden', async () => {
 		vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
 		await poller.tick();
-		expect(deps.listTerminals).not.toHaveBeenCalled();
+		expect(listTerminals).not.toHaveBeenCalled();
 	});
 
 	it('polls on start, on the interval and on window focus until disposed', async () => {
 		poller.start();
 		await vi.advanceTimersByTimeAsync(0);
-		expect(deps.listTerminals).toHaveBeenCalledTimes(1);
+		expect(listTerminals).toHaveBeenCalledTimes(1);
 
 		await vi.advanceTimersByTimeAsync(1000);
-		expect(deps.listTerminals).toHaveBeenCalledTimes(2);
+		expect(listTerminals).toHaveBeenCalledTimes(2);
 
 		window.dispatchEvent(new Event('focus'));
 		await vi.advanceTimersByTimeAsync(0);
-		expect(deps.listTerminals).toHaveBeenCalledTimes(3);
+		expect(listTerminals).toHaveBeenCalledTimes(3);
 
 		poller.dispose();
 		window.dispatchEvent(new Event('focus'));
 		await vi.advanceTimersByTimeAsync(5000);
-		expect(deps.listTerminals).toHaveBeenCalledTimes(3);
+		expect(listTerminals).toHaveBeenCalledTimes(3);
 	});
 });
