@@ -10,6 +10,7 @@ export { createTauriTransport } from './tauri.ts';
 export { createHttpTransport, type HttpTransportOptions } from './http.ts';
 export { createMockTransport, type MockTransport } from './mock.ts';
 export { parseTerminalControlFrame, type TerminalControlFrame } from './terminal-frames.ts';
+export { buildPairingUri, isStrongToken, parsePairingUri, type PairingInfo } from './pairing.ts';
 
 /**
  * Build the terminal-attach WebSocket URL. The server reads only the id from the
