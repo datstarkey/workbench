@@ -5,6 +5,7 @@ import {
 	adoptableTerminals,
 	adoptionWorkspace,
 	paneDisplayName,
+	withoutPanes,
 	TerminalAdoptionPoller,
 	type AdoptableTerminal,
 	type AdoptionPollerDeps
@@ -50,6 +51,31 @@ describe('adoptionWorkspace', () => {
 	it('never picks a native-renderer workspace or an unrelated one', () => {
 		expect(adoptionWorkspace([ws({ renderer: 'native' })], '/p')).toBeUndefined();
 		expect(adoptionWorkspace([main], '/elsewhere')).toBeUndefined();
+	});
+});
+
+describe('withoutPanes', () => {
+	const tabs = [
+		{ id: 't1', label: 'mine', split: 'horizontal' as const, panes: [{ id: 'a' }] },
+		{ id: 't2', label: 'remote', split: 'horizontal' as const, panes: [{ id: 'b' }] },
+		{ id: 't3', label: 'mixed', split: 'vertical' as const, panes: [{ id: 'c' }, { id: 'd' }] }
+	];
+
+	it('drops the panes, empty tabs, and repoints a dropped active tab', () => {
+		const [result] = withoutPanes(
+			[ws({ terminalTabs: tabs, activeTerminalTabId: 't2' })],
+			new Set(['b', 'd'])
+		);
+		expect(result.terminalTabs.map((t) => [t.id, t.panes.map((p) => p.id)])).toEqual([
+			['t1', ['a']],
+			['t3', ['c']]
+		]);
+		expect(result.activeTerminalTabId).toBe('t1');
+	});
+
+	it('returns the workspaces untouched when there is nothing to drop', () => {
+		const workspaces = [ws({ terminalTabs: tabs })];
+		expect(withoutPanes(workspaces, new Set())).toBe(workspaces);
 	});
 });
 

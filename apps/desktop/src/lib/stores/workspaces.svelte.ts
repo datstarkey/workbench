@@ -26,6 +26,7 @@ import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import {
 	adoptionWorkspace,
 	paneDisplayName,
+	withoutPanes,
 	type AdoptableTerminal
 } from '$features/terminal/server-terminals';
 
@@ -53,10 +54,12 @@ export class WorkspaceStore {
 
 	/**
 	 * Panes adopted from another device's terminal. They mount detached (offering
-	 * "Take control") instead of kicking that device. Not persisted: after a
-	 * reload they reattach like any other pane.
+	 * "Take control") instead of kicking that device, closing them only detaches,
+	 * and they're left out of the persisted snapshot (the PTY dies with the app).
 	 */
-	private detachedPaneIds = new SvelteSet<string>();
+	private adoptedPaneIds = new SvelteSet<string>();
+	/** Server terminals whose adopted tab was closed: never re-adopt them. */
+	private releasedServerTerminalIds = new SvelteSet<string>();
 
 	private settingsStore = getWorkbenchSettingsStore();
 	private gitStore = getGitStore();
@@ -187,10 +190,13 @@ export class WorkspaceStore {
 	}
 
 	private persist() {
+		const adopted = this.adoptedPaneIds;
 		const snapshot: WorkspaceSnapshot = {
-			workspaces: this.workspaces,
+			workspaces: withoutPanes(this.workspaces, adopted),
 			selectedId: this.selectedId,
-			serverTerminalIds: this.serverTerminalIds
+			serverTerminalIds: Object.fromEntries(
+				Object.entries(this.serverTerminalIds).filter(([paneId]) => !adopted.has(paneId))
+			)
 		};
 		invoke('save_workspaces', { snapshot }).catch((e) => {
 			console.error('[WorkspaceStore] Failed to persist:', e);
@@ -237,13 +243,13 @@ export class WorkspaceStore {
 		this.persist();
 	}
 
-	/** Server terminal ids already mapped to panes. */
+	/** Server terminal ids the adoption poller must skip: mapped to panes or released. */
 	knownServerTerminalIds(): string[] {
-		return Object.values(this.serverTerminalIds);
+		return [...Object.values(this.serverTerminalIds), ...this.releasedServerTerminalIds];
 	}
 
 	startsDetached(paneId: string): boolean {
-		return this.detachedPaneIds.has(paneId);
+		return this.adoptedPaneIds.has(paneId);
 	}
 
 	/** Readable server-side name for a pane, e.g. `app [feat] · Claude 1`. */
@@ -265,7 +271,7 @@ export class WorkspaceStore {
 			split: 'horizontal',
 			panes: [{ id: paneId }]
 		};
-		this.detachedPaneIds.add(paneId);
+		this.adoptedPaneIds.add(paneId);
 		this.serverTerminalIds = { ...this.serverTerminalIds, [paneId]: terminal.id };
 		this.updateWorkspace(ws.id, (w) => ({
 			...w,
@@ -284,7 +290,8 @@ export class WorkspaceStore {
 	 * Kill the server-side PTYs for panes being intentionally closed (vs a webview
 	 * reload, which only detaches). Without this the PTYs leak on the server and
 	 * count against the terminal cap. Best-effort / fire-and-forget; also drops the
-	 * persisted re-attach mappings so a stale id is never reused.
+	 * persisted re-attach mappings so a stale id is never reused. Adopted panes
+	 * belong to another device, so closing one only detaches and releases it.
 	 */
 	private disposeServerTerminals(paneIds: Iterable<string>): void {
 		const next = { ...this.serverTerminalIds };
@@ -292,7 +299,11 @@ export class WorkspaceStore {
 		for (const paneId of paneIds) {
 			const serverId = next[paneId];
 			if (serverId) {
-				void deleteServerTerminal(serverId);
+				if (this.adoptedPaneIds.delete(paneId)) {
+					this.releasedServerTerminalIds.add(serverId);
+				} else {
+					void deleteServerTerminal(serverId);
+				}
 				delete next[paneId];
 				changed = true;
 			}

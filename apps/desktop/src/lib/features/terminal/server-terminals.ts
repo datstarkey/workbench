@@ -33,6 +33,29 @@ export function adoptionWorkspace(
 	);
 }
 
+/**
+ * Workspaces without the given panes (and tabs left empty), for persisting:
+ * adopted panes point at loopback PTYs that die with the app, so restoring them
+ * would reopen as fresh phantom shells.
+ */
+export function withoutPanes(
+	workspaces: ProjectWorkspace[],
+	paneIds: ReadonlySet<string>
+): ProjectWorkspace[] {
+	if (paneIds.size === 0) return workspaces;
+	return workspaces.map((ws) => {
+		const terminalTabs = ws.terminalTabs
+			.map((tab) => ({ ...tab, panes: tab.panes.filter((p) => !paneIds.has(p.id)) }))
+			.filter((tab) => tab.panes.length > 0);
+		const activeKept = terminalTabs.some((t) => t.id === ws.activeTerminalTabId);
+		return {
+			...ws,
+			terminalTabs,
+			activeTerminalTabId: activeKept ? ws.activeTerminalTabId : (terminalTabs[0]?.id ?? '')
+		};
+	});
+}
+
 /** Human-readable server terminal name (shown in other devices' lists) for a pane. */
 export function paneDisplayName(
 	workspaces: ProjectWorkspace[],
