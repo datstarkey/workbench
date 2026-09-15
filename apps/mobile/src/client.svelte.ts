@@ -1,12 +1,16 @@
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
-import { createHttpTransport, parsePairingUri } from '@workbench/transport';
+import { createHttpTransport, parsePairingUri, type PairingInfo } from '@workbench/transport';
 import * as barcodeScanner from '@tauri-apps/plugin-barcode-scanner';
+import { onBackButtonPress } from '@tauri-apps/api/app';
+import type { PluginListener } from '@tauri-apps/api/core';
 
-/** The barcode-scanner plugin surface pairing uses (injectable for tests). */
+/** The plugin surface pairing uses (injectable for tests). */
 export type QrScanner = Pick<
 	typeof barcodeScanner,
-	'checkPermissions' | 'requestPermissions' | 'scan'
->;
+	'checkPermissions' | 'requestPermissions' | 'scan' | 'cancel'
+> & { onBackButtonPress: typeof onBackButtonPress };
+
+const defaultScanner: QrScanner = { ...barcodeScanner, onBackButtonPress };
 
 export const CAMERA_DENIED =
 	'Camera permission denied. Allow it in system settings, or enter the server details below.';
@@ -75,9 +79,15 @@ export class MobileClient {
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
 
 	private readonly scanner: QrScanner;
+	/** Bumped on every scan start and cancel; a scan whose number is stale is ignored. */
+	private scanGeneration = 0;
+	private backButton: PluginListener | null = null;
+	/** A URL that is already a complete origin (saved, or from a pairing code): never re-normalised. */
+	private exactUrl: string | null;
 
-	constructor(scanner: QrScanner = barcodeScanner) {
+	constructor(scanner: QrScanner = defaultScanner) {
 		this.scanner = scanner;
+		this.exactUrl = this.url || null;
 	}
 
 	/** Whether a server address and token were previously saved (auto-reconnect on launch). */
@@ -93,7 +103,9 @@ export class MobileClient {
 		this.connecting = true;
 		this.connectError = null;
 		try {
-			const base = normalizeUrl(this.url);
+			// Only hand-typed input gets a scheme and the default port added: a scanned
+			// `https://box.ts.net` must not become `https://box.ts.net:4317`.
+			const base = this.url === this.exactUrl ? this.url : normalizeUrl(this.url);
 			if (!base) throw new Error('enter a server address');
 			this.token = this.token.trim();
 			// Every Workbench server requires a token (see Settings → Server mode).
@@ -106,6 +118,7 @@ export class MobileClient {
 			if (!authed.ok) throw new Error(`server returned ${authed.status}`);
 
 			this.url = base;
+			this.exactUrl = base;
 			lsSet(LS_URL, base);
 			lsSet(LS_TOKEN, this.token);
 
@@ -123,35 +136,74 @@ export class MobileClient {
 
 	/**
 	 * Scan the desktop's pairing QR code (Settings → Server mode → Pair phone),
-	 * fill in the server details and connect. A cancelled scan is silent.
+	 * fill in the server details and connect.
+	 *
+	 * The scan is windowed: the camera renders behind the (transparent) webview so
+	 * our overlay can offer Cancel. Cancel and the Android back button end the scan
+	 * here rather than waiting on the plugin, whose promise never settles once
+	 * cancelled (nor on a device without a camera).
 	 */
 	async scanAndConnect(): Promise<void> {
+		if (this.scanning) return;
 		this.connectError = null;
 		this.scanning = true;
+		const generation = ++this.scanGeneration;
+		const stale = () => generation !== this.scanGeneration;
+		let pairing: PairingInfo | null;
 		try {
 			let permission = await this.scanner.checkPermissions();
 			if (permission !== 'granted') permission = await this.scanner.requestPermissions();
+			if (stale()) return;
 			if (permission !== 'granted') {
 				this.connectError = CAMERA_DENIED;
 				return;
 			}
-			const { content } = await this.scanner.scan({ formats: [barcodeScanner.Format.QRCode] });
-			const pairing = parsePairingUri(content);
+			const listener = await this.scanner.onBackButtonPress(() => void this.cancelScan());
+			if (stale()) {
+				void listener.unregister();
+				return;
+			}
+			this.backButton = listener;
+			const { content } = await this.scanner.scan({
+				windowed: true,
+				formats: [barcodeScanner.Format.QRCode]
+			});
+			if (stale()) return;
+			pairing = parsePairingUri(content);
 			if (!pairing) {
 				this.connectError = NOT_A_PAIRING_CODE;
 				return;
 			}
-			this.url = pairing.url;
-			this.token = pairing.token;
 		} catch (e) {
+			if (stale()) return;
 			const message = e instanceof Error ? e.message : String(e);
-			// The plugin rejects with "cancelled" when the scan is dismissed.
 			if (!/cancel/i.test(message)) this.connectError = message;
 			return;
 		} finally {
-			this.scanning = false;
+			if (!stale()) this.endScan();
 		}
+		this.url = pairing.url;
+		this.exactUrl = pairing.url;
+		this.token = pairing.token;
 		await this.connect();
+	}
+
+	/** Overlay Cancel / Android back: end the scan now; a late result is ignored. */
+	cancelScan = async (): Promise<void> => {
+		if (!this.scanning) return;
+		this.scanGeneration++;
+		this.endScan();
+		try {
+			await this.scanner.cancel();
+		} catch {
+			/* nothing was scanning on the native side */
+		}
+	};
+
+	private endScan(): void {
+		this.scanning = false;
+		void this.backButton?.unregister();
+		this.backButton = null;
 	}
 
 	disconnect(): void {

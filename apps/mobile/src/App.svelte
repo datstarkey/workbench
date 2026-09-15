@@ -4,6 +4,7 @@
 	import { Button } from '@workbench/ui/button';
 	import { Input } from '@workbench/ui/input';
 	import Terminal from './Terminal.svelte';
+	import ScanOverlay from './ScanOverlay.svelte';
 	import { MobileClient } from './client.svelte.ts';
 
 	const c = new MobileClient();
@@ -14,7 +15,9 @@
 	});
 </script>
 
-{#if c.activeTerminal && c.store}
+{#if c.scanning}
+	<ScanOverlay onCancel={c.cancelScan} />
+{:else if c.activeTerminal && c.store}
 	{#key c.activeTerminal.id}
 		<Terminal
 			serverUrl={c.url}

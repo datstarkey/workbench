@@ -1,2 +1,8 @@
 @import 'tailwindcss';
 @import '@workbench/theme/theme.css';
+
+/* QR scan: the camera preview renders behind the webview. */
+html.qr-scanning,
+html.qr-scanning body {
+	background: transparent;
+}

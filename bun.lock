@@ -74,6 +74,7 @@
       "name": "@workbench/mobile",
       "version": "0.1.0",
       "dependencies": {
+        "@tauri-apps/api": "catalog:",
         "@tauri-apps/plugin-barcode-scanner": "^2",
         "@tauri-apps/plugin-log": "^2",
         "@workbench/control-plane-ui": "workspace:*",

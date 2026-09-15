@@ -213,17 +213,30 @@ describe('MobileClient', () => {
 	describe('scanAndConnect()', () => {
 		const PAIR_URL = 'http://100.64.1.2:4317';
 
+		const scanned = (content: string) => ({ content, format: 'QR_CODE', bounds: null });
+
 		function scanner(overrides: Partial<Record<keyof QrScanner, unknown>> = {}) {
-			return {
+			const unregister = vi.fn(async () => {});
+			let backHandler: (() => void) | undefined;
+			const mock = {
 				checkPermissions: vi.fn(async () => 'granted'),
 				requestPermissions: vi.fn(async () => 'granted'),
-				scan: vi.fn(async () => ({
-					content: buildPairingUri({ url: PAIR_URL, token: TOKEN }),
-					format: 'QR_CODE',
-					bounds: null
-				})),
+				scan: vi.fn(async () => scanned(buildPairingUri({ url: PAIR_URL, token: TOKEN }))),
+				cancel: vi.fn(async () => {}),
+				onBackButtonPress: vi.fn(async (handler: () => void) => {
+					backHandler = handler;
+					return { unregister };
+				}),
 				...overrides
 			} as unknown as QrScanner & Record<keyof QrScanner, ReturnType<typeof vi.fn>>;
+			return { mock, unregister, pressBack: () => backHandler?.() };
+		}
+
+		/** A scan that stays pending until `resolve` is called, like the plugin. */
+		function pendingScan() {
+			let resolve!: (value: ReturnType<typeof scanned>) => void;
+			const scan = vi.fn(() => new Promise((r) => (resolve = r)));
+			return { scan, resolve: (content: string) => resolve(scanned(content)) };
 		}
 
 		it('scans a pairing code, fills in the server and connects', async () => {
@@ -231,12 +244,12 @@ describe('MobileClient', () => {
 				...CONNECT_ROUTES,
 				'/remote/terminals': () => jsonResponse([])
 			});
-			const s = scanner();
+			const { mock: s } = scanner();
 			const c = new MobileClient(s);
 
 			await c.scanAndConnect();
 
-			expect(s.scan).toHaveBeenCalledWith({ formats: ['QR_CODE'] });
+			expect(s.scan).toHaveBeenCalledWith({ windowed: true, formats: ['QR_CODE'] });
 			expect(c.connectError).toBeNull();
 			expect(c.store).not.toBeNull();
 			expect(c.url).toBe(PAIR_URL);
@@ -248,7 +261,7 @@ describe('MobileClient', () => {
 
 		it('requests camera permission when not yet granted', async () => {
 			routeFetch({ ...CONNECT_ROUTES, '/remote/terminals': () => jsonResponse([]) });
-			const s = scanner({ checkPermissions: vi.fn(async () => 'prompt') });
+			const { mock: s } = scanner({ checkPermissions: vi.fn(async () => 'prompt') });
 			const c = new MobileClient(s);
 
 			await c.scanAndConnect();
@@ -258,7 +271,7 @@ describe('MobileClient', () => {
 		});
 
 		it('explains a denied camera permission without scanning', async () => {
-			const s = scanner({
+			const { mock: s } = scanner({
 				checkPermissions: vi.fn(async () => 'denied'),
 				requestPermissions: vi.fn(async () => 'denied')
 			});
@@ -272,7 +285,7 @@ describe('MobileClient', () => {
 
 		it('rejects a QR code that is not a Workbench pairing code', async () => {
 			const fetchSpy = routeFetch(CONNECT_ROUTES);
-			const s = scanner({
+			const { mock: s } = scanner({
 				scan: vi.fn(async () => ({
 					content: 'https://example.com',
 					format: 'QR_CODE',
@@ -291,7 +304,7 @@ describe('MobileClient', () => {
 
 		it('stays silent when the scan is cancelled', async () => {
 			const fetchSpy = routeFetch(CONNECT_ROUTES);
-			const s = scanner({ scan: vi.fn(async () => Promise.reject('cancelled')) });
+			const { mock: s } = scanner({ scan: vi.fn(async () => Promise.reject('cancelled')) });
 			const c = new MobileClient(s);
 
 			await c.scanAndConnect();
@@ -302,8 +315,103 @@ describe('MobileClient', () => {
 			expect(c.scanning).toBe(false);
 		});
 
+		it('cancel ends the scan at once and ignores a late result', async () => {
+			const fetchSpy = routeFetch(CONNECT_ROUTES);
+			const pending = pendingScan();
+			const { mock: s, unregister } = scanner({ scan: pending.scan });
+			const c = new MobileClient(s);
+
+			const scanning = c.scanAndConnect();
+			await vi.waitFor(() => expect(s.scan).toHaveBeenCalled());
+			expect(c.scanning).toBe(true);
+
+			await c.cancelScan();
+			expect(c.scanning).toBe(false);
+			expect(s.cancel).toHaveBeenCalled();
+			expect(unregister).toHaveBeenCalled();
+
+			pending.resolve(buildPairingUri({ url: PAIR_URL, token: TOKEN }));
+			await scanning;
+			expect(c.url).toBe('');
+			expect(c.connectError).toBeNull();
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		it('the Android back button cancels the scan', async () => {
+			const pending = pendingScan();
+			const { mock: s, pressBack } = scanner({ scan: pending.scan });
+			const c = new MobileClient(s);
+
+			void c.scanAndConnect();
+			await vi.waitFor(() => expect(s.scan).toHaveBeenCalled());
+			pressBack();
+
+			await vi.waitFor(() => expect(s.cancel).toHaveBeenCalled());
+			expect(c.scanning).toBe(false);
+		});
+
+		it('a double tap starts only one scan', async () => {
+			const pending = pendingScan();
+			const { mock: s } = scanner({ scan: pending.scan });
+			const c = new MobileClient(s);
+
+			void c.scanAndConnect();
+			void c.scanAndConnect();
+			await vi.waitFor(() => expect(s.scan).toHaveBeenCalled());
+			await c.scanAndConnect();
+
+			expect(s.checkPermissions).toHaveBeenCalledTimes(1);
+			expect(s.scan).toHaveBeenCalledTimes(1);
+			await c.cancelScan();
+		});
+
+		it('a new scan after a cancel works', async () => {
+			routeFetch({ ...CONNECT_ROUTES, '/remote/terminals': () => jsonResponse([]) });
+			const pending = pendingScan();
+			const { mock: s } = scanner({ scan: pending.scan });
+			const c = new MobileClient(s);
+
+			void c.scanAndConnect();
+			await vi.waitFor(() => expect(s.scan).toHaveBeenCalledTimes(1));
+			await c.cancelScan();
+
+			s.scan.mockImplementationOnce(async () =>
+				scanned(buildPairingUri({ url: PAIR_URL, token: TOKEN }))
+			);
+			await c.scanAndConnect();
+
+			expect(c.store).not.toBeNull();
+			expect(c.scanning).toBe(false);
+		});
+
+		it('connects to a scanned https origin exactly, without the default port', async () => {
+			const origin = 'https://box.tail1234.ts.net';
+			const fetchSpy = routeFetch({
+				...CONNECT_ROUTES,
+				'/remote/terminals': () => jsonResponse([])
+			});
+			const { mock: s } = scanner({
+				scan: vi.fn(async () => scanned(buildPairingUri({ url: origin, token: TOKEN })))
+			});
+			const c = new MobileClient(s);
+
+			await c.scanAndConnect();
+
+			expect(c.url).toBe(origin);
+			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`);
+			expect(localStorage.getItem('wb.serverUrl')).toBe(origin);
+
+			// Relaunch: the saved origin is reused as-is too.
+			fetchSpy.mockClear();
+			const relaunched = new MobileClient(s);
+			await relaunched.connect();
+			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`);
+		});
+
 		it('surfaces other scanner errors', async () => {
-			const s = scanner({ scan: vi.fn(async () => Promise.reject(new Error('no camera'))) });
+			const { mock: s } = scanner({
+				scan: vi.fn(async () => Promise.reject(new Error('no camera')))
+			});
 			const c = new MobileClient(s);
 
 			await c.scanAndConnect();
