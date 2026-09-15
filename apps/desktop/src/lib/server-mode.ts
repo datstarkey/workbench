@@ -58,7 +58,7 @@ export function terminalHookSocket(): Promise<string | null> {
 export interface PairingAddress {
 	interface: string;
 	address: string;
-	/** In Tailscale's 100.64.0.0/10 range (encrypted); anything else is plain HTTP on the wire. */
+	/** Confirmed Tailscale address (encrypted); anything else is plain HTTP on the wire. */
 	tailscale: boolean;
 }
 
