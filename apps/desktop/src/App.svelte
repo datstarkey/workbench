@@ -184,7 +184,10 @@
 		await Promise.all(projectStore.projects.map((p) => trelloStore.loadProjectConfig(p.path)));
 		if (workbenchSettingsStore.serverMode) {
 			try {
-				await startServer(workbenchSettingsStore.serverPort);
+				await startServer(
+					workbenchSettingsStore.serverPort,
+					await workbenchSettingsStore.ensureServerToken()
+				);
 			} catch {
 				/* server failed to start (e.g. port in use); surfaced in settings */
 			}

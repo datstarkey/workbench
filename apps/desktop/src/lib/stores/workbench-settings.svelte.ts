@@ -17,6 +17,7 @@ import { invoke } from '$lib/transport';
 // so this one call must never be routed to a remote instance's control plane.
 import { invoke as invokeLocal } from '@tauri-apps/api/core';
 import { IS_WINDOWS, isClaudePermissionMode } from '$lib/utils/claude';
+import { generateServerToken } from '$lib/server-mode';
 
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<
@@ -50,6 +51,7 @@ export class WorkbenchSettingsStore {
 	accentColor: AccentColor = $state<AccentColor>('violet');
 	serverMode = $state(false);
 	serverPort = $state(4317);
+	serverToken: string | null = $state(null);
 	settingsWindowBounds: SettingsWindowBounds | null = $state(null);
 	loaded = $state(false);
 	saving = $state(false);
@@ -96,6 +98,7 @@ export class WorkbenchSettingsStore {
 		this.accentColor = settings.accentColor ?? 'violet';
 		this.serverMode = settings.serverMode ?? false;
 		this.serverPort = settings.serverPort ?? 4317;
+		this.serverToken = settings.serverToken ?? null;
 		this.settingsWindowBounds = settings.settingsWindowBounds ?? null;
 		this.loaded = true;
 		this.dirty = false;
@@ -127,6 +130,20 @@ export class WorkbenchSettingsStore {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		(this as any)[field] = value;
 		this.dirty = true;
+	}
+
+	/** The LAN server token, generating and saving one if none exists yet. */
+	async ensureServerToken(): Promise<string> {
+		if (this.serverToken) return this.serverToken;
+		return this.regenerateServerToken();
+	}
+
+	/** Replace the LAN server token and save it. Clients holding the old one lose access once the server restarts. */
+	async regenerateServerToken(): Promise<string> {
+		const token = await generateServerToken();
+		this.serverToken = token;
+		await invoke('save_workbench_settings', { settings: this.toSettings() });
+		return token;
 	}
 
 	addSandboxAllowedDomain(domain: string) {
@@ -204,6 +221,7 @@ export class WorkbenchSettingsStore {
 			accentColor: this.accentColor,
 			serverMode: this.serverMode,
 			serverPort: this.serverPort,
+			serverToken: this.serverToken,
 			settingsWindowBounds: this.settingsWindowBounds
 		};
 	}

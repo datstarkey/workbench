@@ -265,6 +265,7 @@ describe('WorkbenchSettingsStore', () => {
 					accentColor: 'violet',
 					serverMode: false,
 					serverPort: 4317,
+					serverToken: null,
 					settingsWindowBounds: null
 				}
 			});
@@ -523,6 +524,7 @@ describe('WorkbenchSettingsStore', () => {
 					accentColor: 'violet',
 					serverMode: false,
 					serverPort: 4317,
+					serverToken: null,
 					settingsWindowBounds: null
 				}
 			});
@@ -656,6 +658,50 @@ describe('WorkbenchSettingsStore', () => {
 			// ...but the path does not.
 			expect(transportCalls).not.toContain('sandbox_runtime_settings_path');
 			expect(invokeSpy).toHaveBeenCalledWith('sandbox_runtime_settings_path');
+		});
+	});
+	// ─── LAN server token ───────────────────────────────────
+
+	describe('server token', () => {
+		const savedToken = () =>
+			(
+				invokeSpy.mock.calls.find((c) => c[0] === 'save_workbench_settings')?.[1] as {
+					settings: WorkbenchSettings;
+				}
+			)?.settings.serverToken;
+
+		it('loads the persisted token', async () => {
+			mockInvoke('load_workbench_settings', () => makeSettings({ serverToken: 'tok-from-disk' }));
+			await store.load();
+			expect(store.serverToken).toBe('tok-from-disk');
+		});
+
+		it('ensureServerToken generates and saves a token when none exists', async () => {
+			mockInvoke('generate_server_token', () => 'fresh-token');
+
+			await expect(store.ensureServerToken()).resolves.toBe('fresh-token');
+
+			expect(store.serverToken).toBe('fresh-token');
+			expect(savedToken()).toBe('fresh-token');
+		});
+
+		it('ensureServerToken keeps an existing token without saving', async () => {
+			store.serverToken = 'existing';
+
+			await expect(store.ensureServerToken()).resolves.toBe('existing');
+
+			expect(invokeSpy).not.toHaveBeenCalledWith('generate_server_token');
+			expect(savedToken()).toBeUndefined();
+		});
+
+		it('regenerateServerToken replaces and saves the token', async () => {
+			store.serverToken = 'old';
+			mockInvoke('generate_server_token', () => 'rotated');
+
+			await store.regenerateServerToken();
+
+			expect(store.serverToken).toBe('rotated');
+			expect(savedToken()).toBe('rotated');
 		});
 	});
 });

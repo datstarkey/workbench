@@ -9,15 +9,20 @@ export interface ServerStatus {
 	running: boolean;
 	address: string | null;
 	/**
-	 * Bearer token used by the embedded server, or null when no auth is
-	 * configured. Used to build the `?token=` query for WS attach URLs. Always
-	 * null for the loopback server (no auth needed on 127.0.0.1).
+	 * Loopback listener's per-process bearer token (`terminal_server_status`
+	 * only). Null for LAN status — that token lives in settings.
 	 */
 	token: string | null;
 }
 
-export function startServer(port: number, token?: string): Promise<ServerStatus> {
-	return invoke<ServerStatus>('start_server', { port, token: token ?? null });
+/** Start the LAN server. Rust refuses a missing or weak (< 32 chars) token. */
+export function startServer(port: number, token: string): Promise<ServerStatus> {
+	return invoke<ServerStatus>('start_server', { port, token });
+}
+
+/** A fresh CSPRNG token for the LAN server (not saved by this call). */
+export function generateServerToken(): Promise<string> {
+	return invoke<string>('generate_server_token');
 }
 
 export function stopServer(): Promise<ServerStatus> {

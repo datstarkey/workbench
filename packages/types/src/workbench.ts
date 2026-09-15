@@ -425,6 +425,8 @@ export interface WorkbenchSettings {
 	accentColor?: AccentColor;
 	serverMode?: boolean;
 	serverPort?: number;
+	/** Bearer token the LAN server requires; generated on first enable. */
+	serverToken?: string | null;
 	settingsWindowBounds?: SettingsWindowBounds | null;
 }
 
