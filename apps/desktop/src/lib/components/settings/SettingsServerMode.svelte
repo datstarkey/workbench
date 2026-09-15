@@ -9,9 +9,18 @@
 	import { Input } from '@workbench/ui/input';
 	import ConfirmDialog from '$components/ConfirmDialog.svelte';
 	import { ConfirmAction } from '$lib/utils/confirm-action.svelte';
-	import { startServer, stopServer, serverStatus, type ServerStatus } from '$lib/server-mode';
+	import {
+		pairingAddresses,
+		startServer,
+		stopServer,
+		serverStatus,
+		type PairingAddress,
+		type ServerStatus
+	} from '$lib/server-mode';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 	import SettingsToggle from './SettingsToggle.svelte';
+	import ServerPairingDialog from './ServerPairingDialog.svelte';
+	import { boundPort } from './server-pairing';
 
 	const store = getWorkbenchSettingsStore();
 
@@ -21,6 +30,8 @@
 	let tokenRevealed = $state(false);
 	let tokenCopied = $state(false);
 	const tokenRotation = new ConfirmAction<true>();
+	let pairing = $state<{ addresses: PairingAddress[]; port: number } | null>(null);
+	let pairingOpen = $state(false);
 
 	onMount(async () => {
 		try {
@@ -71,6 +82,23 @@
 	/** Rust saves the new token and restarts a running server, cutting off old clients. */
 	async function rotateToken() {
 		await store.rotateServerToken();
+	}
+
+	async function openPairing() {
+		serverError = null;
+		try {
+			// The QR must carry the port the server is actually bound to right now.
+			server = await serverStatus();
+			const port = boundPort(server.address);
+			if (!server.running || port === null) {
+				serverError = 'Start server mode to pair a phone.';
+				return;
+			}
+			pairing = { addresses: await pairingAddresses(), port };
+			pairingOpen = true;
+		} catch (e) {
+			serverError = e instanceof Error ? e.message : String(e);
+		}
 	}
 
 	async function copyServerToken() {
@@ -148,13 +176,26 @@
 		such as Tailscale.
 	</p>
 
-	{#if server.running && server.address}
-		<p class="text-xs text-wb-ok">Listening on {server.address}</p>
-	{/if}
+	<div class="flex items-center justify-between gap-4">
+		<p
+			class="text-xs"
+			class:text-wb-ok={server.running}
+			class:text-muted-foreground={!server.running}
+		>
+			{server.running && server.address ? `Listening on ${server.address}` : 'Not running'}
+		</p>
+		<Button variant="outline" size="sm" disabled={!server.running} onclick={openPairing}>
+			Pair phone
+		</Button>
+	</div>
 	{#if serverError}
 		<p class="text-xs text-wb-err">{serverError}</p>
 	{/if}
 </div>
+
+{#if pairing}
+	<ServerPairingDialog bind:open={pairingOpen} addresses={pairing.addresses} port={pairing.port} />
+{/if}
 
 <ConfirmDialog
 	bind:open={tokenRotation.open}

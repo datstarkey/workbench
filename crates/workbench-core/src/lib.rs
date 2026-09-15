@@ -10,6 +10,7 @@ pub mod codex_sessions;
 pub mod config;
 pub mod git;
 pub mod github;
+pub mod net;
 pub mod paths;
 pub mod sandbox_runtime;
 pub mod session_utils;

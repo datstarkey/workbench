@@ -54,3 +54,15 @@ export function terminalServerStatus(): Promise<ServerStatus> {
 export function terminalHookSocket(): Promise<string | null> {
 	return invoke<string | null>('terminal_hook_socket');
 }
+
+export interface PairingAddress {
+	interface: string;
+	address: string;
+	/** In Tailscale's 100.64.0.0/10 range (encrypted); anything else is plain HTTP on the wire. */
+	tailscale: boolean;
+}
+
+/** This machine's IPv4 addresses for the pairing QR code, Tailscale first. */
+export function pairingAddresses(): Promise<PairingAddress[]> {
+	return invoke<PairingAddress[]>('pairing_addresses');
+}

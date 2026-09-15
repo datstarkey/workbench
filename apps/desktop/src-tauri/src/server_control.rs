@@ -164,6 +164,12 @@ pub async fn rotate_server_token(
     Ok(token)
 }
 
+/// This machine's IPv4 addresses for the pairing QR code, Tailscale first.
+#[tauri::command]
+pub fn pairing_addresses() -> Result<Vec<crate::net::PairingAddress>, String> {
+    crate::net::pairing_addresses().map_err(|e| e.to_string())
+}
+
 /// Start the LAN server (opt-in server mode). Has no effect on the loopback
 /// server. A different token than the running server's restarts it.
 #[tauri::command]
