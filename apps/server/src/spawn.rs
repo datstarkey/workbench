@@ -218,9 +218,11 @@ impl RemoteControlManager {
                         }
                     }
                 }
-                // Child closed its PTY → it has exited; stop tracking it.
-                if let Ok(mut map) = inner.lock() {
-                    map.remove(&sid);
+                // Child closed its PTY → it has exited; stop tracking it and reap
+                // it (outside the lock) so it doesn't linger as a zombie.
+                let tracked = inner.lock().ok().and_then(|mut map| map.remove(&sid));
+                if let Some(mut tracked) = tracked {
+                    let _ = tracked.child.wait();
                 }
             });
         }
@@ -248,13 +250,15 @@ impl RemoteControlManager {
     /// exists (already killed, or self-exited and reaped by the reader thread) so
     /// the route can stay idempotent rather than 500ing on a normal race.
     pub fn kill(&self, id: &str) -> bool {
-        let mut map = match self.inner.lock() {
-            Ok(m) => m,
-            Err(p) => p.into_inner(),
+        let tracked = match self.inner.lock() {
+            Ok(mut m) => m.remove(id),
+            Err(p) => p.into_inner().remove(id),
         };
-        match map.remove(id) {
+        match tracked {
+            // portable-pty's kill escalates SIGHUP → SIGKILL, so the wait is brief.
             Some(mut tracked) => {
                 let _ = tracked.child.kill();
+                let _ = tracked.child.wait();
                 true
             }
             None => false,
