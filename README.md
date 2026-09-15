@@ -2,7 +2,7 @@
 
 A desktop terminal manager built with Tauri v2 and Svelte 5. Add local project folders, and each project gets a tabbed workspace with real shell terminals, Claude Code + Codex integration, and git worktree support.
 
-[Website](https://datstarkey.github.io/workbench/) · [Download](https://github.com/datstarkey/workbench/releases/latest)
+[Website](https://workbench.starkeydigital.com/) · [Download](https://github.com/datstarkey/workbench/releases/latest)
 
 The public landing page lives in `site/` and deploys to GitHub Pages. See [landing page development](docs/LANDING_PAGE.md).
 
