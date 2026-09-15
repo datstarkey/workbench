@@ -107,13 +107,16 @@
 						/>
 
 						<label class="mb-1 block text-[11px] font-medium text-wb-ink-mute" for="tok">
-							Token <span class="text-wb-ink-soft">(optional)</span>
+							Token
 						</label>
 						<Input
 							id="tok"
 							type="password"
 							bind:value={c.token}
-							placeholder="bearer token"
+							placeholder="from Settings → Server mode"
+							autocapitalize="off"
+							autocorrect="off"
+							spellcheck={false}
 							class="mb-4 font-mono"
 						/>
 
