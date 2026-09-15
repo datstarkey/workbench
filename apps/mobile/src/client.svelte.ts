@@ -61,13 +61,13 @@ export class MobileClient {
 	serverLabel = $derived(this.url.replace(/^https?:\/\//, ''));
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
 
-	/** Whether a server address was previously saved (auto-reconnect on launch). */
+	/** Whether a server address and token were previously saved (auto-reconnect on launch). */
 	get hasSavedServer(): boolean {
-		return !!lsGet(LS_URL);
+		return !!lsGet(LS_URL) && !!lsGet(LS_TOKEN);
 	}
 
 	private authHeaders(): Record<string, string> {
-		return this.token ? { authorization: `Bearer ${this.token}` } : {};
+		return { authorization: `Bearer ${this.token}` };
 	}
 
 	async connect(): Promise<void> {
@@ -76,14 +76,21 @@ export class MobileClient {
 		try {
 			const base = normalizeUrl(this.url);
 			if (!base) throw new Error('enter a server address');
-			const res = await fetch(`${base}/health`, { headers: this.authHeaders() });
+			this.token = this.token.trim();
+			// Every Workbench server requires a token (see Settings → Server mode).
+			if (!this.token) throw new Error('enter the server token');
+			const res = await fetch(`${base}/health`);
 			if (!res.ok) throw new Error(`health check returned ${res.status}`);
+			// /health is unauthenticated, so check the token on a protected route.
+			const authed = await fetch(`${base}/remote/terminals`, { headers: this.authHeaders() });
+			if (authed.status === 401) throw new Error('invalid token');
+			if (!authed.ok) throw new Error(`server returned ${authed.status}`);
 
 			this.url = base;
 			lsSet(LS_URL, base);
 			lsSet(LS_TOKEN, this.token);
 
-			const transport = createHttpTransport({ baseUrl: base, token: this.token || undefined });
+			const transport = createHttpTransport({ baseUrl: base, token: this.token });
 			const next = new ControlPlaneStore(transport);
 			await next.refresh();
 			this.store = next;

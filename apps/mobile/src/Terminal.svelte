@@ -5,6 +5,7 @@
 	import '@xterm/xterm/css/xterm.css';
 	import { terminalWsUrl } from './terminal-url.ts';
 	import { touchScroll } from './touch-scroll.ts';
+	import { statusForTextFrame, statusOnClose, type TerminalStatus } from './terminal-status.ts';
 
 	let {
 		serverUrl,
@@ -20,8 +21,10 @@
 		onClose: () => void;
 	} = $props();
 
-	let status = $state<'connecting' | 'open' | 'closed'>('connecting');
+	let status = $state<TerminalStatus>('connecting');
 	let ws: WebSocket | undefined;
+	/** Re-attach after a takeover, kicking the device that holds the terminal now. */
+	let takeControl = () => {};
 
 	// Android soft keyboards lack arrows / Esc / Tab / Ctrl — provide them here.
 	const KEYS: { label: string; seq: string }[] = [
@@ -52,21 +55,38 @@
 		fit.fit();
 
 		// Attach to the persistent session; the server replays scrollback first.
-		ws = new WebSocket(terminalWsUrl(serverUrl, id, token));
-		ws.binaryType = 'arraybuffer';
+		const attach = () => {
+			status = 'connecting';
+			let replayed = false;
+			const socket = new WebSocket(terminalWsUrl(serverUrl, id, token));
+			ws = socket;
+			socket.binaryType = 'arraybuffer';
 
-		ws.onopen = () => {
-			status = 'open';
-			term.focus();
-			ws?.send(JSON.stringify({ t: 'r', c: term.cols, r: term.rows }));
+			socket.onopen = () => {
+				status = 'open';
+				term.focus();
+				socket.send(JSON.stringify({ t: 'r', c: term.cols, r: term.rows }));
+			};
+			socket.onmessage = (ev) => {
+				if (ev.data instanceof ArrayBuffer) {
+					// A re-attach replays the whole scrollback; clear the old copy first.
+					if (!replayed) term.reset();
+					replayed = true;
+					term.write(new Uint8Array(ev.data));
+				} else {
+					status = statusForTextFrame(ev.data) ?? status;
+				}
+			};
+			socket.onclose = () => {
+				status = statusOnClose(status);
+			};
 		};
-		ws.onmessage = (ev) => {
-			if (ev.data instanceof ArrayBuffer) term.write(new Uint8Array(ev.data));
-			else term.write(ev.data);
+		takeControl = () => {
+			if (ws) ws.onopen = ws.onmessage = ws.onclose = null;
+			ws?.close();
+			attach();
 		};
-		ws.onclose = () => {
-			status = 'closed';
-		};
+		attach();
 
 		term.onData((d) => send(d));
 		term.onResize(({ cols, rows }) => {
@@ -110,14 +130,24 @@
 			← Back
 		</button>
 		<span class="min-w-0 flex-1 truncate font-mono text-[11px] text-wb-ink">{name}</span>
-		<span
-			class="text-[10px] uppercase"
-			class:text-wb-ok={status === 'open'}
-			class:text-wb-ink-soft={status === 'connecting'}
-			class:text-wb-err={status === 'closed'}
-		>
-			{status}
-		</span>
+		{#if status === 'taken_over'}
+			<span class="text-[10px] text-wb-warn">Opened on another device</span>
+			<button
+				class="rounded bg-wb-panel2 px-2 py-1 text-[11px] text-wb-ink active:bg-wb-panel"
+				onclick={() => takeControl()}
+			>
+				Take control
+			</button>
+		{:else}
+			<span
+				class="text-[10px] uppercase"
+				class:text-wb-ok={status === 'open'}
+				class:text-wb-ink-soft={status === 'connecting'}
+				class:text-wb-err={status === 'closed' || status === 'exited'}
+			>
+				{status}
+			</span>
+		{/if}
 	</header>
 
 	<div

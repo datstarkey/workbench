@@ -147,6 +147,7 @@ impl RemoteControlManager {
         for (key, val) in workbench_core::shell::inherited_env() {
             cmd.env(key, val);
         }
+        cmd.env_remove("WORKBENCH_TOKEN");
 
         let child = pair
             .slave

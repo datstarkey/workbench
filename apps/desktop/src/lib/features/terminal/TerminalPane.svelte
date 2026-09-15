@@ -18,7 +18,11 @@
 	import { TerminalInputDedup } from './input-dedup';
 	import { installTextareaResidueGuard } from './textarea-residue';
 	import { isLayoutDisabled } from './layout-guard';
-	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
+	import {
+		getClaudeSessionStore,
+		getWorkbenchSettingsStore,
+		getWorkspaceStore
+	} from '$stores/context';
 	import { terminalHookSocket } from '$lib/server-mode';
 
 	let {
@@ -62,6 +66,8 @@
 	let searchOpen = $state(false);
 	let shellState: ShellIntegrationState | null = null;
 	let terminalError = $state('');
+	/** Another device holds this terminal; stays detached until the user takes control. */
+	let takenOver = $state(false);
 	let removeVisibilityListener: (() => void) | null = null;
 	let lastCols = 0;
 	let lastRows = 0;
@@ -70,6 +76,7 @@
 	let perfLogInterval: ReturnType<typeof setInterval> | null = null;
 	const claudeSessionStore = getClaudeSessionStore();
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
+	const workspaceStore = getWorkspaceStore();
 	let inputDedup: TerminalInputDedup;
 
 	// VS Code-style split-axis resize debouncing:
@@ -551,9 +558,9 @@
 				},
 				({ reason, code }: { reason: string; code?: number }) => {
 					if (reason === 'taken_over') {
-						// Another client took over this terminal — show a banner. The PTY
-						// keeps running so the user can reconnect by re-focusing this pane.
-						terminal?.writeln('\r\n\x1b[33m[opened elsewhere]\x1b[0m');
+						// The PTY keeps running on the other device; reattaching is an
+						// explicit click, never automatic, so two devices can't ping-pong.
+						takenOver = true;
 					} else if (code != null) {
 						terminal?.writeln(`\r\n[process exited: ${code}]`);
 					} else {
@@ -570,23 +577,26 @@
 			// the hook bridge (activity/quiescence) exactly like local PTYs.
 			const hookSocket = (await terminalHookSocket()) ?? undefined;
 
-			await conn.connect(
-				{
-					// projectPath MUST be the registered project — the server's
-					// resolve_cwd rejects an unregistered path; a worktree rides along in
-					// worktreePath (and is validated against the project's worktrees).
-					projectPath: project.path,
-					...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
-					name: paneId,
-					command: startupCommand,
-					cols: terminal.cols,
-					rows: terminal.rows,
-					paneId,
-					shell: project.shell,
-					hookSocket
-				},
-				existingServerTerminalId
-			);
+			const connectOpts = {
+				// projectPath MUST be the registered project — the server's
+				// resolve_cwd rejects an unregistered path; a worktree rides along in
+				// worktreePath (and is validated against the project's worktrees).
+				projectPath: project.path,
+				...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
+				name: workspaceStore.paneDisplayName(paneId) ?? project.name,
+				command: startupCommand,
+				cols: terminal.cols,
+				rows: terminal.rows,
+				paneId,
+				shell: project.shell,
+				hookSocket
+			};
+			if (existingServerTerminalId && workspaceStore.startsDetached(paneId)) {
+				conn.connectDetached(connectOpts, existingServerTerminalId);
+				takenOver = true;
+			} else {
+				await conn.connect(connectOpts, existingServerTerminalId);
+			}
 
 			// Notify workspace store of the assigned server terminal ID.
 			if (conn.terminalId) {
@@ -663,6 +673,19 @@
 		}
 	});
 
+	async function takeControl() {
+		if (!conn || !terminal) return;
+		takenOver = false;
+		try {
+			await conn.takeControl(terminal.cols, terminal.rows);
+			if (conn.terminalId) onServerTerminalIdChange?.(paneId, conn.terminalId);
+			terminal.focus();
+		} catch (error) {
+			takenOver = true;
+			terminalError = `Failed to take control: ${String(error)}`;
+		}
+	}
+
 	onDestroy(() => {
 		if (resizeRAFId !== null) cancelAnimationFrame(resizeRAFId);
 		if (colResizeTimeout) clearTimeout(colResizeTimeout);
@@ -700,6 +723,20 @@
 			</div>
 		</div>
 	{/if}
+	{#if takenOver && !terminalError}
+		<div class="terminal-takeover">
+			<div class="text-center">
+				<p>Opened on another device</p>
+				<button
+					class="mt-2 rounded bg-white/10 px-3 py-1 text-xs hover:bg-white/20"
+					type="button"
+					onclick={takeControl}
+				>
+					Take control
+				</button>
+			</div>
+		</div>
+	{/if}
 	{#if searchOpen && searchAddon}
 		<TerminalSearch
 			{searchAddon}
@@ -725,6 +762,17 @@
 	.terminal-shell {
 		height: 100%;
 		width: 100%;
+	}
+
+	.terminal-takeover {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: color-mix(in srgb, var(--wb-bg) 70%, transparent);
+		color: var(--wb-ink);
+		font-size: 12px;
 	}
 
 	.terminal-error {

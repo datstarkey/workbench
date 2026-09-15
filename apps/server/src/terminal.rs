@@ -15,7 +15,9 @@
 //! (`{"t":"i","d":..}` input, `{"t":"r","c":..,"r":..}` resize); server→client
 //! raw PTY bytes as binary frames. Server→client control frames (text JSON):
 //! `{"t":"takeover"}` — another client has attached (epoch bumped, old socket
-//! will be closed); `{"t":"exit","code":<n|null>}` — shell exited.
+//! will be closed); `{"t":"exit","code":<n|null>}` — shell exited;
+//! `{"t":"revoked"}` — the listener this socket came through stopped (server
+//! mode off / token rotated), so the socket is closed.
 //!
 //! Single-attacher lease: only ONE client may drive input at a time. When a new
 //! client attaches the server:
@@ -26,7 +28,8 @@
 //!
 //! Gated by the same bearer auth as every other route. NOTE: browser WebSocket
 //! can't send an `Authorization` header, so query-param auth for the WS is
-//! supported via `?token=`.
+//! supported via `?token=`. The upgrade also checks `Origin` (see
+//! `auth::ws_origin_allowed`).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -39,7 +42,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -180,6 +183,9 @@ impl TerminalManager {
         if let Some(sock) = &hook_socket {
             cmd.env("WORKBENCH_HOOK_SOCKET", sock);
         }
+        // CommandBuilder inherits the whole server env; never hand the shell the
+        // standalone server's bearer token.
+        cmd.env_remove("WORKBENCH_TOKEN");
 
         // Shell integration (OSC 133): when launching a bare zsh (no startup
         // command), point ZDOTDIR at our generated rc dir so prompt/command marks
@@ -410,8 +416,21 @@ pub async fn terminal_attach(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
     Query(auth): Query<WsAuthQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
+    let header_str = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    if !crate::auth::ws_origin_allowed(
+        header_str(header::ORIGIN),
+        header_str(header::HOST),
+        cfg!(debug_assertions),
+    ) {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "origin not allowed".to_string(),
+        });
+    }
+
     // This route is exempt from the global bearer middleware (a browser WebSocket
     // can't set an Authorization header), so authenticate the ?token= query param
     // here — same token, same constant-time compare as every other route.
@@ -432,7 +451,8 @@ pub async fn terminal_attach(
         .terminals
         .get(&id)
         .ok_or_else(|| anyhow::anyhow!("no terminal with id {id}"))?;
-    Ok(ws.on_upgrade(move |socket| attach(socket, session)))
+    let revoked = state.revoked.clone();
+    Ok(ws.on_upgrade(move |socket| attach(socket, session, revoked)))
 }
 
 /// Build the `{"t":"exit","code":<n|null>}` control frame, reading the child's real
@@ -455,6 +475,10 @@ fn exit_frame(session: &TerminalSession) -> Message {
         None => r#"{"t":"exit","code":null}"#.to_string(),
     };
     Message::Text(json)
+}
+
+fn revoked_frame() -> Message {
+    Message::Text(r#"{"t":"revoked"}"#.to_string())
 }
 
 /// Block until a freshly spawned shell is ready for input: a settling delay,
@@ -558,7 +582,18 @@ fn terminate_process_group(session: &TerminalSession) {
     }
 }
 
-async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
+async fn attach(
+    mut socket: WebSocket,
+    session: Arc<TerminalSession>,
+    mut revoked: watch::Receiver<bool>,
+) {
+    // An upgrade that raced the listener stopping must not kick the live attacher.
+    if *revoked.borrow_and_update() {
+        let _ = socket.send(revoked_frame()).await;
+        let _ = socket.close().await;
+        return;
+    }
+
     // --- Single-attacher lease -------------------------------------------------
     // Subscribe to the kick channel BEFORE bumping the epoch. tokio's `watch` marks
     // the value present at subscribe time as "seen", so a receiver created AFTER our
@@ -619,6 +654,13 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
                     .await;
                 // Send a WS Close frame so the client can distinguish a clean kick from
                 // a dropped connection.
+                let _ = socket.close().await;
+                return;
+            }
+            _ = crate::state::wait_revoked(&mut revoked) => {
+                // The listener stopped (server mode off / token rotated): cut this
+                // client off. The PTY keeps running for other listeners' clients.
+                let _ = socket.send(revoked_frame()).await;
                 let _ = socket.close().await;
                 return;
             }

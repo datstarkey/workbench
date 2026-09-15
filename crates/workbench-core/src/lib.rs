@@ -17,6 +17,7 @@ pub mod settings;
 pub mod shell;
 pub mod shell_integration;
 pub mod text;
+pub mod token;
 pub mod trello;
 pub mod trello_automation;
 pub mod types;

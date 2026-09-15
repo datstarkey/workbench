@@ -12,7 +12,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    if cli.token.is_some() {
+    let token = cli.resolved_token()?;
+    if token.is_some() {
         tracing::info!(
             "workbench-server listening on {}:{} (bearer token required)",
             cli.bind,
@@ -26,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    workbench_server::serve(&cli.bind, cli.port, cli.token, shutdown_signal()).await
+    workbench_server::serve(&cli.bind, cli.port, token, shutdown_signal()).await
 }
 
 async fn shutdown_signal() {

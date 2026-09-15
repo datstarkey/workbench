@@ -21,7 +21,9 @@
  * ───────────────────
  * The server enforces single-attach: if a second client attaches, the first
  * receives a {"t":"takeover"} frame then its socket is closed. `onExit` is
- * fired with `{ reason: 'taken_over' }` in that case.
+ * fired with `{ reason: 'taken_over' }` in that case, and the pane stays
+ * detached until the user calls `takeControl()` — never automatically, or two
+ * devices would kick each other back and forth.
  *
  * PTY persistence
  * ───────────────
@@ -32,7 +34,7 @@
  */
 
 import { terminalServerStatus } from '$lib/server-mode';
-import { terminalWsUrl } from '@workbench/transport';
+import { parseTerminalControlFrame, terminalWsUrl } from '@workbench/transport';
 
 /** Payload delivered to the `onData` callback. */
 export type TerminalDataPayload = Uint8Array;
@@ -68,7 +70,7 @@ export interface ConnectOptions {
 }
 
 /** Server-side terminal metadata returned by GET/POST /remote/terminals. */
-interface TerminalMeta {
+export interface TerminalMeta {
 	id: string;
 	name?: string;
 	cwd: string;
@@ -110,9 +112,43 @@ function authHeaders(token?: string): Record<string, string> {
 	return token ? { authorization: `Bearer ${token}` } : {};
 }
 
-/** Test-only: drop the memoized server-info cache so tests stay isolated. */
+/**
+ * Server terminal ids this webview created, attached to or killed. Adoption
+ * skips them: the loopback list is shared with other devices, and a pane's own
+ * PTY is visible there before its id reaches the workspace store (or, after a
+ * kill, until the DELETE lands).
+ */
+const claimedIds = new Set<string>();
+/** Creates whose id isn't known yet — the server may already list it. */
+let pendingCreates = 0;
+
+export function isClaimedLocally(id: string): boolean {
+	return claimedIds.has(id);
+}
+
+/** Test-only: drop the memoized server-info cache and claims so tests stay isolated. */
 export function __resetServerInfoCache(): void {
 	serverInfoCache = null;
+	claimedIds.clear();
+	pendingCreates = 0;
+}
+
+/**
+ * List the loopback server's terminals (including ones opened from other
+ * devices). Null when unavailable — including while a local create is in
+ * flight, whose not-yet-claimed id would look like a foreign terminal.
+ */
+export async function listServerTerminals(): Promise<TerminalMeta[] | null> {
+	try {
+		const { baseUrl, token } = await resolveServer();
+		const resp = await fetch(`${baseUrl}/remote/terminals`, { headers: authHeaders(token) });
+		if (!resp.ok) return null;
+		const list: unknown = await resp.json();
+		if (pendingCreates > 0 || !Array.isArray(list)) return null;
+		return list as TerminalMeta[];
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -130,6 +166,8 @@ export class TerminalConnection {
 	terminalId: string | null = null;
 
 	private ws: WebSocket | null = null;
+	/** Options from the last connect, reused by `takeControl()`. */
+	private lastOpts: ConnectOptions | null = null;
 	private readonly onData: (data: TerminalDataPayload) => void;
 	private readonly onExit: (info: TerminalExitInfo) => void;
 	private readonly onReset?: () => void;
@@ -176,6 +214,7 @@ export class TerminalConnection {
 	 * Resolves once the socket is open and the initial resize frame is sent.
 	 */
 	async connect(opts: ConnectOptions, existingId?: string): Promise<void> {
+		this.lastOpts = opts;
 		const { baseUrl, token } = await resolveServer();
 		if (this.disposed) return;
 
@@ -184,6 +223,7 @@ export class TerminalConnection {
 		const reattach = existingId ? await this.isAlive(baseUrl, token, existingId) : false;
 		if (this.disposed) return;
 		const id = reattach ? existingId! : await this.createTerminal(baseUrl, token, opts);
+		claimedIds.add(id);
 		this.terminalId = id;
 
 		// dispose() may have landed while we awaited create/isAlive — before this.ws
@@ -200,6 +240,28 @@ export class TerminalConnection {
 		await this.openSocket(terminalWsUrl(baseUrl, id, token), opts);
 	}
 
+	/**
+	 * Remember an existing server terminal without attaching, so a device that
+	 * currently holds it isn't kicked. The pane attaches on `takeControl()`.
+	 */
+	connectDetached(opts: ConnectOptions, existingId: string): void {
+		this.lastOpts = opts;
+		this.terminalId = existingId;
+		claimedIds.add(existingId);
+	}
+
+	/**
+	 * Re-attach after a takeover (or a detached start), kicking whichever device
+	 * holds the terminal now. Falls back to a fresh PTY if it has since died, so
+	 * callers should re-read `terminalId` afterwards.
+	 */
+	async takeControl(cols: number, rows: number): Promise<void> {
+		if (!this.lastOpts) throw new Error('terminal was never connected');
+		this.detachSocket();
+		this.exitDelivered = false;
+		await this.connect({ ...this.lastOpts, cols, rows }, this.terminalId ?? undefined);
+	}
+
 	/** Whether a server terminal with `id` still exists and is alive. */
 	private async isAlive(baseUrl: string, token: string | undefined, id: string): Promise<boolean> {
 		try {
@@ -214,6 +276,19 @@ export class TerminalConnection {
 
 	/** Create a server-side PTY and return its id. */
 	private async createTerminal(
+		baseUrl: string,
+		token: string | undefined,
+		opts: ConnectOptions
+	): Promise<string> {
+		pendingCreates += 1;
+		try {
+			return await this.postTerminal(baseUrl, token, opts);
+		} finally {
+			pendingCreates -= 1;
+		}
+	}
+
+	private async postTerminal(
 		baseUrl: string,
 		token: string | undefined,
 		opts: ConnectOptions
@@ -237,6 +312,7 @@ export class TerminalConnection {
 			throw new Error(`POST /remote/terminals failed: ${resp.status}`);
 		}
 		const meta: TerminalMeta = await resp.json();
+		claimedIds.add(meta.id);
 		return meta.id;
 	}
 
@@ -260,7 +336,8 @@ export class TerminalConnection {
 			};
 
 			ws.onerror = () => {
-				reject(new Error(`WebSocket error connecting to ${wsUrl}`));
+				// Strip ?token= so the credential never lands in UI text or error reports.
+				reject(new Error(`WebSocket error connecting to ${wsUrl.split('?')[0]}`));
 			};
 
 			ws.onmessage = (event: MessageEvent) => {
@@ -271,15 +348,13 @@ export class TerminalConnection {
 					}
 					this.onData(new Uint8Array(event.data));
 				} else if (typeof event.data === 'string') {
-					try {
-						const msg = JSON.parse(event.data) as { t: string; code?: number | null };
-						if (msg.t === 'takeover') {
-							this.deliverExit({ reason: 'taken_over' });
-						} else if (msg.t === 'exit') {
-							this.deliverExit({ reason: 'ended', code: msg.code ?? undefined });
-						}
-					} catch {
-						// Ignore malformed text frames.
+					const frame = parseTerminalControlFrame(event.data);
+					if (frame?.t === 'takeover') {
+						this.deliverExit({ reason: 'taken_over' });
+					} else if (frame?.t === 'exit') {
+						this.deliverExit({ reason: 'ended', code: frame.code ?? undefined });
+					} else if (frame?.t === 'revoked') {
+						this.deliverExit({ reason: 'ended' });
 					}
 				}
 			};
@@ -314,6 +389,11 @@ export class TerminalConnection {
 	 */
 	dispose(): void {
 		this.disposed = true;
+		this.detachSocket();
+	}
+
+	/** Close the socket with its handlers dropped, so the close can't fire onExit. */
+	private detachSocket(): void {
 		if (this.ws) {
 			// Drop handlers before close so the onclose path can't fire onExit.
 			this.ws.onmessage = null;
@@ -330,6 +410,7 @@ export class TerminalConnection {
  * the PTY doesn't leak on the server, consuming the terminal cap). Best-effort.
  */
 export async function deleteServerTerminal(id: string): Promise<void> {
+	claimedIds.add(id);
 	try {
 		const { baseUrl, token } = await resolveServer();
 		await fetch(`${baseUrl}/remote/terminals/${id}`, {

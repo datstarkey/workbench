@@ -14,6 +14,7 @@ import { createHttpTransport, type ControlPlaneTransport } from './index.ts';
 const BIN = join(import.meta.dirname, '../../../target/debug/workbench-server');
 const PORT = 47317;
 const BASE = `http://127.0.0.1:${PORT}`;
+const TOKEN = 'integration-token-0123456789abcdef01';
 
 const hasBin = existsSync(BIN);
 
@@ -52,12 +53,17 @@ describe.skipIf(!hasBin)('HttpTransport ↔ real workbench-server', () => {
 			JSON.stringify({ projects: [{ name: 'int', path: projectDir }] })
 		);
 
-		server = spawn(BIN, ['--port', String(PORT)], {
-			env: { ...process.env, WORKBENCH_CLAUDE_BIN: fake, WORKBENCH_CONFIG_DIR: configDir },
+		server = spawn(BIN, ['--bind', '127.0.0.1', '--port', String(PORT)], {
+			env: {
+				...process.env,
+				WORKBENCH_CLAUDE_BIN: fake,
+				WORKBENCH_CONFIG_DIR: configDir,
+				WORKBENCH_TOKEN: TOKEN
+			},
 			stdio: 'ignore'
 		});
 		await waitForHealth();
-		transport = createHttpTransport({ baseUrl: BASE });
+		transport = createHttpTransport({ baseUrl: BASE, token: TOKEN });
 	}, 20000);
 
 	afterAll(() => {

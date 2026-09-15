@@ -265,6 +265,7 @@ describe('WorkbenchSettingsStore', () => {
 					accentColor: 'violet',
 					serverMode: false,
 					serverPort: 4317,
+					serverToken: null,
 					settingsWindowBounds: null
 				}
 			});
@@ -523,6 +524,7 @@ describe('WorkbenchSettingsStore', () => {
 					accentColor: 'violet',
 					serverMode: false,
 					serverPort: 4317,
+					serverToken: null,
 					settingsWindowBounds: null
 				}
 			});
@@ -656,6 +658,56 @@ describe('WorkbenchSettingsStore', () => {
 			// ...but the path does not.
 			expect(transportCalls).not.toContain('sandbox_runtime_settings_path');
 			expect(invokeSpy).toHaveBeenCalledWith('sandbox_runtime_settings_path');
+		});
+	});
+	// ─── LAN server token ───────────────────────────────────
+
+	describe('server token', () => {
+		const savedToken = () =>
+			(
+				invokeSpy.mock.calls.find((c) => c[0] === 'save_workbench_settings')?.[1] as {
+					settings: WorkbenchSettings;
+				}
+			)?.settings.serverToken;
+
+		it('loads the persisted token', async () => {
+			mockInvoke('load_workbench_settings', () => makeSettings({ serverToken: 'tok-from-disk' }));
+			await store.load();
+			expect(store.serverToken).toBe('tok-from-disk');
+		});
+
+		it('ensureServerToken rotates one in when none exists', async () => {
+			mockInvoke('rotate_server_token', () => 'fresh-token');
+
+			await expect(store.ensureServerToken()).resolves.toBe('fresh-token');
+
+			expect(store.serverToken).toBe('fresh-token');
+			expect(invokeSpy).toHaveBeenCalledWith('rotate_server_token');
+		});
+
+		it('ensureServerToken keeps an existing token', async () => {
+			store.serverToken = 'existing';
+
+			await expect(store.ensureServerToken()).resolves.toBe('existing');
+
+			expect(invokeSpy).not.toHaveBeenCalledWith('rotate_server_token');
+		});
+
+		it('rotateServerToken persists only the token via Rust, keeping unsaved edits', async () => {
+			store.serverToken = 'old';
+			store.set('sandboxRuntimeEnabled', true);
+			store.set('worktreeCustomBranch', 'unsaved-branch');
+			mockInvoke('rotate_server_token', () => 'rotated');
+
+			await store.rotateServerToken();
+
+			expect(store.serverToken).toBe('rotated');
+			expect(invokeSpy).toHaveBeenCalledWith('rotate_server_token');
+			expect(savedToken()).toBeUndefined();
+			expect(invokeSpy).not.toHaveBeenCalledWith('save_workbench_settings', expect.anything());
+			expect(store.sandboxRuntimeEnabled).toBe(true);
+			expect(store.worktreeCustomBranch).toBe('unsaved-branch');
+			expect(store.dirty).toBe(true);
 		});
 	});
 });

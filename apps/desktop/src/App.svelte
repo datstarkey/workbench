@@ -52,7 +52,9 @@
 	import { listen } from '@tauri-apps/api/event';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { startServer } from '$lib/server-mode';
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
+	import { TerminalAdoptionPoller } from '$features/terminal/server-terminals';
+	import { isClaimedLocally, listServerTerminals } from '$features/terminal/terminal-connection';
 	import { watch } from 'runed';
 	import { Toaster, toast } from 'svelte-sonner';
 
@@ -169,11 +171,23 @@
 		}
 	});
 
+	// Terminals opened from another device appear as background tabs. Started only
+	// once workspaces are loaded, or every persisted pane's PTY would look foreign.
+	const terminalAdoption = new TerminalAdoptionPoller({
+		listTerminals: listServerTerminals,
+		isClaimed: isClaimedLocally,
+		knownIds: () => workspaceStore.knownServerTerminalIds(),
+		adopt: (t) => workspaceStore.adoptServerTerminal(t),
+		onAdopted: (t) => toast.info(`Terminal opened on another device: ${t.name ?? 'terminal'}`)
+	});
+	onDestroy(() => terminalAdoption.dispose());
+
 	onMount(async () => {
 		instancesStore.load();
 		await Promise.all([workbenchSettingsStore.load(), projectStore.load()]);
 		await workspaceStore.load();
 		workspaceStore.ensureShape();
+		terminalAdoption.start();
 		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
 			projectStore.openProject(projectStore.projects[0].path);
 		}
@@ -184,7 +198,10 @@
 		await Promise.all(projectStore.projects.map((p) => trelloStore.loadProjectConfig(p.path)));
 		if (workbenchSettingsStore.serverMode) {
 			try {
-				await startServer(workbenchSettingsStore.serverPort);
+				await startServer(
+					workbenchSettingsStore.serverPort,
+					await workbenchSettingsStore.ensureServerToken()
+				);
 			} catch {
 				/* server failed to start (e.g. port in use); surfaced in settings */
 			}

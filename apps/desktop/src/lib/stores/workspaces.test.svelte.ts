@@ -2,6 +2,8 @@ import { invokeSpy, clearInvokeMocks } from '../../test/tauri-mocks';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WorkspaceStore } from './workspaces.svelte';
 import { SANDBOX_RUNTIME_PACKAGE } from '$lib/utils/claude';
+import { deleteServerTerminal } from '$features/terminal/terminal-connection';
+import { adoptableTerminals } from '$features/terminal/server-terminals';
 import type {
 	ProjectConfig,
 	ProjectWorkspace,
@@ -14,6 +16,11 @@ import type {
 let uidCounter = 0;
 vi.mock('$lib/utils/uid', () => ({
 	uid: () => `uid-${++uidCounter}`
+}));
+
+vi.mock('$features/terminal/terminal-connection', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$features/terminal/terminal-connection')>()),
+	deleteServerTerminal: vi.fn()
 }));
 
 // Mock context so getGitStore() and getWorkbenchSettingsStore() work outside a component
@@ -1771,6 +1778,115 @@ describe('WorkspaceStore', () => {
 			store.addAISession('ws-a', 'codex', { startupCommand: "codex 'audit'" });
 
 			expect(startupCommand()).toBe("codex 'audit'");
+		});
+	});
+	// ─── Adopting terminals opened on another device ────────
+
+	describe('adoptServerTerminal', () => {
+		const remote = { id: 'srv-remote', name: 'phone shell', cwd: '/projects/test', alive: true };
+
+		it('adds a background tab mapped to the existing server terminal, starting detached', () => {
+			const active = makeTab({ id: 'tab-active' });
+			const ws = makeWorkspace({ terminalTabs: [active], activeTerminalTabId: 'tab-active' });
+			store.workspaces = [ws];
+
+			expect(store.adoptServerTerminal(remote)).toBe(true);
+
+			const tabs = store.workspaces[0].terminalTabs;
+			expect(tabs).toHaveLength(2);
+			const adopted = tabs[1];
+			expect(adopted.label).toBe('phone shell');
+			expect(adopted.panes[0].startupCommand).toBeUndefined();
+			const paneId = adopted.panes[0].id;
+			expect(store.getServerTerminalId(paneId)).toBe('srv-remote');
+			expect(store.knownServerTerminalIds()).toContain('srv-remote');
+			expect(store.startsDetached(paneId)).toBe(true);
+			// Doesn't steal focus from the tab the user is on.
+			expect(store.workspaces[0].activeTerminalTabId).toBe('tab-active');
+			expect(invokeSpy).toHaveBeenCalledWith('save_workspaces', expect.anything());
+		});
+
+		it('routes a worktree cwd to the worktree workspace', () => {
+			store.workspaces = [
+				makeWorkspace({ id: 'main' }),
+				makeWorkspace({ id: 'wt', worktreePath: '/projects/test-feat', branch: 'feat' })
+			];
+
+			store.adoptServerTerminal({ ...remote, cwd: '/projects/test-feat' });
+
+			expect(store.workspaces.find((w) => w.id === 'wt')!.terminalTabs).toHaveLength(1);
+			expect(store.workspaces.find((w) => w.id === 'main')!.terminalTabs).toHaveLength(0);
+		});
+
+		it('does nothing when no open workspace runs in the cwd', () => {
+			store.workspaces = [makeWorkspace()];
+
+			expect(store.adoptServerTerminal({ ...remote, cwd: '/elsewhere' })).toBe(false);
+			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
+			expect(store.knownServerTerminalIds()).toEqual([]);
+		});
+
+		it('falls back to a generic label for an unnamed terminal', () => {
+			store.workspaces = [makeWorkspace()];
+			store.adoptServerTerminal({ ...remote, name: undefined });
+			expect(store.workspaces[0].terminalTabs[0].label).toBe('Remote terminal');
+		});
+
+		/** The workspaces array from the latest save_workspaces call. */
+		const lastSnapshot = () =>
+			invokeSpy.mock.calls.filter((c) => c[0] === 'save_workspaces').slice(-1)[0]?.[1] as {
+				snapshot: { workspaces: ProjectWorkspace[]; serverTerminalIds: Record<string, string> };
+			};
+
+		it('closing an adopted tab only detaches and is not re-adopted on the next poll', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.adoptServerTerminal(remote);
+			const tab = store.workspaces[0].terminalTabs[0];
+			vi.mocked(deleteServerTerminal).mockClear();
+
+			store.closeTerminalTab('ws-a', tab.id);
+
+			expect(deleteServerTerminal).not.toHaveBeenCalled();
+			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
+			const known = new Set(store.knownServerTerminalIds());
+			expect(adoptableTerminals([remote], known, () => false)).toEqual([]);
+		});
+
+		it('closing a normal tab still kills its server terminal', () => {
+			const tab = makeTab({ id: 'tab-own' });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab] })];
+			store.setServerTerminalId(tab.panes[0].id, 'srv-own');
+			vi.mocked(deleteServerTerminal).mockClear();
+
+			store.closeTerminalTab('ws-a', 'tab-own');
+
+			expect(deleteServerTerminal).toHaveBeenCalledWith('srv-own');
+		});
+
+		it('leaves adopted tabs and their server ids out of the persisted snapshot', () => {
+			const own = makeTab({ id: 'tab-own' });
+			store.workspaces = [
+				makeWorkspace({ id: 'ws-a', terminalTabs: [own], activeTerminalTabId: 'tab-own' })
+			];
+			store.setServerTerminalId(own.panes[0].id, 'srv-own');
+			store.adoptServerTerminal(remote);
+			const adoptedTab = store.workspaces[0].terminalTabs[1];
+			store.setActiveTab('ws-a', adoptedTab.id);
+
+			const { snapshot } = lastSnapshot();
+			expect(snapshot.workspaces[0].terminalTabs.map((t) => t.id)).toEqual(['tab-own']);
+			expect(snapshot.workspaces[0].activeTerminalTabId).toBe('tab-own');
+			expect(snapshot.serverTerminalIds).toEqual({ [own.panes[0].id]: 'srv-own' });
+			// The live state still shows the adopted tab.
+			expect(store.workspaces[0].terminalTabs).toHaveLength(2);
+		});
+
+		it('gives panes a readable server-side name', () => {
+			store.workspaces = [
+				makeWorkspace({ terminalTabs: [makeTab({ id: 't', label: 'Claude 1' })] })
+			];
+			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
+			expect(store.paneDisplayName(paneId)).toBe('Test Project · Claude 1');
 		});
 	});
 });
