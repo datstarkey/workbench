@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#f4f2e9" />
+		<title>Workbench — A place for every project.</title>
+		<meta
+			name="description"
+			content="Bring your terminals, Claude Code and Codex sessions, and git worktrees into one desktop workspace. Free and open source. Download Workbench for macOS and Windows."
+		/>
+		<link rel="canonical" href="https://datstarkey.github.io/workbench/" />
+		<meta property="og:type" content="website" />
+		<meta property="og:title" content="Workbench — A place for every project." />
+		<meta
+			property="og:description"
+			content="Your terminals, coding agents, and git worktrees. Together, in one desktop workspace."
+		/>
+		<meta property="og:url" content="https://datstarkey.github.io/workbench/" />
+		<link rel="icon" href="./icon.svg" type="image/svg+xml" />
+		<link rel="stylesheet" href="./style.css" />
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to content</a>
+		<header class="site-header wrap">
+			<a class="brand" href="./" aria-label="Workbench home"
+				><img src="./icon.svg" alt="" width="36" height="36" />Workbench</a
+			>
+			<nav aria-label="Main navigation">
+				<a href="#workflow">The workflow</a>
+				<a href="https://github.com/datstarkey/workbench"
+					>GitHub <span aria-hidden="true">↗</span></a
+				>
+				<a class="nav-download" href="#download">Get Workbench <span aria-hidden="true">↓</span></a>
+			</nav>
+		</header>
+		<main id="main">
+			<section class="hero wrap" aria-labelledby="hero-title">
+				<p class="eyebrow"><span class="status-dot"></span> YOUR LOCAL DEVELOPMENT WORKSPACE</p>
+				<div class="hero-heading">
+					<h1 id="hero-title">A place for<br />every <em>project.</em></h1>
+					<p class="hero-aside">Less window juggling.<br />More making things.</p>
+				</div>
+				<div class="hero-bottom">
+					<p class="intro">
+						Your terminals, coding agents, and git worktrees.<br class="desktop-break" />
+						Together, in one desktop workspace.
+					</p>
+					<a class="button" href="#download">Find your focus <span aria-hidden="true">↗</span></a>
+				</div>
+				<figure class="product-figure">
+					<div
+						class="app-preview"
+						role="img"
+						aria-label="Illustrative Workbench workspace: projects and worktrees on the left, with Claude Code, Codex, and a shell running in split terminal panes."
+					>
+						<div class="window-bar">
+							<span class="traffic-lights"><i></i><i></i><i></i></span><span>Workbench</span
+							><span class="window-shortcut">⌘ K</span>
+						</div>
+						<div class="app-body">
+							<div class="app-rail" aria-hidden="true">
+								<span class="rail-selected">▦</span><span>⌘</span><span>⑂</span
+								><span class="rail-bottom">⚙</span>
+							</div>
+							<div class="app-sidebar">
+								<div class="sidebar-heading">This Mac <span>⌄</span></div>
+								<p class="tiny-label">PROJECTS <span>+</span></p>
+								<div class="project selected">▾ &nbsp; studio</div>
+								<div class="tree-item">⑂ &nbsp; main <span class="green-dot"></span></div>
+								<div class="tree-item active-tree">⑂ &nbsp; feat / search</div>
+								<div class="tree-item">⑂ &nbsp; fix / navigation</div>
+								<div class="project">▸ &nbsp; api-service</div>
+								<div class="project">▸ &nbsp; personal-site</div>
+								<div class="sidebar-footer">
+									<span class="green-dot"></span> Everything in its place.
+								</div>
+							</div>
+							<div class="app-workspace">
+								<div class="workspace-tabs">
+									<span class="tab-active">studio <small>feat / search</small></span
+									><span>api-service</span><span>+</span>
+								</div>
+								<div class="terminal-grid">
+									<div class="terminal claude-terminal">
+										<div class="terminal-heading">
+											<span><b class="claude-color">✳</b> Claude Code</span
+											><span class="terminal-state">Working</span>
+										</div>
+										<div class="terminal-content">
+											<p class="muted">~/projects/studio-search</p>
+											<p><span class="claude-color">❯</span> Add search to the command palette</p>
+											<p class="claude-color terminal-gap">✳ Claude Code</p>
+											<p>I’ll look at the existing commands<br />and add fuzzy search.</p>
+											<p class="muted terminal-gap">
+												Read &nbsp;src/lib/commands.ts<br />Read &nbsp;src/lib/CommandPalette.svelte
+											</p>
+											<p>
+												<span class="green">+</span> Search across projects and commands<br /><span
+													class="green"
+													>+</span
+												>
+												Keep keyboard navigation intact
+											</p>
+											<p class="claude-color terminal-gap">✳ Updating CommandPalette.svelte…</p>
+											<span class="cursor"></span>
+										</div>
+									</div>
+									<div class="terminal">
+										<div class="terminal-heading">
+											<span><b class="codex-color">◇</b> Codex</span
+											><span class="terminal-state ready">Ready</span>
+										</div>
+										<div class="terminal-content">
+											<p class="muted">~/projects/studio-search</p>
+											<p><span class="codex-color">❯</span> Review the search tests</p>
+											<p class="terminal-gap">
+												The keyboard navigation tests pass.<br />Added coverage for empty queries.
+											</p>
+											<p class="green">✓ 12 tests passed</p>
+										</div>
+									</div>
+									<div class="terminal shell-terminal">
+										<div class="terminal-heading">
+											<span>⌁ &nbsp; Shell</span><span class="muted">zsh</span>
+										</div>
+										<div class="terminal-content">
+											<p><span class="green">❯</span> bun run dev</p>
+											<p class="terminal-gap">
+												<span class="green">VITE</span> &nbsp;ready in 182 ms
+											</p>
+											<p><span class="muted">Local:</span> &nbsp;http://localhost:5173/</p>
+										</div>
+									</div>
+								</div>
+								<div class="app-status">
+									<span><span class="green-dot"></span> 3 terminals</span
+									><span>⑂ feat / search &nbsp; · &nbsp; studio</span>
+								</div>
+							</div>
+						</div>
+					</div>
+					<figcaption>
+						<span>ONE PROJECT. ROOM FOR ALL YOUR TOOLS.</span
+						><span>Illustrative workspace · Workbench desktop</span>
+					</figcaption>
+				</figure>
+			</section>
+			<section class="workflow wrap" id="workflow" aria-labelledby="workflow-title">
+				<div class="section-intro">
+					<p class="eyebrow">01 / A LITTLE LESS CONTEXT SWITCHING</p>
+					<h2 id="workflow-title">Keep the work<br /><em>within reach.</em></h2>
+					<p>
+						One feature in progress. Another waiting for review. A terminal you’ll need in a minute.
+						Give each of them a home.
+					</p>
+				</div>
+				<div class="feature-list">
+					<article>
+						<span class="feature-number">01</span>
+						<div>
+							<h3>Your projects, already organised.</h3>
+							<p>
+								Add a local folder and give it a tabbed workspace. Split terminals, run your dev
+								server, and move between projects without losing your place.
+							</p>
+						</div>
+					</article>
+					<article>
+						<span class="feature-number">02</span>
+						<div>
+							<h3>Claude. Codex. Your shell.</h3>
+							<p>
+								Start and resume coding sessions beside real shell terminals. Keep session history
+								attached to the project it belongs to.
+							</p>
+						</div>
+					</article>
+					<article>
+						<span class="feature-number">03</span>
+						<div>
+							<h3>A fresh branch. A clear workspace.</h3>
+							<p>
+								Create git worktrees for parallel work. Each branch gets its own directory and
+								workspace, so you can move between tasks with their context intact.
+							</p>
+						</div>
+					</article>
+				</div>
+			</section>
+			<section class="principles wrap" aria-label="Built for your tools">
+				<p class="eyebrow">FAMILIAR TOOLS. A BETTER PLACE TO USE THEM.</p>
+				<div>
+					<span>Real PTY terminals</span><span>Built with Tauri + Svelte</span
+					><span>Local project files</span><span>Open source · AGPL-3.0</span>
+				</div>
+			</section>
+			<section class="download-section" id="download" aria-labelledby="download-title">
+				<div class="wrap download-inner">
+					<div>
+						<p class="eyebrow">02 / MAKE YOURSELF AT HOME</p>
+						<h2 id="download-title">Your next project<br />starts <em>here.</em></h2>
+						<p>Free to download. Open to make your own.</p>
+					</div>
+					<div class="download-actions">
+						<a class="button" href="https://github.com/datstarkey/workbench/releases/latest"
+							>Download Workbench <span aria-hidden="true">↓</span></a
+						>
+						<p>
+							macOS (Apple silicon + Intel) & Windows<br />Choose your installer on GitHub Releases.
+						</p>
+						<a class="source-link" href="https://github.com/datstarkey/workbench#development"
+							>Build from source <span aria-hidden="true">↗</span></a
+						>
+					</div>
+				</div>
+			</section>
+		</main>
+		<footer class="wrap">
+			<a class="brand" href="./"><img src="./icon.svg" alt="" width="28" height="28" />Workbench</a>
+			<p>A little order for the things you’re building.</p>
+			<div>
+				<a href="https://github.com/datstarkey/workbench/issues">Feedback</a
+				><a href="https://github.com/datstarkey/workbench/blob/main/LICENSE">License</a
+				><a href="https://github.com/datstarkey/workbench">GitHub ↗</a>
+			</div>
+		</footer>
+	</body>
+</html>
