@@ -601,4 +601,124 @@ describe('TerminalConnection', () => {
 			expect(onExit).not.toHaveBeenCalled();
 		});
 	});
+
+	describe('takeControl()', () => {
+		it('rejects when the connection was never set up', async () => {
+			const { TerminalConnection } = await import('./terminal-connection');
+			const conn = new TerminalConnection(vi.fn(), vi.fn());
+			await expect(conn.takeControl(80, 24)).rejects.toThrow('never connected');
+		});
+
+		it('re-attaches to the same PTY after a takeover and can be taken over again', async () => {
+			const { conn, ws: first, onExit, onReset } = await connectAndOpen();
+			first.recvText({ t: 'takeover' });
+			first.closeWs();
+			expect(onExit).toHaveBeenCalledTimes(1);
+
+			// The PTY is still alive, so take-control re-attaches without a POST.
+			vi.mocked(globalThis.fetch).mockClear();
+			const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+				ok: true,
+				json: async () => [{ id: 'term-abc123', cwd: '/p', createdAt: 1, alive: true }]
+			} as Response);
+			const p = conn.takeControl(132, 40);
+			await flushMicrotasks();
+			const second = FakeWebSocket._last!;
+			expect(second).not.toBe(first);
+			second.openWs();
+			await p;
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(second.url).toBe(`ws://${SERVER_ADDRESS}/remote/terminals/term-abc123/ws`);
+			expect(second.send).toHaveBeenCalledWith(JSON.stringify({ t: 'r', c: 132, r: 40 }));
+			expect(conn.terminalId).toBe('term-abc123');
+
+			// Replay after re-attach resets xterm again.
+			second.recvBinary(new Uint8Array([1]));
+			expect(onReset).toHaveBeenCalledTimes(1);
+
+			second.recvText({ t: 'takeover' });
+			expect(onExit).toHaveBeenCalledTimes(2);
+		});
+
+		it('starts detached without opening a socket, then attaches on takeControl', async () => {
+			const { TerminalConnection } = await import('./terminal-connection');
+			const conn = new TerminalConnection(vi.fn(), vi.fn());
+			conn.connectDetached(DEFAULT_OPTS, 'remote-1');
+			expect(FakeWebSocket._last).toBeNull();
+			expect(conn.terminalId).toBe('remote-1');
+
+			mockServerRunning();
+			vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+				ok: true,
+				json: async () => [{ id: 'remote-1', cwd: '/p', createdAt: 1, alive: true }]
+			} as Response);
+			const p = conn.takeControl(90, 30);
+			await flushMicrotasks();
+			FakeWebSocket._last!.openWs();
+			await p;
+
+			expect(FakeWebSocket._last!.url).toBe(`ws://${SERVER_ADDRESS}/remote/terminals/remote-1/ws`);
+		});
+	});
+
+	describe('server terminal listing and local claims', () => {
+		it('lists the loopback terminals with the bearer token', async () => {
+			mockServerRunning(SERVER_ADDRESS, 'loop-token');
+			const list = [{ id: 'x', cwd: '/p', createdAt: 1, alive: true }];
+			const fetchMock = vi
+				.spyOn(globalThis, 'fetch')
+				.mockResolvedValueOnce({ ok: true, json: async () => list } as Response);
+
+			const { listServerTerminals } = await import('./terminal-connection');
+			await expect(listServerTerminals()).resolves.toEqual(list);
+			expect(fetchMock).toHaveBeenCalledWith(`http://${SERVER_ADDRESS}/remote/terminals`, {
+				headers: { authorization: 'Bearer loop-token' }
+			});
+		});
+
+		it('returns null when the server rejects the request', async () => {
+			mockServerRunning();
+			vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: false, status: 401 } as Response);
+			const { listServerTerminals } = await import('./terminal-connection');
+			await expect(listServerTerminals()).resolves.toBeNull();
+		});
+
+		it('claims created and killed ids so they are never adopted', async () => {
+			const { isClaimedLocally, deleteServerTerminal } = await import('./terminal-connection');
+			await connectAndOpen();
+			expect(isClaimedLocally('term-abc123')).toBe(true);
+			expect(isClaimedLocally('someone-else')).toBe(false);
+
+			vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true } as Response);
+			await deleteServerTerminal('killed-1');
+			expect(isClaimedLocally('killed-1')).toBe(true);
+		});
+
+		it('returns null while a create is in flight', async () => {
+			const { TerminalConnection, listServerTerminals } = await import('./terminal-connection');
+			mockServerRunning();
+			let finishCreate!: (r: Response) => void;
+			vi.spyOn(globalThis, 'fetch')
+				.mockImplementationOnce(() => new Promise<Response>((r) => (finishCreate = r)))
+				.mockResolvedValueOnce({
+					ok: true,
+					json: async () => [{ id: 'fresh', cwd: '/p', createdAt: 1, alive: true }]
+				} as Response);
+
+			const conn = new TerminalConnection(vi.fn(), vi.fn());
+			const connecting = conn.connect(DEFAULT_OPTS);
+			await flushMicrotasks();
+
+			await expect(listServerTerminals()).resolves.toBeNull();
+
+			finishCreate({
+				ok: true,
+				json: async () => ({ id: 'fresh', cwd: '/p', createdAt: 1, alive: true })
+			} as Response);
+			await flushMicrotasks();
+			FakeWebSocket._last!.openWs();
+			await connecting;
+		});
+	});
 });

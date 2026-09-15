@@ -1773,4 +1773,64 @@ describe('WorkspaceStore', () => {
 			expect(startupCommand()).toBe("codex 'audit'");
 		});
 	});
+	// ─── Adopting terminals opened on another device ────────
+
+	describe('adoptServerTerminal', () => {
+		const remote = { id: 'srv-remote', name: 'phone shell', cwd: '/projects/test', alive: true };
+
+		it('adds a background tab mapped to the existing server terminal, starting detached', () => {
+			const active = makeTab({ id: 'tab-active' });
+			const ws = makeWorkspace({ terminalTabs: [active], activeTerminalTabId: 'tab-active' });
+			store.workspaces = [ws];
+
+			expect(store.adoptServerTerminal(remote)).toBe(true);
+
+			const tabs = store.workspaces[0].terminalTabs;
+			expect(tabs).toHaveLength(2);
+			const adopted = tabs[1];
+			expect(adopted.label).toBe('phone shell');
+			expect(adopted.panes[0].startupCommand).toBeUndefined();
+			const paneId = adopted.panes[0].id;
+			expect(store.getServerTerminalId(paneId)).toBe('srv-remote');
+			expect(store.knownServerTerminalIds()).toContain('srv-remote');
+			expect(store.startsDetached(paneId)).toBe(true);
+			// Doesn't steal focus from the tab the user is on.
+			expect(store.workspaces[0].activeTerminalTabId).toBe('tab-active');
+			expect(invokeSpy).toHaveBeenCalledWith('save_workspaces', expect.anything());
+		});
+
+		it('routes a worktree cwd to the worktree workspace', () => {
+			store.workspaces = [
+				makeWorkspace({ id: 'main' }),
+				makeWorkspace({ id: 'wt', worktreePath: '/projects/test-feat', branch: 'feat' })
+			];
+
+			store.adoptServerTerminal({ ...remote, cwd: '/projects/test-feat' });
+
+			expect(store.workspaces.find((w) => w.id === 'wt')!.terminalTabs).toHaveLength(1);
+			expect(store.workspaces.find((w) => w.id === 'main')!.terminalTabs).toHaveLength(0);
+		});
+
+		it('does nothing when no open workspace runs in the cwd', () => {
+			store.workspaces = [makeWorkspace()];
+
+			expect(store.adoptServerTerminal({ ...remote, cwd: '/elsewhere' })).toBe(false);
+			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
+			expect(store.knownServerTerminalIds()).toEqual([]);
+		});
+
+		it('falls back to a generic label for an unnamed terminal', () => {
+			store.workspaces = [makeWorkspace()];
+			store.adoptServerTerminal({ ...remote, name: undefined });
+			expect(store.workspaces[0].terminalTabs[0].label).toBe('Remote terminal');
+		});
+
+		it('gives panes a readable server-side name', () => {
+			store.workspaces = [
+				makeWorkspace({ terminalTabs: [makeTab({ id: 't', label: 'Claude 1' })] })
+			];
+			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
+			expect(store.paneDisplayName(paneId)).toBe('Test Project · Claude 1');
+		});
+	});
 });

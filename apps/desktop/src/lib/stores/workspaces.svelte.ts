@@ -1,3 +1,4 @@
+import { SvelteSet } from 'svelte/reactivity';
 import {
 	isAISessionType,
 	type ProjectConfig,
@@ -22,6 +23,11 @@ import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
+import {
+	adoptionWorkspace,
+	paneDisplayName,
+	type AdoptableTerminal
+} from '$features/terminal/server-terminals';
 
 interface WorkspaceSnapshot {
 	workspaces: ProjectWorkspace[];
@@ -44,6 +50,13 @@ export class WorkspaceStore {
 	 * snapshot so panes can re-attach to surviving server PTYs after a reload.
 	 */
 	private serverTerminalIds: Record<string, string> = $state({});
+
+	/**
+	 * Panes adopted from another device's terminal. They mount detached (offering
+	 * "Take control") instead of kicking that device. Not persisted: after a
+	 * reload they reattach like any other pane.
+	 */
+	private detachedPaneIds = new SvelteSet<string>();
 
 	private settingsStore = getWorkbenchSettingsStore();
 	private gitStore = getGitStore();
@@ -222,6 +235,44 @@ export class WorkspaceStore {
 		if (this.serverTerminalIds[paneId] === serverTerminalId) return;
 		this.serverTerminalIds = { ...this.serverTerminalIds, [paneId]: serverTerminalId };
 		this.persist();
+	}
+
+	/** Server terminal ids already mapped to panes. */
+	knownServerTerminalIds(): string[] {
+		return Object.values(this.serverTerminalIds);
+	}
+
+	startsDetached(paneId: string): boolean {
+		return this.detachedPaneIds.has(paneId);
+	}
+
+	/** Readable server-side name for a pane, e.g. `app [feat] · Claude 1`. */
+	paneDisplayName(paneId: string): string | undefined {
+		return paneDisplayName(this.workspaces, paneId);
+	}
+
+	/**
+	 * Add a background tab for a terminal opened on another device, attached to
+	 * its existing PTY. Returns false when no open workspace runs in its cwd.
+	 */
+	adoptServerTerminal(terminal: AdoptableTerminal): boolean {
+		const ws = adoptionWorkspace(this.workspaces, terminal.cwd);
+		if (!ws) return false;
+		const paneId = uid();
+		const tab: TerminalTabState = {
+			id: uid(),
+			label: terminal.name?.trim() || 'Remote terminal',
+			split: 'horizontal',
+			panes: [{ id: paneId }]
+		};
+		this.detachedPaneIds.add(paneId);
+		this.serverTerminalIds = { ...this.serverTerminalIds, [paneId]: terminal.id };
+		this.updateWorkspace(ws.id, (w) => ({
+			...w,
+			terminalTabs: [...w.terminalTabs, tab],
+			activeTerminalTabId: w.activeTerminalTabId || tab.id
+		}));
+		return true;
 	}
 
 	/** Collect every pane id contained in a workspace. */
