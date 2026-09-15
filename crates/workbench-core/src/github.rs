@@ -540,25 +540,21 @@ pub fn fetch_pr_branch(path: &str, branch: &str) -> Result<()> {
 pub fn open_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        crate::shell::command("open")
-            .arg(url)
-            .spawn()
+        crate::shell::spawn_detached(crate::shell::command("open").arg(url))
             .context("Failed to open URL")?;
     }
     #[cfg(target_os = "linux")]
     {
-        crate::shell::command("xdg-open")
-            .arg(url)
-            .spawn()
+        crate::shell::spawn_detached(crate::shell::command("xdg-open").arg(url))
             .context("Failed to open URL")?;
     }
     #[cfg(target_os = "windows")]
     {
         // Empty title ("") prevents `start` from misinterpreting URLs with special chars
-        crate::shell::command("cmd")
-            .args(["/c", "start", "\"\"", url])
-            .spawn()
-            .context("Failed to open URL")?;
+        crate::shell::spawn_detached(
+            crate::shell::command("cmd").args(["/c", "start", "\"\"", url]),
+        )
+        .context("Failed to open URL")?;
     }
     Ok(())
 }

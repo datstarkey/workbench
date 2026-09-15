@@ -26,6 +26,17 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
+/// Spawn a fire-and-forget child (`open`, `xdg-open`, …) and reap it on a
+/// background thread. Dropping a `Child` never waits on it, so without this each
+/// launch leaves a zombie in the process table for the lifetime of the app.
+pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<()> {
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// The shell to spawn for a terminal when the project configures none.
 ///
 /// The fallback only fires when `$SHELL`/`%COMSPEC%` is unset — routine for the
