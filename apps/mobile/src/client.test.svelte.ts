@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MobileClient, normalizeUrl } from './client.svelte.ts';
+import {
+	CAMERA_DENIED,
+	MobileClient,
+	NOT_A_PAIRING_CODE,
+	normalizeUrl,
+	type QrScanner
+} from './client.svelte.ts';
+import { buildPairingUri } from '@workbench/transport';
 
 /** Object-backed localStorage stub (jsdom's may lack `clear`). */
 function stubLocalStorage() {
@@ -201,5 +208,107 @@ describe('MobileClient', () => {
 		expect(c.url).toBe('http://saved:4317');
 		expect(c.token).toBe(TOKEN);
 		expect(c.hasSavedServer).toBe(true);
+	});
+
+	describe('scanAndConnect()', () => {
+		const PAIR_URL = 'http://100.64.1.2:4317';
+
+		function scanner(overrides: Partial<Record<keyof QrScanner, unknown>> = {}) {
+			return {
+				checkPermissions: vi.fn(async () => 'granted'),
+				requestPermissions: vi.fn(async () => 'granted'),
+				scan: vi.fn(async () => ({
+					content: buildPairingUri({ url: PAIR_URL, token: TOKEN }),
+					format: 'QR_CODE',
+					bounds: null
+				})),
+				...overrides
+			} as unknown as QrScanner & Record<keyof QrScanner, ReturnType<typeof vi.fn>>;
+		}
+
+		it('scans a pairing code, fills in the server and connects', async () => {
+			const fetchSpy = routeFetch({
+				...CONNECT_ROUTES,
+				'/remote/terminals': () => jsonResponse([])
+			});
+			const s = scanner();
+			const c = new MobileClient(s);
+
+			await c.scanAndConnect();
+
+			expect(s.scan).toHaveBeenCalledWith({ formats: ['QR_CODE'] });
+			expect(c.connectError).toBeNull();
+			expect(c.store).not.toBeNull();
+			expect(c.url).toBe(PAIR_URL);
+			expect(c.token).toBe(TOKEN);
+			expect(localStorage.getItem('wb.token')).toBe(TOKEN);
+			expect(fetchSpy).toHaveBeenCalledWith(`${PAIR_URL}/remote/terminals`, expect.anything());
+			expect(c.scanning).toBe(false);
+		});
+
+		it('requests camera permission when not yet granted', async () => {
+			routeFetch({ ...CONNECT_ROUTES, '/remote/terminals': () => jsonResponse([]) });
+			const s = scanner({ checkPermissions: vi.fn(async () => 'prompt') });
+			const c = new MobileClient(s);
+
+			await c.scanAndConnect();
+
+			expect(s.requestPermissions).toHaveBeenCalled();
+			expect(c.store).not.toBeNull();
+		});
+
+		it('explains a denied camera permission without scanning', async () => {
+			const s = scanner({
+				checkPermissions: vi.fn(async () => 'denied'),
+				requestPermissions: vi.fn(async () => 'denied')
+			});
+			const c = new MobileClient(s);
+
+			await c.scanAndConnect();
+
+			expect(c.connectError).toBe(CAMERA_DENIED);
+			expect(s.scan).not.toHaveBeenCalled();
+		});
+
+		it('rejects a QR code that is not a Workbench pairing code', async () => {
+			const fetchSpy = routeFetch(CONNECT_ROUTES);
+			const s = scanner({
+				scan: vi.fn(async () => ({
+					content: 'https://example.com',
+					format: 'QR_CODE',
+					bounds: null
+				}))
+			});
+			const c = new MobileClient(s);
+			c.url = 'kept:4317';
+
+			await c.scanAndConnect();
+
+			expect(c.connectError).toBe(NOT_A_PAIRING_CODE);
+			expect(c.url).toBe('kept:4317');
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		it('stays silent when the scan is cancelled', async () => {
+			const fetchSpy = routeFetch(CONNECT_ROUTES);
+			const s = scanner({ scan: vi.fn(async () => Promise.reject('cancelled')) });
+			const c = new MobileClient(s);
+
+			await c.scanAndConnect();
+
+			expect(c.connectError).toBeNull();
+			expect(c.store).toBeNull();
+			expect(fetchSpy).not.toHaveBeenCalled();
+			expect(c.scanning).toBe(false);
+		});
+
+		it('surfaces other scanner errors', async () => {
+			const s = scanner({ scan: vi.fn(async () => Promise.reject(new Error('no camera'))) });
+			const c = new MobileClient(s);
+
+			await c.scanAndConnect();
+
+			expect(c.connectError).toBe('no camera');
+		});
 	});
 });

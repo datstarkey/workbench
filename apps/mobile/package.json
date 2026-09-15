@@ -13,6 +13,7 @@
 		"tauri": "tauri"
 	},
 	"dependencies": {
+		"@tauri-apps/plugin-barcode-scanner": "^2",
 		"@tauri-apps/plugin-log": "^2",
 		"@workbench/control-plane-ui": "workspace:*",
 		"@workbench/theme": "workspace:*",

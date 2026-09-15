@@ -93,6 +93,17 @@
 							workbench-server control plane
 						</p>
 
+						<Button
+							onclick={() => c.scanAndConnect()}
+							disabled={c.scanning || c.connecting}
+							class="mb-2 w-full"
+						>
+							{c.scanning ? 'Scanning…' : 'Scan QR code'}
+						</Button>
+						<p class="mb-4 text-center text-[11px] text-wb-ink-soft">
+							Desktop: Settings → Server mode → Pair phone. Or enter the details below.
+						</p>
+
 						<label class="mb-1 block text-[11px] font-medium text-wb-ink-mute" for="srv"
 							>Server (Tailscale IP)</label
 						>

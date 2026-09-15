@@ -1,5 +1,16 @@
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
-import { createHttpTransport } from '@workbench/transport';
+import { createHttpTransport, parsePairingUri } from '@workbench/transport';
+import * as barcodeScanner from '@tauri-apps/plugin-barcode-scanner';
+
+/** The barcode-scanner plugin surface pairing uses (injectable for tests). */
+export type QrScanner = Pick<
+	typeof barcodeScanner,
+	'checkPermissions' | 'requestPermissions' | 'scan'
+>;
+
+export const CAMERA_DENIED =
+	'Camera permission denied. Allow it in system settings, or enter the server details below.';
+export const NOT_A_PAIRING_CODE = 'Not a Workbench pairing code';
 
 export type TerminalMeta = {
 	id: string;
@@ -58,8 +69,16 @@ export class MobileClient {
 	terminals = $state<TerminalMeta[]>([]);
 	activeTerminalId = $state<string | null>(null);
 
+	scanning = $state(false);
+
 	serverLabel = $derived(this.url.replace(/^https?:\/\//, ''));
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
+
+	private readonly scanner: QrScanner;
+
+	constructor(scanner: QrScanner = barcodeScanner) {
+		this.scanner = scanner;
+	}
 
 	/** Whether a server address and token were previously saved (auto-reconnect on launch). */
 	get hasSavedServer(): boolean {
@@ -100,6 +119,39 @@ export class MobileClient {
 		} finally {
 			this.connecting = false;
 		}
+	}
+
+	/**
+	 * Scan the desktop's pairing QR code (Settings → Server mode → Pair phone),
+	 * fill in the server details and connect. A cancelled scan is silent.
+	 */
+	async scanAndConnect(): Promise<void> {
+		this.connectError = null;
+		this.scanning = true;
+		try {
+			let permission = await this.scanner.checkPermissions();
+			if (permission !== 'granted') permission = await this.scanner.requestPermissions();
+			if (permission !== 'granted') {
+				this.connectError = CAMERA_DENIED;
+				return;
+			}
+			const { content } = await this.scanner.scan({ formats: [barcodeScanner.Format.QRCode] });
+			const pairing = parsePairingUri(content);
+			if (!pairing) {
+				this.connectError = NOT_A_PAIRING_CODE;
+				return;
+			}
+			this.url = pairing.url;
+			this.token = pairing.token;
+		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e);
+			// The plugin rejects with "cancelled" when the scan is dismissed.
+			if (!/cancel/i.test(message)) this.connectError = message;
+			return;
+		} finally {
+			this.scanning = false;
+		}
+		await this.connect();
 	}
 
 	disconnect(): void {

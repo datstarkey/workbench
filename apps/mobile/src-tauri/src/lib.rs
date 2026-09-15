@@ -15,6 +15,12 @@ pub fn run() {
                 ))
                 .build(),
         )
+        .setup(|_app| {
+            // QR pairing: scan the code the desktop shows in Settings → Server mode.
+            #[cfg(mobile)]
+            _app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running Workbench mobile");
 }
