@@ -45,8 +45,8 @@ Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-
 1. **Branch:** create a feature branch off `main` (e.g. `feat/...`, `fix/...`). `main` has force-push protection.
 2. **Commit:** Conventional Commits format. Commit/push only when the change is complete or the user asks.
 3. **PR:** open a PR with `gh pr create`. Reference issues/PRs with `(#N)` so GitHub auto-links.
-4. **Auto-merge:** enable auto-merge (`gh pr merge --auto --squash`) so the PR lands once CI passes — don't sit and babysit checks unless asked.
-5. **Cleanup:** delete the branch after merge (auto-merge with `--squash` does this on GitHub).
+4. **Auto-merge:** add the `automerge` label (`gh pr create --label automerge`, or `gh pr edit N --add-label automerge`) — don't sit and babysit checks unless asked. **Kodiak** (GitHub App, `.kodiak.toml`) acts as the merge queue: it keeps labelled PRs up to date with `main` (branch protection requires up-to-date branches, so without it every merge to `main` strands the other PRs as BEHIND) and squash-merges once `frontend`/`rust`/`rust-windows` pass. It keys off the label (`require_automerge_label`), not GitHub's native `gh pr merge --auto`. Titles matching `WIP`/`DRAFT`/`DO NOT MERGE` or labels `wip`/`do-not-merge` block it. GitHub's built-in merge queue isn't available — it's org-only and this repo is user-owned.
+5. **Cleanup:** Kodiak deletes the branch after merge (`delete_branch_on_merge`).
 
 The `github-pr` / `prep-pr` skills automate this; prefer them over hand-running `gh`.
 
