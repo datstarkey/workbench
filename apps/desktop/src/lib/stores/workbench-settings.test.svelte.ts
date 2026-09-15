@@ -676,32 +676,38 @@ describe('WorkbenchSettingsStore', () => {
 			expect(store.serverToken).toBe('tok-from-disk');
 		});
 
-		it('ensureServerToken generates and saves a token when none exists', async () => {
-			mockInvoke('generate_server_token', () => 'fresh-token');
+		it('ensureServerToken rotates one in when none exists', async () => {
+			mockInvoke('rotate_server_token', () => 'fresh-token');
 
 			await expect(store.ensureServerToken()).resolves.toBe('fresh-token');
 
 			expect(store.serverToken).toBe('fresh-token');
-			expect(savedToken()).toBe('fresh-token');
+			expect(invokeSpy).toHaveBeenCalledWith('rotate_server_token');
 		});
 
-		it('ensureServerToken keeps an existing token without saving', async () => {
+		it('ensureServerToken keeps an existing token', async () => {
 			store.serverToken = 'existing';
 
 			await expect(store.ensureServerToken()).resolves.toBe('existing');
 
-			expect(invokeSpy).not.toHaveBeenCalledWith('generate_server_token');
-			expect(savedToken()).toBeUndefined();
+			expect(invokeSpy).not.toHaveBeenCalledWith('rotate_server_token');
 		});
 
-		it('regenerateServerToken replaces and saves the token', async () => {
+		it('rotateServerToken persists only the token via Rust, keeping unsaved edits', async () => {
 			store.serverToken = 'old';
-			mockInvoke('generate_server_token', () => 'rotated');
+			store.set('sandboxRuntimeEnabled', true);
+			store.set('worktreeCustomBranch', 'unsaved-branch');
+			mockInvoke('rotate_server_token', () => 'rotated');
 
-			await store.regenerateServerToken();
+			await store.rotateServerToken();
 
 			expect(store.serverToken).toBe('rotated');
-			expect(savedToken()).toBe('rotated');
+			expect(invokeSpy).toHaveBeenCalledWith('rotate_server_token');
+			expect(savedToken()).toBeUndefined();
+			expect(invokeSpy).not.toHaveBeenCalledWith('save_workbench_settings', expect.anything());
+			expect(store.sandboxRuntimeEnabled).toBe(true);
+			expect(store.worktreeCustomBranch).toBe('unsaved-branch');
+			expect(store.dirty).toBe(true);
 		});
 	});
 });

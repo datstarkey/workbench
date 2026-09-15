@@ -46,11 +46,12 @@
 		}
 	}
 
-	/** Restart a running LAN server so a new port or token takes effect. */
+	/** Restart a running LAN server so a new port takes effect. */
 	async function restartServer() {
-		if (!server.running) return;
 		serverError = null;
 		try {
+			// Ask Rust, not the status cached at mount, whether it's running.
+			if (!(await serverStatus()).running) return;
 			await stopServer();
 			server = await startServer(store.serverPort, await store.ensureServerToken());
 		} catch (e) {
@@ -67,10 +68,9 @@
 		await restartServer();
 	}
 
-	async function rotateServerToken() {
-		await store.regenerateServerToken();
-		await emit('settings:changed');
-		await restartServer();
+	/** Rust saves the new token and restarts a running server, cutting off old clients. */
+	async function rotateToken() {
+		await store.rotateServerToken();
 	}
 
 	async function copyServerToken() {
@@ -163,5 +163,5 @@
 	confirmLabel="Regenerate"
 	destructive
 	error={tokenRotation.error}
-	onConfirm={() => tokenRotation.confirm(rotateServerToken)}
+	onConfirm={() => tokenRotation.confirm(rotateToken)}
 />

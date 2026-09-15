@@ -20,9 +20,12 @@ export function startServer(port: number, token: string): Promise<ServerStatus> 
 	return invoke<ServerStatus>('start_server', { port, token });
 }
 
-/** A fresh CSPRNG token for the LAN server (not saved by this call). */
-export function generateServerToken(): Promise<string> {
-	return invoke<string>('generate_server_token');
+/**
+ * Replace the LAN server token. Rust persists only `serverToken`, restarts a
+ * running LAN server (disconnecting old clients) and emits `settings:changed`.
+ */
+export function rotateServerToken(): Promise<string> {
+	return invoke<string>('rotate_server_token');
 }
 
 export function stopServer(): Promise<ServerStatus> {

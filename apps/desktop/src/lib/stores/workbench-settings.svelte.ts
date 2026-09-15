@@ -17,7 +17,7 @@ import { invoke } from '$lib/transport';
 // so this one call must never be routed to a remote instance's control plane.
 import { invoke as invokeLocal } from '@tauri-apps/api/core';
 import { IS_WINDOWS, isClaudePermissionMode } from '$lib/utils/claude';
-import { generateServerToken } from '$lib/server-mode';
+import { rotateServerToken } from '$lib/server-mode';
 
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<
@@ -132,17 +132,19 @@ export class WorkbenchSettingsStore {
 		this.dirty = true;
 	}
 
-	/** The LAN server token, generating and saving one if none exists yet. */
+	/** The LAN server token, creating one if none exists yet. */
 	async ensureServerToken(): Promise<string> {
-		if (this.serverToken) return this.serverToken;
-		return this.regenerateServerToken();
+		return this.serverToken ?? this.rotateServerToken();
 	}
 
-	/** Replace the LAN server token and save it. Clients holding the old one lose access once the server restarts. */
-	async regenerateServerToken(): Promise<string> {
-		const token = await generateServerToken();
+	/**
+	 * Replace the LAN server token. Rust persists only that field and restarts a
+	 * running server, so unsaved edits elsewhere in the form (and `dirty`) are
+	 * left alone rather than silently saved.
+	 */
+	async rotateServerToken(): Promise<string> {
+		const token = await rotateServerToken();
 		this.serverToken = token;
-		await invoke('save_workbench_settings', { settings: this.toSettings() });
 		return token;
 	}
 

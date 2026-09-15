@@ -22,6 +22,8 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
+use tauri::async_runtime::Mutex as AsyncMutex;
+use tauri::Emitter;
 use workbench_server::{Managers, ServerHandle};
 
 struct Loopback {
@@ -29,12 +31,21 @@ struct Loopback {
     token: String,
 }
 
+/// The running LAN listener and what it was started with, so a token change
+/// restarts it (revoking old clients) instead of silently keeping the old token.
+struct Lan {
+    handle: ServerHandle,
+    token: String,
+    bind: String,
+}
+
 /// Managed Tauri state holding the shared managers and both listener handles.
 #[derive(Default)]
 pub struct ServerControl {
     managers: Managers,
     loopback: Mutex<Option<Loopback>>,
-    lan: Mutex<Option<ServerHandle>>,
+    /// Async mutex held across start/stop, so concurrent commands serialize.
+    lan: AsyncMutex<Option<Lan>>,
 }
 
 impl ServerControl {
@@ -51,6 +62,45 @@ impl ServerControl {
                 .await?;
         let mut guard = self.loopback.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(Loopback { handle, token });
+        Ok(())
+    }
+
+    /// Ensure the LAN listener runs with `token`. Already running with the same
+    /// token → no-op (keeps its address). Running with a different token →
+    /// stopped (disconnecting its clients) and restarted on `bind`/`port`.
+    async fn ensure_lan(&self, bind: &str, port: u16, token: String) -> Result<String, String> {
+        let mut slot = self.lan.lock().await;
+        if let Some(lan) = slot.as_ref().filter(|lan| lan.token == token) {
+            return Ok(lan.handle.addr().to_string());
+        }
+        if let Some(old) = slot.take() {
+            old.handle.stop().await;
+        }
+        let handle =
+            workbench_server::spawn_embedded(bind, port, self.managers.clone(), token.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+        let address = handle.addr().to_string();
+        *slot = Some(Lan {
+            handle,
+            token,
+            bind: bind.to_string(),
+        });
+        Ok(address)
+    }
+
+    /// Switch a running LAN listener to `token` on its current bind and port.
+    /// No-op when server mode is off.
+    async fn restart_lan_with_token(&self, token: String) -> Result<(), String> {
+        let running = self
+            .lan
+            .lock()
+            .await
+            .as_ref()
+            .map(|lan| (lan.bind.clone(), lan.handle.addr().port()));
+        if let Some((bind, port)) = running {
+            self.ensure_lan(&bind, port, token).await?;
+        }
         Ok(())
     }
 }
@@ -76,44 +126,6 @@ impl ServerStatus {
     }
 }
 
-/// Ensure the LAN listener is running. Returns the current address on success
-/// (whether a new server was started or one was already running). If a
-/// concurrent call wins the race, the freshly-spawned server is stopped to
-/// avoid orphans.
-async fn ensure_lan_started(
-    state: &ServerControl,
-    bind: &str,
-    port: u16,
-    token: String,
-) -> Result<String, String> {
-    {
-        let guard = state.lan.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(handle) = guard.as_ref() {
-            return Ok(handle.addr().to_string());
-        }
-    }
-
-    let handle = workbench_server::spawn_embedded(bind, port, state.managers.clone(), token)
-        .await
-        .map_err(|e| e.to_string())?;
-    let address = handle.addr().to_string();
-
-    // Re-check after the await: a concurrent call may have won the race.
-    let existing_addr = {
-        let guard = state.lan.lock().unwrap_or_else(|e| e.into_inner());
-        guard.as_ref().map(|h| h.addr().to_string())
-    };
-    if let Some(addr) = existing_addr {
-        handle.stop().await;
-        return Ok(addr);
-    }
-
-    let mut guard = state.lan.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = Some(handle);
-
-    Ok(address)
-}
-
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
@@ -132,14 +144,28 @@ fn lan_token(token: Option<String>) -> Option<String> {
     token.filter(|t| workbench_core::token::is_strong(t))
 }
 
-/// Generate a new LAN server token (the settings UI saves it).
+/// Replace the LAN token: persist ONLY `serverToken` (other settings on disk are
+/// untouched, and unsaved form edits never ride along), restart a running LAN
+/// listener so clients holding the old token are cut off, and notify windows.
 #[tauri::command]
-pub fn generate_server_token() -> Result<String, String> {
-    workbench_core::token::generate().map_err(|e| e.to_string())
+pub async fn rotate_server_token(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ServerControl>,
+) -> Result<String, String> {
+    let token = workbench_core::token::generate().map_err(|e| e.to_string())?;
+    let mut settings =
+        workbench_core::config::load_workbench_settings().map_err(|e| e.to_string())?;
+    settings.server_token = Some(token.clone());
+    workbench_core::config::save_workbench_settings(&settings).map_err(|e| e.to_string())?;
+    state.restart_lan_with_token(token.clone()).await?;
+    if let Err(e) = app.emit("settings:changed", ()) {
+        log::warn!("failed to emit settings:changed after token rotation: {e}");
+    }
+    Ok(token)
 }
 
 /// Start the LAN server (opt-in server mode). Has no effect on the loopback
-/// server.
+/// server. A different token than the running server's restarts it.
 #[tauri::command]
 pub async fn start_server(
     state: tauri::State<'_, ServerControl>,
@@ -149,7 +175,7 @@ pub async fn start_server(
 ) -> Result<ServerStatus, String> {
     let token = lan_token(token).ok_or_else(|| LAN_NEEDS_TOKEN.to_string())?;
     let bind = bind.unwrap_or_else(|| "0.0.0.0".to_string());
-    let address = ensure_lan_started(&state, &bind, port, token).await?;
+    let address = state.ensure_lan(&bind, port, token).await?;
     Ok(ServerStatus {
         running: true,
         address: Some(address),
@@ -157,31 +183,28 @@ pub async fn start_server(
     })
 }
 
-/// Stop the LAN server. Has no effect on the loopback server or on terminals.
+/// Stop the LAN server, disconnecting its clients. Has no effect on the
+/// loopback server or on terminals.
 #[tauri::command]
 pub async fn stop_server(state: tauri::State<'_, ServerControl>) -> Result<ServerStatus, String> {
-    let handle = {
-        let mut guard = state.lan.lock().unwrap_or_else(|e| e.into_inner());
-        guard.take()
-    };
-    if let Some(handle) = handle {
-        handle.stop().await;
+    let mut slot = state.lan.lock().await;
+    if let Some(lan) = slot.take() {
+        lan.handle.stop().await;
     }
     Ok(ServerStatus::stopped())
 }
 
 /// Status of the LAN server (used by the server-mode settings UI).
 #[tauri::command]
-pub fn server_status(state: tauri::State<'_, ServerControl>) -> ServerStatus {
-    let guard = state.lan.lock().unwrap_or_else(|e| e.into_inner());
-    match guard.as_ref() {
-        Some(handle) => ServerStatus {
+pub async fn server_status(state: tauri::State<'_, ServerControl>) -> Result<ServerStatus, String> {
+    Ok(match state.lan.lock().await.as_ref() {
+        Some(lan) => ServerStatus {
             running: true,
-            address: Some(handle.addr().to_string()),
+            address: Some(lan.handle.addr().to_string()),
             token: None,
         },
         None => ServerStatus::stopped(),
-    }
+    })
 }
 
 /// Status of the always-on loopback server. Used by the frontend's terminal
@@ -232,7 +255,7 @@ mod tests {
     async fn lan_start_status_stop_cycle() {
         let app = mock_app();
 
-        assert!(!server_status(app.state()).running);
+        assert!(!server_status(app.state()).await.unwrap().running);
         assert!(!terminal_server_status(app.state()).running);
 
         let started = start_lan(&app).await;
@@ -240,12 +263,12 @@ mod tests {
         assert!(started.address.is_some());
         assert!(started.token.is_none(), "LAN status never echoes the token");
 
-        let status = server_status(app.state());
+        let status = server_status(app.state()).await.unwrap();
         assert!(status.running);
         assert_eq!(status.address, started.address);
 
         // Starting again while running is a no-op that returns the same address
-        // (exercises the double-checked-lock guard, not a second bind).
+        // (the same token never rebinds).
         let again = start_server(app.state(), None, 0, Some(LAN_TOKEN.to_string()))
             .await
             .expect("second start is idempotent");
@@ -253,7 +276,7 @@ mod tests {
 
         let stopped = stop_server(app.state()).await.expect("stop_server");
         assert!(!stopped.running);
-        assert!(!server_status(app.state()).running);
+        assert!(!server_status(app.state()).await.unwrap().running);
 
         // Stopping the LAN server must NOT affect the loopback slot.
         assert!(!terminal_server_status(app.state()).running);
@@ -272,7 +295,7 @@ mod tests {
             ts.token.as_deref().unwrap()
         ));
 
-        assert!(!server_status(app.state()).running);
+        assert!(!server_status(app.state()).await.unwrap().running);
     }
 
     #[tokio::test]
@@ -289,7 +312,7 @@ mod tests {
 
         assert!(!stop_server(app.state()).await.expect("stop LAN").running);
         assert!(terminal_server_status(app.state()).running);
-        assert!(!server_status(app.state()).running);
+        assert!(!server_status(app.state()).await.unwrap().running);
     }
 
     /// A terminal in the shared managers is listed by both listeners, each
@@ -368,12 +391,90 @@ mod tests {
             .await;
             assert_eq!(res.err().as_deref(), Some(LAN_NEEDS_TOKEN), "{token:?}");
         }
-        assert!(!server_status(app.state()).running);
+        assert!(!server_status(app.state()).await.unwrap().running);
     }
 
     #[test]
-    fn generated_server_tokens_pass_the_lan_gate() {
-        let token = generate_server_token().unwrap();
+    fn generated_tokens_pass_the_lan_gate() {
+        let token = workbench_core::token::generate().unwrap();
         assert_eq!(lan_token(Some(token.clone())), Some(token));
+    }
+
+    async fn lan_status_with(addr: &str, token: &str) -> u16 {
+        reqwest::Client::new()
+            .get(format!("http://{addr}/remote/terminals"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
+    /// Rotating while running swaps the listener's token on the same port, so the
+    /// old token stops working instead of lingering on an "already running" server.
+    #[tokio::test]
+    async fn rotating_the_token_restarts_a_running_lan_listener() {
+        const ROTATED: &str = "rotated-token-abcdefabcdefabcdefabcdef";
+        let app = mock_app();
+        let sc: tauri::State<'_, ServerControl> = app.state();
+        let addr = start_lan(&app).await.address.unwrap();
+        assert_eq!(lan_status_with(&addr, LAN_TOKEN).await, 200);
+
+        sc.restart_lan_with_token(ROTATED.to_string())
+            .await
+            .unwrap();
+
+        let status = server_status(app.state()).await.unwrap();
+        assert_eq!(
+            status.address.as_deref(),
+            Some(addr.as_str()),
+            "same bind/port"
+        );
+        assert_eq!(sc.lan.lock().await.as_ref().unwrap().token, ROTATED);
+        assert_eq!(lan_status_with(&addr, LAN_TOKEN).await, 401);
+        assert_eq!(lan_status_with(&addr, ROTATED).await, 200);
+
+        stop_server(app.state()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn starting_with_a_different_token_replaces_the_running_one() {
+        const OTHER: &str = "other-token-abcdefabcdefabcdefabcdefab";
+        let app = mock_app();
+        let addr = start_lan(&app).await.address.unwrap();
+
+        start_server(
+            app.state(),
+            Some("127.0.0.1".to_string()),
+            0,
+            Some(OTHER.to_string()),
+        )
+        .await
+        .unwrap();
+
+        let sc: tauri::State<'_, ServerControl> = app.state();
+        let new_addr = server_status(app.state()).await.unwrap().address.unwrap();
+        assert_eq!(sc.lan.lock().await.as_ref().unwrap().token, OTHER);
+        assert_eq!(lan_status_with(&new_addr, OTHER).await, 200);
+        assert_eq!(lan_status_with(&new_addr, LAN_TOKEN).await, 401);
+        if new_addr != addr {
+            assert!(
+                reqwest::get(format!("http://{addr}/health")).await.is_err(),
+                "old listener stopped"
+            );
+        }
+
+        stop_server(app.state()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rotating_while_stopped_leaves_server_mode_off() {
+        let app = mock_app();
+        let sc: tauri::State<'_, ServerControl> = app.state();
+        sc.restart_lan_with_token(LAN_TOKEN.to_string())
+            .await
+            .unwrap();
+        assert!(!server_status(app.state()).await.unwrap().running);
     }
 }

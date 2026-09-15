@@ -121,7 +121,7 @@ macro_rules! build_invoke_handler {
             server_control::stop_server,
             server_control::server_status,
             server_control::terminal_server_status,
-            server_control::generate_server_token,
+            server_control::rotate_server_token,
             $( $extra ),*
         ]
     };
