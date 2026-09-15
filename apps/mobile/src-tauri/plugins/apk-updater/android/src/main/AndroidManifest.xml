@@ -1,0 +1,17 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!-- A FileProvider subclass so it cannot collide with the app's own FileProvider in the merged manifest. -->
+        <provider
+            android:name="com.workbench.apkupdater.ApkFileProvider"
+            android:authorities="${applicationId}.apkupdater"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/apk_updater_paths" />
+        </provider>
+    </application>
+</manifest>

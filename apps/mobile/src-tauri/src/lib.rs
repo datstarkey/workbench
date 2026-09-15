@@ -19,6 +19,9 @@ pub fn run() {
             // QR pairing: scan the code the desktop shows in Settings → Server mode.
             #[cfg(mobile)]
             _app.handle().plugin(tauri_plugin_barcode_scanner::init())?;
+            // Sideloaded APK self-update (no Play Store); iOS would update through the App Store.
+            #[cfg(target_os = "android")]
+            _app.handle().plugin(tauri_plugin_apk_updater::init())?;
             Ok(())
         })
         .run(tauri::generate_context!())

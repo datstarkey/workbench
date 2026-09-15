@@ -6,8 +6,11 @@
 	import Terminal from './Terminal.svelte';
 	import ScanOverlay from './ScanOverlay.svelte';
 	import { MobileClient } from './client.svelte.ts';
+	import UpdateBanner from './UpdateBanner.svelte';
+	import { AppUpdater } from './app-updater.svelte.ts';
 
 	const c = new MobileClient();
+	const updater = new AppUpdater();
 
 	// Remember the last server: auto-reconnect on launch if one was saved.
 	onMount(() => {
@@ -145,5 +148,6 @@
 				</div>
 			{/if}
 		</main>
+		<UpdateBanner {updater} />
 	</div>
 {/if}
