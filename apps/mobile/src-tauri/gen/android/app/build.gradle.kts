@@ -13,20 +13,39 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Written by the release workflow (see docs/SIGNING.md); absent locally, so debug builds
+// and unsigned release builds still work without the keystore.
+val keystoreProperties = Properties().apply {
+    val propFile = rootProject.file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 35
     namespace = "com.workbench.mobile"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // The app talks to workbench-server over plain HTTP/WS on a LAN or Tailscale address.
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "com.workbench.mobile"
         minSdk = 24
         targetSdk = 34
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    signingConfigs {
+        if (!keystoreProperties.isEmpty) {
+            create("release") {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
     buildTypes {
         getByName("debug") {
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
@@ -37,6 +56,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
