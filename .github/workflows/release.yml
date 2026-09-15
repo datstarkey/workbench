@@ -4,9 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  # Dry-runs the Android build: the signed APK is kept as a workflow artifact and no
+  # release is touched. Desktop jobs and publish only run for tag pushes.
+  workflow_dispatch:
 
 jobs:
   changelog:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       body: ${{ steps.changelog.outputs.body }}
@@ -27,6 +31,7 @@ jobs:
           fi
 
   build:
+    if: github.event_name == 'push'
     needs: changelog
     permissions:
       contents: write
@@ -174,12 +179,128 @@ jobs:
           spctl -a -vvv -t open --context context:primary-signature "$DMG"
           gh release upload "${{ github.ref_name }}" "$DMG" --clobber --repo "${{ github.repository }}"
 
+  # Builds in parallel with desktop but never talks to the release: tauri-action creates
+  # the draft inside `build`, so uploading from here would race it (and a draft created
+  # here first could be duplicated by tauri-action). The APK travels as an artifact and
+  # `publish` attaches it once the draft is guaranteed to exist.
+  android:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      # r28+ links 16 KB page-aligned binaries by default. Same version as the local builds.
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;29.0.14206865"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+
+      # 64-bit ARM only: every supported phone is arm64, and each extra ABI adds a full
+      # Rust cross-build to the release.
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: release-android-aarch64
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Sync version from tag
+        if: github.event_name == 'push'
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" apps/mobile/src-tauri/tauri.conf.json
+          echo "Set mobile tauri.conf.json version to ${VERSION}"
+
+      # Always a hard failure, dispatch included: an unsigned APK cannot be installed, and
+      # one signed with any other key cannot update an existing install, so there is no
+      # useful unsigned fallback (ALLOW_UNSIGNED_RELEASE does not apply here). As with the
+      # Apple step, `gh secret set` without a TTY stores an empty string that still shows
+      # up in `gh secret list`, so check the values, not just their presence.
+      - name: Configure Android signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::empty or unset:$missing"
+            echo "::error::Refusing to build an unsigned APK. See docs/SIGNING.md (Android)."
+            echo "::error::A secret can exist but be empty — 'gh secret set' without a TTY stores ''."
+            exit 1
+          fi
+
+          KEYSTORE="$RUNNER_TEMP/workbench-release.p12"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          chmod 600 "$KEYSTORE"
+          # Backslashes are escapes in .properties files.
+          esc() { printf '%s' "${1//\\/\\\\}"; }
+          umask 077
+          {
+            echo "storeFile=$(esc "$KEYSTORE")"
+            echo "storePassword=$(esc "$ANDROID_KEYSTORE_PASSWORD")"
+            echo "keyAlias=$(esc "$ANDROID_KEY_ALIAS")"
+            echo "keyPassword=$(esc "$ANDROID_KEY_PASSWORD")"
+          } > apps/mobile/src-tauri/gen/android/keystore.properties
+
+      - name: Build signed APK
+        working-directory: apps/mobile
+        run: bun run tauri android build --apk --target aarch64
+
+      # The signed output is app-universal-release.apk; without a signing config Gradle
+      # names it *-unsigned.apk instead, so a missing file here means it wasn't signed.
+      - name: Rename APK and write checksum
+        id: apk
+        run: |
+          VERSION=$(jq -r .version apps/mobile/src-tauri/tauri.conf.json)
+          NAME="workbench-android-${VERSION}.apk"
+          mkdir -p dist-android
+          cp apps/mobile/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk "dist-android/$NAME"
+          (cd dist-android && sha256sum "$NAME" > "$NAME.sha256" && cat "$NAME.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist-android/
+          if-no-files-found: error
+
   publish:
-    needs: [changelog, build]
+    if: github.event_name == 'push'
+    needs: [changelog, build, android]
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: dist-android
+
+      - name: Attach Android APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} dist-android/* --clobber --repo ${{ github.repository }}
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
