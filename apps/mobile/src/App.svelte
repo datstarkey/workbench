@@ -4,6 +4,7 @@
 	import { Button } from '@workbench/ui/button';
 	import { Input } from '@workbench/ui/input';
 	import Terminal from './Terminal.svelte';
+	import ScanOverlay from './ScanOverlay.svelte';
 	import { MobileClient } from './client.svelte.ts';
 
 	const c = new MobileClient();
@@ -14,7 +15,9 @@
 	});
 </script>
 
-{#if c.activeTerminal && c.store}
+{#if c.scanning}
+	<ScanOverlay onCancel={c.cancelScan} />
+{:else if c.activeTerminal && c.store}
 	{#key c.activeTerminal.id}
 		<Terminal
 			serverUrl={c.url}
@@ -91,6 +94,17 @@
 						<h1 class="text-sm font-semibold">Connect to server</h1>
 						<p class="mb-4 font-mono text-[11px] text-wb-ink-soft">
 							workbench-server control plane
+						</p>
+
+						<Button
+							onclick={() => c.scanAndConnect()}
+							disabled={c.scanning || c.connecting}
+							class="mb-2 w-full"
+						>
+							{c.scanning ? 'Scanning…' : 'Scan QR code'}
+						</Button>
+						<p class="mb-4 text-center text-[11px] text-wb-ink-soft">
+							Desktop: Settings → Server mode → Pair phone. Or enter the details below.
 						</p>
 
 						<label class="mb-1 block text-[11px] font-medium text-wb-ink-mute" for="srv"

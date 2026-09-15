@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability for the mobile webview.","local":true,"windows":["main"],"permissions":["core:default","log:default"]}}
+{"barcode-scanner":{"identifier":"barcode-scanner","description":"QR pairing: the scanner plugin is only built for mobile targets.","local":true,"windows":["main"],"permissions":["barcode-scanner:default"],"platforms":["android","iOS"]},"default":{"identifier":"default","description":"Default capability for the mobile webview.","local":true,"windows":["main"],"permissions":["core:default","log:default"]}}
