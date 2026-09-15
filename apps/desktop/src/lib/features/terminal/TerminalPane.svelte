@@ -759,9 +759,12 @@
 		contain: strict;
 	}
 
+	/* xterm's WebGL addon gives its full-size canvases an inline z-index; without a
+	   stacking context here they paint above (and swallow clicks on) the overlays below. */
 	.terminal-shell {
 		height: 100%;
 		width: 100%;
+		isolation: isolate;
 	}
 
 	.terminal-takeover {
