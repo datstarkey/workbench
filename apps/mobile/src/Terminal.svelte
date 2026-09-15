@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import type { Attachment } from 'svelte/attachments';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
 	import { terminalWsUrl } from './terminal-url.ts';
+	import { touchScroll } from './touch-scroll.ts';
 
 	let {
 		serverUrl,
@@ -19,7 +20,6 @@
 		onClose: () => void;
 	} = $props();
 
-	let host = $state<HTMLDivElement>();
 	let status = $state<'connecting' | 'open' | 'closed'>('connecting');
 	let ws: WebSocket | undefined;
 
@@ -39,7 +39,7 @@
 		if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: 'i', d: data }));
 	}
 
-	onMount(() => {
+	const mountTerminal: Attachment<HTMLDivElement> = (host) => {
 		const term = new Terminal({
 			cursorBlink: true,
 			fontSize: 13,
@@ -48,7 +48,7 @@
 		});
 		const fit = new FitAddon();
 		term.loadAddon(fit);
-		term.open(host!);
+		term.open(host);
 		fit.fit();
 
 		// Attach to the persistent session; the server replays scrollback first.
@@ -75,7 +75,7 @@
 		});
 
 		const ro = new ResizeObserver(() => fit.fit());
-		ro.observe(host!);
+		ro.observe(host);
 
 		// Re-fit when the soft keyboard shows/hides (visualViewport shrinks).
 		const vv = window.visualViewport;
@@ -95,7 +95,7 @@
 			ws = undefined;
 			term.dispose();
 		};
-	});
+	};
 </script>
 
 <div class="flex h-full flex-col bg-wb-bg">
@@ -120,7 +120,11 @@
 		</span>
 	</header>
 
-	<div bind:this={host} class="min-h-0 flex-1 overflow-hidden p-1"></div>
+	<div
+		{@attach mountTerminal}
+		{@attach touchScroll}
+		class="min-h-0 flex-1 overflow-hidden p-1"
+	></div>
 
 	<!-- Extra keys row — sits above the soft keyboard. pointerdown+preventDefault
 	     keeps focus on the terminal so tapping a key doesn't dismiss the keyboard. -->
