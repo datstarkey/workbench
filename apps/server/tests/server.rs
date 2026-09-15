@@ -6,14 +6,42 @@
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use workbench_server::{spawn_embedded, ServerHandle};
+use workbench_server::{spawn_embedded, Managers, ServerHandle};
 
-async fn start(token: Option<&str>) -> (ServerHandle, String) {
-    let handle = spawn_embedded("127.0.0.1", 0, token.map(|t| t.to_string()))
+/// Embedded listeners always require a token of at least 32 characters.
+const TOKEN: &str = "e2e-token-0123456789abcdef0123456789";
+
+async fn start() -> (ServerHandle, String) {
+    start_with(Managers::default(), TOKEN).await
+}
+
+async fn start_with(managers: Managers, token: &str) -> (ServerHandle, String) {
+    let handle = spawn_embedded("127.0.0.1", 0, managers, token.to_string())
         .await
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     (handle, base)
+}
+
+/// HTTP client that sends `TOKEN` on every request.
+fn client() -> reqwest::Client {
+    client_with(TOKEN)
+}
+
+fn client_with(token: &str) -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap()
+}
+
+fn ws_url(addr: &str, id: &str) -> String {
+    format!("ws://{addr}/remote/terminals/{id}/ws?token={TOKEN}")
 }
 
 #[cfg(unix)]
@@ -93,8 +121,8 @@ fn git_init(dir: &std::path::Path) {
 
 #[tokio::test]
 async fn health_sync_and_validation() {
-    let (handle, base) = start(None).await;
-    let http = reqwest::Client::new();
+    let (handle, base) = start().await;
+    let http = client();
 
     let health = http.get(format!("{base}/health")).send().await.unwrap();
     assert_eq!(health.status(), 200);
@@ -122,10 +150,10 @@ async fn health_sync_and_validation() {
 
 #[tokio::test]
 async fn auth_gate() {
-    let (handle, base) = start(Some("secret")).await;
+    let (handle, base) = start().await;
     let http = reqwest::Client::new();
 
-    // /health is exempt even when a token is configured.
+    // /health is exempt.
     assert_eq!(
         http.get(format!("{base}/health"))
             .send()
@@ -135,31 +163,34 @@ async fn auth_gate() {
         200
     );
 
-    // protected route without a token → 401.
-    assert_eq!(
-        http.get(format!("{base}/remote/sessions"))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
+    for path in ["/remote/sessions", "/remote/terminals", "/projects"] {
+        // No token → 401.
+        assert_eq!(
+            http.get(format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401,
+            "{path} without a token"
+        );
+        // Wrong token → 401.
+        assert_eq!(
+            http.get(format!("{base}{path}"))
+                .bearer_auth("nope-nope-nope-nope-nope-nope-nope-nope")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            401,
+            "{path} with a wrong token"
+        );
+    }
 
-    // wrong token → 401.
+    // Correct token → 200.
     assert_eq!(
         http.get(format!("{base}/remote/sessions"))
-            .bearer_auth("nope")
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
-
-    // correct token → 200.
-    assert_eq!(
-        http.get(format!("{base}/remote/sessions"))
-            .bearer_auth("secret")
+            .bearer_auth(TOKEN)
             .send()
             .await
             .unwrap()
@@ -168,6 +199,14 @@ async fn auth_gate() {
     );
 
     handle.stop().await;
+}
+
+#[tokio::test]
+async fn embedded_server_refuses_a_weak_token() {
+    for token in ["", "   ", "secret"] {
+        let res = spawn_embedded("127.0.0.1", 0, Managers::default(), token.to_string()).await;
+        assert!(res.is_err(), "token {token:?} must be refused");
+    }
 }
 
 #[cfg(unix)]
@@ -180,8 +219,8 @@ async fn spawn_list_kill_cycle() {
     // Register tmp as a Workbench project so the spawn cwd allowlist accepts it.
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
-    let http = reqwest::Client::new();
+    let (handle, base) = start().await;
+    let http = client();
 
     // Spawn in the registered project directory.
     let spawned: Value = http
@@ -251,8 +290,8 @@ async fn spawn_rejects_unknown_worktree() {
     git_init(tmp.path());
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
-    let http = reqwest::Client::new();
+    let (handle, base) = start().await;
+    let http = client();
 
     // Registered project + real repo, but the worktree path is not a known worktree
     // of it → rejected by the known-worktree guard.
@@ -274,8 +313,8 @@ async fn spawn_rejects_unknown_worktree() {
 async fn remote_kill_is_idempotent() {
     // A delete for an unknown / already-self-exited session is a normal race, so it
     // must return 204 (idempotent) — never 500.
-    let (handle, base) = start(None).await;
-    let http = reqwest::Client::new();
+    let (handle, base) = start().await;
+    let http = client();
 
     for _ in 0..2 {
         let res = http
@@ -298,8 +337,8 @@ async fn spawn_rejects_unregistered_dir() {
     env.set("WORKBENCH_CONFIG_DIR", cfg.path());
     let tmp = tempfile::tempdir().unwrap();
 
-    let (handle, base) = start(None).await;
-    let http = reqwest::Client::new();
+    let (handle, base) = start().await;
+    let http = client();
 
     // tmp exists but is not a registered Workbench project → rejected by the
     // allowlist (500 from resolve_cwd, not an earlier validation error).
@@ -327,8 +366,8 @@ async fn spawn_respects_session_cap() {
     env.set("WORKBENCH_MAX_SESSIONS", "1");
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
-    let http = reqwest::Client::new();
+    let (handle, base) = start().await;
+    let http = client();
 
     let spawn = |c: &reqwest::Client| {
         c.post(format!("{base}/remote/spawn"))
@@ -353,43 +392,49 @@ async fn spawn_respects_session_cap() {
     handle.stop().await;
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn terminal_ws_requires_token_when_set() {
-    let env = env_guard();
-    let tmp = tempfile::tempdir().unwrap();
-    let _cfg = register_project(&env, tmp.path());
-
-    let (handle, base) = start(Some("secret")).await;
-    let addr = handle.addr().to_string();
-    let http = reqwest::Client::new();
-
-    // Create a terminal over the header-authed REST route.
+/// Create a terminal in `project` over REST and return its id.
+async fn create_terminal(http: &reqwest::Client, base: &str, project: &std::path::Path) -> String {
     let meta: Value = http
         .post(format!("{base}/remote/terminals"))
-        .bearer_auth("secret")
-        .json(&json!({ "projectPath": tmp.path() }))
+        .json(&json!({ "projectPath": project }))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+    meta["id"].as_str().expect("terminal id").to_string()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_ws_requires_token() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+
+    let (handle, base) = start().await;
+    let addr = handle.addr().to_string();
+    let id = create_terminal(&client(), &base, tmp.path()).await;
 
     // A browser WebSocket can't send Authorization; without ?token= the upgrade 401s.
     let no_token =
         tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws")).await;
     assert!(
         no_token.is_err(),
-        "WS upgrade without a token must be rejected when a token is configured"
+        "WS upgrade without a token must be rejected"
     );
 
-    // With the correct ?token= the upgrade succeeds.
-    let with_token = tokio_tungstenite::connect_async(format!(
-        "ws://{addr}/remote/terminals/{id}/ws?token=secret"
+    let wrong = tokio_tungstenite::connect_async(format!(
+        "ws://{addr}/remote/terminals/{id}/ws?token=wrong-wrong-wrong-wrong-wrong-wrong"
     ))
     .await;
+    assert!(
+        wrong.is_err(),
+        "WS upgrade with a wrong token must be rejected"
+    );
+
+    let with_token = tokio_tungstenite::connect_async(ws_url(&addr, &id)).await;
     assert!(
         with_token.is_ok(),
         "WS upgrade with the correct token must succeed"
@@ -400,15 +445,112 @@ async fn terminal_ws_requires_token_when_set() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn terminal_ws_rejects_a_foreign_origin() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Error;
+
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+
+    let (handle, base) = start().await;
+    let addr = handle.addr().to_string();
+    let id = create_terminal(&client(), &base, tmp.path()).await;
+
+    let with_origin = |origin: &str| {
+        let mut req = ws_url(&addr, &id).into_client_request().unwrap();
+        req.headers_mut().insert("origin", origin.parse().unwrap());
+        req
+    };
+
+    // Even with the right token, a drive-by page's origin is refused.
+    match tokio_tungstenite::connect_async(with_origin("https://evil.example")).await {
+        Err(Error::Http(resp)) => assert_eq!(resp.status(), 403),
+        other => panic!("foreign origin must get 403, got {:?}", other.map(|_| ())),
+    }
+
+    // The desktop webview's origin is allowed.
+    assert!(
+        tokio_tungstenite::connect_async(with_origin("tauri://localhost"))
+            .await
+            .is_ok(),
+        "the app webview origin must be allowed"
+    );
+
+    handle.stop().await;
+}
+
+/// The desktop runs a loopback and a LAN listener over the same managers, each
+/// with its own token: a terminal created through one is visible and attachable
+/// through the other.
+#[cfg(unix)]
+#[tokio::test]
+async fn listeners_sharing_managers_see_the_same_terminals() {
+    const LAN_TOKEN: &str = "lan-token-abcdefabcdefabcdefabcdefabcdef";
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+
+    let managers = Managers::default();
+    let (loopback, loopback_base) = start_with(managers.clone(), TOKEN).await;
+    let (lan, lan_base) = start_with(managers, LAN_TOKEN).await;
+    let lan_http = client_with(LAN_TOKEN);
+
+    let id = create_terminal(&client(), &loopback_base, tmp.path()).await;
+
+    let listed: Value = lan_http
+        .get(format!("{lan_base}/remote/terminals"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == id.as_str()),
+        "terminal created on loopback must be listed on the LAN listener"
+    );
+
+    let lan_addr = lan.addr().to_string();
+    let attach = tokio_tungstenite::connect_async(format!(
+        "ws://{lan_addr}/remote/terminals/{id}/ws?token={LAN_TOKEN}"
+    ))
+    .await;
+    assert!(
+        attach.is_ok(),
+        "the LAN listener must attach to the shared terminal"
+    );
+
+    // Tokens stay per-listener.
+    assert_eq!(
+        client()
+            .get(format!("{lan_base}/remote/terminals"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+
+    loopback.stop().await;
+    lan.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn terminal_ws_closes_when_killed() {
     use futures_util::StreamExt;
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
+    let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = reqwest::Client::new();
+    let http = client();
 
     let meta: Value = http
         .post(format!("{base}/remote/terminals"))
@@ -421,10 +563,9 @@ async fn terminal_ws_closes_when_killed() {
         .unwrap();
     let id = meta["id"].as_str().expect("terminal id").to_string();
 
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
-            .await
-            .expect("WS should connect");
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
+        .await
+        .expect("WS should connect");
 
     // Kill the terminal; the attached socket must close rather than hang forever.
     http.delete(format!("{base}/remote/terminals/{id}"))
@@ -457,9 +598,9 @@ async fn terminal_ws_closes_on_shell_exit() {
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
+    let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = reqwest::Client::new();
+    let http = client();
 
     let meta: Value = http
         .post(format!("{base}/remote/terminals"))
@@ -472,10 +613,9 @@ async fn terminal_ws_closes_on_shell_exit() {
         .unwrap();
     let id = meta["id"].as_str().expect("terminal id").to_string();
 
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
-            .await
-            .expect("WS should connect");
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
+        .await
+        .expect("WS should connect");
 
     // Drive the shell to exit (raw bytes → PTY). On EOF the reader signals done and
     // the attached socket must close instead of hanging on a dead shell.
@@ -505,8 +645,8 @@ async fn terminal_respects_cap() {
     env.set("WORKBENCH_MAX_TERMINALS", "1");
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
-    let http = reqwest::Client::new();
+    let (handle, base) = start().await;
+    let http = client();
 
     let create = |c: &reqwest::Client| {
         c.post(format!("{base}/remote/terminals"))
@@ -544,9 +684,9 @@ async fn terminal_single_attacher_kick() {
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
+    let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = reqwest::Client::new();
+    let http = client();
 
     // Create a terminal.
     let meta: Value = http
@@ -561,19 +701,17 @@ async fn terminal_single_attacher_kick() {
     let id = meta["id"].as_str().expect("terminal id").to_string();
 
     // Attacher A connects first.
-    let (mut ws_a, _) =
-        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
-            .await
-            .expect("WS A should connect");
+    let (mut ws_a, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
+        .await
+        .expect("WS A should connect");
 
     // Give A a moment to establish (epoch = 1).
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Attacher B connects — this should kick A (epoch bumps to 2).
-    let (mut ws_b, _) =
-        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
-            .await
-            .expect("WS B should connect");
+    let (mut ws_b, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
+        .await
+        .expect("WS B should connect");
 
     // A must receive {"t":"takeover"} and then close within 5 s.
     let takeover_and_close = tokio::time::timeout(Duration::from_secs(5), async {
@@ -646,9 +784,9 @@ async fn terminal_ws_exit_frame_carries_code() {
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
 
-    let (handle, base) = start(None).await;
+    let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = reqwest::Client::new();
+    let http = client();
 
     let meta: Value = http
         .post(format!("{base}/remote/terminals"))
@@ -661,10 +799,9 @@ async fn terminal_ws_exit_frame_carries_code() {
         .unwrap();
     let id = meta["id"].as_str().expect("terminal id").to_string();
 
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
-            .await
-            .expect("WS should connect");
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
+        .await
+        .expect("WS should connect");
 
     // Exit the shell; the PTY reader thread will signal done_tx.
     ws.send(Message::Binary(b"exit\n".to_vec())).await.unwrap();
@@ -722,9 +859,9 @@ async fn terminal_create_forwards_env() {
     let pane_id_val = "test-pane-42";
     let hook_socket_val = "/tmp/workbench-hook.sock";
 
-    let (handle, base) = start(None).await;
+    let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = reqwest::Client::new();
+    let http = client();
 
     // Create a terminal with paneId + hookSocket + an initial command that
     // immediately prints both env vars so we can capture them in the stream.
@@ -747,10 +884,9 @@ async fn terminal_create_forwards_env() {
         .unwrap();
     let id = meta["id"].as_str().expect("terminal id").to_string();
 
-    let (mut ws, _) =
-        tokio_tungstenite::connect_async(format!("ws://{addr}/remote/terminals/{id}/ws"))
-            .await
-            .expect("WS should connect");
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
+        .await
+        .expect("WS should connect");
 
     // Collect output for up to 8 s and look for the printed env values.
     let result = tokio::time::timeout(Duration::from_secs(8), async {

@@ -39,6 +39,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+reqwest = { workspace = true }
 # Enables `tauri::test` (mock runtime) for testing #[tauri::command] handlers
 # without a webview. Feature unification keeps it out of release builds.
 tauri = { version = "2", features = ["test"] }

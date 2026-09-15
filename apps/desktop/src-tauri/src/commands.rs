@@ -230,9 +230,16 @@ pub fn load_workbench_settings() -> Result<WorkbenchSettings, String> {
 
 #[tauri::command]
 pub fn save_workbench_settings(
-    settings: WorkbenchSettings,
+    mut settings: WorkbenchSettings,
     hook_bridge: State<'_, HookBridgeState>,
 ) -> Result<bool, String> {
+    // Each window holds its own settings store; one loaded before the LAN token
+    // was generated must not wipe it (and lock paired phones out) on save.
+    if settings.server_token.is_none() {
+        settings.server_token = config::load_workbench_settings()
+            .ok()
+            .and_then(|s| s.server_token);
+    }
     config::save_workbench_settings(&settings).map_err(|e| e.to_string())?;
     refresh_sandbox_runtime_settings(Some(&settings), &hook_bridge);
     Ok(true)

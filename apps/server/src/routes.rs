@@ -164,7 +164,10 @@ async fn load_claude_settings(Query(q): Query<SettingsQuery>) -> ApiResult<Json<
 }
 
 async fn load_workbench_settings() -> ApiResult<Json<Value>> {
-    let settings = blocking(workbench_core::config::load_workbench_settings).await?;
+    let mut settings = blocking(workbench_core::config::load_workbench_settings).await?;
+    // The LAN token stays on this machine: a client holding one token must not
+    // be able to read the current (possibly rotated) one.
+    settings.server_token = None;
     Ok(Json(serde_json::to_value(settings)?))
 }
 

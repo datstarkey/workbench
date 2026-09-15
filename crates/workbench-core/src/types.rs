@@ -344,6 +344,9 @@ pub struct WorkbenchSettings {
     pub server_mode: bool,
     #[serde(default = "default_server_port")]
     pub server_port: u16,
+    /// Bearer token the LAN server requires. Generated on first enable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_window_bounds: Option<SettingsWindowBounds>,
 }
@@ -415,6 +418,7 @@ impl Default for WorkbenchSettings {
             accent_color: default_accent_color(),
             server_mode: false,
             server_port: default_server_port(),
+            server_token: None,
             settings_window_bounds: None,
         }
     }

@@ -26,7 +26,8 @@
 //!
 //! Gated by the same bearer auth as every other route. NOTE: browser WebSocket
 //! can't send an `Authorization` header, so query-param auth for the WS is
-//! supported via `?token=`.
+//! supported via `?token=`. The upgrade also checks `Origin` (see
+//! `auth::ws_origin_allowed`).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -39,7 +40,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -180,6 +181,9 @@ impl TerminalManager {
         if let Some(sock) = &hook_socket {
             cmd.env("WORKBENCH_HOOK_SOCKET", sock);
         }
+        // CommandBuilder inherits the whole server env; never hand the shell the
+        // standalone server's bearer token.
+        cmd.env_remove("WORKBENCH_TOKEN");
 
         // Shell integration (OSC 133): when launching a bare zsh (no startup
         // command), point ZDOTDIR at our generated rc dir so prompt/command marks
@@ -410,8 +414,21 @@ pub async fn terminal_attach(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
     Query(auth): Query<WsAuthQuery>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
+    let header_str = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    if !crate::auth::ws_origin_allowed(
+        header_str(header::ORIGIN),
+        header_str(header::HOST),
+        cfg!(debug_assertions),
+    ) {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "origin not allowed".to_string(),
+        });
+    }
+
     // This route is exempt from the global bearer middleware (a browser WebSocket
     // can't set an Authorization header), so authenticate the ?token= query param
     // here — same token, same constant-time compare as every other route.

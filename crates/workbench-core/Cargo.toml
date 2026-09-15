@@ -13,6 +13,7 @@ dirs = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
 log = "0.4"
+getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
