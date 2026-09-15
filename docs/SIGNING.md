@@ -1,4 +1,4 @@
-# Code signing & notarization (macOS)
+# Code signing & notarization (macOS, Android)
 
 Workbench ships as a Developer ID–signed, notarized app. Without this, macOS
 Gatekeeper refuses to open the download ("Apple could not verify…") and
@@ -133,8 +133,8 @@ diff-clean.
 > v0.27.0 publicly unsigned. Always use `--body` or a pipe, never the bare prompting
 > form, and confirm the CI log shows `***` rather than a blank after the variable name.
 
-The workflow **fails** if any of the six is empty or unset — it only ever runs on a
-`v*` tag, so every run is a release and an unsigned artifact is never the right answer.
+The workflow **fails** if any of the six is empty or unset — the desktop jobs only run
+on a `v*` tag, so every run is a release and an unsigned artifact is never the right answer.
 To ship unsigned deliberately (expired certificate, Apple outage), set the repository
 variable `ALLOW_UNSIGNED_RELEASE=true`.
 
@@ -187,6 +187,60 @@ weakening of the hardened runtime and Apple reviews them for notarization.
   not support anything older, so the old value was a claim the binary couldn't honour.
 - Certificates expire after 5 years; notarization of already-stapled builds keeps
   working after expiry, but new builds do not.
+
+## Android (APK)
+
+The phone app is sideloaded from GitHub releases (no Play Store), so the APK is signed
+with our own upload key and the in-app updater installs newer releases over it.
+
+**Android refuses to update an app with an APK signed by a different key.** That is the
+updater's authenticity guarantee, and it means **losing the key forces every user to
+uninstall and reinstall** (dropping their saved server) to get updates. Keep the backups.
+
+- Keystore: PKCS12 (`.p12`), alias `workbench`.
+- Certificate SHA-256:
+  `5F:61:A6:34:4B:26:FB:BC:FF:F4:3B:6F:5E:7A:FF:34:F2:3C:2F:EB:A4:9B:53:D2:11:E8:03:E7:7E:11:23:1C`
+- Backups: Infisical project `workbench`, environment `prod`, under the secret names
+  below; and the owner's iCloud Documents.
+
+### GitHub Actions secrets
+
+| Secret                      | Value                          |
+| --------------------------- | ------------------------------ |
+| `ANDROID_KEYSTORE_BASE64`   | the `.p12`, base64 on one line |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore (store) password      |
+| `ANDROID_KEY_ALIAS`         | `workbench`                    |
+| `ANDROID_KEY_PASSWORD`      | key password                   |
+
+```sh
+base64 -i workbench-release.p12 | tr -d '\n' | gh secret set ANDROID_KEYSTORE_BASE64
+gh secret set ANDROID_KEY_ALIAS --body workbench
+gh secret set ANDROID_KEYSTORE_PASSWORD   # interactive terminal only — see the empty-secret warning above
+gh secret set ANDROID_KEY_PASSWORD
+```
+
+The `android` job in `release.yml` fails if any of the four is empty — an unsigned APK
+can't be installed and a differently signed one can't update, so there is no unsigned
+fallback and `ALLOW_UNSIGNED_RELEASE` does not apply. It decodes the keystore into
+`$RUNNER_TEMP` and writes `apps/mobile/src-tauri/gen/android/keystore.properties`
+(gitignored), which `app/build.gradle.kts` reads:
+
+```properties
+storeFile=/absolute/path/to/workbench-release.p12
+storePassword=…
+keyAlias=workbench
+keyPassword=…
+```
+
+Without that file debug builds are unaffected and `tauri android build --apk` produces an
+unsigned `app-universal-release-unsigned.apk`. To check a signed build:
+
+```sh
+~/Library/Android/sdk/build-tools/<ver>/apksigner verify --print-certs app-universal-release.apk
+```
+
+`gh workflow run release.yml --ref <branch>` dry-runs just the Android build: the signed
+APK is uploaded as a workflow artifact and no release is touched.
 
 ## Troubleshooting
 
