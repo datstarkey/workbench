@@ -15,23 +15,33 @@ export function buildPairingUri({ url, token }: PairingInfo): string {
 	return `workbench://pair?${new URLSearchParams({ v: '1', url, token })}`;
 }
 
+const PAIRING_PREFIX = 'workbench://pair?';
+const PAIRING_KEYS = ['v', 'url', 'token'] as const;
+
+/**
+ * The query of a pairing URI, or null unless the text starts with exactly
+ * `workbench://pair?` and has no fragment. Deliberately not `new URL()`: older
+ * Android System WebView parses custom schemes differently (empty host,
+ * pathname `//pair`), so the outer URI is matched as a strict prefix.
+ */
+export function pairingQuery(text: string): URLSearchParams | null {
+	const trimmed = text.trim();
+	if (!trimmed.startsWith(PAIRING_PREFIX) || trimmed.includes('#')) return null;
+	return new URLSearchParams(trimmed.slice(PAIRING_PREFIX.length));
+}
+
 /**
  * Parse a scanned pairing code. Returns null for anything that isn't a
  * well-formed v1 pairing URI, so a random QR code can't point the app at a
  * URL carrying credentials, paths or queries, or at a weak token.
  */
 export function parsePairingUri(text: string): PairingInfo | null {
-	let uri: URL;
-	try {
-		uri = new URL(text.trim());
-	} catch {
-		return null;
-	}
-	if (uri.protocol !== 'workbench:' || uri.host !== 'pair' || uri.pathname || uri.hash) return null;
-	if (uri.searchParams.get('v') !== '1') return null;
+	const query = pairingQuery(text);
+	if (!query || PAIRING_KEYS.some((key) => query.getAll(key).length !== 1)) return null;
+	if (query.get('v') !== '1') return null;
 
-	const url = serverBaseUrl(uri.searchParams.get('url'));
-	const token = uri.searchParams.get('token');
+	const url = serverBaseUrl(query.get('url'));
+	const token = query.get('token');
 	if (!url || !token || !isStrongToken(token)) return null;
 	return { url, token };
 }
