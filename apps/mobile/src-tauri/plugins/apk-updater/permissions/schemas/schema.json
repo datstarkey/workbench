@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the clear_downloads command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-downloads",
+          "markdownDescription": "Enables the clear_downloads command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_downloads command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-downloads",
+          "markdownDescription": "Denies the clear_downloads command without any pre-configured scope."
+        },
+        {
           "description": "Enables the download_and_install command without any pre-configured scope.",
           "type": "string",
           "const": "allow-download-and-install",
@@ -307,10 +319,22 @@
           "markdownDescription": "Denies the download_and_install command without any pre-configured scope."
         },
         {
-          "description": "Allows downloading and installing a Workbench release APK.\n#### This default permission set includes:\n\n- `allow-download-and-install`",
+          "description": "Enables the install_downloaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-downloaded",
+          "markdownDescription": "Enables the install_downloaded command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_downloaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-downloaded",
+          "markdownDescription": "Denies the install_downloaded command without any pre-configured scope."
+        },
+        {
+          "description": "Allows downloading, installing and clearing Workbench release APKs.\n#### This default permission set includes:\n\n- `allow-download-and-install`\n- `allow-install-downloaded`\n- `allow-clear-downloads`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows downloading and installing a Workbench release APK.\n#### This default permission set includes:\n\n- `allow-download-and-install`"
+          "markdownDescription": "Allows downloading, installing and clearing Workbench release APKs.\n#### This default permission set includes:\n\n- `allow-download-and-install`\n- `allow-install-downloaded`\n- `allow-clear-downloads`"
         }
       ]
     }

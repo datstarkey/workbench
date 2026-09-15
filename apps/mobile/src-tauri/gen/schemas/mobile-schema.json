@@ -177,10 +177,16 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Allows downloading and installing a Workbench release APK.\n#### This default permission set includes:\n\n- `allow-download-and-install`",
+          "description": "Allows downloading, installing and clearing Workbench release APKs.\n#### This default permission set includes:\n\n- `allow-download-and-install`\n- `allow-install-downloaded`\n- `allow-clear-downloads`",
           "type": "string",
           "const": "apk-updater:default",
-          "markdownDescription": "Allows downloading and installing a Workbench release APK.\n#### This default permission set includes:\n\n- `allow-download-and-install`"
+          "markdownDescription": "Allows downloading, installing and clearing Workbench release APKs.\n#### This default permission set includes:\n\n- `allow-download-and-install`\n- `allow-install-downloaded`\n- `allow-clear-downloads`"
+        },
+        {
+          "description": "Enables the clear_downloads command without any pre-configured scope.",
+          "type": "string",
+          "const": "apk-updater:allow-clear-downloads",
+          "markdownDescription": "Enables the clear_downloads command without any pre-configured scope."
         },
         {
           "description": "Enables the download_and_install command without any pre-configured scope.",
@@ -189,10 +195,28 @@
           "markdownDescription": "Enables the download_and_install command without any pre-configured scope."
         },
         {
+          "description": "Enables the install_downloaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "apk-updater:allow-install-downloaded",
+          "markdownDescription": "Enables the install_downloaded command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_downloads command without any pre-configured scope.",
+          "type": "string",
+          "const": "apk-updater:deny-clear-downloads",
+          "markdownDescription": "Denies the clear_downloads command without any pre-configured scope."
+        },
+        {
           "description": "Denies the download_and_install command without any pre-configured scope.",
           "type": "string",
           "const": "apk-updater:deny-download-and-install",
           "markdownDescription": "Denies the download_and_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_downloaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "apk-updater:deny-install-downloaded",
+          "markdownDescription": "Denies the install_downloaded command without any pre-configured scope."
         },
         {
           "description": "This permission set configures which\nbarcode scanning features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all barcode related features.\n\n\n#### This default permission set includes:\n\n- `allow-cancel`\n- `allow-check-permissions`\n- `allow-open-app-settings`\n- `allow-request-permissions`\n- `allow-scan`\n- `allow-vibrate`",

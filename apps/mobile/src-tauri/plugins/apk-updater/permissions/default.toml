@@ -1,5 +1,9 @@
 "$schema" = "schemas/schema.json"
 
 [default]
-description = "Allows downloading and installing a Workbench release APK."
-permissions = ["allow-download-and-install"]
+description = "Allows downloading, installing and clearing Workbench release APKs."
+permissions = [
+  "allow-download-and-install",
+  "allow-install-downloaded",
+  "allow-clear-downloads",
+]

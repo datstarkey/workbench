@@ -3,7 +3,9 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { checkForUpdate, type AvailableUpdate } from './updater';
 
 export type DownloadProgress = { downloaded: number; total: number };
-export type InstallResult = { status: 'installing' | 'needs_permission' };
+export type InstallResult =
+	| { status: 'installing' | 'needs_permission' }
+	| { status: 'ready_to_install'; sha256: string };
 
 export type UpdaterState =
 	| { kind: 'idle' }
@@ -11,6 +13,7 @@ export type UpdaterState =
 	| { kind: 'up-to-date' }
 	| { kind: 'available'; update: AvailableUpdate }
 	| { kind: 'downloading'; update: AvailableUpdate; progress: number | null }
+	| { kind: 'ready'; update: AvailableUpdate; sha256: string }
 	| { kind: 'installing'; update: AvailableUpdate }
 	| { kind: 'needs-permission'; update: AvailableUpdate }
 	| { kind: 'error'; message: string; update?: AvailableUpdate };
@@ -23,6 +26,8 @@ export type UpdaterDeps = {
 		update: AvailableUpdate,
 		onProgress: (p: DownloadProgress) => void
 	) => Promise<InstallResult>;
+	installDownloaded: (sha256: string) => Promise<InstallResult>;
+	clearDownloads: () => Promise<void>;
 };
 
 const defaultDeps: UpdaterDeps = {
@@ -37,7 +42,10 @@ const defaultDeps: UpdaterDeps = {
 			sha256Url: update.sha256Url,
 			onProgress: channel
 		});
-	}
+	},
+	installDownloaded: (sha256) =>
+		invoke<InstallResult>('plugin:apk-updater|install_downloaded', { sha256 }),
+	clearDownloads: () => invoke('plugin:apk-updater|clear_downloads')
 };
 
 /** Sideloaded-APK self-update: GitHub release check → download with progress → system installer. */
@@ -67,6 +75,8 @@ export class AppUpdater {
 		try {
 			this.version ??= await this.deps.getVersion();
 			const result = await checkForUpdate(this.version, this.deps.fetch);
+			// Current again (e.g. an update just installed): its downloaded APK is dead weight.
+			if (result.kind === 'up-to-date') this.deps.clearDownloads().catch(() => {});
 			if (result.kind === 'available') this.state = result;
 			else if (result.kind === 'error' && !silent) this.state = result;
 			else this.state = silent ? { kind: 'idle' } : { kind: 'up-to-date' };
@@ -85,12 +95,31 @@ export class AppUpdater {
 				const progress = total > 0 ? Math.min(1, downloaded / total) : null;
 				this.state = { kind: 'downloading', update, progress };
 			});
-			this.state =
-				result.status === 'needs_permission'
-					? { kind: 'needs-permission', update }
-					: { kind: 'installing', update };
+			this.applyInstallResult(update, result);
 		} catch (e) {
 			this.state = { kind: 'error', message: errorMessage(e), update };
+		}
+	}
+
+	/** Launches the installer for an APK that finished downloading while the app was in the background. */
+	async installDownloaded(): Promise<void> {
+		if (this.state.kind !== 'ready') return;
+		const { update, sha256 } = this.state;
+		this.state = { kind: 'installing', update };
+		try {
+			this.applyInstallResult(update, await this.deps.installDownloaded(sha256));
+		} catch (e) {
+			this.state = { kind: 'error', message: errorMessage(e), update };
+		}
+	}
+
+	private applyInstallResult(update: AvailableUpdate, result: InstallResult): void {
+		if (result.status === 'ready_to_install') {
+			this.state = { kind: 'ready', update, sha256: result.sha256 };
+		} else if (result.status === 'needs_permission') {
+			this.state = { kind: 'needs-permission', update };
+		} else {
+			this.state = { kind: 'installing', update };
 		}
 	}
 

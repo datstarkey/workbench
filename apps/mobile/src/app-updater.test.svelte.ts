@@ -26,6 +26,8 @@ function deps(overrides: Partial<UpdaterDeps> = {}): UpdaterDeps {
 			Promise.resolve(new Response(JSON.stringify(RELEASE)))
 		) as unknown as typeof fetch,
 		downloadAndInstall: vi.fn(() => Promise.resolve({ status: 'installing' as const })),
+		installDownloaded: vi.fn(() => Promise.resolve({ status: 'installing' as const })),
+		clearDownloads: vi.fn(() => Promise.resolve()),
 		...overrides
 	};
 }
@@ -79,6 +81,20 @@ describe('AppUpdater', () => {
 		expect(updater.state.kind).toBe('idle');
 		await updater.check();
 		expect(updater.state.kind).toBe('up-to-date');
+		expect(current.clearDownloads).toHaveBeenCalledTimes(2);
+	});
+
+	it('keeps downloads while an update is pending or the check failed', async () => {
+		const d = deps();
+		await new AppUpdater(d).check();
+		const limited = deps({
+			fetch: vi.fn(() =>
+				Promise.resolve(new Response('', { status: 403 }))
+			) as unknown as typeof fetch
+		});
+		await new AppUpdater(limited).check();
+		expect(d.clearDownloads).not.toHaveBeenCalled();
+		expect(limited.clearDownloads).not.toHaveBeenCalled();
 	});
 
 	it('downloads with progress, then hands off to the installer', async () => {
@@ -137,6 +153,61 @@ describe('AppUpdater', () => {
 			message: 'Checksum mismatch, the download was discarded',
 			update: UPDATE
 		});
+	});
+
+	it('offers the verified APK when the download finished in the background', async () => {
+		const SHA = 'a'.repeat(64);
+		const installDownloaded = vi.fn(() => Promise.resolve({ status: 'installing' as const }));
+		const updater = await available({
+			downloadAndInstall: vi.fn(() =>
+				Promise.resolve({ status: 'ready_to_install' as const, sha256: SHA })
+			),
+			installDownloaded
+		});
+		await updater.install();
+		expect(updater.state).toEqual({ kind: 'ready', update: UPDATE, sha256: SHA });
+
+		await updater.installDownloaded();
+		expect(installDownloaded).toHaveBeenCalledWith(SHA);
+		expect(updater.state).toEqual({ kind: 'installing', update: UPDATE });
+	});
+
+	it('stays ready when installing the download is still backgrounded', async () => {
+		const SHA = 'b'.repeat(64);
+		const ready = { status: 'ready_to_install' as const, sha256: SHA };
+		const updater = await available({
+			downloadAndInstall: vi.fn(() => Promise.resolve(ready)),
+			installDownloaded: vi.fn(() => Promise.resolve(ready))
+		});
+		await updater.install();
+		await updater.installDownloaded();
+		expect(updater.state).toEqual({ kind: 'ready', update: UPDATE, sha256: SHA });
+	});
+
+	it('reports a vanished download and keeps the update for a fresh download', async () => {
+		const updater = await available({
+			downloadAndInstall: vi.fn(() =>
+				Promise.resolve({ status: 'ready_to_install' as const, sha256: 'c'.repeat(64) })
+			),
+			installDownloaded: vi.fn(() =>
+				Promise.reject({ message: 'The downloaded update is gone, download it again' })
+			)
+		});
+		await updater.install();
+		await updater.installDownloaded();
+		expect(updater.state).toEqual({
+			kind: 'error',
+			message: 'The downloaded update is gone, download it again',
+			update: UPDATE
+		});
+	});
+
+	it('installDownloaded() does nothing without a ready download', async () => {
+		const d = deps();
+		const updater = await available(d);
+		await updater.installDownloaded();
+		expect(d.installDownloaded).not.toHaveBeenCalled();
+		expect(updater.state.kind).toBe('available');
 	});
 
 	it('dismiss() hides the banner', async () => {

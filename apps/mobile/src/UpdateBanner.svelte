@@ -35,6 +35,8 @@
 				<span class="text-wb-ink">Update to v{current.update.version}</span>
 			{:else if current.kind === 'downloading'}
 				Downloading v{current.update.version}{percent === null ? '…' : ` ${percent}%`}
+			{:else if current.kind === 'ready'}
+				<span class="text-wb-ink">Downloaded v{current.update.version}</span>
 			{:else if current.kind === 'installing'}
 				Confirm the install in the Android prompt
 			{:else if current.kind === 'needs-permission'}
@@ -55,6 +57,13 @@
 			</button>
 			<button class="rounded px-1.5 py-0.5 hover:text-wb-ink" onclick={() => updater.dismiss()}>
 				Later
+			</button>
+		{:else if current.kind === 'ready'}
+			<button
+				class="rounded bg-wb-accent px-2 py-0.5 font-medium text-wb-bg"
+				onclick={() => updater.installDownloaded()}
+			>
+				Install
 			</button>
 		{:else if current.kind === 'needs-permission' || current.kind === 'installing' || (current.kind === 'error' && current.update)}
 			<button
