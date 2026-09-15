@@ -479,6 +479,16 @@ describe('TerminalConnection', () => {
 		});
 	});
 
+	describe('revoked frame', () => {
+		it('ends the session (not a takeover) when the listener is revoked', async () => {
+			const { ws, onExit } = await connectAndOpen();
+			ws.recvText({ t: 'revoked' });
+			ws.closeWs();
+			expect(onExit).toHaveBeenCalledTimes(1);
+			expect(onExit).toHaveBeenCalledWith({ reason: 'ended' });
+		});
+	});
+
 	describe('WS close', () => {
 		it('fires onExit with reason ended when the socket closes', async () => {
 			const { ws, onExit } = await connectAndOpen();

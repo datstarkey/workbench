@@ -6,7 +6,9 @@ export type TerminalControlFrame =
 	/** Another client attached; this socket is about to be closed. */
 	| { t: 'takeover' }
 	/** The shell exited; `code` is null when the status wasn't available. */
-	| { t: 'exit'; code: number | null };
+	| { t: 'exit'; code: number | null }
+	/** The listener this socket used stopped (server mode off / token rotated). */
+	| { t: 'revoked' };
 
 /** Parse a text frame into a control frame, or null for anything else. */
 export function parseTerminalControlFrame(data: string): TerminalControlFrame | null {
@@ -18,7 +20,7 @@ export function parseTerminalControlFrame(data: string): TerminalControlFrame | 
 	}
 	if (typeof msg !== 'object' || msg === null) return null;
 	const { t, code } = msg as { t?: unknown; code?: unknown };
-	if (t === 'takeover') return { t };
+	if (t === 'takeover' || t === 'revoked') return { t };
 	if (t === 'exit') return { t, code: typeof code === 'number' ? code : null };
 	return null;
 }

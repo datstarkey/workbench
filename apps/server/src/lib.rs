@@ -11,7 +11,7 @@ pub mod terminal;
 
 use anyhow::Context;
 use std::net::SocketAddr;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 pub use spawn::RemoteControlManager;
 pub use state::{AppState, Managers};
@@ -47,13 +47,17 @@ pub async fn serve(
     token: Option<String>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let app = app(AppState::new(Managers::default(), token));
+    let (revoke, revoked) = watch::channel(false);
+    let app = app(AppState::new(Managers::default(), token, revoked));
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            let _ = revoke.send(true);
+        })
         .await
         .context("server error")?;
     Ok(())
@@ -64,6 +68,7 @@ pub async fn serve(
 pub struct ServerHandle {
     addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
+    revoke: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -72,8 +77,11 @@ impl ServerHandle {
         self.addr
     }
 
-    /// Signal graceful shutdown and wait for the server task to finish.
+    /// Disconnect this listener's attached terminal WebSockets, then shut it
+    /// down gracefully and wait for the server task. Terminals themselves live
+    /// in the shared managers and stay attachable through other listeners.
     pub async fn stop(mut self) {
+        let _ = self.revoke.send(true);
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
@@ -99,7 +107,8 @@ pub async fn spawn_embedded(
         "embedded server requires a token of at least {} characters",
         workbench_core::token::MIN_TOKEN_LEN
     );
-    let app = app(AppState::new(managers, Some(token)));
+    let (revoke, revoked) = watch::channel(false);
+    let app = app(AppState::new(managers, Some(token), revoked));
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -118,6 +127,7 @@ pub async fn spawn_embedded(
     Ok(ServerHandle {
         addr: local_addr,
         shutdown: Some(tx),
+        revoke,
         task,
     })
 }

@@ -5,6 +5,7 @@ describe('statusForTextFrame', () => {
 	it('maps control frames to statuses', () => {
 		expect(statusForTextFrame('{"t":"takeover"}')).toBe('taken_over');
 		expect(statusForTextFrame('{"t":"exit","code":0}')).toBe('exited');
+		expect(statusForTextFrame('{"t":"revoked"}')).toBe('closed');
 	});
 
 	it('returns null for anything else', () => {

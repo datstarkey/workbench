@@ -15,7 +15,9 @@
 //! (`{"t":"i","d":..}` input, `{"t":"r","c":..,"r":..}` resize); server→client
 //! raw PTY bytes as binary frames. Server→client control frames (text JSON):
 //! `{"t":"takeover"}` — another client has attached (epoch bumped, old socket
-//! will be closed); `{"t":"exit","code":<n|null>}` — shell exited.
+//! will be closed); `{"t":"exit","code":<n|null>}` — shell exited;
+//! `{"t":"revoked"}` — the listener this socket came through stopped (server
+//! mode off / token rotated), so the socket is closed.
 //!
 //! Single-attacher lease: only ONE client may drive input at a time. When a new
 //! client attaches the server:
@@ -449,7 +451,8 @@ pub async fn terminal_attach(
         .terminals
         .get(&id)
         .ok_or_else(|| anyhow::anyhow!("no terminal with id {id}"))?;
-    Ok(ws.on_upgrade(move |socket| attach(socket, session)))
+    let revoked = state.revoked.clone();
+    Ok(ws.on_upgrade(move |socket| attach(socket, session, revoked)))
 }
 
 /// Build the `{"t":"exit","code":<n|null>}` control frame, reading the child's real
@@ -472,6 +475,10 @@ fn exit_frame(session: &TerminalSession) -> Message {
         None => r#"{"t":"exit","code":null}"#.to_string(),
     };
     Message::Text(json)
+}
+
+fn revoked_frame() -> Message {
+    Message::Text(r#"{"t":"revoked"}"#.to_string())
 }
 
 /// Block until a freshly spawned shell is ready for input: a settling delay,
@@ -575,7 +582,18 @@ fn terminate_process_group(session: &TerminalSession) {
     }
 }
 
-async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
+async fn attach(
+    mut socket: WebSocket,
+    session: Arc<TerminalSession>,
+    mut revoked: watch::Receiver<bool>,
+) {
+    // An upgrade that raced the listener stopping must not kick the live attacher.
+    if *revoked.borrow_and_update() {
+        let _ = socket.send(revoked_frame()).await;
+        let _ = socket.close().await;
+        return;
+    }
+
     // --- Single-attacher lease -------------------------------------------------
     // Subscribe to the kick channel BEFORE bumping the epoch. tokio's `watch` marks
     // the value present at subscribe time as "seen", so a receiver created AFTER our
@@ -636,6 +654,13 @@ async fn attach(mut socket: WebSocket, session: Arc<TerminalSession>) {
                     .await;
                 // Send a WS Close frame so the client can distinguish a clean kick from
                 // a dropped connection.
+                let _ = socket.close().await;
+                return;
+            }
+            _ = crate::state::wait_revoked(&mut revoked) => {
+                // The listener stopped (server mode off / token rotated): cut this
+                // client off. The PTY keeps running for other listeners' clients.
+                let _ = socket.send(revoked_frame()).await;
                 let _ = socket.close().await;
                 return;
             }

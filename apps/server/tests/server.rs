@@ -540,6 +540,78 @@ async fn listeners_sharing_managers_see_the_same_terminals() {
     lan.stop().await;
 }
 
+/// Stopping a listener (server mode off / token rotated) must cut off sockets
+/// attached through it — they run in detached tasks that outlive the listener —
+/// while the shared terminal stays alive for other listeners.
+#[cfg(unix)]
+#[tokio::test]
+async fn stopping_a_listener_disconnects_its_attached_sockets() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    const LAN_TOKEN: &str = "lan-token-abcdefabcdefabcdefabcdefabcdef";
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+
+    let managers = Managers::default();
+    let (loopback, loopback_base) = start_with(managers.clone(), TOKEN).await;
+    let (lan, _) = start_with(managers, LAN_TOKEN).await;
+    let lan_addr = lan.addr().to_string();
+    let id = create_terminal(&client(), &loopback_base, tmp.path()).await;
+
+    let (mut lan_ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{lan_addr}/remote/terminals/{id}/ws?token={LAN_TOKEN}"
+    ))
+    .await
+    .expect("attach via the LAN listener");
+
+    lan.stop().await;
+
+    let outcome = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut saw_revoked = false;
+        while let Some(Ok(msg)) = lan_ws.next().await {
+            match msg {
+                Message::Text(t) if t.contains(r#""t":"revoked""#) => saw_revoked = true,
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        saw_revoked
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "socket must close promptly when its listener stops"
+    );
+    assert!(outcome.unwrap(), "socket must be told it was revoked");
+
+    let listed: Value = client()
+        .get(format!("{loopback_base}/remote/terminals"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["id"] == id.as_str() && t["alive"] == true),
+        "the terminal outlives the stopped listener"
+    );
+    let loopback_addr = loopback.addr().to_string();
+    assert!(
+        tokio_tungstenite::connect_async(ws_url(&loopback_addr, &id))
+            .await
+            .is_ok(),
+        "the terminal stays attachable through the other listener"
+    );
+
+    loopback.stop().await;
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn terminal_ws_closes_when_killed() {

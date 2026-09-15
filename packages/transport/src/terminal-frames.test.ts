@@ -6,6 +6,10 @@ describe('parseTerminalControlFrame', () => {
 		expect(parseTerminalControlFrame('{"t":"takeover"}')).toEqual({ t: 'takeover' });
 	});
 
+	it('parses a revoked frame', () => {
+		expect(parseTerminalControlFrame('{"t":"revoked"}')).toEqual({ t: 'revoked' });
+	});
+
 	it('parses an exit frame with and without a code', () => {
 		expect(parseTerminalControlFrame('{"t":"exit","code":2}')).toEqual({ t: 'exit', code: 2 });
 		expect(parseTerminalControlFrame('{"t":"exit","code":null}')).toEqual({

@@ -353,6 +353,8 @@ export class TerminalConnection {
 						this.deliverExit({ reason: 'taken_over' });
 					} else if (frame?.t === 'exit') {
 						this.deliverExit({ reason: 'ended', code: frame.code ?? undefined });
+					} else if (frame?.t === 'revoked') {
+						this.deliverExit({ reason: 'ended' });
 					}
 				}
 			};

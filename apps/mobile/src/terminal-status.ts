@@ -10,6 +10,8 @@ export function statusForTextFrame(data: string): TerminalStatus | null {
 	const frame = parseTerminalControlFrame(data);
 	if (frame?.t === 'takeover') return 'taken_over';
 	if (frame?.t === 'exit') return 'exited';
+	// Access was withdrawn: plain closed, not "Take control" — reattaching would 401.
+	if (frame?.t === 'revoked') return 'closed';
 	return null;
 }
 
