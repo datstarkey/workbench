@@ -1,7 +1,4 @@
-use crate::trello::{
-    api, config,
-    types::*,
-};
+use crate::trello::{api, config, types::*};
 
 fn load_creds() -> Result<TrelloCredentials, String> {
     config::load_credentials()
@@ -13,10 +10,7 @@ fn load_creds() -> Result<TrelloCredentials, String> {
 
 #[tauri::command(async)]
 pub async fn trello_validate_auth(api_key: String, token: String) -> Result<bool, String> {
-    let creds = TrelloCredentials {
-        api_key,
-        token,
-    };
+    let creds = TrelloCredentials { api_key, token };
     api::validate_auth(&creds).await.map_err(|e| e.to_string())
 }
 
@@ -25,10 +19,7 @@ pub async fn trello_list_boards(
     api_key: String,
     token: String,
 ) -> Result<Vec<TrelloBoard>, String> {
-    let creds = TrelloCredentials {
-        api_key,
-        token,
-    };
+    let creds = TrelloCredentials { api_key, token };
     api::list_boards(&creds).await.map_err(|e| e.to_string())
 }
 
@@ -74,10 +65,7 @@ pub async fn trello_create_card(
 }
 
 #[tauri::command(async)]
-pub async fn trello_move_card(
-    card_id: String,
-    target_list_id: String,
-) -> Result<bool, String> {
+pub async fn trello_move_card(card_id: String, target_list_id: String) -> Result<bool, String> {
     let creds = load_creds()?;
     api::move_card(&creds, &card_id, &target_list_id)
         .await
@@ -112,10 +100,7 @@ pub fn trello_load_credentials() -> Result<Option<TrelloCredentials>, String> {
 
 #[tauri::command(async)]
 pub fn trello_save_credentials(api_key: String, token: String) -> Result<bool, String> {
-    let creds = TrelloCredentials {
-        api_key,
-        token,
-    };
+    let creds = TrelloCredentials { api_key, token };
     config::save_credentials(&creds).map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -127,9 +112,7 @@ pub fn trello_disconnect() -> Result<bool, String> {
 }
 
 #[tauri::command(async)]
-pub fn trello_load_project_config(
-    project_path: String,
-) -> Result<TrelloProjectConfig, String> {
+pub fn trello_load_project_config(project_path: String) -> Result<TrelloProjectConfig, String> {
     config::load_project_config(&project_path).map_err(|e| e.to_string())
 }
 

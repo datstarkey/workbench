@@ -118,7 +118,9 @@ mod tests {
     #[test]
     fn parse_valid_session_with_user_message() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("abc12345-1234-1234-1234-123456789abc.jsonl");
+        let path = dir
+            .path()
+            .join("abc12345-1234-1234-1234-123456789abc.jsonl");
         let mut file = fs::File::create(&path).unwrap();
         writeln!(
             file,
@@ -126,8 +128,7 @@ mod tests {
         )
         .unwrap();
 
-        let result =
-            parse_session_jsonl(&path, "abc12345-1234-1234-1234-123456789abc".to_string());
+        let result = parse_session_jsonl(&path, "abc12345-1234-1234-1234-123456789abc".to_string());
         assert!(result.is_some());
         let session = result.unwrap();
         assert_eq!(session.session_id, "abc12345-1234-1234-1234-123456789abc");

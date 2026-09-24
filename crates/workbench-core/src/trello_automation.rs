@@ -40,9 +40,18 @@ where
     Ok(Some(card_id))
 }
 
-fn resolve_merge_action(config: &TrelloProjectConfig, branch: &str) -> Option<(String, MergeAction)> {
-    let link = config.task_links.iter().find(|task| task.branch == branch)?;
-    let board = config.boards.iter().find(|board| board.board_id == link.board_id)?;
+fn resolve_merge_action(
+    config: &TrelloProjectConfig,
+    branch: &str,
+) -> Option<(String, MergeAction)> {
+    let link = config
+        .task_links
+        .iter()
+        .find(|task| task.branch == branch)?;
+    let board = config
+        .boards
+        .iter()
+        .find(|board| board.board_id == link.board_id)?;
     let action = board.merge_action.clone()?;
     Some((link.card_id.clone(), action))
 }
@@ -73,10 +82,10 @@ fn execute_action(creds: &TrelloCredentials, card_id: &str, action: &MergeAction
 mod tests {
     use std::cell::{Cell, RefCell};
 
-    use anyhow::anyhow;
     use crate::trello::types::{
         BoardConfig, MergeAction, TaskLink, TrelloCredentials, TrelloProjectConfig,
     };
+    use anyhow::anyhow;
 
     use super::{apply_merge_action_for_branch_with, resolve_merge_action};
 

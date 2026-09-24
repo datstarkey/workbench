@@ -37,7 +37,10 @@ pub fn delete_credentials() -> Result<()> {
 }
 
 pub fn load_project_config(project_path: &str) -> Result<TrelloProjectConfig> {
-    paths::load_json_strict(&project_config_path(project_path), TrelloProjectConfig::default())
+    paths::load_json_strict(
+        &project_config_path(project_path),
+        TrelloProjectConfig::default(),
+    )
 }
 
 pub fn save_project_config(project_path: &str, config: &TrelloProjectConfig) -> Result<()> {
