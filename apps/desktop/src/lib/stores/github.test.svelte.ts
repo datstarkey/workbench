@@ -375,6 +375,82 @@ describe('GitHubStore', () => {
 		});
 	});
 
+	describe('sidebarOverridden / activeTarget', () => {
+		beforeEach(() => {
+			store.ghAvailable = false;
+			mockWorkspaceStore.activeWorkspaceId = 'ws-1';
+			mockWorkspaceStore.activeWorkspace = { id: 'ws-1', projectPath: '/project' };
+			mockWorkspaceStore.resolvedBranch = vi.fn(() => 'main');
+		});
+
+		it('is not overridden by default', () => {
+			expect(store.sidebarOverridden).toBe(false);
+		});
+
+		it('reports an override while keeping the active target', () => {
+			store.showBranch('/project', 'feature');
+			expect(store.sidebarOverridden).toBe(true);
+			expect(store.activeTarget).toEqual({ projectPath: '/project', branch: 'main' });
+		});
+
+		it('ignores an override set in another workspace', () => {
+			store.showBranch('/project', 'feature');
+			mockWorkspaceStore.activeWorkspaceId = 'ws-2';
+			expect(store.sidebarOverridden).toBe(false);
+		});
+	});
+
+	describe('sidebarChecksOverall', () => {
+		beforeEach(() => {
+			mockWorkspaceStore.activeWorkspace = { id: 'ws-1', projectPath: '/project' };
+			mockWorkspaceStore.resolvedBranch = vi.fn(() => 'feature');
+		});
+
+		it('prefers the PR checks status', () => {
+			store.prsByProject = {
+				'/project': [
+					makePR({
+						headRefName: 'feature',
+						checksStatus: { overall: 'failure', total: 2, passing: 1, failing: 1, pending: 0 }
+					})
+				]
+			};
+			store.branchRunsByProject = { '/project': { feature: makeBranchRuns() } };
+			expect(store.sidebarChecksOverall).toBe('failure');
+		});
+
+		it('falls back to branch runs, then none', () => {
+			expect(store.sidebarChecksOverall).toBe('none');
+			store.branchRunsByProject = {
+				'/project': {
+					feature: makeBranchRuns({
+						status: { overall: 'pending', total: 1, passing: 0, failing: 0, pending: 1 }
+					})
+				}
+			};
+			expect(store.sidebarChecksOverall).toBe('pending');
+		});
+	});
+
+	describe('rerunWorkflows', () => {
+		it('reruns every run, then refreshes the project once', async () => {
+			store.ghAvailable = true;
+			mockInvoke('github_rerun_workflow', () => undefined);
+			mockInvoke('github_refresh_project', () => undefined);
+			invokeSpy.mockClear();
+
+			await store.rerunWorkflows('/project', [42, 43]);
+
+			const calls = invokeSpy.mock.calls.map(([cmd]) => cmd);
+			expect(calls.filter((c) => c === 'github_rerun_workflow')).toHaveLength(2);
+			expect(calls.filter((c) => c === 'github_refresh_project')).toHaveLength(1);
+			expect(invokeSpy).toHaveBeenCalledWith('github_rerun_workflow', {
+				projectPath: '/project',
+				runId: 43
+			});
+		});
+	});
+
 	// ─── toggleSidebar ────────────────────────────────────────
 
 	describe('toggleSidebar', () => {

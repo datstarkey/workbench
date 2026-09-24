@@ -118,71 +118,41 @@ export class GitStore {
 		}
 	}
 
-	async commit(projectPath: string, message: string): Promise<GitCommitResult | null> {
-		const result = await this.tryInvoke<GitCommitResult>(
-			'git_commit',
-			{ path: projectPath, message },
-			'[GitStore] Failed to commit:'
-		);
-		if (result) {
-			await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
-		}
-		return result ?? null;
+	/** Throws with git's message (e.g. a failing pre-commit hook) so the UI can show it. */
+	async commit(projectPath: string, message: string): Promise<GitCommitResult> {
+		const result = await invoke<GitCommitResult>('git_commit', { path: projectPath, message });
+		await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
+		return result;
 	}
 
 	async checkoutBranch(projectPath: string, branch: string) {
-		const ok = await this.tryInvoke<void>(
-			'git_checkout_branch',
-			{ path: projectPath, branch },
-			'[GitStore] Failed to checkout branch:'
-		);
-		if (ok !== undefined) {
-			await this.refreshGitState(projectPath);
-		}
+		await invoke('git_checkout_branch', { path: projectPath, branch });
+		await this.refreshGitState(projectPath);
 	}
 
+	// Stash/discard throw so the UI can report git's error (e.g. a pop that conflicts)
 	async stashPush(projectPath: string, message?: string) {
-		const ok = await this.tryInvoke<void>(
-			'git_stash_push',
-			{ path: projectPath, message },
-			'[GitStore] Failed to push stash:'
-		);
-		if (ok !== undefined) {
-			await Promise.all([this.fetchStatus(projectPath), this.fetchStashes(projectPath)]);
-		}
+		await invoke('git_stash_push', { path: projectPath, message });
+		await Promise.all([this.fetchStatus(projectPath), this.fetchStashes(projectPath)]);
 	}
 
 	async stashPop(projectPath: string, index: number) {
-		const ok = await this.tryInvoke<void>(
-			'git_stash_pop',
-			{ path: projectPath, index },
-			'[GitStore] Failed to pop stash:'
-		);
-		if (ok !== undefined) {
+		try {
+			await invoke('git_stash_pop', { path: projectPath, index });
+		} finally {
+			// A conflicting pop still changes the working tree
 			await Promise.all([this.fetchStatus(projectPath), this.fetchStashes(projectPath)]);
 		}
 	}
 
 	async stashDrop(projectPath: string, index: number) {
-		const ok = await this.tryInvoke<void>(
-			'git_stash_drop',
-			{ path: projectPath, index },
-			'[GitStore] Failed to drop stash:'
-		);
-		if (ok !== undefined) {
-			await this.fetchStashes(projectPath);
-		}
+		await invoke('git_stash_drop', { path: projectPath, index });
+		await this.fetchStashes(projectPath);
 	}
 
 	async discardFile(projectPath: string, file: string) {
-		const ok = await this.tryInvoke<void>(
-			'git_discard_file',
-			{ path: projectPath, file },
-			'[GitStore] Failed to discard file:'
-		);
-		if (ok !== undefined) {
-			await this.fetchStatus(projectPath);
-		}
+		await invoke('git_discard_file', { path: projectPath, file });
+		await this.fetchStatus(projectPath);
 	}
 
 	async fetch(projectPath: string) {
@@ -248,16 +218,13 @@ export class GitStore {
 		await this.refreshGitState(projectPath);
 	}
 
-	async commitAmend(projectPath: string, message: string): Promise<GitCommitResult | null> {
-		const result = await this.tryInvoke<GitCommitResult>(
-			'git_commit_amend',
-			{ path: projectPath, message },
-			'[GitStore] Failed to amend:'
-		);
-		if (result) {
-			await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
-		}
-		return result ?? null;
+	async commitAmend(projectPath: string, message: string): Promise<GitCommitResult> {
+		const result = await invoke<GitCommitResult>('git_commit_amend', {
+			path: projectPath,
+			message
+		});
+		await Promise.all([this.fetchStatus(projectPath), this.fetchLog(projectPath)]);
+		return result;
 	}
 
 	async refreshAll(projectPaths: string[]) {

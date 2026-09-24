@@ -20,3 +20,23 @@ export function formatSessionDate(timestamp: string): string {
 		hour12: true
 	});
 }
+
+/** Compact age of an ISO timestamp: "now", "5m", "3h", "2d", "4w", then "Mar 3" */
+export function formatRelativeTime(timestamp: string, now = Date.now()): string {
+	const then = new Date(timestamp).getTime();
+	if (isNaN(then)) return '';
+	const minutes = Math.floor((now - then) / 60_000);
+	if (minutes < 1) return 'now';
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+	const days = Math.floor(hours / 24);
+	if (days < 7) return `${days}d`;
+	if (days < 30) return `${Math.floor(days / 7)}w`;
+	return new Date(then).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** "1 file", "3 files" */
+export function plural(count: number, word: string): string {
+	return `${count} ${word}${count === 1 ? '' : 's'}`;
+}

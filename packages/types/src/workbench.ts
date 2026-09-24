@@ -240,6 +240,8 @@ export interface GitLogEntry {
 	message: string;
 	author: string;
 	date: string;
+	/** Not on any remote-tracking ref yet */
+	unpushed: boolean;
 }
 
 export interface GitStashEntry {

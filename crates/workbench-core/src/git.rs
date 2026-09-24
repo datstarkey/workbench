@@ -576,10 +576,26 @@ pub fn git_status(path: &str) -> Result<GitStatusResult> {
     })
 }
 
+/// Commits reachable from HEAD but from no remote-tracking ref. Empty when the repo has
+/// no remotes, so a purely local repo doesn't flag its whole history as unpushed.
+fn unpushed_shas(path: &str) -> HashSet<String> {
+    let has_remote = git_output(&["remote"], path).is_ok_and(|out| !out.trim().is_empty());
+    if !has_remote {
+        return HashSet::new();
+    }
+    git_output(
+        &["rev-list", "HEAD", "--not", "--remotes", "--max-count=1000"],
+        path,
+    )
+    .map(|out| out.lines().map(str::to_string).collect())
+    .unwrap_or_default()
+}
+
 pub fn git_log(path: &str, max_count: u32) -> Result<Vec<GitLogEntry>> {
     let format = "%H%x00%h%x00%s%x00%an%x00%aI";
     let count_arg = format!("-{}", max_count);
     let output = git_output(&["log", &format!("--format={format}"), &count_arg], path)?;
+    let unpushed = unpushed_shas(path);
 
     let mut entries = Vec::new();
     for line in output.lines() {
@@ -593,6 +609,7 @@ pub fn git_log(path: &str, max_count: u32) -> Result<Vec<GitLogEntry>> {
             message: parts[2].to_string(),
             author: parts[3].to_string(),
             date: parts[4].to_string(),
+            unpushed: unpushed.contains(parts[0]),
         });
     }
     Ok(entries)
@@ -657,7 +674,7 @@ pub fn git_stash_list(path: &str) -> Result<Vec<GitStashEntry>> {
 }
 
 pub fn git_stash_push(path: &str, message: Option<&str>) -> Result<()> {
-    let mut args = vec!["stash", "push"];
+    let mut args = vec!["stash", "push", "--include-untracked"];
     if let Some(msg) = message {
         args.extend_from_slice(&["-m", msg]);
     }
@@ -780,6 +797,58 @@ mod tests {
     use super::*;
     use crate::types::WorktreeCopyOptions;
     use std::path::Path;
+
+    // --- git_log unpushed marking ---
+
+    fn git(dir: &str, args: &[&str]) {
+        let mut full = vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ];
+        full.extend_from_slice(args);
+        git_output(&full, dir).unwrap();
+    }
+
+    #[test]
+    fn git_log_marks_nothing_unpushed_without_remotes() {
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path().to_str().unwrap();
+        git(dir, &["init", "-q"]);
+        git(dir, &["commit", "-q", "--allow-empty", "-m", "a"]);
+
+        let log = git_log(dir, 10).unwrap();
+        assert_eq!(log.len(), 1);
+        assert!(!log[0].unpushed);
+    }
+
+    #[test]
+    fn git_log_marks_commits_missing_from_remotes() {
+        let remote = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let (remote_dir, dir) = (
+            remote.path().to_str().unwrap(),
+            repo.path().to_str().unwrap(),
+        );
+        git(remote_dir, &["init", "-q", "--bare"]);
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["remote", "add", "origin", remote_dir]);
+        git(dir, &["commit", "-q", "--allow-empty", "-m", "pushed"]);
+        git(dir, &["push", "-q", "origin", "main"]);
+        // An unpublished branch: no upstream, but its base is on the remote
+        git(dir, &["checkout", "-q", "-b", "feature"]);
+        git(dir, &["commit", "-q", "--allow-empty", "-m", "local"]);
+
+        let log = git_log(dir, 10).unwrap();
+        let flags: Vec<_> = log
+            .iter()
+            .map(|e| (e.message.as_str(), e.unpushed))
+            .collect();
+        assert_eq!(flags, vec![("local", true), ("pushed", false)]);
+    }
 
     // --- is_safe_relative_path ---
 
