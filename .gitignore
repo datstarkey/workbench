@@ -53,3 +53,11 @@ Library/
 
 # Claude Code worktrees (nested git repos)
 .claude/worktrees/
+
+# design-sync (claude.ai/design) build output + staged scripts
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+.design-sync/theme-entry/workbench.css

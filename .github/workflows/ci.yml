@@ -6,7 +6,53 @@ on:
   pull_request:
 
 jobs:
+  # Decides which suites a change needs. The suite jobs below are required
+  # branch-protection checks, so they must never be filtered out at the
+  # workflow level (`paths-ignore`): a check that never reports blocks the PR
+  # forever. A job skipped by its own `if:` reports as passed instead. If this
+  # job fails, every suite runs (fail-safe) rather than skipping.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.frontend.outputs.code }}
+      rust: ${{ steps.rust.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Anything except docs, design-sync inputs and Rust-only files.
+      - uses: dorny/paths-filter@v3
+        id: frontend
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!.design-sync/**'
+              - '!changelog/**'
+              - '!docs/**'
+              - '!site/**'
+              - '!LICENSE'
+              - '!**/*.rs'
+              - '!**/Cargo.toml'
+              - '!Cargo.lock'
+
+      - uses: dorny/paths-filter@v3
+        id: rust
+        with:
+          filters: |
+            code:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'crates/**'
+              - 'apps/server/**'
+              - 'apps/*/src-tauri/**'
+              - '.github/workflows/ci.yml'
+
   frontend:
+    needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,19 +63,25 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # Always runs: prettier also checks the markdown a docs-only change touches.
       - name: Check formatting
         run: bun run format --check
 
       - name: Lint
+        if: needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true'
         run: bun run lint
 
       - name: Typecheck
+        if: needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true'
         run: bun run check
 
       - name: Test
+        if: needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true'
         run: bun run test
 
   rust:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +103,8 @@ jobs:
         working-directory: apps/desktop/src-tauri
 
   rust-windows:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

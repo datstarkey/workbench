@@ -1,0 +1,6 @@
+{
+	"name": "@workbench/theme-sync",
+	"private": true,
+	"description": "Design-sync entry: the Workbench theme as a tokens-only design system. workbench.css is copied from the desktop Vite build (see .design-sync/config.json buildCmd).",
+	"main": "index.js"
+}
