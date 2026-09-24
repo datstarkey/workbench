@@ -1,4 +1,5 @@
 {
+	"projectId": "64cd299e-eefb-4170-92ef-49e2a67b47e1",
 	"shape": "package",
 	"pkg": "@workbench/theme-sync",
 	"globalName": "WorkbenchTheme",
