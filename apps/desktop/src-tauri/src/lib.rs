@@ -7,6 +7,11 @@ pub use workbench_core::{
     trello_automation, types,
 };
 
+// The e2e WebDriver server is unauthenticated control of the webview (and so of
+// every Tauri command) for anything on loopback, including sandboxed sessions.
+#[cfg(all(feature = "e2e", not(debug_assertions)))]
+compile_error!("the `e2e` feature is test-only and must not be built in release mode");
+
 mod commands;
 mod git_commands;
 mod git_watcher;
@@ -202,6 +207,11 @@ pub fn run() {
     #[cfg(not(target_os = "macos"))]
     {
         builder = builder.invoke_handler(build_invoke_handler!());
+    }
+
+    #[cfg(feature = "e2e")]
+    {
+        builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     }
 
     builder.run(context).expect("error while running Workbench");

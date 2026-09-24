@@ -33,6 +33,12 @@ chrono = "0.4"
 sentry = { version = "0.48", features = ["log"] }
 log = "0.4"
 env_logger = "0.11"
+# Embedded W3C WebDriver server for the e2e suite (apps/desktop/e2e). Only
+# compiled with `--features e2e`; see the guard in lib.rs.
+tauri-plugin-wdio-webdriver = { version = "1.4", optional = true }
+
+[features]
+e2e = ["dep:tauri-plugin-wdio-webdriver"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
