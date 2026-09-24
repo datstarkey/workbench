@@ -20,7 +20,7 @@
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import { Input } from '@workbench/ui/input';
 	import { ScrollArea } from '@workbench/ui/scroll-area';
-	import { SvelteSet } from 'svelte/reactivity';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import {
 		getClaudeSessionStore,
 		getGitHubStore,
@@ -57,7 +57,8 @@
 		onConnect: () => void;
 	} = $props();
 
-	const expandedProjects = new SvelteSet<string>();
+	// Explicit per-project toggles; projects the user never toggled follow "is active".
+	const expandedProjects = new SvelteMap<string, boolean>();
 	const collapsedGroups = new SvelteSet<string>();
 
 	let filterText = $state('');
@@ -231,7 +232,7 @@
 	{@const isActive = workspaceStore.activeProjectPath === project.path}
 	{@const sessions = allSessionsForProject(project.path)}
 	{@const attentionType = projectAttentionType(project.path)}
-	{@const isExpanded = expandedProjects.has(project.path) || isActive}
+	{@const isExpanded = expandedProjects.get(project.path) ?? isActive}
 	<div
 		role="listitem"
 		draggable="true"
@@ -269,7 +270,7 @@
 						type="button"
 						aria-label={isExpanded ? `Collapse ${project.name}` : `Expand ${project.name}`}
 						aria-expanded={isExpanded}
-						onclick={() => toggleSet(expandedProjects, project.path)}
+						onclick={() => expandedProjects.set(project.path, !isExpanded)}
 					>
 						{#if isExpanded}
 							<ChevronDownIcon class="size-3" />
@@ -339,36 +340,60 @@
 <!-- main checkout first, then each worktree; sessions nest under the branch they run on -->
 {#snippet branchTree(project: ProjectConfig)}
 	{@const active = workspaceStore.activeWorkspace}
-	{@const mainBranch = gitStore.branchByProject[project.path] ?? 'main'}
+	{@const mainBranch = gitStore.branchByProject[project.path]}
+	{@const mainSessions = allSessionsForProject(project.path).filter((s) => !s.worktreePath)}
 	<div class="mb-1 ml-[15px] border-l border-wb-hair">
-		{@render branchRow({
-			project,
-			branch: mainBranch,
-			isActive: active?.projectPath === project.path && !active.worktreePath,
-			sessions: allSessionsForProject(project.path).filter((s) => !s.worktreePath),
-			onOpen: () => projectStore.openProject(project.path),
-			onNewSession: () => claudeSessionStore.startSessionByProject(project.path)
-		})}
-		{#each worktreesForProject(project.path) as wt (wt.path)}
+		<!-- no branch = not a git repo: no branch row to show, nothing to branch a worktree from -->
+		{#if !mainBranch}
+			{@render sessionList(project, mainSessions)}
+		{:else}
 			{@render branchRow({
 				project,
-				branch: wt.branch,
-				isActive: active?.worktreePath === wt.path,
-				sessions: allSessionsForProject(project.path).filter((s) => s.worktreePath === wt.path),
-				onOpen: () => worktreeManager.open(project.path, wt.path, wt.branch),
-				onNewSession: () => startSessionInWorktree(project.path, wt.path, wt.branch),
-				onRemove: () => worktreeManager.remove(project.path, wt.path, wt.branch)
+				branch: mainBranch,
+				isActive: active?.projectPath === project.path && !active.worktreePath,
+				sessions: mainSessions,
+				onOpen: () => projectStore.openProject(project.path),
+				onNewSession: () => claudeSessionStore.startSessionByProject(project.path)
 			})}
-		{/each}
-		<button
-			class="flex h-6 w-full items-center gap-1.5 px-2.5 text-left font-mono text-[11px] text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
-			type="button"
-			onclick={() => worktreeManager.add(project.path)}
-		>
-			<PlusIcon class="size-3 shrink-0" />
-			worktree
-		</button>
+			{#each worktreesForProject(project.path) as wt (wt.path)}
+				{@render branchRow({
+					project,
+					branch: wt.branch,
+					isActive: active?.worktreePath === wt.path,
+					sessions: allSessionsForProject(project.path).filter((s) => s.worktreePath === wt.path),
+					onOpen: () => worktreeManager.open(project.path, wt.path, wt.branch),
+					onNewSession: () => startSessionInWorktree(project.path, wt.path, wt.branch),
+					onRemove: () => worktreeManager.remove(project.path, wt.path, wt.branch)
+				})}
+			{/each}
+			<button
+				class="flex h-6 w-full items-center gap-1.5 px-2.5 text-left font-mono text-[11px] text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
+				type="button"
+				onclick={() => worktreeManager.add(project.path)}
+			>
+				<PlusIcon class="size-3 shrink-0" />
+				worktree
+			</button>
+		{/if}
 	</div>
+{/snippet}
+
+{#snippet sessionList(project: ProjectConfig, sessions: ActiveClaudeSession[])}
+	{#each sessions as session (session.tabId)}
+		<div class="pl-5">
+			<SessionItem
+				{session}
+				onSelect={() => workspaceStore.selectTabByProject(project.path, session.tabId)}
+				onRestart={() =>
+					claudeSessionStore.restartSessionByProject(
+						project.path,
+						session.tabId,
+						session.sessionType
+					)}
+				onClose={() => workspaceStore.closeTabByProject(project.path, session.tabId)}
+			/>
+		</div>
+	{/each}
 {/snippet}
 
 {#snippet branchRow(row: {
@@ -433,21 +458,7 @@
 			{@render branchMenuItems(row, ContextMenu.Item, ContextMenu.Separator)}
 		</ContextMenu.Content>
 	</ContextMenu.Root>
-	{#each row.sessions as session (session.tabId)}
-		<div class="pl-5">
-			<SessionItem
-				{session}
-				onSelect={() => workspaceStore.selectTabByProject(row.project.path, session.tabId)}
-				onRestart={() =>
-					claudeSessionStore.restartSessionByProject(
-						row.project.path,
-						session.tabId,
-						session.sessionType
-					)}
-				onClose={() => workspaceStore.closeTabByProject(row.project.path, session.tabId)}
-			/>
-		</div>
-	{/each}
+	{@render sessionList(row.project, row.sessions)}
 {/snippet}
 
 {#snippet branchMenuItems(
