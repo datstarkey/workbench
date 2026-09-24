@@ -80,7 +80,9 @@ mod tests {
 
     #[test]
     fn skippable_starts_with_base_directory() {
-        assert!(is_skippable_user_message("Base directory: /home/user/project"));
+        assert!(is_skippable_user_message(
+            "Base directory: /home/user/project"
+        ));
     }
 
     #[test]

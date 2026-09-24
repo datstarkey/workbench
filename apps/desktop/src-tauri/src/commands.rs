@@ -7,9 +7,9 @@ use crate::codex_config;
 use crate::codex_sessions;
 use crate::config;
 use crate::git;
+use crate::git_watcher::GitWatcher;
 use crate::github;
 use crate::github_poller::GitHubPoller;
-use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::{HookBridgeState, HookLogEntry};
 use crate::package_scripts;
 use crate::pty::PtyManager;
@@ -357,10 +357,7 @@ pub fn github_update_pr_branch(
 }
 
 #[tauri::command(async)]
-pub fn github_rerun_workflow(
-    project_path: String,
-    run_id: u64,
-) -> Result<bool, String> {
+pub fn github_rerun_workflow(project_path: String, run_id: u64) -> Result<bool, String> {
     github::rerun_workflow(&project_path, run_id).map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -389,11 +386,7 @@ pub fn github_merge_pr(
 }
 
 #[tauri::command(async)]
-pub fn delete_branch(
-    repo_path: String,
-    branch: String,
-    force: bool,
-) -> Result<bool, String> {
+pub fn delete_branch(repo_path: String, branch: String, force: bool) -> Result<bool, String> {
     git::delete_branch(&repo_path, &branch, force).map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -466,9 +459,7 @@ pub fn terminal_hook_socket(hook_bridge: State<'_, HookBridgeState>) -> Option<S
 }
 
 #[tauri::command]
-pub fn clear_hook_logs(
-    hook_bridge: State<'_, HookBridgeState>,
-) -> Result<(), String> {
+pub fn clear_hook_logs(hook_bridge: State<'_, HookBridgeState>) -> Result<(), String> {
     hook_bridge.clear_logs();
     Ok(())
 }

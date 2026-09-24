@@ -159,6 +159,8 @@ mod tests {
     fn inherited_env_carries_path_and_term() {
         let env = inherited_env();
         assert!(env.iter().any(|(k, v)| *k == "PATH" && !v.is_empty()));
-        assert!(env.iter().any(|(k, v)| *k == "TERM" && v == "xterm-256color"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| *k == "TERM" && v == "xterm-256color"));
     }
 }

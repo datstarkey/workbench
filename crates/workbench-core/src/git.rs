@@ -58,7 +58,10 @@ pub(crate) fn is_safe_relative_path(path: &Path) -> bool {
         })
 }
 
-pub(crate) fn is_relevant_workspace_ignored_path(rel_path: &str, options: &WorktreeCopyOptions) -> bool {
+pub(crate) fn is_relevant_workspace_ignored_path(
+    rel_path: &str,
+    options: &WorktreeCopyOptions,
+) -> bool {
     let normalized = rel_path.trim_end_matches('/');
     if normalized.is_empty() {
         return false;
@@ -386,8 +389,8 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
             Some("current") | Some("") => None,
             Some("auto") | None => {
                 // Auto-detect: origin/<default_branch>
-                let default_branch = get_default_branch(&request.repo_path)
-                    .unwrap_or_else(|_| "main".to_string());
+                let default_branch =
+                    get_default_branch(&request.repo_path).unwrap_or_else(|_| "main".to_string());
                 let origin_ref = format!("origin/{default_branch}");
                 // Only use origin ref if it actually exists
                 if git_output(&["rev-parse", "--verify", &origin_ref], &request.repo_path).is_ok() {
@@ -438,9 +441,7 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
 /// Append an entry to a .gitignore file if it's not already present.
 fn ensure_gitignore_entry(gitignore_path: &Path, entry: &str) -> Result<()> {
     let content = fs::read_to_string(gitignore_path).unwrap_or_default();
-    let already_present = content
-        .lines()
-        .any(|line| line.trim() == entry.trim());
+    let already_present = content.lines().any(|line| line.trim() == entry.trim());
     if !already_present {
         let mut new_content = content;
         if !new_content.is_empty() && !new_content.ends_with('\n') {
@@ -578,10 +579,7 @@ pub fn git_status(path: &str) -> Result<GitStatusResult> {
 pub fn git_log(path: &str, max_count: u32) -> Result<Vec<GitLogEntry>> {
     let format = "%H%x00%h%x00%s%x00%an%x00%aI";
     let count_arg = format!("-{}", max_count);
-    let output = git_output(
-        &["log", &format!("--format={format}"), &count_arg],
-        path,
-    )?;
+    let output = git_output(&["log", &format!("--format={format}"), &count_arg], path)?;
 
     let mut entries = Vec::new();
     for line in output.lines() {
@@ -628,10 +626,7 @@ pub fn git_checkout(path: &str, branch: &str) -> Result<()> {
 }
 
 pub fn git_stash_list(path: &str) -> Result<Vec<GitStashEntry>> {
-    let output = git_output(
-        &["stash", "list", "--format=%gd%x00%gs%x00%aI"],
-        path,
-    );
+    let output = git_output(&["stash", "list", "--format=%gd%x00%gs%x00%aI"], path);
 
     // Empty stash list returns an error from git_output because there's no output
     let output = match output {
@@ -817,86 +812,131 @@ mod tests {
 
     #[test]
     fn ignored_path_ai_config_claude_dir() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: false,
+        };
         assert!(is_relevant_workspace_ignored_path(".claude", &opts));
     }
 
     #[test]
     fn ignored_path_ai_config_claude_subpath() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
-        assert!(is_relevant_workspace_ignored_path(".claude/settings.json", &opts));
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: false,
+        };
+        assert!(is_relevant_workspace_ignored_path(
+            ".claude/settings.json",
+            &opts
+        ));
     }
 
     #[test]
     fn ignored_path_ai_config_codex() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: false,
+        };
         assert!(is_relevant_workspace_ignored_path(".codex", &opts));
     }
 
     #[test]
     fn ignored_path_ai_config_mcp_json() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: false,
+        };
         assert!(is_relevant_workspace_ignored_path(".mcp.json", &opts));
     }
 
     #[test]
     fn ignored_path_ai_config_claude_md() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: false,
+        };
         assert!(is_relevant_workspace_ignored_path("CLAUDE.md", &opts));
     }
 
     #[test]
     fn ignored_path_ai_config_unrelated_file() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: false,
+        };
         assert!(!is_relevant_workspace_ignored_path("src/main.rs", &opts));
     }
 
     #[test]
     fn ignored_path_env_files_env() {
-        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        let opts = WorktreeCopyOptions {
+            ai_config: false,
+            env_files: true,
+        };
         assert!(is_relevant_workspace_ignored_path(".env", &opts));
     }
 
     #[test]
     fn ignored_path_env_files_env_local() {
-        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        let opts = WorktreeCopyOptions {
+            ai_config: false,
+            env_files: true,
+        };
         assert!(is_relevant_workspace_ignored_path(".env.local", &opts));
     }
 
     #[test]
     fn ignored_path_env_files_envrc() {
-        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        let opts = WorktreeCopyOptions {
+            ai_config: false,
+            env_files: true,
+        };
         assert!(is_relevant_workspace_ignored_path(".envrc", &opts));
     }
 
     #[test]
     fn ignored_path_env_files_dev_vars() {
-        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        let opts = WorktreeCopyOptions {
+            ai_config: false,
+            env_files: true,
+        };
         assert!(is_relevant_workspace_ignored_path(".dev.vars", &opts));
     }
 
     #[test]
     fn ignored_path_env_files_unrelated() {
-        let opts = WorktreeCopyOptions { ai_config: false, env_files: true };
+        let opts = WorktreeCopyOptions {
+            ai_config: false,
+            env_files: true,
+        };
         assert!(!is_relevant_workspace_ignored_path("package.json", &opts));
     }
 
     #[test]
     fn ignored_path_both_disabled() {
-        let opts = WorktreeCopyOptions { ai_config: false, env_files: false };
+        let opts = WorktreeCopyOptions {
+            ai_config: false,
+            env_files: false,
+        };
         assert!(!is_relevant_workspace_ignored_path(".claude", &opts));
         assert!(!is_relevant_workspace_ignored_path(".env", &opts));
     }
 
     #[test]
     fn ignored_path_empty_string() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: true };
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: true,
+        };
         assert!(!is_relevant_workspace_ignored_path("", &opts));
     }
 
     #[test]
     fn ignored_path_trailing_slash_stripped() {
-        let opts = WorktreeCopyOptions { ai_config: true, env_files: false };
+        let opts = WorktreeCopyOptions {
+            ai_config: true,
+            env_files: false,
+        };
         assert!(is_relevant_workspace_ignored_path(".claude/", &opts));
     }
 

@@ -41,8 +41,10 @@ pub async fn list_boards(creds: &TrelloCredentials) -> Result<Vec<TrelloBoard>> 
         bail!("Trello API error listing boards: {}", resp.status());
     }
 
-    let mut boards: Vec<TrelloBoard> =
-        resp.json().await.context("Failed to parse boards response")?;
+    let mut boards: Vec<TrelloBoard> = resp
+        .json()
+        .await
+        .context("Failed to parse boards response")?;
     let mut seen: HashSet<String> = boards.iter().map(|b| b.id.clone()).collect();
 
     // Also fetch boards from each organization/workspace (includes workspace-visible boards)
@@ -101,10 +103,7 @@ async fn list_organization_boards(
         .context("Failed to list organization boards")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error listing org boards: {}",
-            resp.status()
-        );
+        bail!("Trello API error listing org boards: {}", resp.status());
     }
 
     resp.json()
@@ -127,13 +126,13 @@ pub async fn list_columns(creds: &TrelloCredentials, board_id: &str) -> Result<V
         .context("Failed to list Trello columns")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error listing columns: {}",
-            resp.status()
-        );
+        bail!("Trello API error listing columns: {}", resp.status());
     }
 
-    let lists: Vec<TrelloList> = resp.json().await.context("Failed to parse columns response")?;
+    let lists: Vec<TrelloList> = resp
+        .json()
+        .await
+        .context("Failed to parse columns response")?;
     Ok(lists)
 }
 
@@ -151,13 +150,13 @@ pub async fn list_cards(creds: &TrelloCredentials, list_id: &str) -> Result<Vec<
         .context("Failed to list Trello cards")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error listing cards: {}",
-            resp.status()
-        );
+        bail!("Trello API error listing cards: {}", resp.status());
     }
 
-    let cards: Vec<TrelloCard> = resp.json().await.context("Failed to parse cards response")?;
+    let cards: Vec<TrelloCard> = resp
+        .json()
+        .await
+        .context("Failed to parse cards response")?;
     Ok(cards)
 }
 
@@ -171,14 +170,13 @@ pub async fn list_labels(creds: &TrelloCredentials, board_id: &str) -> Result<Ve
         .context("Failed to list Trello labels")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error listing labels: {}",
-            resp.status()
-        );
+        bail!("Trello API error listing labels: {}", resp.status());
     }
 
-    let labels: Vec<TrelloLabel> =
-        resp.json().await.context("Failed to parse labels response")?;
+    let labels: Vec<TrelloLabel> = resp
+        .json()
+        .await
+        .context("Failed to parse labels response")?;
     Ok(labels)
 }
 
@@ -207,13 +205,13 @@ pub async fn create_card(
         .context("Failed to create Trello card")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error creating card: {}",
-            resp.status()
-        );
+        bail!("Trello API error creating card: {}", resp.status());
     }
 
-    let card: TrelloCard = resp.json().await.context("Failed to parse created card response")?;
+    let card: TrelloCard = resp
+        .json()
+        .await
+        .context("Failed to parse created card response")?;
     Ok(card)
 }
 
@@ -235,10 +233,7 @@ pub async fn move_card(
         .context("Failed to move Trello card")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error moving card: {}",
-            resp.status()
-        );
+        bail!("Trello API error moving card: {}", resp.status());
     }
 
     Ok(())
@@ -262,10 +257,7 @@ pub async fn add_label_to_card(
         .context("Failed to add label to Trello card")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error adding label: {}",
-            resp.status()
-        );
+        bail!("Trello API error adding label: {}", resp.status());
     }
 
     Ok(())
@@ -288,10 +280,7 @@ pub async fn remove_label_from_card(
         .context("Failed to remove label from Trello card")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error removing label: {}",
-            resp.status()
-        );
+        bail!("Trello API error removing label: {}", resp.status());
     }
 
     Ok(())
@@ -317,13 +306,13 @@ pub async fn fetch_board_data(
         .context("Failed to fetch Trello board")?;
 
     if !resp.status().is_success() {
-        bail!(
-            "Trello API error fetching board: {}",
-            resp.status()
-        );
+        bail!("Trello API error fetching board: {}", resp.status());
     }
 
-    let board: TrelloBoard = resp.json().await.context("Failed to parse board response")?;
+    let board: TrelloBoard = resp
+        .json()
+        .await
+        .context("Failed to parse board response")?;
 
     // Fetch all columns
     let all_columns = list_columns(creds, board_id).await?;
@@ -335,10 +324,7 @@ pub async fn fetch_board_data(
             continue;
         }
         let cards = list_cards(creds, &col.id).await?;
-        columns.push(TrelloColumnData {
-            column: col,
-            cards,
-        });
+        columns.push(TrelloColumnData { column: col, cards });
     }
 
     Ok(TrelloBoardData { board, columns })
