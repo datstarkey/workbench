@@ -903,7 +903,10 @@ async fn terminal_ws_exit_frame_carries_code() {
     })
     .await;
 
-    assert!(result.is_ok(), "socket must close within timeout after shell exit");
+    assert!(
+        result.is_ok(),
+        "socket must close within timeout after shell exit"
+    );
     let (saw_exit, saw_close) = result.unwrap();
     assert!(
         saw_exit,

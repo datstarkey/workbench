@@ -265,11 +265,8 @@ mod tests {
 
         let first =
             dispatcher.enqueue_request(project_path.clone(), "git-watcher", "git-dir-change");
-        let second = dispatcher.enqueue_request(
-            project_path.clone(),
-            "claude-hook",
-            "post-tool-use-bash",
-        );
+        let second =
+            dispatcher.enqueue_request(project_path.clone(), "claude-hook", "post-tool-use-bash");
 
         assert_eq!(first, 1);
         assert_eq!(second, 2);
@@ -292,11 +289,8 @@ mod tests {
         let project_path = "/repo".to_string();
 
         dispatcher.enqueue_request(project_path.clone(), "git-watcher", "git-dir-change");
-        let latest = dispatcher.enqueue_request(
-            project_path.clone(),
-            "claude-hook",
-            "post-tool-use-write",
-        );
+        let latest =
+            dispatcher.enqueue_request(project_path.clone(), "claude-hook", "post-tool-use-write");
 
         let payload = dispatcher
             .take_payload_if_latest(project_path.as_str(), latest)

@@ -151,7 +151,10 @@ pub fn list_project_prs_with_checks(path: &str) -> Result<PrsWithChecks> {
         .filter_map(|v| {
             let number = v["number"].as_u64()?;
             let nodes = v.get("statusCheckRollup")?.as_array()?;
-            Some((number, nodes.iter().filter_map(parse_check_detail).collect()))
+            Some((
+                number,
+                nodes.iter().filter_map(parse_check_detail).collect(),
+            ))
         })
         .collect();
 
@@ -336,7 +339,9 @@ pub fn get_project_status(path: &str) -> GitHubProjectStatus {
             });
             let runs_handle = s.spawn(|| list_workflow_runs(path));
             (
-                prs_handle.join().unwrap_or_else(|_| (vec![], HashMap::new())),
+                prs_handle
+                    .join()
+                    .unwrap_or_else(|_| (vec![], HashMap::new())),
                 runs_handle.join().unwrap_or_default(),
             )
         })
