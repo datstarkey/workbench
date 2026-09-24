@@ -151,14 +151,55 @@ pub fn list_project_prs_with_checks(path: &str) -> Result<PrsWithChecks> {
         .filter_map(|v| {
             let number = v["number"].as_u64()?;
             let nodes = v.get("statusCheckRollup")?.as_array()?;
-            Some((
-                number,
-                nodes.iter().filter_map(parse_check_detail).collect(),
-            ))
+            let checks = latest_rollup_nodes(nodes)
+                .into_iter()
+                .filter_map(parse_check_detail)
+                .collect();
+            Some((number, checks))
         })
         .collect();
 
     Ok((prs, pr_checks))
+}
+
+/// The rollup lists every check run on the head commit, so a re-run job or a workflow
+/// fired by both `push` and `pull_request` appears twice under one name. Keep only the
+/// most recently started node per name + workflow (as `gh pr checks` does); the sidebar
+/// keys its check list on that pair and throws on duplicates. Nameless nodes pass through.
+fn latest_rollup_nodes(nodes: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    fn str_of<'a>(node: &'a serde_json::Value, key: &str) -> &'a str {
+        node.get(key).and_then(|v| v.as_str()).unwrap_or("")
+    }
+    fn name_of(node: &serde_json::Value) -> &str {
+        node.get("name")
+            .or_else(|| node.get("context"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    }
+
+    let mut latest: HashMap<(&str, &str), usize> = HashMap::new();
+    for (i, node) in nodes.iter().enumerate() {
+        let name = name_of(node);
+        if name.is_empty() {
+            continue;
+        }
+        latest
+            .entry((name, str_of(node, "workflowName")))
+            .and_modify(|j| {
+                if str_of(node, "startedAt") > str_of(&nodes[*j], "startedAt") {
+                    *j = i;
+                }
+            })
+            .or_insert(i);
+    }
+
+    let kept: std::collections::HashSet<usize> = latest.into_values().collect();
+    nodes
+        .iter()
+        .enumerate()
+        .filter(|(i, node)| kept.contains(i) || name_of(node).is_empty())
+        .map(|(_, node)| node)
+        .collect()
 }
 
 /// Map one `statusCheckRollup` node to the shape — and bucket vocabulary — that
@@ -411,7 +452,7 @@ fn parse_checks_rollup(rollup: Option<&serde_json::Value>) -> GitHubChecksStatus
     let mut failing = 0u32;
     let mut pending = 0u32;
 
-    for check in arr {
+    for check in latest_rollup_nodes(arr) {
         let state = check
             .get("conclusion")
             .or_else(|| check.get("state"))
@@ -766,6 +807,30 @@ mod tests {
         let s = parse_checks_rollup(Some(&val));
         assert_eq!(s.overall, "pending");
         assert_eq!(s.pending, 1);
+    }
+
+    #[test]
+    fn rollup_keeps_latest_run_per_name_and_workflow() {
+        let val = serde_json::json!([
+            {"name": "build", "workflowName": "CI", "startedAt": "2026-09-22T10:00:00Z", "conclusion": "FAILURE"},
+            {"name": "build", "workflowName": "Release", "startedAt": "2026-09-22T10:00:00Z", "conclusion": "SUCCESS"},
+            {"name": "build", "workflowName": "CI", "startedAt": "2026-09-22T11:00:00Z", "conclusion": "SUCCESS"},
+            {"context": "ci/status", "state": "SUCCESS"},
+            {"context": "ci/status", "state": "SUCCESS"}
+        ]);
+        let s = parse_checks_rollup(Some(&val));
+        assert_eq!((s.passing, s.failing), (3, 0));
+
+        let nodes = latest_rollup_nodes(val.as_array().unwrap());
+        let started: Vec<_> = nodes.iter().map(|n| n["startedAt"].as_str()).collect();
+        assert_eq!(
+            started,
+            [
+                Some("2026-09-22T10:00:00Z"),
+                Some("2026-09-22T11:00:00Z"),
+                None
+            ]
+        );
     }
 
     #[test]
