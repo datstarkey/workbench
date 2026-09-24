@@ -13,19 +13,22 @@ Cargo.toml / package.json / turbo.json   # workspace roots (repo root)
 apps/
   desktop/      # the Tauri app: src/ (Svelte frontend) + src-tauri/ (Rust, crate `workbench`)
   server/       # workbench-server: headless axum control plane (lib + bin), NO tauri
-  mobile/       # placeholder (Tauri-mobile client, not yet built)
+  mobile/       # Tauri Android control-plane client (see docs/MOBILE.md)
 crates/
   workbench-core/   # shared pure Rust logic (no tauri): config, git, sessions, settings, types
 packages/
   types/             # @workbench/types: shared TS types (mirror of workbench-core serde types)
   transport/         # @workbench/transport: ControlPlaneTransport (Tauri/Http/mock impls), typed via @workbench/types
   ui/                # @workbench/ui: shadcn-svelte primitives + cn(); subpath exports (@workbench/ui/button …)
+  theme/             # @workbench/theme: theme.css — design tokens, accent presets, Tailwind v4 @theme mappings
   control-plane-ui/  # @workbench/control-plane-ui: transport-driven ControlPlaneStore + ControlPlaneSidebar (mobile / desktop-remote)
+docs/                # SIGNING, SANDBOX_RUNTIME, MOBILE, LANDING_PAGE deep dives
+.design-sync/        # claude.ai/design sync inputs (tokens-only; see its NOTES.md)
 ```
 
-`@workbench/ui` owns the shadcn primitives (`@workbench/ui/<component>`) and `cn`/type-helpers (`@workbench/ui` root). Apps must add `@source '<rel>/packages/ui/src'` in their `app.css` so Tailwind v4 generates classes used only in the package. `@workbench/control-plane-ui` is a clean, transport-driven shared sidebar (list projects, view/create worktrees, spawn/kill remote sessions, no terminal IO) — consumed by the desktop's **remote-client mode** (ActivityRail "Remote server" → `RemoteServerDialog`, `HttpTransport`) and, in future, the native mobile app.
+`@workbench/ui` owns the shadcn primitives (`@workbench/ui/<component>`) and `cn`/type-helpers (`@workbench/ui` root). `@workbench/theme` (`packages/theme/theme.css`) holds every token, the accent presets, the `@theme inline` utility mappings, the base layer and the `@source` lines that make Tailwind v4 scan `packages/ui` and `packages/control-plane-ui`; each app's `app.css` imports it after `tailwindcss`. `@workbench/control-plane-ui` is a clean, transport-driven shared sidebar (list projects, view/create worktrees, spawn/kill remote sessions, no terminal IO) — consumed by the desktop's **remote-client mode** (ActivityRail "Remote server" → `RemoteServerDialog`, `HttpTransport`) and by the mobile app.
 
-Not yet extracted (deferred; desktop keeps its own terminal-coupled `ProjectSidebar`/stores): `@workbench/tailwind-preset`, and splitting the desktop `ClaudeSessions`/`Workspace` stores into shared core slices. The desktop's rich sidebar is intentionally NOT shared — it's coupled to terminals/git/github; the shared `ControlPlaneSidebar` is the lean cross-platform one.
+Not yet extracted (deferred; desktop keeps its own terminal-coupled `ProjectSidebar`/stores): splitting the desktop `ClaudeSessions`/`Workspace` stores into shared core slices. The desktop's rich sidebar is intentionally NOT shared — it's coupled to terminals/git/github; the shared `ControlPlaneSidebar` is the lean cross-platform one.
 
 Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-core` (pure logic), `workbench-server` (lib+bin). `workbench-core` and `workbench-server` must **never** depend on `tauri` — verify with `cargo tree -p workbench-server | grep -i tauri` (must be empty). Tauri deps live only in `apps/desktop/src-tauri/Cargo.toml`.
 
@@ -50,6 +53,8 @@ Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-
 5. **Cleanup:** Kodiak deletes the branch after merge (`delete_branch_on_merge`).
 
 The `github-pr` / `prep-pr` skills automate this; prefer them over hand-running `gh`.
+
+**CI scope** (`.github/workflows/ci.yml`): a `changes` job (`dorny/paths-filter`) decides what a diff needs. Docs-only changes (`**/*.md`, `docs/`, `changelog/`, `site/`, `.design-sync/`) run only the prettier check; Rust suites run only when Rust inputs change (`*.rs`, `Cargo.*`, `crates/`, `apps/server/`, `apps/*/src-tauri/`, `ci.yml`). The required checks (`frontend`/`rust`/`rust-windows`) always report: gate them with job- or step-level `if:`, never workflow-level `paths`/`paths-ignore`, or a filtered-out required check blocks the PR forever. If `changes` fails, every suite runs.
 
 ## Commands
 
@@ -136,19 +141,21 @@ Control-plane stores call `invoke`/`listen` imported from **`$lib/transport`** (
 
 - `projects/` — Sidebar, project dialog, project manager
 - `workspaces/` — Workspace tabs, landing page
-- `terminal/` — Terminal tabs, grid layout, terminal pane (xterm.js)
+- `terminal/` — Terminal tabs, grid layout, terminal pane (xterm.js), cross-device adoption
 - `claude/` — Session resume menu
 - `worktrees/` — Worktree creation dialog, worktree manager
-- `trello/` — Board panel, task cards, quick-add, link dialog
-- `sidebar/` — Tabbed right sidebar (GitHub | Boards)
+- `instances/` — Local/remote instance switcher (see Gotchas)
+- `chrome/` — `ActivityRail`, `StatusBar`
+- `agent-actions/` — Agent actions menu
+- `sidebar/` — Tabbed right sidebar: `git/` (status, branches, log, stash) | `github/` (PRs, runs, checks) | `trello/` (boards)
 
 **Manager stores** (`src/lib/features/*/`): `ProjectManagerStore` and `WorktreeManagerStore` own dialog UI state and multi-step workflows (picker → dialog → validate → save). Data stores handle CRUD; manager stores orchestrate UI flows. Both are in context and use `ConfirmAction<T>` from `$lib/utils/confirm-action.svelte.ts` for confirm-before-delete flows.
 
 **Components** (`src/lib/components/`):
 
-- `ConfirmDialog`, `EmptyState`
-- `settings/` — `SettingsSheet` (Workbench/Claude Code/Integrations tabs) + per-tab components (`SettingsWorkbench`, `SettingsEmptyState`, `SettingsSelect`, `SettingsToggle`, `EditableStringList`, `SettingsTrelloAuth`, `SettingsBoardConfig`)
-- `ui/` — shadcn-svelte primitives
+- `ConfirmDialog`, `EmptyState`, `UpdateDialog`, `IntegrationApprovalDialog`
+- `settings/` — rendered in a separate OS window (`utils/settings-window.ts`; `index.html?view=settings`, mounted by `main.ts`). `SettingsContent` + one component per section (`SettingsWorkbench`, `SettingsServerMode`, `SettingsSandbox`, `SettingsPermissions`, `SettingsHooks`, `SettingsMcp`, …)
+- shadcn primitives live in `@workbench/ui`, not here
 
 **Utils** (`src/lib/utils/`):
 
@@ -159,6 +166,7 @@ Control-plane stores call `invoke`/`listen` imported from **`$lib/transport`** (
 - `path.ts` — `baseName`, `effectivePath`
 - `terminal.ts` — PTY IPC wrappers
 - `uid.ts`, `vscode.ts` — UUID generation, VS Code opener
+- `github.ts`, `overlay-scrollbars.ts`, `settings-window.ts`
 
 **Types**: `src/types/workbench.ts`, `src/types/claude-settings.ts` (typed settings with union literals for enums)
 
@@ -170,9 +178,10 @@ Control-plane stores call `invoke`/`listen` imported from **`$lib/transport`** (
 
 Tailwind CSS v4 via `@tailwindcss/vite`. shadcn-svelte components (`components.json`, base color: slate). Dark mode forced on.
 
-- Pro chrome tokens: `--wb-*` CSS vars in `app.css` (`bg`/`panel`/`panel2`/`rail`/`ink`/`hair` + session colors `claude`/`codex`/`shell`/`ok`/`warn`/`err`), exposed as Tailwind utilities (`bg-wb-panel`, `text-wb-claude`). Use these for new chrome instead of shadcn surface tokens (keeps dialogs/inputs unbroken).
-- Accent is theme-selectable: `:root[data-accent='violet|tideline|ember|moss|iris']` presets in `app.css` drive `--wb-accent` + shadcn `--primary`; the attribute is set from `workbenchSettingsStore.accentColor`. Add new presets in `app.css` AND the swatch list in `SettingsWorkbench.svelte`.
+- Pro chrome tokens: `--wb-*` CSS vars in `packages/theme/theme.css` (`bg`/`panel`/`panel2`/`rail`/`ink`/`hair` + session colors `claude`/`codex`/`shell`/`ok`/`warn`/`err`), exposed as Tailwind utilities (`bg-wb-panel`, `text-wb-claude`). Use these for new chrome instead of shadcn surface tokens (keeps dialogs/inputs unbroken).
+- Accent is theme-selectable: `:root[data-accent='violet|tideline|ember|moss|iris']` presets in `theme.css` drive `--wb-accent` + shadcn `--primary`; the attribute is set from `workbenchSettingsStore.accentColor`. Add new presets in `theme.css` AND the swatch list in `SettingsWorkbench.svelte`.
 - Window chrome components live in `src/lib/features/chrome/` (`ActivityRail` 44px left rail, `StatusBar` 22px bottom). App uses the native titlebar (`decorations: true`) — no custom traffic-light bar.
+- The theme is synced to claude.ai/design as a tokens-only design system (Svelte components can't sync; Claude Design renders React). Changing tokens or `packages/ui` class strings means re-running `/design-sync`; `.design-sync/NOTES.md` lists what drifts.
 
 ### Terminal persistence
 
@@ -190,18 +199,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Runtime session/activity updates are event-driven (`claude:hook` and `codex:notify`); JSONL discovery is on-demand for resume/history and label enrichment.
 - Quiescence: per-pane debounce on `terminal:data` events. After 1s of no output, pane marked as needing attention.
 - Session IDs come from JSONL files created by the CLI, never generated by frontend.
-- **Sandbox runtime** (opt-in, `sandboxRuntimeEnabled`): when on, every Claude command is wrapped as `npx --yes @anthropic-ai/sandbox-runtime@0.0.76 --settings <file> -- claude …`, putting the whole process (file tools, MCP servers, hooks — not just Bash) behind Seatbelt/bubblewrap. Codex is never wrapped (no srt support) and it is a no-op on Windows (srt Windows support is alpha) — gated in both `claude.ts`'s builder and the store getter, and the toggle is hidden in the UI.
-  - The `--` separator is **required**: srt's own parser claims `--version`/`--debug`/`-s`/`-c` anywhere in the argument list, so without it `claude --version` prints _srt's_ version. The version is **pinned** so an upstream release cannot change sandbox semantics under a running install. **Pin the npm version, not srt's self-reported one** — the package at npm `0.0.76` prints `0.2.0` for `--version`, and `@0.2.0` does not resolve. `extractPromptArg`'s prefix regex matches any version (or none) so commands persisted by an earlier build still normalise.
-  - Settings file: `~/.workbench/sandbox-runtime.json`, generated by `workbench_core::sandbox_runtime`. `sandbox_runtime_settings_path` **writes it and returns `Result`** — the frontend wraps only with a path it got back, so a write failure means launching unwrapped rather than emitting a command srt refuses. Also regenerated at startup (after `HookBridgeState::new` binds) and on every `save_workbench_settings` / `save_projects`.
-  - srt's schema **requires** `network.allowedDomains`, `network.deniedDomains`, `filesystem.allowWrite`, `denyWrite` and `denyRead`; a file missing any key fails loudly (`Invalid configuration in <path>` … `Refusing to run with the default config`) rather than running unconfined.
-  - **srt matches on the real path.** `/tmp` in `allowWrite` grants nothing on macOS — `/tmp` is a symlink to `/private/tmp` — and the same applies to `/var` (so `$TMPDIR`) and any project under a symlinked parent. Every emitted path is canonicalized (`resolved()`), absolute, and never tilde-relative.
-  - **`~/.claude` is an allowlist, not a denylist** (`CLAUDE_ALLOW_WRITE`). That directory keeps gaining code-execution surfaces (hooks, plugins, skills, agents, commands, output-styles, rules, workflows, routines, scheduled tasks, daemon state, `local`), so only Claude Code's runtime-state paths are writable: `projects`, `todos`, `sessions`, `history.jsonl`, `file-history`, `plans`, `paste-cache`, `statsig`, `telemetry`, `cache`, `stats-cache.json`, `ide`, `debug`, `.update.lock`, `.credentials.json`, `mcp-needs-auth-cache.json`. **`projects` is load-bearing**: with `~/.claude` unwritable a session still completes and Bash still works, but no session JSONL is written, silently breaking Workbench's discovery/resume/labels. `shell-snapshots` is deliberately _not_ allowed — Bash was verified working without it. The worst surfaces are additionally in `denyWrite` as defence in depth against a future widening of the allowlist.
-  - Also writable: cwd, every registered project root (a sibling worktree writes into the main repo's `.git/worktrees/*`), `/tmp`, `$TMPDIR`. **`~/.workbench` is not writable at all** — a session that could rewrite `settings.json` or `projects.json` would widen its own sandbox at the next regeneration, and nothing inside the sandbox needs it (the hook script only opens a TCP socket).
-  - Denied writes also cover `~/.claude.json` (holds `mcpServers`) and, **per project root**, `.git/hooks`, `.git/config`, `.git/modules`, `.claude/{settings.json,settings.local.json,hooks,agents,skills,commands}` and `.mcp.json`. srt's built-in mandatory denies only protect the process **cwd** — a second project root in `allowWrite` had a writable `.git/hooks` under srt 0.0.76 — which is why these are emitted per root.
-  - Unreadable: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, `~/.config/gh`, `~/.docker`, `~/.kube`, and `~/.workbench/settings.json` (Trello token). `~/.claude/.credentials.json` stays **readable and writable** — Claude cannot authenticate or refresh its token without it.
-  - `allowedDomains` is the union of the required Claude Code hosts and the user's list, so removing an entry in the UI cannot break Claude. The hook bridge's ephemeral `127.0.0.1:<port>` is added per launch as a bare `host:port` (srt accepts IP literals); on macOS loopback is unfiltered anyway, but the entry is emitted for intent and for Linux.
-  - **Every control-plane listener requires a token**, because `allowLocalBinding` plus unfiltered loopback would otherwise let a sandboxed session `POST /remote/spawn` or `/remote/terminals` an _unsandboxed_ process. The loopback listener's token lives only in process memory; the LAN token (`serverToken`) lives in `~/.workbench/settings.json`, which is `denyRead` inside the sandbox. `server_control::start_server` refuses a missing/weak token (`lan_token`) regardless of sandbox state — the check is in Rust so no frontend caller can bypass it. `save_workbench_settings` keeps the on-disk token when a (stale) window saves `serverToken: null`.
-  - **Accepted residual risks.** `<project>/.envrc` stays writable by design (a project file, and direnv only runs it for someone who allows it). `~/.claude/projects/*/memory/MEMORY.md` stays writable because `projects` must be — that is auto-loaded instruction text, so prompt-injection class rather than code execution. Claude Code's _own_ Bash sandbox cannot initialise inside the wrapper (it fails to bind its `srt-mux` unix socket, since unix sockets are not allowed); Claude Code reports one `is_error` tool result, disables its inner sandboxing and Bash then works normally — the outer wrapper is doing the confining, so this is expected. First launch downloads the package via npx and needs registry access.
+- **Sandbox runtime** (opt-in, `sandboxRuntimeEnabled`): wraps every Claude command as `npx --yes @anthropic-ai/sandbox-runtime@0.0.76 --settings <file> -- claude …`. Never Codex, never Windows. The `--` is required and the npm version is pinned (not srt's self-reported one). Settings file `~/.workbench/sandbox-runtime.json` comes from `workbench_core::sandbox_runtime`; `~/.claude` is a write **allowlist** and `projects` in it is load-bearing. Every control-plane listener requires a token because of this. **Read `docs/SANDBOX_RUNTIME.md` before touching any of it** — it records the path, allowlist and residual-risk decisions.
 
 ### Git worktree support
 
@@ -255,15 +253,14 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - **Pure logic goes in `workbench-core`, not desktop.** When adding shared logic (git, config, sessions, settings), put it in `crates/workbench-core` and (if it needs a Tauri command) add a thin wrapper in `apps/desktop/src-tauri/src/commands.rs`. Never add `tauri` to core or server; re-export new core modules at the desktop crate root in `lib.rs`.
 - **Adding a server endpoint** = add the route in `apps/server/src/routes.rs` calling a `workbench_core` fn, reuse a `types.rs` struct for the body/response (camelCase so it matches frontend), and (if the desktop/mobile client should call it) add the command name to `ControlPlaneCommands` + the route mapping in `packages/transport/src/http.ts`.
 - **Control-plane stores import `invoke`/`listen` from `$lib/transport`**, not `@tauri-apps/api`. Terminal IO / native dialogs / window APIs stay on direct `@tauri-apps/api`. Don't route terminal IO through the transport — it's local-only.
-- `@tauri-apps/api` must not be imported in `packages/*` except `transport/src/tauri.ts` (optional peer dep) — keeps shared packages buildable by the future mobile app.
+- `@tauri-apps/api` must not be imported in `packages/*` except `transport/src/tauri.ts` (optional peer dep) — keeps shared packages buildable by the mobile app.
 - bun workspaces nest `@workbench/*` symlinks under the **consumer's** `node_modules` (e.g. `apps/desktop/node_modules/@workbench/transport`), not hoisted to root. A new workspace dep needs declaring in the consumer's `package.json` (`"workspace:*"`) + `bun install`.
 - `TauriTransport` uses **static** imports of `@tauri-apps/api` (not dynamic) so call timing/arg-shape match what stores/tests expect; it omits the args object when undefined.
 - UI primitives import from `@workbench/ui/<component>` and `cn` from `@workbench/ui` (NOT `$lib/components/ui` / `$lib/utils` anymore). `components.json` (shadcn CLI) aliases still say `$lib/...`; if you `shadcn add` a component it lands in the app — move it into `packages/ui/src/ui/` and fix its `$lib/utils` import to `../../utils`.
 - The server spawns `claude remote-control` via the binary named by `WORKBENCH_CLAUDE_BIN` (default `claude`) — set it to a fake script in tests, or to point at an alternative CLI.
 - **Left sidebar is instance-aware** (`$features/instances/`): `InstancesStore` holds the implicit local instance ("This Mac") plus persisted remote servers (localStorage), each remote owning a `ControlPlaneStore` (HttpTransport) + health-polled status. `InstanceSwitcher` (dropdown in the sidebar header) sets `activeId`; `App.svelte` renders the rich terminal-coupled `ProjectSidebar` when local, else `RemoteInstanceSidebar` (sidebar chrome + shared `ControlPlaneSidebar`). `ConnectInstanceDialog` adds a server (name/URL/token + `/health` test). So: control-plane features that should work on remote instances belong in the shared `ControlPlaneSidebar`, not `ProjectSidebar`.
 - **Server-mode token UX** lives in `components/settings/SettingsServerMode.svelte`: first enable calls `WorkbenchSettingsStore.ensureServerToken()` (Rust `rotate_server_token`), the token is shown masked with reveal/copy, and Regenerate (`ConfirmDialog`) calls `rotate_server_token` so old clients are cut off. The mobile app refuses to connect without a token and verifies it on `/remote/terminals` (`/health` is unauthenticated).
-- **QR pairing.** Payload is `workbench://pair?v=1&url=<http(s) base url>&token=<token>`, built/parsed only by `buildPairingUri` / `parsePairingUri` in `@workbench/transport` (`pairing.ts`; the outer URI is matched as the exact prefix `workbench://pair?` — never `new URL()`, which older Android WebView parses differently for custom schemes — and duplicated params, non-http(s) urls, credentials, paths, queries, fragments and weak tokens are rejected). Desktop: "Pair phone" in `SettingsServerMode` (enabled while the LAN server runs, re-checked with Rust) opens `ServerPairingDialog` — address picker from the `pairing_addresses` command, bound port from `server_status`, QR drawn as an inline `<svg><path>` from `uqr`'s `encode()` (`server-pairing.ts`; no `{@html}`), plain-HTTP warning for non-Tailscale addresses, derived from the store so a rotated token redraws. Mobile: `@tauri-apps/plugin-barcode-scanner` / `tauri-plugin-barcode-scanner` (mobile-only target dep, `init()` under `cfg(mobile)`), permission in `capabilities/barcode-scanner.json` scoped to `platforms: ["android", "iOS"]` — tauri-build validates unscoped capabilities against the plugins built for the current target, so putting it in `default.json` breaks desktop-target builds of the mobile crate. CAMERA comes from the plugin's library manifest via the generated (gitignored) gradle wiring. `MobileClient.scanAndConnect` (scanner + `onBackButtonPress` injected) does permission → **windowed** QR scan → `parsePairingUri` → `connect()` with the scanned origin used verbatim (only hand-typed URLs get the default port). The plugin's full-screen scan has no way out and its `cancel()` never settles the pending promise (nor does `scan()` on a device without a camera), so the app renders `ScanOverlay` (Cancel button; `html.qr-scanning` makes the page transparent so the camera shows through) and `cancelScan` — also wired to the Android back button, registered only during a scan because any back-button listener suppresses default back navigation — ends the scan itself and bumps a generation counter so a late result is ignored.
-- **Mobile in-app updater (Android only, no Play Store).** `updater.ts` (pure: GitHub `releases/latest`, strictly newer plain semver, no drafts/prereleases, both `workbench-android-<v>.apk` and `.sha256` assets under `https://github.com/datstarkey/workbench/releases/download/`, 403/429 → rate-limit error) → `AppUpdater` (`app-updater.svelte.ts`, deps injected; launch check is silent, manual check reports) → `UpdateBanner.svelte` (bottom row: available / downloading % / needs permission / error). Native side is the local plugin `apps/mobile/src-tauri/plugins/apk-updater` (workspace member, Android-only target dep, capability `capabilities/apk-updater.json` scoped to `android`): Kotlin `downloadAndInstall({ url, sha256Url, onProgress: Channel })` re-checks the URL prefix, follows redirects only to `release-assets`/`objects.githubusercontent.com`, returns `needs_permission` after opening `ACTION_MANAGE_UNKNOWN_APP_SOURCES` when `canRequestPackageInstalls()` is false, verifies SHA-256 (deletes on mismatch) into `cache/apk-updates/<sha256>.apk` (reused by retries; pruned when a newer one downloads, cleared by `clear_downloads` once a check finds the app current) and opens the installer via its own `ApkFileProvider` (a `FileProvider` subclass, so it can't collide with the app's provider in the merged manifest). The sha256 only guards corruption; authenticity is Android refusing an update signed by another key. Android 10+ silently drops background activity starts, so when the activity isn't `RESUMED` the plugin returns `ready_to_install` + sha256 and the banner offers "Install" (`install_downloaded` re-hashes the file, no re-download). Activity starts are try/caught (not `resolveActivity`, which needs `<queries>` on 11+) and reject readably on devices without the settings screen or installer (Android TV, some OEM/work profiles). Silent install is impossible for sideloaded apps.
+- **QR pairing** (`workbench://pair?v=1&url=…&token=…`, only via `buildPairingUri`/`parsePairingUri` in `@workbench/transport`) and the **Android in-app updater** (`apk-updater` plugin) have many platform traps (custom-scheme parsing, scanner cancel never settling, background activity starts). **Read `docs/MOBILE.md` before changing either.**
 - Adding a `WorkbenchSettings` field touches 5 places: Rust `crates/workbench-core/src/types.rs` (field + `default_*` fn + `Default` impl), TS `apps/desktop/src/types/workbench.ts` interface, store `workbench-settings.svelte.ts` (field decl + `load()` + `toSettings()`), and `workbench-settings.test.svelte.ts` — two exact `toHaveBeenCalledWith('save_workbench_settings', …)` assertions list every field, so both break until updated.
 - Rust modules use `anyhow::Result` internally. `commands.rs` converts to `Result<_, String>` for Tauri IPC via `.map_err(|e| e.to_string())`.
 - Config/settings writes use `paths::atomic_write()` (temp file + rename) to prevent corruption.
@@ -273,7 +270,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Reader threads self-cleanup on EOF: remove session from map, emit `terminal:exit`. `kill()` handles already-cleaned-up sessions.
 - Mutex locks use `.unwrap_or_else(|e| e.into_inner())` to recover from poisoning.
 - `tauri.conf.json` must have `beforeDevCommand` set or `tauri dev` hangs waiting for Vite.
-- `.prettierignore` (at root) excludes `.claude/`, `/target/`, `apps/desktop/src-tauri/gen/`, `dist/`, `.turbo/`, and `*.rs`. `tailwindStylesheet` in `.prettierrc` points at `./apps/desktop/src/app.css`. eslint config reads `../../.gitignore`.
+- `.prettierignore` (at root) excludes lockfiles, `.claude/`, build output, generated Tauri dirs and `*.rs`. `tailwindStylesheet` in `.prettierrc` points at `./apps/desktop/src/app.css`. eslint config reads `../../.gitignore`.
 - Rust types use `#[serde(rename_all = "camelCase")]` to match frontend field names.
 - Store constructors run at import time. Side effects like `listen()` are fine — Tauri event system is available immediately.
 - `ConfirmDialog` delegates close behavior to the bound `ConfirmAction.open` — don't auto-close on confirm (allows async error display + retry).
@@ -287,5 +284,4 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - Every frontend `invoke('command_name')` call needs three things: (1) the `async fn` in a `_commands.rs` file, (2) registration in `lib.rs`'s `invoke_handler`, and (3) matching `#[serde(rename_all = "camelCase")]` types. Missing any one silently fails at runtime.
 - Per-project config (like `TrelloProjectConfig`) must be loaded at startup in `App.svelte`'s `onMount`, not only from settings UI. Otherwise features depending on that config (sidebar panels, merge automation) won't work until settings is opened.
 - Dialog pre-fill from props: don't use `$state(prop)` (captures initial value only). Instead, apply prop values in the dialog's `onOpenChange` callback when `isOpen` is true.
-- `main` branch has force-push protection. Always use feature branches for multi-step changes; don't amend already-pushed commits to `main`.
 - `ScrollArea` internal viewport uses `size-full` (`h-full`) — `max-h-N` on the root doesn't constrain it. Use a fixed `h-N` for scroll areas that must stay bounded.

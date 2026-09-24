@@ -1,0 +1,11 @@
+{
+	"projectId": "64cd299e-eefb-4170-92ef-49e2a67b47e1",
+	"shape": "package",
+	"pkg": "@workbench/theme-sync",
+	"globalName": "WorkbenchTheme",
+	"entry": ".design-sync/theme-entry/index.js",
+	"cssEntry": "workbench.css",
+	"buildCmd": "cd apps/desktop && bunx vite build && cp dist/assets/index-*.css ../../.design-sync/theme-entry/workbench.css",
+	"readmeHeader": ".design-sync/conventions.md",
+	"guidelinesGlob": ["../guidelines/*.md"]
+}
