@@ -4,7 +4,7 @@ import { baseName } from '$lib/utils/path';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
 import type { WorkspaceStore } from '$stores/workspaces.svelte';
-import type { ProjectConfig, ProjectFormState, ProjectTask } from '$types/workbench';
+import type { ProjectConfig, ProjectFormState } from '$types/workbench';
 
 export class ProjectManagerStore {
 	dialogOpen = $state(false);
@@ -16,9 +16,7 @@ export class ProjectManagerStore {
 		name: '',
 		path: '',
 		group: '',
-		shell: '',
-		startupCommand: '',
-		tasks: []
+		shell: ''
 	});
 	formError = $state('');
 	readonly removal = new ConfirmAction<string>();
@@ -35,7 +33,7 @@ export class ProjectManagerStore {
 	}
 
 	private resetForm() {
-		this.form = { name: '', path: '', group: '', shell: '', startupCommand: '', tasks: [] };
+		this.form = { name: '', path: '', group: '', shell: '' };
 		this.formError = '';
 		this.editingProjectPath = null;
 	}
@@ -61,42 +59,10 @@ export class ProjectManagerStore {
 			name: project.name,
 			path: project.path,
 			group: project.group || '',
-			shell: project.shell || '',
-			startupCommand: project.startupCommand || '',
-			tasks: (project.tasks ?? []).map((task) => ({ ...task }))
+			shell: project.shell || ''
 		};
 		this.formError = '';
 		this.dialogOpen = true;
-	}
-
-	addTask() {
-		this.form = {
-			...this.form,
-			tasks: [...this.form.tasks, { name: '', command: '' }]
-		};
-	}
-
-	removeTask(index: number) {
-		this.form = {
-			...this.form,
-			tasks: this.form.tasks.filter((_, i) => i !== index)
-		};
-	}
-
-	updateTaskName(index: number, name: string) {
-		this.form.tasks[index].name = name;
-	}
-
-	updateTaskCommand(index: number, command: string) {
-		this.form.tasks[index].command = command;
-	}
-
-	reorderTask(fromIndex: number, toIndex: number) {
-		if (fromIndex === toIndex) return;
-		const next = [...this.form.tasks];
-		const [moved] = next.splice(fromIndex, 1);
-		next.splice(toIndex, 0, moved);
-		this.form = { ...this.form, tasks: next };
 	}
 
 	async pickFolder() {
@@ -126,25 +92,16 @@ export class ProjectManagerStore {
 			return;
 		}
 
-		const normalizedTasks = this.form.tasks
-			.map((task) => ({ name: task.name.trim(), command: task.command.trim() }))
-			.filter((task) => task.name || task.command);
-		if (normalizedTasks.some((task) => !task.name || !task.command)) {
-			this.formError = 'Each task needs both a name and a command.';
-			return;
-		}
-		if (hasDuplicateTaskNames(normalizedTasks)) {
-			this.formError = 'Task names must be unique.';
-			return;
-		}
-
+		// Spread the saved project so legacy fields (startupCommand, tasks) survive an edit.
+		const saved = this.editingProjectPath
+			? this.projectStore.getByPath(this.editingProjectPath)
+			: undefined;
 		const nextProject: ProjectConfig = {
+			...saved,
 			name: nextName,
 			path: nextPath,
 			group: this.form.group.trim() || undefined,
-			shell: this.form.shell.trim() || undefined,
-			startupCommand: this.form.startupCommand.trim() || undefined,
-			tasks: normalizedTasks.length > 0 ? normalizedTasks : undefined
+			shell: this.form.shell.trim() || undefined
 		};
 
 		if (this.dialogMode === 'create') {
@@ -189,14 +146,4 @@ export class ProjectManagerStore {
 			await this.projectStore.removeWithWorkspaces(path);
 		});
 	}
-}
-
-function hasDuplicateTaskNames(tasks: ProjectTask[]): boolean {
-	const seen: Record<string, true> = {};
-	for (const task of tasks) {
-		const key = task.name.toLowerCase();
-		if (seen[key]) return true;
-		seen[key] = true;
-	}
-	return false;
 }

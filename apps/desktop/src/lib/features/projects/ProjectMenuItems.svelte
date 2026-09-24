@@ -7,7 +7,6 @@
 	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlayCircleIcon from '@lucide/svelte/icons/play-circle';
-	import PlayIcon from '@lucide/svelte/icons/play';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
@@ -21,34 +20,25 @@
 		getProjectManager,
 		getProjectStore,
 		getWorkbenchSettingsStore,
-		getWorktreeManager,
-		getWorkspaceStore
+		getWorktreeManager
 	} from '$stores/context';
 	import { openInGitHub } from '$lib/utils/github';
 	import { openInVSCode } from '$lib/utils/vscode';
-	import type { AgentAction, ProjectConfig, ProjectTask } from '$types/workbench';
+	import type { AgentAction, ProjectConfig } from '$types/workbench';
 
 	let {
 		project,
-		tasks,
 		Item,
 		Separator,
-		Group,
-		GroupHeading,
 		Sub,
 		SubTrigger,
 		SubContent
 	}: {
 		project: ProjectConfig;
-		tasks: ProjectTask[];
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		Item: Component<any>;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		Separator: Component<any>;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		Group: Component<any>;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		GroupHeading: Component<any>;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		Sub: Component<any>;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,18 +48,12 @@
 	} = $props();
 
 	const projectStore = getProjectStore();
-	const workspaceStore = getWorkspaceStore();
 	const claudeSessionStore = getClaudeSessionStore();
 	const gitStore = getGitStore();
 	const githubStore = getGitHubStore();
 	const projectManager = getProjectManager();
 	const worktreeManager = getWorktreeManager();
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
-
-	function runTask(task: ProjectTask): void {
-		projectStore.openProject(project.path);
-		workspaceStore.runTaskByProject(project.path, task);
-	}
 
 	let runnableActions = $derived(workbenchSettingsStore.runnableActions);
 
@@ -154,18 +138,6 @@
 		<GithubIcon class="size-3.5" />
 		Open in GitHub
 	</Item>
-{/if}
-{#if tasks.length > 0}
-	<Separator />
-	<Group>
-		<GroupHeading>Tasks</GroupHeading>
-		{#each tasks as task, i (`${task.name}-${i}`)}
-			<Item onclick={() => runTask(task)}>
-				<PlayIcon class="size-3.5" />
-				{task.name}
-			</Item>
-		{/each}
-	</Group>
 {/if}
 <Separator />
 <Item onclick={() => projectManager.edit(project.path)}>

@@ -1,16 +1,13 @@
 <script lang="ts">
-	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import * as Tooltip from '@workbench/ui/tooltip';
 	import {
 		getGitHubStore,
 		getGitStore,
-		getProjectStore,
 		getWorkspaceStore,
 		getWorktreeManager
 	} from '$stores/context';
@@ -22,14 +19,12 @@
 	}: { onToggleSidebar: () => void; onOpenSettings: () => void; onOpenRemote: () => void } =
 		$props();
 
-	const projectStore = getProjectStore();
 	const workspaceStore = getWorkspaceStore();
 	const gitStore = getGitStore();
 	const githubStore = getGitHubStore();
 	const worktreeManager = getWorktreeManager();
 
 	const projectPath = $derived(workspaceStore.activeProjectPath);
-	const projectCount = $derived(projectStore.projects.length);
 	const worktreeCount = $derived(
 		projectPath ? (gitStore.worktreesByProject[projectPath]?.length ?? 0) : 0
 	);
@@ -78,7 +73,7 @@
 <nav
 	class="flex w-11 flex-shrink-0 flex-col items-center gap-0.5 border-r border-wb-hair bg-wb-rail py-2"
 >
-	{@render railButton('Projects', true, projectCount || undefined, onToggleSidebar, FolderIcon)}
+	{@render railButton('Projects', true, undefined, onToggleSidebar, FolderIcon)}
 	{@render railButton(
 		'New worktree',
 		false,
@@ -93,15 +88,8 @@
 		() => void githubStore.toggleSidebar(),
 		GithubIcon
 	)}
-	{@render railButton('Sessions', false, undefined, () => {}, SparklesIcon)}
 	{@render railButton('Remote server', false, undefined, onOpenRemote, ServerIcon)}
-	{@render railButton('Docs', false, undefined, () => {}, BookOpenIcon)}
-	{@render railButton('Settings', false, undefined, onOpenSettings, SettingsIcon)}
 
 	<div class="flex-1"></div>
-	<div
-		class="mb-1 grid h-7 w-7 place-items-center rounded-full bg-wb-panel2 text-[11px] font-semibold text-wb-accent"
-	>
-		AJ
-	</div>
+	{@render railButton('Settings', false, undefined, onOpenSettings, SettingsIcon)}
 </nav>

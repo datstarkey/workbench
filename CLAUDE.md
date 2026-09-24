@@ -103,6 +103,7 @@ Pure, non-Tauri logic reused by desktop and server. All `Serialize`/`Deserialize
 - `claude_sessions.rs` / `codex_sessions.rs` / `codex_config.rs` — session discovery (`~/.claude/`, `~/.codex/`)
 - `settings.rs` — Claude Code settings CRUD, plugin/skill/hook discovery
 - `github.rs` — GitHub CLI wrappers
+- `package_scripts.rs` — root `package.json` reader for the Scripts tab: package manager from `packageManager`, then lockfile, then npm; scripts in file order (custom visitor, since `serde_json` maps sort); script names with shell-special characters are dropped because they're typed into a shell as `<pm> run <name>`
 - `trello/` + `trello_automation.rs` — Trello API integration (async; uses a self-built Tokio runtime, no Tauri)
 - `paths.rs` (`atomic_write`), `session_utils.rs`, `shell_integration.rs`, `token.rs` (CSPRNG bearer tokens + `is_strong`, ≥32 chars), `net.rs` (`pairing_addresses`: IPv4 via `if-addrs`, confirmed-Tailscale first, then RFC 1918; 100.64/10 is also carrier-grade NAT, so it counts as Tailscale only with a Tailscale-named interface or a `tailscale ip -4` match — macOS `utunN` needs the CLI)
 
@@ -145,9 +146,10 @@ Control-plane stores call `invoke`/`listen` imported from **`$lib/transport`** (
 - `claude/` — Session resume menu
 - `worktrees/` — Worktree creation dialog, worktree manager
 - `instances/` — Local/remote instance switcher (see Gotchas)
+- `projects/` sidebar layout: project row → branch tree (main checkout first, then worktrees), sessions nested under the branch they run on; row actions show on hover. Settings and collapse live only in the `ActivityRail`.
 - `chrome/` — `ActivityRail`, `StatusBar`
 - `agent-actions/` — Agent actions menu
-- `sidebar/` — Tabbed right sidebar: `git/` (status, branches, log, stash) | `github/` (PRs, runs, checks) | `trello/` (boards)
+- `sidebar/` — Tabbed right sidebar: `git/` (status, branches, log, stash) | `github/` (PRs, runs, checks) | `scripts/` (root `package.json` install + scripts, each run in a new terminal tab via `runTaskInWorkspace`) | `trello/` (boards)
 
 **Manager stores** (`src/lib/features/*/`): `ProjectManagerStore` and `WorktreeManagerStore` own dialog UI state and multi-step workflows (picker → dialog → validate → save). Data stores handle CRUD; manager stores orchestrate UI flows. Both are in context and use `ConfirmAction<T>` from `$lib/utils/confirm-action.svelte.ts` for confirm-before-delete flows.
 
@@ -261,6 +263,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 - **Left sidebar is instance-aware** (`$features/instances/`): `InstancesStore` holds the implicit local instance ("This Mac") plus persisted remote servers (localStorage), each remote owning a `ControlPlaneStore` (HttpTransport) + health-polled status. `InstanceSwitcher` (dropdown in the sidebar header) sets `activeId`; `App.svelte` renders the rich terminal-coupled `ProjectSidebar` when local, else `RemoteInstanceSidebar` (sidebar chrome + shared `ControlPlaneSidebar`). `ConnectInstanceDialog` adds a server (name/URL/token + `/health` test). So: control-plane features that should work on remote instances belong in the shared `ControlPlaneSidebar`, not `ProjectSidebar`.
 - **Server-mode token UX** lives in `components/settings/SettingsServerMode.svelte`: first enable calls `WorkbenchSettingsStore.ensureServerToken()` (Rust `rotate_server_token`), the token is shown masked with reveal/copy, and Regenerate (`ConfirmDialog`) calls `rotate_server_token` so old clients are cut off. The mobile app refuses to connect without a token and verifies it on `/remote/terminals` (`/health` is unauthenticated).
 - **QR pairing** (`workbench://pair?v=1&url=…&token=…`, only via `buildPairingUri`/`parsePairingUri` in `@workbench/transport`) and the **Android in-app updater** (`apk-updater` plugin) have many platform traps (custom-scheme parsing, scanner cancel never settling, background activity starts). **Read `docs/MOBILE.md` before changing either.**
+- `ProjectConfig.startupCommand` / `tasks` are legacy: no UI edits or runs them (the Scripts tab replaced tasks), but Rust keeps them and `ProjectManagerStore.save` spreads the saved project so an edit doesn't drop them from `projects.json`.
 - Adding a `WorkbenchSettings` field touches 5 places: Rust `crates/workbench-core/src/types.rs` (field + `default_*` fn + `Default` impl), TS `apps/desktop/src/types/workbench.ts` interface, store `workbench-settings.svelte.ts` (field decl + `load()` + `toSettings()`), and `workbench-settings.test.svelte.ts` — two exact `toHaveBeenCalledWith('save_workbench_settings', …)` assertions list every field, so both break until updated.
 - Rust modules use `anyhow::Result` internally. `commands.rs` converts to `Result<_, String>` for Tauri IPC via `.map_err(|e| e.to_string())`.
 - Config/settings writes use `paths::atomic_write()` (temp file + rename) to prevent corruption.

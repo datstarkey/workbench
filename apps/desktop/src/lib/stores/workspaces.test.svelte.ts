@@ -1089,23 +1089,6 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
-	describe('runTaskByProject', () => {
-		it('adds a task tab to the main workspace', () => {
-			store.workspaces = [makeWorkspace({ id: 'ws-a', projectPath: '/a' })];
-
-			const result = store.runTaskByProject('/a', { name: 'Test', command: 'bun test' });
-
-			expect(result).not.toBeNull();
-			expect(result!.workspaceId).toBe('ws-a');
-			expect(store.workspaces[0].terminalTabs[0].label).toBe('Test');
-			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe('bun test');
-		});
-
-		it('returns null when no workspace exists', () => {
-			expect(store.runTaskByProject('/nonexistent', { name: 'T', command: 'c' })).toBeNull();
-		});
-	});
-
 	describe('runTaskInWorkspace', () => {
 		it('sets selectedId and adds task tab', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];

@@ -2,8 +2,8 @@
 // crate root so existing `crate::config`, `crate::git`, `crate::types`, … paths
 // throughout the desktop crate keep resolving without per-file edits.
 pub use workbench_core::{
-    claude_sessions, codex_config, codex_sessions, config, git, github, net, paths,
-    sandbox_runtime, session_utils, settings, shell, shell_integration, text, trello,
+    claude_sessions, codex_config, codex_sessions, config, git, github, net, package_scripts,
+    paths, sandbox_runtime, session_utils, settings, shell, shell_integration, text, trello,
     trello_automation, types,
 };
 
@@ -86,6 +86,7 @@ macro_rules! build_invoke_handler {
             commands::clear_hook_logs,
             commands::terminal_hook_socket,
             commands::is_native_terminal_available,
+            commands::get_package_info,
             git_commands::git_status,
             git_commands::git_log,
             git_commands::git_stage,

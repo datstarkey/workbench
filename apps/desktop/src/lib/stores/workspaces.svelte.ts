@@ -727,18 +727,6 @@ export class WorkspaceStore {
 		);
 	}
 
-	runTaskByProject(
-		projectPath: string,
-		task: ProjectTask
-	): { workspaceId: string; tabId: string } | null {
-		return (
-			this.withMainWorkspace(projectPath, (ws) => {
-				const { tabId } = this.addProjectTaskTab(ws.id, task);
-				return { workspaceId: ws.id, tabId };
-			}) ?? null
-		);
-	}
-
 	runTaskInWorkspace(
 		workspaceId: string,
 		task: ProjectTask
