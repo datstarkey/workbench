@@ -91,7 +91,9 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          # PR caches are only visible to that PR, and each one fills the 10 GB repo
+          # quota and evicts main's. Save from main only; PRs restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         run: |
@@ -99,8 +101,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Run Rust tests
-        run: cargo test
-        working-directory: apps/desktop/src-tauri
+        run: cargo test --workspace
 
   rust-windows:
     needs: changes
@@ -114,11 +115,10 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check Rust compiles on Windows
-        run: cargo test --no-run
-        working-directory: apps/desktop/src-tauri
+        run: cargo test --workspace --no-run
 
   # Smoke-tests the built app over WebDriver (apps/desktop/e2e). Not a required
   # check: WebKitGTK under xvfb is new here, so it earns that once it's stable.
@@ -138,6 +138,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           key: e2e
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         run: |

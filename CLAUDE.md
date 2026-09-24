@@ -54,7 +54,7 @@ Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-
 
 The `github-pr` / `prep-pr` skills automate this; prefer them over hand-running `gh`.
 
-**CI scope** (`.github/workflows/ci.yml`): a `changes` job (`dorny/paths-filter`) decides what a diff needs. Docs-only changes (`**/*.md`, `docs/`, `changelog/`, `site/`, `.design-sync/`) run only the prettier check; Rust suites run only when Rust inputs change (`*.rs`, `Cargo.*`, `crates/`, `apps/server/`, `apps/*/src-tauri/`, `ci.yml`). The required checks (`frontend`/`rust`/`rust-windows`) always report: gate them with job- or step-level `if:`, never workflow-level `paths`/`paths-ignore`, or a filtered-out required check blocks the PR forever. If `changes` fails, every suite runs.
+**CI scope** (`.github/workflows/ci.yml`): a `changes` job (`dorny/paths-filter`) decides what a diff needs. Docs-only changes (`**/*.md`, `docs/`, `changelog/`, `site/`, `.design-sync/`) run only the prettier check; Rust suites run only when Rust inputs change (`*.rs`, `Cargo.*`, `crates/`, `apps/server/`, `apps/*/src-tauri/`, `ci.yml`). The required checks (`frontend`/`rust`/`rust-windows`) always report: gate them with job- or step-level `if:`, never workflow-level `paths`/`paths-ignore`, or a filtered-out required check blocks the PR forever. If `changes` fails, every suite runs. Rust jobs run from the repo root (`cargo test --workspace`, which also runs `workbench-core`, `workbench-server` and `apps/server/tests`). Leave `swatinem/rust-cache` on its default `target/`: the Cargo workspace is the repo root, so pointing `workspaces:` at a member dir caches nothing.
 
 ## Commands
 
