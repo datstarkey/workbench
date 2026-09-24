@@ -233,7 +233,6 @@
 						{#if instancesStore.activeIsLocal || !instancesStore.activeRemote}
 							<ProjectSidebar
 								{sidebarCollapsed}
-								onOpenSettings={openSettings}
 								onToggleSidebar={toggleSidebar}
 								onConnect={() => (connectOpen = true)}
 							/>

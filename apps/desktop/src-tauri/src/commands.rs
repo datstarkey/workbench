@@ -11,6 +11,7 @@ use crate::github;
 use crate::github_poller::GitHubPoller;
 use crate::git_watcher::GitWatcher;
 use crate::hook_bridge::{HookBridgeState, HookLogEntry};
+use crate::package_scripts;
 use crate::pty::PtyManager;
 use crate::sandbox_runtime;
 use crate::settings;
@@ -18,7 +19,8 @@ use crate::types::GitHubProjectStatusEvent;
 use crate::types::{
     BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
     DiscoveredClaudeSession, GitHubRemote, GitHubRepo, GitInfo, HookScriptInfo, IntegrationStatus,
-    PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile, WorktreeInfo,
+    PackageInfo, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile,
+    WorktreeInfo,
 };
 
 #[tauri::command]
@@ -476,6 +478,11 @@ pub fn clear_hook_logs(
 #[tauri::command(async)]
 pub fn is_native_terminal_available() -> bool {
     cfg!(target_os = "macos")
+}
+
+#[tauri::command(async)]
+pub fn get_package_info(path: String) -> Result<Option<PackageInfo>, String> {
+    package_scripts::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
 }
 
 fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {

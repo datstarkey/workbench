@@ -53,9 +53,7 @@ describe('ProjectManagerStore', () => {
 			const project = makeProject({
 				name: 'My App',
 				path: '/projects/app',
-				shell: '/bin/zsh',
-				startupCommand: 'npm start',
-				tasks: [{ name: 'Build', command: 'npm run build' }]
+				shell: '/bin/zsh'
 			});
 			vi.mocked(mocks.projectStore.getByPath).mockReturnValue(project);
 
@@ -66,8 +64,6 @@ describe('ProjectManagerStore', () => {
 			expect(manager.form.name).toBe('My App');
 			expect(manager.form.path).toBe('/projects/app');
 			expect(manager.form.shell).toBe('/bin/zsh');
-			expect(manager.form.startupCommand).toBe('npm start');
-			expect(manager.form.tasks).toEqual([{ name: 'Build', command: 'npm run build' }]);
 			expect(manager.formError).toBe('');
 		});
 
@@ -79,15 +75,13 @@ describe('ProjectManagerStore', () => {
 			expect(manager.dialogOpen).toBe(false);
 		});
 
-		it('defaults shell and startupCommand to empty strings when undefined', () => {
+		it('defaults shell to an empty string when undefined', () => {
 			const project = makeProject({ name: 'Minimal', path: '/minimal' });
 			vi.mocked(mocks.projectStore.getByPath).mockReturnValue(project);
 
 			manager.edit('/minimal');
 
 			expect(manager.form.shell).toBe('');
-			expect(manager.form.startupCommand).toBe('');
-			expect(manager.form.tasks).toEqual([]);
 		});
 	});
 
@@ -97,9 +91,7 @@ describe('ProjectManagerStore', () => {
 				name: '',
 				path: '/some/path',
 				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: []
+				shell: ''
 			};
 
 			await manager.save();
@@ -113,9 +105,7 @@ describe('ProjectManagerStore', () => {
 				name: '   ',
 				path: '/some/path',
 				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: []
+				shell: ''
 			};
 
 			await manager.save();
@@ -128,9 +118,7 @@ describe('ProjectManagerStore', () => {
 				name: 'Valid',
 				path: '',
 				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: []
+				shell: ''
 			};
 
 			await manager.save();
@@ -144,9 +132,7 @@ describe('ProjectManagerStore', () => {
 				name: 'New',
 				path: '/existing',
 				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: []
+				shell: ''
 			};
 
 			await manager.save();
@@ -166,62 +152,6 @@ describe('ProjectManagerStore', () => {
 			expect(manager.formError).toBe('');
 			expect(mocks.projectStore.update).toHaveBeenCalled();
 		});
-
-		it('validates tasks need both name and command', async () => {
-			manager.form = {
-				name: 'App',
-				path: '/app',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [{ name: 'Build', command: '' }]
-			};
-
-			await manager.save();
-
-			expect(manager.formError).toBe('Each task needs both a name and a command.');
-		});
-
-		it('validates task names must be unique', async () => {
-			manager.form = {
-				name: 'App',
-				path: '/app',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [
-					{ name: 'Build', command: 'npm run build' },
-					{ name: 'build', command: 'npm run build:prod' }
-				]
-			};
-
-			await manager.save();
-
-			expect(manager.formError).toBe('Task names must be unique.');
-		});
-
-		it('ignores fully empty tasks during validation', async () => {
-			manager.form = {
-				name: 'App',
-				path: '/app',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [
-					{ name: 'Build', command: 'npm run build' },
-					{ name: '', command: '' }
-				]
-			};
-
-			await manager.save();
-
-			expect(manager.formError).toBe('');
-			expect(mocks.projectStore.add).toHaveBeenCalledWith(
-				expect.objectContaining({
-					tasks: [{ name: 'Build', command: 'npm run build' }]
-				})
-			);
-		});
 	});
 
 	describe('save - create mode', () => {
@@ -230,9 +160,7 @@ describe('ProjectManagerStore', () => {
 				name: 'New App',
 				path: '/projects/new-app',
 				group: '',
-				shell: '/bin/bash',
-				startupCommand: 'npm start',
-				tasks: []
+				shell: '/bin/bash'
 			};
 
 			await manager.save();
@@ -241,8 +169,7 @@ describe('ProjectManagerStore', () => {
 				expect.objectContaining({
 					name: 'New App',
 					path: '/projects/new-app',
-					shell: '/bin/bash',
-					startupCommand: 'npm start'
+					shell: '/bin/bash'
 				})
 			);
 			expect(mocks.projectStore.openProject).toHaveBeenCalledWith('/projects/new-app');
@@ -254,9 +181,7 @@ describe('ProjectManagerStore', () => {
 				name: 'App',
 				path: '/projects/app',
 				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: []
+				shell: ''
 			};
 
 			await manager.save();
@@ -266,37 +191,18 @@ describe('ProjectManagerStore', () => {
 			expect(manager.form.path).toBe('');
 		});
 
-		it('omits shell and startupCommand when empty', async () => {
+		it('omits shell when empty', async () => {
 			manager.form = {
 				name: 'App',
 				path: '/projects/app',
 				group: '',
-				shell: '',
-				startupCommand: '  ',
-				tasks: []
+				shell: ''
 			};
 
 			await manager.save();
 
 			const savedProject = vi.mocked(mocks.projectStore.add).mock.calls[0][0];
 			expect(savedProject.shell).toBeUndefined();
-			expect(savedProject.startupCommand).toBeUndefined();
-		});
-
-		it('omits tasks when none remain after filtering', async () => {
-			manager.form = {
-				name: 'App',
-				path: '/projects/app',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [{ name: '', command: '' }]
-			};
-
-			await manager.save();
-
-			const savedProject = vi.mocked(mocks.projectStore.add).mock.calls[0][0];
-			expect(savedProject.tasks).toBeUndefined();
 		});
 	});
 
@@ -321,6 +227,30 @@ describe('ProjectManagerStore', () => {
 			);
 		});
 
+		it('keeps legacy startupCommand and tasks on disk when editing', async () => {
+			const project = makeProject({
+				name: 'Legacy',
+				path: '/projects/legacy',
+				startupCommand: 'npm start',
+				tasks: [{ name: 'Build', command: 'npm run build' }]
+			});
+			mocks.projectStore.projects = [project];
+			vi.mocked(mocks.projectStore.getByPath).mockReturnValue(project);
+
+			manager.edit('/projects/legacy');
+			manager.form = { ...manager.form, name: 'Renamed' };
+			await manager.save();
+
+			expect(mocks.projectStore.update).toHaveBeenCalledWith(
+				'/projects/legacy',
+				expect.objectContaining({
+					name: 'Renamed',
+					startupCommand: 'npm start',
+					tasks: [{ name: 'Build', command: 'npm run build' }]
+				})
+			);
+		});
+
 		it('does not call projectStore.add or openProject', async () => {
 			const project = makeProject({ name: 'Edit Me', path: '/projects/edit' });
 			mocks.projectStore.projects = [project];
@@ -331,120 +261,6 @@ describe('ProjectManagerStore', () => {
 
 			expect(mocks.projectStore.add).not.toHaveBeenCalled();
 			expect(mocks.projectStore.openProject).not.toHaveBeenCalled();
-		});
-	});
-
-	describe('addTask / removeTask / reorderTask', () => {
-		it('addTask appends an empty task', () => {
-			manager.form = { name: '', path: '', group: '', shell: '', startupCommand: '', tasks: [] };
-
-			manager.addTask();
-
-			expect(manager.form.tasks).toEqual([{ name: '', command: '' }]);
-		});
-
-		it('addTask appends to existing tasks', () => {
-			manager.form = {
-				name: '',
-				path: '',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [{ name: 'Existing', command: 'cmd' }]
-			};
-
-			manager.addTask();
-
-			expect(manager.form.tasks).toHaveLength(2);
-			expect(manager.form.tasks[1]).toEqual({ name: '', command: '' });
-		});
-
-		it('removeTask removes task at index', () => {
-			manager.form = {
-				name: '',
-				path: '',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [
-					{ name: 'A', command: 'a' },
-					{ name: 'B', command: 'b' },
-					{ name: 'C', command: 'c' }
-				]
-			};
-
-			manager.removeTask(1);
-
-			expect(manager.form.tasks).toEqual([
-				{ name: 'A', command: 'a' },
-				{ name: 'C', command: 'c' }
-			]);
-		});
-
-		it('reorderTask moves a task from one index to another', () => {
-			manager.form = {
-				name: '',
-				path: '',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [
-					{ name: 'A', command: 'a' },
-					{ name: 'B', command: 'b' },
-					{ name: 'C', command: 'c' }
-				]
-			};
-
-			manager.reorderTask(0, 2);
-
-			expect(manager.form.tasks.map((t) => t.name)).toEqual(['B', 'C', 'A']);
-		});
-
-		it('reorderTask does nothing when from equals to', () => {
-			manager.form = {
-				name: '',
-				path: '',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [{ name: 'A', command: 'a' }]
-			};
-
-			manager.reorderTask(0, 0);
-
-			expect(manager.form.tasks).toEqual([{ name: 'A', command: 'a' }]);
-		});
-	});
-
-	describe('updateTaskName / updateTaskCommand', () => {
-		it('updateTaskName updates the name at given index', () => {
-			manager.form = {
-				name: '',
-				path: '',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [{ name: 'Old', command: 'cmd' }]
-			};
-
-			manager.updateTaskName(0, 'New');
-
-			expect(manager.form.tasks[0].name).toBe('New');
-		});
-
-		it('updateTaskCommand updates the command at given index', () => {
-			manager.form = {
-				name: '',
-				path: '',
-				group: '',
-				shell: '',
-				startupCommand: '',
-				tasks: [{ name: 'Task', command: 'old-cmd' }]
-			};
-
-			manager.updateTaskCommand(0, 'new-cmd');
-
-			expect(manager.form.tasks[0].command).toBe('new-cmd');
 		});
 	});
 

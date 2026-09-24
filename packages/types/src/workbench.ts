@@ -10,8 +10,27 @@ export interface ProjectConfig {
 	path: string;
 	group?: string;
 	shell?: string;
+	/** Legacy: no longer editable or run; kept so saving doesn't drop it from disk. */
 	startupCommand?: string;
+	/** Legacy: replaced by package.json scripts; kept so saving doesn't drop it from disk. */
 	tasks?: ProjectTask[];
+}
+
+/** A runnable entry from a project's root `package.json` `scripts`. */
+export interface PackageScript {
+	name: string;
+	command: string;
+}
+
+export type PackageManager = 'bun' | 'pnpm' | 'yarn' | 'npm';
+
+/** A project's root `package.json`: its package manager and scripts (in file order). */
+export interface PackageInfo {
+	manager: PackageManager;
+	managerVersion: string | null;
+	/** `packageManager`, the lockfile name, or `default`. */
+	detectedFrom: string;
+	scripts: PackageScript[];
 }
 
 // ── Native (SwiftTerm / PtyManager) terminal types ──────────────────────────
@@ -458,6 +477,4 @@ export interface ProjectFormState {
 	path: string;
 	group: string;
 	shell: string;
-	startupCommand: string;
-	tasks: ProjectTask[];
 }

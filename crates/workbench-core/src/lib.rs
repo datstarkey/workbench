@@ -11,6 +11,7 @@ pub mod config;
 pub mod git;
 pub mod github;
 pub mod net;
+pub mod package_scripts;
 pub mod paths;
 pub mod sandbox_runtime;
 pub mod session_utils;

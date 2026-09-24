@@ -24,6 +24,26 @@ pub struct ProjectConfig {
     pub tasks: Vec<ProjectTask>,
 }
 
+/// A runnable entry from a project's root `package.json` `scripts`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageScript {
+    pub name: String,
+    pub command: String,
+}
+
+/// A project's root `package.json`: its package manager and scripts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageInfo {
+    /// `bun`, `pnpm`, `yarn` or `npm`.
+    pub manager: String,
+    pub manager_version: Option<String>,
+    /// `packageManager`, the lockfile name, or `default`.
+    pub detected_from: String,
+    pub scripts: Vec<PackageScript>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectsFile {
     pub projects: Vec<ProjectConfig>,
