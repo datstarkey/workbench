@@ -782,7 +782,10 @@ mod tests {
         assert!(json.contains("\"lastMessageRole\""));
         let deserialized: DiscoveredClaudeSession = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.session_id, "abc123");
-        assert_eq!(deserialized.last_message_role, Some("assistant".to_string()));
+        assert_eq!(
+            deserialized.last_message_role,
+            Some("assistant".to_string())
+        );
     }
 
     // WorktreeCopyOptions default

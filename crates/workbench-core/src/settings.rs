@@ -314,7 +314,10 @@ fn remove_outdated_workbench_hooks(
             };
             let before = hooks.len();
             hooks.retain(|hook| {
-                let cmd = hook.get("command").and_then(|v| v.as_str()).unwrap_or_default();
+                let cmd = hook
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 !is_workbench_hook_command(cmd) || cmd == current_command
             });
             changed |= hooks.len() != before;

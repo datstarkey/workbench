@@ -51,11 +51,7 @@ extern "C" {
 
     fn swift_term_resize(session_id: *const c_char, x: f64, y: f64, width: f64, height: f64);
 
-    fn swift_term_get_size(
-        session_id: *const c_char,
-        out_cols: *mut u16,
-        out_rows: *mut u16,
-    );
+    fn swift_term_get_size(session_id: *const c_char, out_cols: *mut u16, out_rows: *mut u16);
 
     fn swift_term_set_visible(session_id: *const c_char, visible: bool);
 
@@ -256,8 +252,7 @@ impl NativeTerminalManager {
         // Create the SwiftTerm view
         let session_cstr =
             CString::new(session_id.clone()).context("Invalid session_id for CString")?;
-        let font_family_cstr =
-            CString::new("Menlo").context("Invalid font family for CString")?;
+        let font_family_cstr = CString::new("Menlo").context("Invalid font family for CString")?;
 
         let created = unsafe {
             swift_term_create(
@@ -320,7 +315,7 @@ impl NativeTerminalManager {
             let mut active = false;
             loop {
                 let signal = match activity_rx.recv_timeout(quiet_window) {
-                    Ok(()) => true,     // data received
+                    Ok(()) => true, // data received
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         // Emit final inactive if needed
@@ -443,14 +438,7 @@ impl NativeTerminalManager {
         Ok(())
     }
 
-    pub fn resize(
-        &self,
-        session_id: &str,
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-    ) -> Result<()> {
+    pub fn resize(&self, session_id: &str, x: f64, y: f64, width: f64, height: f64) -> Result<()> {
         let session = self
             .get_session(session_id)
             .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;

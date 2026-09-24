@@ -9,15 +9,10 @@ const SETTINGS_ID: &str = "settings";
 pub fn build(app: &AppHandle) -> anyhow::Result<()> {
     let app_menu = SubmenuBuilder::new(app, "Workbench")
         .about(Some(
-            AboutMetadataBuilder::new()
-                .name(Some("Workbench"))
-                .build(),
+            AboutMetadataBuilder::new().name(Some("Workbench")).build(),
         ))
         .separator()
-        .item(
-            &MenuItemBuilder::with_id(CHECK_FOR_UPDATES_ID, "Check for Updates…")
-                .build(app)?,
-        )
+        .item(&MenuItemBuilder::with_id(CHECK_FOR_UPDATES_ID, "Check for Updates…").build(app)?)
         .separator()
         .item(
             &MenuItemBuilder::with_id(SETTINGS_ID, "Settings…")

@@ -196,7 +196,8 @@ impl PtyManager {
         app_handle: AppHandle,
     ) -> Result<()> {
         let pty_system = native_pty_system();
-        let resolved_project_path = resolve_repo_root(&project_path).unwrap_or(project_path.clone());
+        let resolved_project_path =
+            resolve_repo_root(&project_path).unwrap_or(project_path.clone());
 
         let size = PtySize {
             rows,
@@ -331,9 +332,8 @@ impl PtyManager {
                         };
 
                         if valid_up_to > 0 {
-                            let data = unsafe {
-                                std::str::from_utf8_unchecked(&chunk[..valid_up_to])
-                            };
+                            let data =
+                                unsafe { std::str::from_utf8_unchecked(&chunk[..valid_up_to]) };
                             if !send_output_chunk(&data_tx, data.to_string()) {
                                 break; // emitter gone
                             }

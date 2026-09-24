@@ -208,7 +208,11 @@ pub fn build_config(
     let mut allow_write = vec![".".to_string()];
     allow_write.extend(projects.iter().map(|p| resolved(Path::new(&p.path))));
     // Narrow allowlist rather than the whole of ~/.claude — see CLAUDE_ALLOW_WRITE.
-    allow_write.extend(CLAUDE_ALLOW_WRITE.iter().map(|p| resolved(&claude_dir.join(p))));
+    allow_write.extend(
+        CLAUDE_ALLOW_WRITE
+            .iter()
+            .map(|p| resolved(&claude_dir.join(p))),
+    );
     allow_write.push(resolved(Path::new("/tmp")));
     if let Some(tmpdir) = std::env::var_os("TMPDIR") {
         let tmpdir = tmpdir.to_string_lossy().to_string();
@@ -222,7 +226,11 @@ pub fn build_config(
     // `mcpServers` here is a list of commands the user's next *unsandboxed*
     // `claude` will execute, so it is read-only despite living outside ~/.claude.
     deny_write.push(resolved(&home.join(".claude.json")));
-    deny_write.extend(CLAUDE_DENY_WRITE.iter().map(|p| resolved(&claude_dir.join(p))));
+    deny_write.extend(
+        CLAUDE_DENY_WRITE
+            .iter()
+            .map(|p| resolved(&claude_dir.join(p))),
+    );
     // Redundant while the config dir is absent from allowWrite, but keeps the
     // sandbox sealed if a project root is ever an ancestor of it.
     deny_write.push(resolved(config_dir));
@@ -232,8 +240,10 @@ pub fn build_config(
     }
     dedupe(&mut deny_write);
 
-    let mut deny_read: Vec<String> =
-        HOME_DENY_READ.iter().map(|p| resolved(&home.join(p))).collect();
+    let mut deny_read: Vec<String> = HOME_DENY_READ
+        .iter()
+        .map(|p| resolved(&home.join(p)))
+        .collect();
     // Holds the Trello API token.
     deny_read.push(resolved(&config_dir.join("settings.json")));
     dedupe(&mut deny_read);
@@ -759,10 +769,22 @@ mod tests {
         assert_eq!(path, dir.path().join(SETTINGS_FILE));
         let written: SandboxRuntimeConfig =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_contains(&written.network.allowed_domains, "127.0.0.1:9999", "allowedDomains");
-        assert_contains(&written.network.allowed_domains, "api.anthropic.com", "allowedDomains");
+        assert_contains(
+            &written.network.allowed_domains,
+            "127.0.0.1:9999",
+            "allowedDomains",
+        );
+        assert_contains(
+            &written.network.allowed_domains,
+            "api.anthropic.com",
+            "allowedDomains",
+        );
         assert_contains(&written.filesystem.allow_write, "/repos/a", "allowWrite");
-        assert_contains(&written.filesystem.deny_write, "/repos/a/.git/hooks", "denyWrite");
+        assert_contains(
+            &written.filesystem.deny_write,
+            "/repos/a/.git/hooks",
+            "denyWrite",
+        );
         assert_contains(
             &written.filesystem.deny_write,
             &resolved(dir.path()),
