@@ -89,6 +89,12 @@
 		else set.add(value);
 	}
 
+	// Landing back on the default drops the override, so the project follows "is active" again.
+	function toggleExpanded(path: string, expanded: boolean, isActive: boolean) {
+		if (expanded === isActive) expandedProjects.delete(path);
+		else expandedProjects.set(path, expanded);
+	}
+
 	function allSessionsForProject(projectPath: string): ActiveClaudeSession[] {
 		return claudeSessionStore.activeSessionsByProject[projectPath] ?? [];
 	}
@@ -270,7 +276,7 @@
 						type="button"
 						aria-label={isExpanded ? `Collapse ${project.name}` : `Expand ${project.name}`}
 						aria-expanded={isExpanded}
-						onclick={() => expandedProjects.set(project.path, !isExpanded)}
+						onclick={() => toggleExpanded(project.path, !isExpanded, isActive)}
 					>
 						{#if isExpanded}
 							<ChevronDownIcon class="size-3" />
@@ -343,10 +349,8 @@
 	{@const mainBranch = gitStore.branchByProject[project.path]}
 	{@const mainSessions = allSessionsForProject(project.path).filter((s) => !s.worktreePath)}
 	<div class="mb-1 ml-[15px] border-l border-wb-hair">
-		<!-- no branch = not a git repo: no branch row to show, nothing to branch a worktree from -->
-		{#if !mainBranch}
-			{@render sessionList(project, mainSessions)}
-		{:else}
+		<!-- no branch = not a git repo (or git info not loaded yet): no main branch row, no worktree button -->
+		{#if mainBranch}
 			{@render branchRow({
 				project,
 				branch: mainBranch,
@@ -355,17 +359,21 @@
 				onOpen: () => projectStore.openProject(project.path),
 				onNewSession: () => claudeSessionStore.startSessionByProject(project.path)
 			})}
-			{#each worktreesForProject(project.path) as wt (wt.path)}
-				{@render branchRow({
-					project,
-					branch: wt.branch,
-					isActive: active?.worktreePath === wt.path,
-					sessions: allSessionsForProject(project.path).filter((s) => s.worktreePath === wt.path),
-					onOpen: () => worktreeManager.open(project.path, wt.path, wt.branch),
-					onNewSession: () => startSessionInWorktree(project.path, wt.path, wt.branch),
-					onRemove: () => worktreeManager.remove(project.path, wt.path, wt.branch)
-				})}
-			{/each}
+		{:else}
+			{@render sessionList(project, mainSessions)}
+		{/if}
+		{#each worktreesForProject(project.path) as wt (wt.path)}
+			{@render branchRow({
+				project,
+				branch: wt.branch,
+				isActive: active?.worktreePath === wt.path,
+				sessions: allSessionsForProject(project.path).filter((s) => s.worktreePath === wt.path),
+				onOpen: () => worktreeManager.open(project.path, wt.path, wt.branch),
+				onNewSession: () => startSessionInWorktree(project.path, wt.path, wt.branch),
+				onRemove: () => worktreeManager.remove(project.path, wt.path, wt.branch)
+			})}
+		{/each}
+		{#if mainBranch}
 			<button
 				class="flex h-6 w-full items-center gap-1.5 px-2.5 text-left font-mono text-[11px] text-wb-ink-mute transition-colors hover:bg-wb-panel2 hover:text-wb-ink"
 				type="button"
