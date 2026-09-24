@@ -90,6 +90,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
+        with:
+          # PR caches are only visible to that PR, and each one fills the 10 GB repo
+          # quota and evicts main's. Save from main only; PRs restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         run: |
@@ -110,6 +114,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check Rust compiles on Windows
         run: cargo test --workspace --no-run
@@ -132,6 +138,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           key: e2e
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         run: |
