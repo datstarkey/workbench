@@ -2,56 +2,68 @@
 	import MinusIcon from '@lucide/svelte/icons/minus';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import UndoIcon from '@lucide/svelte/icons/undo-2';
-	import { Button } from '@workbench/ui/button';
 	import type { GitFileStatus } from '$types/workbench';
-	import { getStatusDisplay } from './status-display';
+	import { iconButton } from '$features/sidebar/styles';
+	import { getStatusDisplay, splitPath } from './git-view';
 
 	let {
 		file,
-		onAction,
-		onDiscard,
-		actionIcon
+		staged,
+		onToggle,
+		onDiscard
 	}: {
 		file: GitFileStatus;
-		onAction: () => void;
+		staged: boolean;
+		onToggle: () => void;
 		onDiscard?: () => void;
-		actionIcon: 'plus' | 'minus';
 	} = $props();
 
 	let display = $derived(getStatusDisplay(file.status));
+	let parts = $derived(splitPath(file.path));
 </script>
 
-<div class="group flex items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-muted/40">
-	<span class="w-3 shrink-0 text-center font-mono text-xs font-medium {display.color}">
-		{display.letter}
+<div
+	class="group mx-1 flex h-6 items-center gap-2 rounded-[5px] pr-1.5 pl-[22px] hover:bg-wb-panel2"
+	title={file.path}
+>
+	<span
+		class={[
+			'min-w-0 truncate text-xs',
+			file.status === 'deleted' ? 'text-wb-ink-soft line-through' : 'text-wb-ink'
+		]}
+	>
+		{parts.name}
 	</span>
-	<span class="min-w-0 flex-1 truncate font-mono text-xs text-foreground/80" title={file.path}>
-		{file.path}
-	</span>
-	<div class="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100">
+	<span class="min-w-0 flex-1 truncate text-[11px] text-wb-ink-soft">{parts.dir}</span>
+	<div
+		class="flex shrink-0 items-center gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+	>
 		{#if onDiscard}
-			<Button
-				variant="ghost"
-				size="icon-sm"
-				class="size-5"
+			<button
+				type="button"
+				class={iconButton}
+				aria-label="Discard changes to {parts.name}"
+				title="Discard changes…"
 				onclick={onDiscard}
-				title="Discard changes"
 			>
 				<UndoIcon class="size-3" />
-			</Button>
+			</button>
 		{/if}
-		<Button
-			variant="ghost"
-			size="icon-sm"
-			class="size-5"
-			onclick={onAction}
-			title={actionIcon === 'plus' ? 'Stage file' : 'Unstage file'}
+		<button
+			type="button"
+			class={iconButton}
+			aria-label="{staged ? 'Unstage' : 'Stage'} {parts.name}"
+			title={staged ? 'Unstage' : 'Stage'}
+			onclick={onToggle}
 		>
-			{#if actionIcon === 'plus'}
-				<PlusIcon class="size-3" />
-			{:else}
+			{#if staged}
 				<MinusIcon class="size-3" />
+			{:else}
+				<PlusIcon class="size-3" />
 			{/if}
-		</Button>
+		</button>
 	</div>
+	<span class="w-3 shrink-0 text-center font-mono text-[11px] font-semibold {display.color}">
+		{display.letter}
+	</span>
 </div>

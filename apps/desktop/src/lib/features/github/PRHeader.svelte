@@ -1,353 +1,101 @@
 <script lang="ts">
-	import GitPullRequestIcon from '@lucide/svelte/icons/git-pull-request';
-	import GitPullRequestDraftIcon from '@lucide/svelte/icons/git-pull-request-draft';
-	import GitPullRequestClosedIcon from '@lucide/svelte/icons/git-pull-request-closed';
-	import GitMergeIcon from '@lucide/svelte/icons/git-merge';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
-	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
-	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
-	import SendHorizontalIcon from '@lucide/svelte/icons/send-horizontal';
+	import GitMergeIcon from '@lucide/svelte/icons/git-merge';
+	import GitPullRequestClosedIcon from '@lucide/svelte/icons/git-pull-request-closed';
+	import GitPullRequestDraftIcon from '@lucide/svelte/icons/git-pull-request-draft';
+	import GitPullRequestIcon from '@lucide/svelte/icons/git-pull-request';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
-	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
-	import { Badge } from '@workbench/ui/badge';
-	import { Button } from '@workbench/ui/button';
-	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import type { GitHubPR, MergePrOptions } from '$types/workbench';
+	import { cn } from '@workbench/ui';
+	import { iconButton } from '$features/sidebar/styles';
+	import type { GitHubPR } from '$types/workbench';
 	import { openInGitHub } from '$lib/utils/github';
-	import { invoke } from '@tauri-apps/api/core';
+	import { toast } from 'svelte-sonner';
+	import { prStateLabel } from './pr-view';
 
 	let {
 		pr,
-		projectPath,
 		onCheckout,
 		onOpenAsWorktree
 	}: {
 		pr: GitHubPR;
-		projectPath: string;
 		onCheckout?: () => Promise<void>;
 		onOpenAsWorktree?: () => Promise<void>;
 	} = $props();
 
-	let merging = $state(false);
-	let mergeError = $state<string | null>(null);
-	let mergeMethod = $state<'squash' | 'merge' | 'rebase'>('squash');
-	let deleteBranch = $state(true);
-	let adminOverride = $state(false);
-	let updating = $state(false);
-	let updateError = $state<string | null>(null);
-	let markingReady = $state(false);
-	let readyError = $state<string | null>(null);
-	let checkingOut = $state(false);
-	let checkoutError = $state<string | null>(null);
-	let openingWorktree = $state(false);
-	let worktreeError = $state<string | null>(null);
-
-	let PrIcon = $derived.by(() => {
+	let busy = $state<'checkout' | 'worktree' | null>(null);
+	let stateLabel = $derived(prStateLabel(pr));
+	let StateIcon = $derived.by(() => {
 		if (pr.state === 'MERGED') return GitMergeIcon;
 		if (pr.state === 'CLOSED') return GitPullRequestClosedIcon;
 		if (pr.isDraft) return GitPullRequestDraftIcon;
 		return GitPullRequestIcon;
 	});
 
-	let prColor = $derived.by(() => {
-		if (pr.state === 'MERGED') return 'text-purple-400';
-		if (pr.state === 'CLOSED') return 'text-red-400';
-		if (pr.isDraft) return 'text-muted-foreground';
-		return 'text-green-400';
-	});
-
-	let stateLabel = $derived.by(() => {
-		if (pr.state === 'MERGED') return 'Merged';
-		if (pr.state === 'CLOSED') return 'Closed';
-		if (pr.isDraft) return 'Draft';
-		return 'Open';
-	});
-
-	let stateBadgeVariant = $derived.by((): 'default' | 'secondary' | 'destructive' | 'outline' => {
-		if (pr.state === 'MERGED') return 'default';
-		if (pr.state === 'CLOSED') return 'destructive';
-		return 'secondary';
-	});
-
-	let reviewLabel = $derived.by(() => {
-		if (!pr.reviewDecision) return null;
-		switch (pr.reviewDecision) {
-			case 'APPROVED':
-				return 'Approved';
-			case 'CHANGES_REQUESTED':
-				return 'Changes Requested';
-			case 'REVIEW_REQUIRED':
-				return 'Review Required';
-			default:
-				return null;
-		}
-	});
-
-	let reviewBadgeVariant = $derived.by((): 'default' | 'secondary' | 'destructive' | 'outline' => {
-		if (pr.reviewDecision === 'APPROVED') return 'default';
-		if (pr.reviewDecision === 'CHANGES_REQUESTED') return 'destructive';
-		return 'outline';
-	});
-
-	let checksSummary = $derived.by(() => {
-		if (pr.checksStatus.total === 0) return null;
-		return `${pr.checksStatus.passing}/${pr.checksStatus.total} checks passing`;
-	});
-
-	let mergeStateInfo = $derived.by(() => {
-		switch (pr.mergeStateStatus) {
-			case 'BEHIND':
-				return {
-					label: 'Behind base',
-					variant: 'outline' as const,
-					class: 'border-yellow-600 text-yellow-400'
-				};
-			case 'DIRTY':
-				return { label: 'Has conflicts', variant: 'destructive' as const, class: '' };
-			default:
-				return null;
-		}
-	});
-
-	let canMerge = $derived(pr.actions.canMerge);
-	let showDraftAction = $derived(pr.actions.canMarkReady);
-	let showUpdateBranch = $derived(pr.actions.canUpdateBranch);
-	let hasActionButton = $derived(canMerge || showDraftAction || showUpdateBranch);
-
-	function runPrAction(
-		setLoading: (v: boolean) => void,
-		setError: (v: string | null) => void,
-		command: string
-	) {
-		return async () => {
-			setLoading(true);
-			setError(null);
-			try {
-				await invoke(command, { projectPath, prNumber: pr.number });
-			} catch (e) {
-				setError(String(e));
-			} finally {
-				setLoading(false);
-			}
-		};
-	}
-
-	const methodLabels: Record<'squash' | 'merge' | 'rebase', string> = {
-		squash: 'Squash and merge',
-		merge: 'Create a merge commit',
-		rebase: 'Rebase and merge'
-	};
-
-	async function runMerge(auto: boolean) {
-		merging = true;
-		mergeError = null;
+	async function run(kind: 'checkout' | 'worktree', action: () => Promise<void>) {
+		busy = kind;
 		try {
-			const options: MergePrOptions = {
-				method: mergeMethod,
-				deleteBranch,
-				admin: adminOverride,
-				auto
-			};
-			await invoke('github_merge_pr', { projectPath, prNumber: pr.number, options });
+			await action();
 		} catch (e) {
-			mergeError = String(e);
+			toast.error(String(e));
 		} finally {
-			merging = false;
-		}
-	}
-
-	const handleMerge = () => runMerge(false);
-	const handleAutoMerge = () => runMerge(true);
-	const handleUpdateBranch = runPrAction(
-		(v) => (updating = v),
-		(v) => (updateError = v),
-		'github_update_pr_branch'
-	);
-	const handleMarkReady = runPrAction(
-		(v) => (markingReady = v),
-		(v) => (readyError = v),
-		'github_mark_pr_ready'
-	);
-
-	async function handleCheckout() {
-		if (!onCheckout) return;
-		checkingOut = true;
-		checkoutError = null;
-		try {
-			await onCheckout();
-		} catch (e) {
-			checkoutError = String(e);
-		} finally {
-			checkingOut = false;
-		}
-	}
-
-	async function handleOpenAsWorktree() {
-		if (!onOpenAsWorktree) return;
-		openingWorktree = true;
-		worktreeError = null;
-		try {
-			await onOpenAsWorktree();
-		} catch (e) {
-			worktreeError = String(e);
-		} finally {
-			openingWorktree = false;
+			busy = null;
 		}
 	}
 </script>
 
-<div class="space-y-2 px-3 py-2">
-	<div class="flex items-start gap-2">
-		<PrIcon class="mt-0.5 size-4 shrink-0 {prColor}" />
-		<div class="min-w-0 flex-1">
-			<p class="text-sm leading-snug font-medium">{pr.title}</p>
-			<p class="text-xs text-muted-foreground">#{pr.number}</p>
-		</div>
-	</div>
-
-	<div class="flex flex-wrap items-center gap-1.5">
-		<Badge variant={stateBadgeVariant} class="text-[10px]">{stateLabel}</Badge>
-		{#if reviewLabel}
-			<Badge variant={reviewBadgeVariant} class="text-[10px]">{reviewLabel}</Badge>
-		{/if}
-		{#if mergeStateInfo}
-			<Badge variant={mergeStateInfo.variant} class="text-[10px] {mergeStateInfo.class}"
-				>{mergeStateInfo.label}</Badge
-			>
-		{/if}
-	</div>
-
-	{#if checksSummary}
-		<p class="text-[11px] text-muted-foreground">{checksSummary}</p>
-	{/if}
-
-	<div class="flex flex-wrap gap-1.5">
+<div class="flex flex-col gap-2">
+	<div class="flex items-center gap-1.5">
+		<span
+			class="flex h-5 items-center gap-1 rounded-full px-[7px] text-[11px] font-semibold {stateLabel.class}"
+		>
+			<StateIcon class="size-[11px]" />
+			{stateLabel.label}
+		</span>
+		<span class="font-mono text-[11px] text-wb-ink-soft">#{pr.number}</span>
+		<span class="flex-1"></span>
 		{#if onCheckout}
-			<Button
-				variant="outline"
-				size="sm"
-				class="h-7 gap-1.5 text-xs"
-				onclick={handleCheckout}
-				disabled={checkingOut}
+			<button
+				type="button"
+				class={cn(iconButton, 'size-6')}
+				aria-label="Check out branch"
+				title="Check out branch"
+				disabled={busy !== null}
+				onclick={() => run('checkout', onCheckout)}
 			>
-				{#if checkingOut}
-					<LoaderIcon class="size-3 animate-spin" />
+				{#if busy === 'checkout'}
+					<LoaderIcon class="size-3.5 animate-spin" />
 				{:else}
-					<GitBranchIcon class="size-3" />
+					<GitBranchIcon class="size-3.5" />
 				{/if}
-				Checkout
-			</Button>
+			</button>
 		{/if}
 		{#if onOpenAsWorktree}
-			<Button
-				variant="outline"
-				size="sm"
-				class="h-7 gap-1.5 text-xs"
-				onclick={handleOpenAsWorktree}
-				disabled={openingWorktree}
+			<button
+				type="button"
+				class={cn(iconButton, 'size-6')}
+				aria-label="Open as worktree"
+				title="Open as worktree"
+				disabled={busy !== null}
+				onclick={() => run('worktree', onOpenAsWorktree)}
 			>
-				{#if openingWorktree}
-					<LoaderIcon class="size-3 animate-spin" />
+				{#if busy === 'worktree'}
+					<LoaderIcon class="size-3.5 animate-spin" />
 				{:else}
-					<GitForkIcon class="size-3" />
+					<GitForkIcon class="size-3.5" />
 				{/if}
-				Open as Worktree
-			</Button>
+			</button>
 		{/if}
-		{#if showDraftAction}
-			<Button
-				variant="outline"
-				size="sm"
-				class="h-7 flex-1 gap-1.5 text-xs"
-				onclick={handleMarkReady}
-				disabled={markingReady}
-			>
-				{#if markingReady}
-					<LoaderIcon class="size-3 animate-spin" />
-				{:else}
-					<SendHorizontalIcon class="size-3" />
-				{/if}
-				Ready for Review
-			</Button>
-		{:else if canMerge}
-			<div class="flex flex-1">
-				<Button
-					variant="default"
-					size="sm"
-					class="h-7 flex-1 gap-1.5 rounded-r-none text-xs"
-					onclick={handleMerge}
-					disabled={merging}
-				>
-					{#if merging}
-						<LoaderIcon class="size-3 animate-spin" />
-					{:else}
-						<GitMergeIcon class="size-3" />
-					{/if}
-					{methodLabels[mergeMethod]}
-				</Button>
-				<DropdownMenu.Root>
-					<DropdownMenu.Trigger
-						class="inline-flex h-7 items-center justify-center rounded-l-none border-l border-primary-foreground/20 bg-primary px-1.5 text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-						disabled={merging}
-						aria-label="Merge options"
-					>
-						<ChevronDownIcon class="size-3.5" />
-					</DropdownMenu.Trigger>
-					<DropdownMenu.Content align="end" class="w-52">
-						<DropdownMenu.RadioGroup bind:value={mergeMethod}>
-							{#each Object.entries(methodLabels) as [value, label] (value)}
-								<DropdownMenu.RadioItem {value}>{label}</DropdownMenu.RadioItem>
-							{/each}
-						</DropdownMenu.RadioGroup>
-						<DropdownMenu.Separator />
-						<DropdownMenu.CheckboxItem bind:checked={deleteBranch}>
-							Delete branch
-						</DropdownMenu.CheckboxItem>
-						<DropdownMenu.CheckboxItem bind:checked={adminOverride}>
-							Admin override
-						</DropdownMenu.CheckboxItem>
-						<DropdownMenu.Separator />
-						<DropdownMenu.Item onclick={handleAutoMerge}>Enable auto-merge</DropdownMenu.Item>
-					</DropdownMenu.Content>
-				</DropdownMenu.Root>
-			</div>
-		{/if}
-		{#if showUpdateBranch}
-			<Button
-				variant="outline"
-				size="sm"
-				class="h-7 flex-1 gap-1.5 text-xs"
-				onclick={handleUpdateBranch}
-				disabled={updating}
-			>
-				{#if updating}
-					<LoaderIcon class="size-3 animate-spin" />
-				{:else}
-					<RefreshCwIcon class="size-3" />
-				{/if}
-				Update Branch
-			</Button>
-		{/if}
-		<Button
-			variant="outline"
-			size="sm"
-			class="h-7 gap-1.5 text-xs {hasActionButton ? '' : 'w-full'}"
+		<button
+			type="button"
+			class={cn(iconButton, 'size-6')}
+			aria-label="Open on GitHub"
+			title="Open on GitHub"
 			onclick={() => openInGitHub(pr.url)}
 		>
-			<ExternalLinkIcon class="size-3" />
-			Open on GitHub
-		</Button>
+			<ExternalLinkIcon class="size-3.5" />
+		</button>
 	</div>
-
-	{#snippet errorMsg(msg: string | null)}
-		{#if msg}
-			<p class="text-[10px] text-destructive">{msg}</p>
-		{/if}
-	{/snippet}
-	{@render errorMsg(mergeError)}
-	{@render errorMsg(updateError)}
-	{@render errorMsg(readyError)}
-	{@render errorMsg(checkoutError)}
-	{@render errorMsg(worktreeError)}
+	<p class="text-[13.5px] leading-[1.35] font-semibold text-wb-ink">{pr.title}</p>
 </div>

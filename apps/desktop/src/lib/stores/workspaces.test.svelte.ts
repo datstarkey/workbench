@@ -25,7 +25,8 @@ vi.mock('$features/terminal/terminal-connection', async (importOriginal) => ({
 
 // Mock context so getGitStore() and getWorkbenchSettingsStore() work outside a component
 const mockGitStore = {
-	branchByProject: {} as Record<string, string>
+	branchByProject: {} as Record<string, string>,
+	statusByProject: {} as Record<string, { branch: string }>
 };
 const mockWorkbenchSettingsStore = {
 	claudePermissionMode: 'default',
@@ -70,6 +71,7 @@ describe('WorkspaceStore', () => {
 	beforeEach(() => {
 		uidCounter = 0;
 		mockGitStore.branchByProject = {};
+		mockGitStore.statusByProject = {};
 		mockWorkbenchSettingsStore.claudePermissionMode = 'default';
 		mockWorkbenchSettingsStore.sandboxRuntimeEnabled = false;
 		mockWorkbenchSettingsStore.sandboxSettingsPath = undefined;
@@ -1335,6 +1337,22 @@ describe('WorkspaceStore', () => {
 
 			// Should be the same reference (no reassignment)
 			expect(store.workspaces).toBe(originalRef);
+		});
+	});
+
+	// ─── activeGitStatus ────────────────────────────────────
+
+	describe('activeGitStatus', () => {
+		it('is undefined without an active workspace', () => {
+			expect(store.activeGitStatus).toBeUndefined();
+		});
+
+		it('reads the worktree path for worktree workspaces', () => {
+			const ws = makeWorkspace({ projectPath: '/a', worktreePath: '/a-wt' });
+			mockGitStore.statusByProject = { '/a': { branch: 'main' }, '/a-wt': { branch: 'wt' } };
+			store.workspaces = [ws];
+
+			expect(store.activeGitStatus).toEqual({ branch: 'wt' });
 		});
 	});
 

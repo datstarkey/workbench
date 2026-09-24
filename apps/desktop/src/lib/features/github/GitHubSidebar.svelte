@@ -1,110 +1,55 @@
 <script lang="ts">
-	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
-	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GitPullRequestIcon from '@lucide/svelte/icons/git-pull-request';
-	import { Separator } from '@workbench/ui/separator';
+	import PlusIcon from '@lucide/svelte/icons/plus';
+	import { cn } from '@workbench/ui';
 	import { ScrollArea } from '@workbench/ui/scroll-area';
-	import { Badge } from '@workbench/ui/badge';
+	import SidebarSection from '$features/sidebar/SidebarSection.svelte';
+	import { primaryButton } from '$features/sidebar/styles';
 	import { getGitHubStore, getGitStore, getWorktreeManager } from '$stores/context';
-	import type { GitHubCheckDetail } from '$types/workbench';
-	import PRHeader from './PRHeader.svelte';
-	import BranchRunsHeader from './BranchRunsHeader.svelte';
-	import CheckItem from './CheckItem.svelte';
+	import { openInGitHub } from '$lib/utils/github';
+	import { invoke } from '@tauri-apps/api/core';
 	import { onDestroy } from 'svelte';
 	import { watch } from 'runed';
-	import { invoke } from '@tauri-apps/api/core';
-	import { toast } from 'svelte-sonner';
+	import ChecksList from './ChecksList.svelte';
+	import GitHubBranchBar from './GitHubBranchBar.svelte';
+	import PRHeader from './PRHeader.svelte';
+	import PRReadiness from './PRReadiness.svelte';
+	import { checkFromPrCheck, checkFromRun, checksTone, compareUrl, TONE_BG } from './pr-view';
 
 	const githubStore = getGitHubStore();
 	const gitStore = getGitStore();
 	const worktreeManager = getWorktreeManager();
 
-	let activeProjectPath = $derived(githubStore.sidebarTarget?.projectPath ?? null);
-	let activeBranch = $derived(githubStore.sidebarTarget?.branch ?? null);
-	let activePr = $derived(githubStore.sidebarPr);
-	let activeBranchRuns = $derived(githubStore.sidebarBranchRuns);
-	let checks = $derived(githubStore.sidebarChecks);
+	let projectPath = $derived(githubStore.sidebarTarget?.projectPath ?? null);
+	let branch = $derived(githubStore.sidebarTarget?.branch ?? null);
+	let pr = $derived(githubStore.sidebarPr);
+	let repoUrl = $derived(projectPath ? githubStore.getRemoteUrl(projectPath) : null);
+	let prChecks = $derived(githubStore.sidebarChecks.map(checkFromPrCheck));
+	let runChecks = $derived((githubStore.sidebarBranchRuns?.runs ?? []).map(checkFromRun));
+	let otherOpenPrs = $derived(
+		projectPath
+			? (githubStore.prsByProject[projectPath] ?? []).filter(
+					(p) => p.state === 'OPEN' && p.headRefName !== branch
+				)
+			: []
+	);
 
-	// Convert workflow runs to check details for reuse with CheckItem
-	type RunCheckDetail = GitHubCheckDetail & { runId: number };
-	let runChecks = $derived.by((): RunCheckDetail[] => {
-		if (!activeBranchRuns) return [];
-		return activeBranchRuns.runs.map((run) => {
-			let bucket: GitHubCheckDetail['bucket'];
-			if (run.status === 'completed') {
-				if (run.conclusion === 'success' || run.conclusion === 'skipped') bucket = 'pass';
-				else if (run.conclusion === 'cancelled') bucket = 'cancel';
-				else bucket = 'fail';
-			} else {
-				bucket = 'pending';
-			}
-			return {
-				name: run.displayTitle,
-				bucket,
-				workflow: run.name,
-				link: run.url,
-				startedAt: run.createdAt,
-				completedAt: run.status === 'completed' ? run.updatedAt : null,
-				description: '',
-				runId: run.id
-			};
-		});
-	});
-
-	// Other open PRs for the active project (feature 4)
-	let otherOpenPrs = $derived.by(() => {
-		if (!activeProjectPath) return [];
-		const prs = githubStore.prsByProject[activeProjectPath] ?? [];
-		const currentBranch = activeBranch;
-		return prs.filter((p) => p.state === 'OPEN' && p.headRefName !== currentBranch);
-	});
-
-	// Group checks: fail -> pending -> pass -> skipping/cancel
-	const BUCKET_ORDER: Record<string, number> = {
-		fail: 0,
-		pending: 1,
-		pass: 2,
-		skipping: 3,
-		cancel: 4
-	};
-	function sortByBucket<T extends { bucket: string }>(items: T[]): T[] {
-		return [...items].sort((a, b) => (BUCKET_ORDER[a.bucket] ?? 5) - (BUCKET_ORDER[b.bucket] ?? 5));
+	async function checkoutPr() {
+		if (!projectPath || !pr) return;
+		await invoke('github_checkout_pr', { projectPath, prNumber: pr.number });
+		await gitStore.refreshGitState(projectPath);
+		await githubStore.refreshProject(projectPath);
 	}
 
-	let groupedChecks = $derived(sortByBucket(checks));
-	let groupedRunChecks = $derived(sortByBucket(runChecks));
-
-	async function handleCheckoutPr() {
-		if (!activeProjectPath || !activePr) return;
-		await invoke('github_checkout_pr', {
-			projectPath: activeProjectPath,
-			prNumber: activePr.number
-		});
-		await gitStore.refreshGitState(activeProjectPath);
-		await githubStore.refreshProject(activeProjectPath);
-	}
-
-	async function handleOpenPrAsWorktree() {
-		if (!activeProjectPath || !activePr) return;
-		await invoke('github_fetch_pr_branch', {
-			projectPath: activeProjectPath,
-			branch: activePr.headRefName
-		});
-		worktreeManager.add(activeProjectPath, { suggestedBranch: activePr.headRefName });
-	}
-
-	async function handleRerunWorkflow(projectPath: string, runId: number) {
-		try {
-			await invoke('github_rerun_workflow', { projectPath, runId });
-			await githubStore.refreshProject(projectPath);
-		} catch (e) {
-			toast.error(`Failed to rerun workflow: ${e}`);
-		}
+	async function openPrAsWorktree() {
+		if (!projectPath || !pr) return;
+		await invoke('github_fetch_pr_branch', { projectPath, branch: pr.headRefName });
+		worktreeManager.add(projectPath, { suggestedBranch: pr.headRefName });
 	}
 
 	// Trigger data fetch when sidebar target changes (external side effect -- network requests)
 	watch(
-		() => activeProjectPath,
+		() => projectPath,
 		(path) => {
 			if (!path) return;
 			if (Date.now() - (githubStore.lastRefreshedAt[path] ?? 0) < 2000) return;
@@ -117,84 +62,89 @@
 	});
 </script>
 
-<div class="flex flex-1 flex-col overflow-hidden">
-	{#if activePr && activeProjectPath}
-		<ScrollArea class="flex-1">
-			<PRHeader
-				pr={activePr}
-				projectPath={activeProjectPath}
-				onCheckout={activePr.state === 'OPEN' ? handleCheckoutPr : undefined}
-				onOpenAsWorktree={activePr.state === 'OPEN' ? handleOpenPrAsWorktree : undefined}
-			/>
+{#snippet otherPrs(path: string)}
+	{#if otherOpenPrs.length > 0}
+		<SidebarSection title="Other open PRs" count={otherOpenPrs.length} collapsible={false}>
+			{#each otherOpenPrs as other (other.number)}
+				{@const tone = checksTone(other.checksStatus.overall)}
+				<button
+					type="button"
+					class="mx-1 flex h-[30px] items-center gap-2 rounded-[5px] px-2.5 text-left text-xs text-wb-ink hover:bg-wb-panel2"
+					onclick={() => githubStore.showBranch(path, other.headRefName)}
+				>
+					<span class={['size-1.5 shrink-0 rounded-full', tone ? TONE_BG[tone] : 'bg-wb-hair']}
+					></span>
+					<span class="min-w-0 flex-1 truncate">{other.title}</span>
+					<span class="shrink-0 font-mono text-[10.5px] text-wb-ink-soft">#{other.number}</span>
+				</button>
+			{/each}
+		</SidebarSection>
+	{/if}
+{/snippet}
 
-			{#if checks.length > 0}
-				<Separator />
-				<div class="py-1">
-					{#each groupedChecks as check (check.name + check.workflow)}
-						<CheckItem {check} />
-					{/each}
+<div class="flex h-full flex-col overflow-hidden">
+	<GitHubBranchBar />
+	{#if projectPath && branch}
+		<ScrollArea class="min-h-0 flex-1">
+			{#if pr}
+				<div class="flex flex-col gap-2.5 p-3">
+					<PRHeader
+						{pr}
+						onCheckout={pr.state === 'OPEN' ? checkoutPr : undefined}
+						onOpenAsWorktree={pr.state === 'OPEN' ? openPrAsWorktree : undefined}
+					/>
+					{#if pr.state === 'OPEN'}
+						<!-- Keyed so merge options (e.g. admin bypass) never carry over to another PR -->
+						{#key `${projectPath}#${pr.number}`}
+							<PRReadiness {pr} {projectPath} />
+						{/key}
+					{/if}
 				</div>
+				<ChecksList
+					title="Checks"
+					checks={prChecks}
+					{projectPath}
+					emptyText={pr.checksStatus.total > 0 ? 'Loading checks…' : 'No checks on this PR'}
+				/>
 			{:else}
-				<Separator />
-				<div class="px-3 py-6 text-center">
-					<p class="text-xs text-muted-foreground">Loading checks...</p>
-				</div>
-			{/if}
-
-			{#if otherOpenPrs.length > 0}
-				<Separator />
-				<div class="px-3 py-2">
-					<p class="mb-1.5 text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
-						Other open PRs
+				<div class="m-3 flex flex-col gap-2.5 rounded-lg border border-dashed border-wb-hair p-3.5">
+					<div class="flex items-center gap-2">
+						<GitPullRequestIcon class="size-4 shrink-0 text-wb-ink-mute" />
+						<span class="text-xs font-medium text-wb-ink">No pull request yet</span>
+					</div>
+					<p class="text-[11px] leading-[1.45] text-wb-ink-mute">
+						{repoUrl
+							? 'Open one on GitHub to get reviews and required checks.'
+							: 'This project has no GitHub remote.'}
 					</p>
-					{#each otherOpenPrs as otherPr (otherPr.number)}
+					{#if repoUrl}
 						<button
-							class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted/50"
-							onclick={() => githubStore.showBranch(activeProjectPath!, otherPr.headRefName)}
+							type="button"
+							class={cn(primaryButton, 'rounded-md')}
+							onclick={() => openInGitHub(compareUrl(repoUrl, branch))}
 						>
-							<GitPullRequestIcon class="size-3.5 shrink-0 text-green-400" />
-							<span class="min-w-0 flex-1 truncate text-xs">{otherPr.title}</span>
-							<Badge variant="secondary" class="shrink-0 text-[10px]">#{otherPr.number}</Badge>
+							<PlusIcon class="size-3.5" />
+							Create pull request
 						</button>
-					{/each}
+					{/if}
 				</div>
+				{#if runChecks.length > 0}
+					<ChecksList
+						title="Workflow runs on this branch"
+						checks={runChecks}
+						{projectPath}
+						emptyText=""
+					/>
+				{/if}
 			{/if}
-		</ScrollArea>
-	{:else if activeBranchRuns && activeBranch && activeProjectPath}
-		<ScrollArea class="flex-1">
-			<BranchRunsHeader
-				branch={activeBranch}
-				repoUrl={githubStore.getRemoteUrl(activeProjectPath)}
-				branchRuns={activeBranchRuns}
-			/>
-
-			{#if groupedRunChecks.length > 0}
-				<Separator />
-				<div class="py-1">
-					{#each groupedRunChecks as check (check.name + check.workflow)}
-						<CheckItem
-							{check}
-							onRerun={check.bucket === 'fail'
-								? () => handleRerunWorkflow(activeProjectPath!, check.runId)
-								: undefined}
-						/>
-					{/each}
-				</div>
-			{/if}
+			{@render otherPrs(projectPath)}
 		</ScrollArea>
 	{:else}
 		<div class="flex flex-1 flex-col items-center justify-center gap-2 px-4">
-			{#if activeBranch}
-				<GitBranchIcon class="size-5 text-muted-foreground/50" />
-				<p class="text-center text-xs text-muted-foreground">
-					No PR found for <span class="font-medium text-foreground">{activeBranch}</span>
-				</p>
-			{:else}
-				<GithubIcon class="size-5 text-muted-foreground/50" />
-				<p class="text-center text-xs text-muted-foreground">
-					Select a workspace to view GitHub Actions
-				</p>
-			{/if}
+			<GitPullRequestIcon class="size-5 text-wb-ink-soft" />
+			<p class="text-center text-xs text-wb-ink-soft">
+				Select a workspace to see its pull request and checks
+			</p>
 		</div>
 	{/if}
 </div>

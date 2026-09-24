@@ -51,16 +51,25 @@ export class GitHubStore {
 	private _overrideForWorkspaceId: string | null = $state(null);
 	checksByPr: Record<string, GitHubCheckDetail[]> = $state({});
 
-	/** Derived sidebar target: override (valid only for current workspace) or active workspace */
-	readonly sidebarTarget = $derived.by(() => {
-		if (this._overrideTarget && this._overrideForWorkspaceId === this.workspaces.activeWorkspaceId)
-			return this._overrideTarget;
+	/** The active workspace's own branch, ignoring any sidebar override */
+	readonly activeTarget = $derived.by(() => {
 		const ws = this.workspaces.activeWorkspace;
 		if (!ws) return null;
 		const branch = this.workspaces.resolvedBranch(ws) ?? null;
 		if (!branch) return null;
 		return { projectPath: ws.projectPath, branch };
 	});
+
+	/** True while the sidebar shows a branch picked by the user (valid only for current workspace) */
+	readonly sidebarOverridden = $derived(
+		this._overrideTarget !== null &&
+			this._overrideForWorkspaceId === this.workspaces.activeWorkspaceId
+	);
+
+	/** Derived sidebar target: override or active workspace */
+	readonly sidebarTarget = $derived(
+		this.sidebarOverridden ? this._overrideTarget : this.activeTarget
+	);
 
 	/** PR matching the current sidebar target branch */
 	readonly sidebarPr = $derived.by((): GitHubPR | null => {
@@ -84,6 +93,11 @@ export class GitHubStore {
 		if (!target || !pr) return [];
 		return this.checksByPr[this.prKey(target.projectPath, pr.number)] ?? [];
 	});
+
+	/** Overall CI state for the sidebar target: its PR's checks, else its branch runs */
+	readonly sidebarChecksOverall = $derived(
+		this.sidebarPr?.checksStatus.overall ?? this.sidebarBranchRuns?.status.overall ?? 'none'
+	);
 
 	/** Derived list of branches with active AI sessions */
 	readonly activeBranches = $derived.by(() => {
@@ -208,6 +222,17 @@ export class GitHubStore {
 			this.lastRefreshedAt[projectPath] = Date.now();
 		} catch (e) {
 			console.warn('[GitHubStore] Failed to request project refresh:', e);
+		}
+	}
+
+	/** Re-run workflow runs, then refresh the project once for the whole batch. */
+	async rerunWorkflows(projectPath: string, runIds: number[]): Promise<void> {
+		try {
+			await Promise.all(
+				runIds.map((runId) => invoke('github_rerun_workflow', { projectPath, runId }))
+			);
+		} finally {
+			await this.refreshProject(projectPath);
 		}
 	}
 

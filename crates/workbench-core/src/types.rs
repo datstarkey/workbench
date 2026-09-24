@@ -201,6 +201,8 @@ pub struct GitLogEntry {
     pub message: String,
     pub author: String,
     pub date: String,
+    /// Not on any remote-tracking ref yet
+    pub unpushed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

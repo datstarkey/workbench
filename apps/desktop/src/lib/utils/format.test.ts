@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripAnsi, formatSessionDate } from './format';
+import { stripAnsi, formatSessionDate, formatRelativeTime, plural } from './format';
 
 describe('stripAnsi', () => {
 	it('removes basic SGR color codes', () => {
@@ -65,5 +65,34 @@ describe('formatSessionDate', () => {
 		const result = formatSessionDate('2024-01-01T08:05:00Z');
 		// Should contain AM or PM since hour12: true
 		expect(result).toMatch(/AM|PM/);
+	});
+});
+
+describe('formatRelativeTime', () => {
+	const now = new Date('2026-09-24T12:00:00Z').getTime();
+	const ago = (ms: number) => new Date(now - ms).toISOString();
+
+	it('buckets by unit', () => {
+		expect(formatRelativeTime(ago(20_000), now)).toBe('now');
+		expect(formatRelativeTime(ago(5 * 60_000), now)).toBe('5m');
+		expect(formatRelativeTime(ago(3 * 3_600_000), now)).toBe('3h');
+		expect(formatRelativeTime(ago(2 * 86_400_000), now)).toBe('2d');
+		expect(formatRelativeTime(ago(15 * 86_400_000), now)).toBe('2w');
+	});
+
+	it('falls back to a short date after a month', () => {
+		expect(formatRelativeTime('2026-03-03T12:00:00Z', now)).toBe('Mar 3');
+	});
+
+	it('returns empty string for invalid input', () => {
+		expect(formatRelativeTime('nope', now)).toBe('');
+	});
+});
+
+describe('plural', () => {
+	it('pluralizes by count', () => {
+		expect(plural(1, 'file')).toBe('1 file');
+		expect(plural(0, 'file')).toBe('0 files');
+		expect(plural(3, 'commit')).toBe('3 commits');
 	});
 });

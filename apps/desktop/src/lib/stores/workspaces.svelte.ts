@@ -117,6 +117,12 @@ export class WorkspaceStore {
 		return this.activeWorkspace?.projectPath ?? null;
 	}
 
+	/** Git status of the active workspace's cwd (worktree or main checkout) */
+	readonly activeGitStatus = $derived.by(() => {
+		const ws = this.activeWorkspace;
+		return ws ? this.gitStore.statusByProject[effectivePath(ws)] : undefined;
+	});
+
 	get activeTerminalTab(): TerminalTabState | null {
 		const ws = this.activeWorkspace;
 		if (!ws) return null;

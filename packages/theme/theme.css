@@ -157,6 +157,7 @@
 	--color-wb-err: var(--wb-err);
 	--color-wb-accent: var(--wb-accent);
 	--color-wb-accent-soft: var(--wb-accent-soft);
+	--color-wb-accent-ink: var(--wb-accent-ink);
 }
 
 @layer base {
