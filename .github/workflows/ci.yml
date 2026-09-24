@@ -119,3 +119,36 @@ jobs:
       - name: Check Rust compiles on Windows
         run: cargo test --no-run
         working-directory: apps/desktop/src-tauri
+
+  # Smoke-tests the built app over WebDriver (apps/desktop/e2e). Not a required
+  # check: WebKitGTK under xvfb is new here, so it earns that once it's stable.
+  e2e:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: e2e
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build the e2e app
+        run: bun run --cwd apps/desktop build:e2e
+
+      - name: Run WebDriver smoke tests
+        run: xvfb-run --auto-servernum bun run --cwd apps/desktop test:e2e

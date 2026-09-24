@@ -50,6 +50,7 @@
 	<Tooltip.Root>
 		<Tooltip.Trigger
 			{onclick}
+			aria-label={label}
 			class="relative grid h-9 w-9 place-items-center rounded-md transition-colors {active
 				? 'bg-wb-panel2 text-wb-accent'
 				: 'text-wb-ink-mute hover:text-wb-ink'}"
