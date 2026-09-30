@@ -1,6 +1,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import {
 	isAISessionType,
+	type PaneView,
 	type ProjectConfig,
 	type ProjectTask,
 	type ProjectWorkspace,
@@ -574,6 +575,20 @@ export class WorkspaceStore {
 			}
 		}
 		return null;
+	}
+
+	/** Switch a Claude pane between its terminal and the chat view of the same session. */
+	setPaneView(paneId: string, view: PaneView): void {
+		const location = this.findPaneLocation(paneId);
+		if (!location) return;
+		this.updateWorkspace(location.workspaceId, (w) => ({
+			...w,
+			terminalTabs: w.terminalTabs.map((t) =>
+				t.id !== location.tabId
+					? t
+					: { ...t, panes: t.panes.map((p) => (p.id === paneId ? { ...p, view } : p)) }
+			)
+		}));
 	}
 
 	/** Activate the workspace and tab containing the given pane. */

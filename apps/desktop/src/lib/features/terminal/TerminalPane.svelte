@@ -12,6 +12,7 @@
 	import type { ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
 	import { TerminalConnection } from './terminal-connection';
+	import { registerPaneInput } from '$features/chat/pane-input';
 	import { stripAnsi } from '$lib/utils/format';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
@@ -69,6 +70,7 @@
 	/** Another device holds this terminal; stays detached until the user takes control. */
 	let takenOver = $state(false);
 	let removeVisibilityListener: (() => void) | null = null;
+	let unregisterInput: (() => void) | null = null;
 	let lastCols = 0;
 	let lastRows = 0;
 	let documentVisible = $state(document.visibilityState === 'visible');
@@ -543,6 +545,12 @@
 				pendingInputAtMs = now;
 				conn?.write(data);
 			});
+			// The chat view types through xterm so its input takes the keystroke path.
+			const term = terminal;
+			unregisterInput = registerPaneInput(paneId, {
+				paste: (text) => term.paste(text),
+				key: (data) => term.input(data)
+			});
 
 			// Fit before connecting PTY so it starts with the correct size.
 			fitTerminal();
@@ -692,6 +700,7 @@
 		clearFlushSchedule();
 		if (perfLogInterval) clearInterval(perfLogInterval);
 		removeVisibilityListener?.();
+		unregisterInput?.();
 		removeCopyListener?.();
 		removeResidueGuard?.();
 		resizeObserver?.disconnect();

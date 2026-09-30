@@ -995,3 +995,42 @@ async fn terminal_create_forwards_env() {
 
     handle.stop().await;
 }
+
+#[tokio::test]
+async fn transcript_ws_requires_token_and_uuid_then_streams_a_snapshot() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::{Error, Message};
+
+    let (handle, _base) = start().await;
+    let addr = handle.addr().to_string();
+    // A random id: no transcript exists, so the snapshot is empty.
+    let id = "0d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let url =
+        |id: &str, token: &str| format!("ws://{addr}/claude/transcripts/{id}/ws?token={token}");
+
+    match tokio_tungstenite::connect_async(url(id, "wrong")).await {
+        Err(Error::Http(resp)) => assert_eq!(resp.status(), 401),
+        other => panic!("wrong token must get 401, got {:?}", other.map(|_| ())),
+    }
+    match tokio_tungstenite::connect_async(url("..%2F..%2Fsecrets", TOKEN)).await {
+        Err(Error::Http(resp)) => assert_eq!(resp.status(), 400),
+        other => panic!("non-UUID id must get 400, got {:?}", other.map(|_| ())),
+    }
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(url(id, TOKEN))
+        .await
+        .expect("valid token and id must upgrade");
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("snapshot within 5s")
+        .expect("stream open")
+        .expect("frame ok");
+    let Message::Text(text) = frame else {
+        panic!("expected a text frame, got {frame:?}");
+    };
+    let msg: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(msg["t"], "snapshot");
+    assert_eq!(msg["items"], json!([]));
+
+    handle.stop().await;
+}

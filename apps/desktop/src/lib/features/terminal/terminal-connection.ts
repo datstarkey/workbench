@@ -79,7 +79,7 @@ export interface TerminalMeta {
 }
 
 /** Resolved loopback server coordinates. */
-interface ServerInfo {
+export interface ServerInfo {
 	baseUrl: string;
 	token?: string;
 }
@@ -92,7 +92,7 @@ interface ServerInfo {
  */
 let serverInfoCache: Promise<ServerInfo> | null = null;
 
-function resolveServer(): Promise<ServerInfo> {
+export function resolveServer(): Promise<ServerInfo> {
 	if (!serverInfoCache) {
 		serverInfoCache = (async () => {
 			const status = await terminalServerStatus();

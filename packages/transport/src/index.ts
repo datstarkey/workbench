@@ -19,7 +19,16 @@ export { buildPairingUri, isStrongToken, parsePairingUri, type PairingInfo } fro
  * server was started with one — rides along as a `?token=` query param.
  */
 export function terminalWsUrl(serverUrl: string, id: string, token?: string): string {
+	return wsUrl(serverUrl, `/remote/terminals/${id}/ws`, token);
+}
+
+/** WebSocket URL streaming a Claude session's transcript as chat items. */
+export function transcriptWsUrl(serverUrl: string, sessionId: string, token?: string): string {
+	return wsUrl(serverUrl, `/claude/transcripts/${encodeURIComponent(sessionId)}/ws`, token);
+}
+
+function wsUrl(serverUrl: string, path: string, token?: string): string {
 	const base = serverUrl.replace(/^http/, 'ws').replace(/\/$/, '');
 	const qs = token ? `?token=${encodeURIComponent(token)}` : '';
-	return `${base}/remote/terminals/${id}/ws${qs}`;
+	return `${base}${path}${qs}`;
 }

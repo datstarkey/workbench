@@ -159,7 +159,11 @@ export interface TerminalPaneState {
 	 * use the native SwiftTerm path.
 	 */
 	serverTerminalId?: string;
+	/** Claude panes can show their session as chat; the terminal keeps running underneath. */
+	view?: PaneView;
 }
+
+export type PaneView = 'terminal' | 'chat';
 
 export interface TerminalTabState {
 	id: string;
@@ -480,3 +484,43 @@ export interface ProjectFormState {
 	group: string;
 	shell: string;
 }
+
+/**
+ * Chat items streamed from a Claude session's JSONL by the server's
+ * `/claude/transcripts/:id/ws` (mirror of workbench-core `claude_transcript`).
+ */
+export type TranscriptToolStatus = 'running' | 'ok' | 'error';
+
+export interface TranscriptPatchHunk {
+	oldStart: number;
+	newStart: number;
+	lines: string[];
+}
+
+export type TranscriptItem =
+	| { kind: 'user'; id: string; text: string; timestamp: string }
+	| { kind: 'text'; id: string; text: string }
+	| { kind: 'thinking'; id: string; text: string }
+	| {
+			kind: 'tool';
+			id: string;
+			name: string;
+			input: Record<string, unknown> | null;
+			status: TranscriptToolStatus;
+			output?: string;
+			patch?: TranscriptPatchHunk[];
+	  }
+	| { kind: 'notice'; id: string; text: string };
+
+export interface TranscriptMeta {
+	title: string | null;
+	model: string | null;
+	permissionMode: string | null;
+	contextTokens: number | null;
+	busy: boolean;
+}
+
+export type TranscriptServerMsg =
+	| { t: 'snapshot'; items: TranscriptItem[]; meta: TranscriptMeta; truncated: boolean }
+	| { t: 'update'; items: TranscriptItem[]; meta: TranscriptMeta }
+	| { t: 'revoked' };

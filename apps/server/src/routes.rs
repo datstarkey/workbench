@@ -43,6 +43,10 @@ pub fn router(state: AppState) -> Router {
             "/remote/terminals/:id",
             delete(crate::terminal::terminal_kill),
         )
+        .route(
+            "/claude/transcripts/:id/ws",
+            get(crate::transcript::transcript_attach),
+        )
         .with_state(state)
 }
 
