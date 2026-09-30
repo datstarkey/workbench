@@ -12,6 +12,7 @@ const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.sh";
 const WORKBENCH_HOOK_SCRIPT_NAME: &str = "workbench-hook-bridge.ps1";
 const WORKBENCH_HOOK_EVENTS: &[(&str, Option<&str>)] = &[
     ("SessionStart", None),
+    ("SessionEnd", None),
     ("UserPromptSubmit", None),
     ("Stop", None),
     ("Notification", None),
@@ -478,7 +479,7 @@ pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
 
     let needs_changes = !script_exists || !missing_events.is_empty();
     let description = if needs_changes {
-        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification, and PostToolUse (Bash only). This enables session activity tracking and immediate git/GitHub refresh after git or gh commands.".to_string()
+        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, SessionEnd, UserPromptSubmit, Stop, Notification, and PostToolUse (Bash only). This enables session activity tracking, the chat view, and immediate git/GitHub refresh after git or gh commands.".to_string()
     } else {
         String::new()
     };

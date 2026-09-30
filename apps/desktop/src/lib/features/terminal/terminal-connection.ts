@@ -369,6 +369,11 @@ export class TerminalConnection {
 		});
 	}
 
+	/** Whether `write` would reach the PTY right now. */
+	get isOpen(): boolean {
+		return this.ws?.readyState === WebSocket.OPEN;
+	}
+
 	/** Send PTY input. No-op if the socket is not OPEN. */
 	write(data: string): void {
 		if (this.ws?.readyState === WebSocket.OPEN) {

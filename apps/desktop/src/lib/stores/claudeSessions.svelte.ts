@@ -42,6 +42,13 @@ export class ClaudeSessionStore {
 	/** Set of terminal pane IDs where Claude is blocked waiting for user action (permission/question) */
 	panesAwaitingInput: SvelteSet<string> = $state(new SvelteSet());
 
+	/**
+	 * Panes where a Claude process has reported in through a hook and not yet
+	 * sent SessionEnd. The chat view only types into these: after Claude exits,
+	 * the pane is a plain shell and a chat message would run as a command.
+	 */
+	panesClaudeRunning: SvelteSet<string> = $state(new SvelteSet());
+
 	/** Cached discovered Claude sessions for the current project */
 	discoveredSessions: DiscoveredClaudeSession[] = $state([]);
 
@@ -447,7 +454,14 @@ export class ClaudeSessionStore {
 			void this.syncLabelFromSession(paneId, event.sessionId, 'claude', canRetryLabel);
 		}
 
+		if (event.hookEventName === 'SessionEnd') this.panesClaudeRunning.delete(paneId);
+		else this.panesClaudeRunning.add(paneId);
+
 		switch (event.hookEventName) {
+			case 'SessionEnd':
+				this.panesInProgress.delete(paneId);
+				this.panesAwaitingInput.delete(paneId);
+				break;
 			case 'UserPromptSubmit':
 				this.panesInProgress.add(paneId);
 				this.panesAwaitingInput.delete(paneId);

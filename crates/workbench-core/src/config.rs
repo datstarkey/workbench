@@ -158,6 +158,7 @@ mod tests {
                         startup_command: Some("cargo test".into()),
                         session_type: Some("claude".into()),
                         claude_session_id: Some("sess-123".into()),
+                        view: Some("chat".into()),
                     }],
                     session_type: None,
                 }],
@@ -179,6 +180,11 @@ mod tests {
         assert_eq!(
             ws.terminal_tabs[0].panes[0].startup_command,
             Some("cargo test".to_string())
+        );
+        assert_eq!(
+            ws.terminal_tabs[0].panes[0].view.as_deref(),
+            Some("chat"),
+            "the chat view choice must survive save_workspaces"
         );
         assert_eq!(ws.worktree_path, Some("/Users/jake/project-wt".to_string()));
         assert_eq!(ws.branch, Some("feature/test".to_string()));

@@ -182,10 +182,14 @@ impl Transcript {
             );
             return;
         }
-        let Some(text) = user_visible_text(text) else {
-            return;
+        let text = match user_visible_text(text) {
+            Some(UserText::Prompt(text)) => {
+                self.meta.busy = true;
+                text
+            }
+            Some(UserText::Command(text)) => text,
+            None => return,
         };
-        self.meta.busy = true;
         let timestamp = str_at(obj, "timestamp").unwrap_or_default().to_string();
         self.upsert(
             TranscriptItem::User {
@@ -327,16 +331,35 @@ impl Transcript {
     }
 }
 
-/// What a person typed, or `None` for CLI bookkeeping. Slash commands are
-/// recorded as `<command-name>/x</command-name><command-args>…` and shown as
-/// `/x …`; other `<tag>` payloads (command output, reminders) are hidden.
-fn user_visible_text(text: &str) -> Option<String> {
-    if !text.starts_with('<') {
-        return Some(text.to_string());
+/// What a person typed, or `None` for CLI bookkeeping. The CLI wraps its own
+/// entries in hyphenated tags (`<local-command-stdout>`, `<system-reminder>`,
+/// `<command-name>`), so a prompt that merely starts with `<` (a pasted
+/// `<Button>` or `<template>`) is still shown. Slash commands are shown as
+/// `/x …`.
+fn user_visible_text(text: &str) -> Option<UserText> {
+    let Some(tag) = text
+        .strip_prefix('<')
+        .and_then(|rest| rest.split_once('>'))
+        .map(|(tag, _)| tag)
+        .filter(|tag| tag.contains('-') && !tag.contains(char::is_whitespace))
+    else {
+        return Some(UserText::Prompt(text.to_string()));
+    };
+    if tag != "command-name" && !text.contains("<command-name>") {
+        return None;
     }
     let name = between(text, "<command-name>", "</command-name>")?;
     let args = between(text, "<command-args>", "</command-args>").unwrap_or("");
-    Some(format!("{name} {args}").trim().to_string())
+    Some(UserText::Command(
+        format!("{name} {args}").trim().to_string(),
+    ))
+}
+
+enum UserText {
+    /// Starts a model turn.
+    Prompt(String),
+    /// A slash command; may be handled locally with no turn at all.
+    Command(String),
 }
 
 fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
@@ -443,10 +466,16 @@ pub struct TranscriptTail {
     projects_dir: PathBuf,
     session_id: String,
     path: Option<PathBuf>,
+    /// Polls left before the next search for a missing file.
+    search_cooldown: u32,
     offset: u64,
     partial: Vec<u8>,
     transcript: Transcript,
 }
+
+/// Searching every project folder is a `read_dir` plus a stat per folder, so a
+/// missing file is looked for on every Nth poll only.
+const SEARCH_EVERY_POLLS: u32 = 8;
 
 impl TranscriptTail {
     pub fn new(projects_dir: PathBuf, session_id: String) -> Self {
@@ -454,6 +483,7 @@ impl TranscriptTail {
             projects_dir,
             session_id,
             path: None,
+            search_cooldown: 0,
             offset: 0,
             partial: Vec::new(),
             transcript: Transcript::default(),
@@ -464,9 +494,23 @@ impl TranscriptTail {
         &self.transcript
     }
 
+    fn clear(&mut self) {
+        self.offset = 0;
+        self.partial.clear();
+        self.transcript = Transcript::default();
+    }
+
     pub fn poll(&mut self) -> std::io::Result<TailUpdate> {
         if self.path.is_none() {
+            if self.search_cooldown > 0 {
+                self.search_cooldown -= 1;
+                return Ok(TailUpdate::Idle);
+            }
             self.path = find_transcript(&self.projects_dir, &self.session_id);
+            if self.path.is_none() {
+                self.search_cooldown = SEARCH_EVERY_POLLS - 1;
+                return Ok(TailUpdate::Idle);
+            }
         }
         let Some(path) = self.path.clone() else {
             return Ok(TailUpdate::Idle);
@@ -474,16 +518,21 @@ impl TranscriptTail {
         let len = match fs::metadata(&path) {
             Ok(m) => m.len(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // A recreated file must be read from the start, not the old offset.
                 self.path = None;
-                return Ok(TailUpdate::Idle);
+                let had_content = self.offset > 0;
+                self.clear();
+                return Ok(if had_content {
+                    TailUpdate::Reset
+                } else {
+                    TailUpdate::Idle
+                });
             }
             Err(e) => return Err(e),
         };
         let reset = len < self.offset;
         if reset {
-            self.offset = 0;
-            self.partial.clear();
-            self.transcript = Transcript::default();
+            self.clear();
         }
         if len == self.offset {
             return Ok(if reset {
@@ -624,6 +673,7 @@ mod tests {
         t.apply_line(&line(json!({"type":"user","uuid":"side","isSidechain":true,"message":{"content":"subagent prompt"}})));
         t.apply_line(&assistant("th", json!({"type":"thinking","thinking":""})));
         t.apply_line(&user("ok", json!("ok")));
+        t.apply_line(&user("html", json!("<Button> renders twice, why?")));
         let texts: Vec<_> = t
             .items()
             .iter()
@@ -632,7 +682,10 @@ mod tests {
                 _ => "?",
             })
             .collect();
-        assert_eq!(texts, vec!["/compact keep tests", "ok"]);
+        assert_eq!(
+            texts,
+            vec!["/compact keep tests", "ok", "<Button> renders twice, why?"]
+        );
     }
 
     #[test]
@@ -647,6 +700,15 @@ mod tests {
         assert!(
             matches!(&t.items()[0], TranscriptItem::User { text, .. } if text == "also check windows")
         );
+    }
+
+    #[test]
+    fn slash_commands_do_not_start_a_turn() {
+        let mut t = Transcript::default();
+        t.apply_line(&user("c", json!("<command-name>/cost</command-name>")));
+        assert!(!t.meta().busy, "/cost runs locally and never ends a turn");
+        t.apply_line(&user("p", json!("fix it")));
+        assert!(t.meta().busy);
     }
 
     #[test]
@@ -688,11 +750,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("-Users-me-repo");
         fs::create_dir_all(&project).unwrap();
-        let mut tail = TranscriptTail::new(dir.path().to_path_buf(), SID.into());
-        assert_eq!(tail.poll().unwrap(), TailUpdate::Idle, "no file yet");
-
         let path = project.join(format!("{SID}.jsonl"));
         let mut f = fs::File::create(&path).unwrap();
+        let mut tail = TranscriptTail::new(dir.path().to_path_buf(), SID.into());
+        assert_eq!(tail.poll().unwrap(), TailUpdate::Idle, "empty file");
         let first = user("u1", json!("hello there"));
         let (head, rest) = first.split_at(10);
         write!(f, "{head}").unwrap();
@@ -708,5 +769,33 @@ mod tests {
         fs::write(&path, format!("{}\n", user("u9", json!("fresh start")))).unwrap();
         assert_eq!(tail.poll().unwrap(), TailUpdate::Reset);
         assert_eq!(tail.transcript().items().len(), 1);
+
+        // Deleted then recreated longer than the old offset: read from the start.
+        fs::remove_file(&path).unwrap();
+        assert_eq!(tail.poll().unwrap(), TailUpdate::Reset);
+        let long = user("u10", json!("x".repeat(500)));
+        fs::write(&path, format!("{long}\n")).unwrap();
+        assert!(matches!(tail.poll().unwrap(), TailUpdate::Changed(a) if a.items == vec![0]));
+        assert!(
+            matches!(&tail.transcript().items()[0], TranscriptItem::User { id, .. } if id == "u10")
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_searched_for_on_every_nth_poll() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("-repo");
+        fs::create_dir_all(&project).unwrap();
+        let mut tail = TranscriptTail::new(dir.path().to_path_buf(), SID.into());
+        assert_eq!(tail.poll().unwrap(), TailUpdate::Idle);
+        fs::write(
+            project.join(format!("{SID}.jsonl")),
+            format!("{}\n", user("u", json!("hello"))),
+        )
+        .unwrap();
+        for _ in 1..SEARCH_EVERY_POLLS {
+            assert_eq!(tail.poll().unwrap(), TailUpdate::Idle, "still cooling down");
+        }
+        assert!(matches!(tail.poll().unwrap(), TailUpdate::Changed(_)));
     }
 }

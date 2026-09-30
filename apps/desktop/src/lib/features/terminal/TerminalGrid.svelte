@@ -45,7 +45,8 @@
 				onServerTerminalIdChange={(paneId, serverTerminalId) =>
 					workspaceStore.setServerTerminalId(paneId, serverTerminalId)}
 			/>
-			{#if chatSessionId && pane.view === 'chat'}
+			<!-- Only while visible: every grid stays mounted, and a hidden chat would keep streaming. -->
+			{#if chatSessionId && pane.view === 'chat' && active}
 				<div class="absolute inset-0 z-10">
 					{#key chatSessionId}
 						<SessionChat

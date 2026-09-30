@@ -46,6 +46,9 @@ pub async fn transcript_attach(
 async fn stream(mut socket: WebSocket, tail: TranscriptTail, mut revoked: watch::Receiver<bool>) {
     let mut tail = Some(tail);
     let mut sent_snapshot = false;
+    // Index of the first item the client has; older ones were cut from the
+    // snapshot, and an update to one would land out of order at the bottom.
+    let mut floor = 0;
     let mut interval = tokio::time::interval(POLL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -65,12 +68,17 @@ async fn stream(mut socket: WebSocket, tail: TranscriptTail, mut revoked: watch:
                     Ok(TailUpdate::Changed(_) | TailUpdate::Idle | TailUpdate::Reset)
                         if !sent_snapshot =>
                     {
-                        Some(snapshot(&t))
+                        Some(snapshot(&t, &mut floor))
                     }
-                    Ok(TailUpdate::Reset) => Some(snapshot(&t)),
+                    Ok(TailUpdate::Reset) => Some(snapshot(&t, &mut floor)),
                     Ok(TailUpdate::Changed(applied)) => {
                         let items = t.transcript().items();
-                        let changed: Vec<_> = applied.items.iter().map(|&i| &items[i]).collect();
+                        let changed: Vec<_> = applied
+                            .items
+                            .iter()
+                            .filter(|&&i| i >= floor)
+                            .map(|&i| &items[i])
+                            .collect();
                         Some(json!({"t": "update", "items": changed, "meta": t.transcript().meta()}))
                     }
                     Ok(TailUpdate::Idle) => None,
@@ -101,9 +109,10 @@ async fn stream(mut socket: WebSocket, tail: TranscriptTail, mut revoked: watch:
     }
 }
 
-fn snapshot(tail: &TranscriptTail) -> serde_json::Value {
+fn snapshot(tail: &TranscriptTail, floor: &mut usize) -> serde_json::Value {
     let items = tail.transcript().items();
     let start = items.len().saturating_sub(SNAPSHOT_ITEMS);
+    *floor = start;
     json!({
         "t": "snapshot",
         "items": &items[start..],

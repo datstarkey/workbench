@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
+	import { watch } from 'runed';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import { cn } from '@workbench/ui';
@@ -37,6 +38,8 @@
 	const doneCount = $derived(todos.filter((t) => t.status === 'completed').length);
 	const busy = $derived(feed.meta?.busy ?? false);
 	const awaitingAnswer = $derived(claudeSessionStore.panesAwaitingInput.has(paneId));
+	/** Without a live Claude process the pane is a shell: never type chat into it. */
+	const claudeRunning = $derived(claudeSessionStore.panesClaudeRunning.has(paneId));
 
 	/** Keep the newest message in view, unless the reader has scrolled up. */
 	const followLatest: Attachment<HTMLDivElement> = (node) => {
@@ -44,18 +47,20 @@
 			stickToBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
 		};
 		node.addEventListener('scroll', onScroll);
-		$effect(() => {
-			void feed.items;
-			if (stickToBottom) node.scrollTop = node.scrollHeight;
-		});
+		watch(
+			() => feed.items,
+			() => {
+				if (stickToBottom) node.scrollTop = node.scrollHeight;
+			}
+		);
 		return () => node.removeEventListener('scroll', onScroll);
 	};
 
 	function send() {
 		const text = draft.trim();
-		if (!text) return;
+		if (!text || !claudeRunning) return;
 		if (!submitPrompt(paneId, text)) {
-			sendError = 'The terminal for this session is not connected.';
+			sendError = 'The terminal is disconnected or controlled elsewhere. Open it to reconnect.';
 			return;
 		}
 		sendError = '';
@@ -72,12 +77,12 @@
 
 	/** Esc interrupts the running turn, as in the terminal. */
 	function interrupt() {
-		paneInput(paneId)?.key('\x1b');
+		if (claudeRunning) paneInput(paneId)?.key('\x1b');
 	}
 
 	/** Shift+Tab cycles the permission mode, as in the terminal. */
 	function cycleMode() {
-		paneInput(paneId)?.key('\x1b[Z');
+		if (claudeRunning) paneInput(paneId)?.key('\x1b[Z');
 	}
 </script>
 
@@ -203,12 +208,31 @@
 		</div>
 	{/if}
 
+	{#if !claudeRunning}
+		<div
+			class="mx-4 mb-2 flex shrink-0 items-center gap-3 rounded-md border border-wb-hair bg-wb-panel px-3 py-2 text-xs text-wb-ink-mute"
+		>
+			<span class="flex-1">
+				Claude isn't running in this pane, so messages can't be sent. Start or resume it in the
+				terminal.
+			</span>
+			<button
+				type="button"
+				class="rounded border border-wb-hair px-2 py-0.5 text-wb-ink"
+				onclick={onShowTerminal}
+			>
+				Open terminal
+			</button>
+		</div>
+	{/if}
+
 	<div class="mx-4 mb-3 shrink-0 rounded-lg border border-wb-hair bg-wb-panel">
 		<label for="chat-draft-{paneId}" class="sr-only">Message Claude</label>
 		<textarea
 			id="chat-draft-{paneId}"
 			bind:value={draft}
 			onkeydown={onComposerKeydown}
+			disabled={!claudeRunning}
 			rows="2"
 			placeholder="Message Claude. Enter to send, Shift+Enter for a new line."
 			class="block w-full resize-none bg-transparent px-3 pt-2 text-sm placeholder:text-wb-ink-soft focus:outline-none"
@@ -226,7 +250,7 @@
 				<span class="text-wb-err">{sendError}</span>
 			{/if}
 			<span class="flex-1"></span>
-			{#if busy}
+			{#if busy && claudeRunning}
 				<button
 					type="button"
 					class="flex size-7 items-center justify-center rounded-md border border-wb-hair bg-wb-panel2 hover:text-wb-ink"
@@ -241,7 +265,7 @@
 				type="button"
 				class="flex size-7 items-center justify-center rounded-md bg-wb-accent text-wb-accent-ink disabled:opacity-40"
 				aria-label="Send"
-				disabled={!draft.trim()}
+				disabled={!draft.trim() || !claudeRunning}
 				onclick={send}
 			>
 				<ArrowUpIcon class="size-3.5" />

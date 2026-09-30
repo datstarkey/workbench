@@ -8,6 +8,7 @@ describe('pane input registry', () => {
 		vi.useFakeTimers();
 		const calls: string[] = [];
 		const off = registerPaneInput('p1', {
+			writable: () => true,
 			paste: (t) => calls.push(`paste:${t}`),
 			key: (d) => calls.push(`key:${JSON.stringify(d)}`)
 		});
@@ -22,9 +23,18 @@ describe('pane input registry', () => {
 		expect(submitPrompt('missing', 'hi')).toBe(false);
 	});
 
+	it('refuses to type into a detached or disconnected terminal', () => {
+		const input = { writable: () => false, paste: vi.fn(), key: vi.fn() };
+		const off = registerPaneInput('p3', input);
+		expect(submitPrompt('p3', 'hi')).toBe(false);
+		expect(paneInput('p3')).toBeUndefined();
+		expect(input.paste).not.toHaveBeenCalled();
+		off();
+	});
+
 	it('only removes its own registration', () => {
-		const a = { paste: vi.fn(), key: vi.fn() };
-		const b = { paste: vi.fn(), key: vi.fn() };
+		const a = { writable: () => true, paste: vi.fn(), key: vi.fn() };
+		const b = { writable: () => true, paste: vi.fn(), key: vi.fn() };
 		const offA = registerPaneInput('p2', a);
 		const offB = registerPaneInput('p2', b);
 		offA();

@@ -548,6 +548,7 @@
 			// The chat view types through xterm so its input takes the keystroke path.
 			const term = terminal;
 			unregisterInput = registerPaneInput(paneId, {
+				writable: () => !takenOver && conn?.isOpen === true,
 				paste: (text) => term.paste(text),
 				key: (data) => term.input(data)
 			});
