@@ -10,21 +10,16 @@
 	import * as Tooltip from '@workbench/ui/tooltip';
 	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import ClaudeSessionMenu from '$features/claude/ClaudeSessionMenu.svelte';
-	import {
-		getClaudeSessionStore,
-		getProjectStore,
-		getWorkbenchSettingsStore,
-		getWorkspaceStore
-	} from '$stores/context';
+	import { getClaudeSessionStore, getProjectStore, getWorkspaceStore } from '$stores/context';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import { effectivePath } from '$lib/utils/path';
-	import type { ProjectWorkspace, TerminalTabState } from '$types/workbench';
+	import { TabReorder } from '$lib/utils/tab-reorder.svelte';
+	import { visibleSplit } from './split-view';
+	import type { ProjectWorkspace, SplitDirection, TerminalTabState } from '$types/workbench';
 
 	const workspaceStore = getWorkspaceStore();
 	const claudeSessionStore = getClaudeSessionStore();
 	const projectStore = getProjectStore();
-	const workbenchSettings = getWorkbenchSettingsStore();
-	let nativeMode = $derived(workbenchSettings.terminalRenderer === 'native');
 
 	let {
 		workspace
@@ -36,6 +31,18 @@
 	let activeTabId = $derived(workspace.activeTerminalTabId);
 	let wsProject = $derived(projectStore.getByPath(workspace.projectPath));
 	let wsCwd = $derived(effectivePath(workspace));
+	let split = $derived(visibleSplit(workspace));
+	// Per workspace, like the grid App.svelte renders: native panes are OS views CSS can't split.
+	let nativeMode = $derived(workspace.renderer === 'native');
+
+	const reorder = new TabReorder(
+		() => tabs.map((t) => t.id),
+		(fromId, toId) => workspaceStore.reorderTerminalTab(workspace.id, fromId, toId)
+	);
+
+	function toggleSplit(direction: SplitDirection) {
+		if (wsProject) workspaceStore.splitTerminal(workspace.id, direction, wsProject);
+	}
 
 	/** Map of tabId → session status for AI tabs */
 	let sessionsByTabId = $derived.by(() => {
@@ -78,16 +85,32 @@
 						? tabSession != null && !tabSession.needsAttention && !tabSession.awaitingInput
 						: false}
 				{@const isAwaiting = tabSession?.awaitingInput ?? false}
+				{@const inSplit = split?.tabs.some((t) => t.id === tab.id) ?? false}
+				{@const dropSide = reorder.dropSide(tab.id)}
 				<div
 					class={[
 						'group relative inline-flex items-stretch border-r border-wb-hair transition-colors',
-						isActive ? 'bg-wb-bg' : 'bg-transparent hover:bg-wb-panel2/60'
+						isActive
+							? 'bg-wb-bg'
+							: inSplit
+								? 'bg-wb-bg/50'
+								: 'bg-transparent hover:bg-wb-panel2/60',
+						reorder.dragging === tab.id && 'opacity-50'
 					]}
 					role="presentation"
+					{...reorder.handlers(tab.id)}
 				>
 					<!-- Top accent border (2px) for active tab -->
 					{#if isActive}
 						<span class={['absolute inset-x-0 top-0 h-0.5', activeTopBorderClass(tab)]}></span>
+					{/if}
+					{#if dropSide}
+						<span
+							class={[
+								'absolute inset-y-1 z-10 w-0.5 rounded bg-wb-accent',
+								dropSide === 'before' ? '-left-px' : '-right-px'
+							]}
+						></span>
 					{/if}
 					<button
 						class={[
@@ -97,6 +120,7 @@
 						type="button"
 						role="tab"
 						aria-selected={isActive}
+						title={tab.label}
 						onclick={() => workspaceStore.setActiveTab(workspace.id, tab.id)}
 					>
 						<!-- Index number -->
@@ -108,8 +132,7 @@
 								kindBadgeClass(tab)
 							]}>{kindBadge(tab)}</span
 						>
-						<!-- Label -->
-						{tab.label}
+						<span class="max-w-36 truncate">{tab.label}</span>
 						<!-- Status indicator -->
 						{#if isLive}
 							<span class="wb-pulse size-1.5 shrink-0 rounded-full bg-wb-ok"></span>
@@ -213,15 +236,21 @@
 							{...props}
 							variant="ghost"
 							size="icon-sm"
-							class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
+							class={[
+								'size-6 hover:bg-wb-panel2 hover:text-wb-ink',
+								split?.direction === 'horizontal' ? 'bg-wb-panel2 text-wb-ink' : 'text-wb-ink-soft'
+							]}
 							type="button"
-							onclick={() => workspaceStore.splitTerminal(workspace.id, 'horizontal')}
+							aria-pressed={split?.direction === 'horizontal'}
+							onclick={() => toggleSplit('horizontal')}
 						>
 							<Columns2Icon class="size-3.5" />
 						</Button>
 					{/snippet}
 				</Tooltip.Trigger>
-				<Tooltip.Content>Split Horizontal</Tooltip.Content>
+				<Tooltip.Content
+					>{split?.direction === 'horizontal' ? 'Unsplit' : 'Split Horizontal'}</Tooltip.Content
+				>
 			</Tooltip.Root>
 
 			<Tooltip.Root>
@@ -231,15 +260,21 @@
 							{...props}
 							variant="ghost"
 							size="icon-sm"
-							class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
+							class={[
+								'size-6 hover:bg-wb-panel2 hover:text-wb-ink',
+								split?.direction === 'vertical' ? 'bg-wb-panel2 text-wb-ink' : 'text-wb-ink-soft'
+							]}
 							type="button"
-							onclick={() => workspaceStore.splitTerminal(workspace.id, 'vertical')}
+							aria-pressed={split?.direction === 'vertical'}
+							onclick={() => toggleSplit('vertical')}
 						>
 							<Rows2Icon class="size-3.5" />
 						</Button>
 					{/snippet}
 				</Tooltip.Trigger>
-				<Tooltip.Content>Split Vertical</Tooltip.Content>
+				<Tooltip.Content
+					>{split?.direction === 'vertical' ? 'Unsplit' : 'Split Vertical'}</Tooltip.Content
+				>
 			</Tooltip.Root>
 		{/if}
 	</div>

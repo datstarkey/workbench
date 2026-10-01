@@ -10,6 +10,7 @@
 	import { branchUrl, openInGitHub } from '$lib/utils/github';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import { effectivePath } from '$lib/utils/path';
+	import { TabReorder } from '$lib/utils/tab-reorder.svelte';
 	import { openInVSCode } from '$lib/utils/vscode';
 
 	import type { ProjectWorkspace } from '$types/workbench';
@@ -19,6 +20,11 @@
 	const claudeSessionStore = getClaudeSessionStore();
 
 	let activeWorkspace = $derived(workspaceStore.activeWorkspace);
+
+	const reorder = new TabReorder(
+		() => workspaceStore.workspaces.map((w) => w.id),
+		(fromId, toId) => workspaceStore.reorder(fromId, toId)
+	);
 
 	type AttentionType = 'claude' | 'codex' | 'input' | null;
 
@@ -64,24 +70,27 @@
 				{@const isActive = workspace.id === workspaceStore.activeWorkspaceId}
 				{@const branch = workspaceStore.resolvedBranch(workspace)}
 				{@const attention = workspaceAttentionType(workspace)}
+				{@const dropSide = reorder.dropSide(workspace.id)}
 				<div
 					class={[
 						'group relative inline-flex items-stretch border-r border-wb-hair transition-colors',
-						isActive ? 'bg-wb-panel' : 'bg-transparent hover:bg-wb-panel/50'
+						isActive ? 'bg-wb-panel' : 'bg-transparent hover:bg-wb-panel/50',
+						reorder.dragging === workspace.id && 'opacity-50'
 					]}
-					draggable="true"
 					role="presentation"
-					ondragstart={(event) => event.dataTransfer?.setData('text/workspace-id', workspace.id)}
-					ondragover={(event) => event.preventDefault()}
-					ondrop={(event) => {
-						event.preventDefault();
-						const fromId = event.dataTransfer?.getData('text/workspace-id');
-						if (fromId) workspaceStore.reorder(fromId, workspace.id);
-					}}
+					{...reorder.handlers(workspace.id)}
 				>
 					<!-- Accent underline at top -->
 					{#if isActive}
 						<span class={['absolute inset-x-0 top-0 h-0.5', accentBarClass(attention)]}></span>
+					{/if}
+					{#if dropSide}
+						<span
+							class={[
+								'absolute inset-y-1 z-10 w-0.5 rounded bg-wb-accent',
+								dropSide === 'before' ? '-left-px' : '-right-px'
+							]}
+						></span>
 					{/if}
 					<button
 						class={[

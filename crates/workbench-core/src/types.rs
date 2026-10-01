@@ -118,12 +118,21 @@ pub struct TerminalTabSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SplitViewSnapshot {
+    pub direction: String,
+    pub tab_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceSnapshot {
     pub id: String,
     pub project_path: String,
     pub project_name: String,
     pub terminal_tabs: Vec<TerminalTabSnapshot>,
     pub active_terminal_tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_view: Option<SplitViewSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -789,6 +798,7 @@ mod tests {
                     session_type: None,
                 }],
                 active_terminal_tab_id: "tab-1".to_string(),
+                split_view: None,
                 worktree_path: None,
                 branch: None,
             }],

@@ -528,6 +528,7 @@ mod tests {
             project_name: format!("project-{id}"),
             terminal_tabs: vec![],
             active_terminal_tab_id: String::new(),
+            split_view: None,
             worktree_path: None,
             branch: None,
         }

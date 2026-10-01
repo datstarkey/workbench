@@ -610,34 +610,62 @@ describe('WorkspaceStore', () => {
 	});
 
 	describe('splitTerminal', () => {
-		it('adds a pane to the active tab', () => {
-			const tab = makeTab({ id: 'tab-1', panes: [{ id: 'pane-1' }] });
-			const ws = makeWorkspace({
-				id: 'ws-a',
-				terminalTabs: [tab],
-				activeTerminalTabId: 'tab-1'
+		function twoTabs(active = 'tab-1') {
+			store.workspaces = [
+				makeWorkspace({
+					id: 'ws-a',
+					terminalTabs: [makeTab({ id: 'tab-1' }), makeTab({ id: 'tab-2' })],
+					activeTerminalTabId: active
+				})
+			];
+		}
+
+		it('pairs the active tab with the next one', () => {
+			twoTabs();
+
+			store.splitTerminal('ws-a', 'vertical', makeProject());
+
+			expect(store.workspaces[0].splitView).toEqual({
+				direction: 'vertical',
+				tabIds: ['tab-1', 'tab-2']
 			});
-			store.workspaces = [ws];
-
-			store.splitTerminal('ws-a', 'vertical');
-
-			const updatedTab = store.workspaces[0].terminalTabs[0];
-			expect(updatedTab.panes).toHaveLength(2);
-			expect(updatedTab.split).toBe('vertical');
+			expect(store.workspaces[0].terminalTabs).toHaveLength(2);
 		});
 
-		it('sets the split direction', () => {
-			const tab = makeTab({ id: 'tab-1', split: 'horizontal', panes: [{ id: 'pane-1' }] });
-			const ws = makeWorkspace({
-				id: 'ws-a',
-				terminalTabs: [tab],
-				activeTerminalTabId: 'tab-1'
-			});
-			store.workspaces = [ws];
+		it('pairs the last tab with the previous one', () => {
+			twoTabs('tab-2');
 
-			store.splitTerminal('ws-a', 'vertical');
+			store.splitTerminal('ws-a', 'horizontal', makeProject());
 
-			expect(store.workspaces[0].terminalTabs[0].split).toBe('vertical');
+			expect(store.workspaces[0].splitView?.tabIds).toEqual(['tab-2', 'tab-1']);
+		});
+
+		it('opens a new shell tab to pair with when there is only one tab', () => {
+			store.workspaces = [
+				makeWorkspace({
+					id: 'ws-a',
+					terminalTabs: [makeTab({ id: 'tab-1' })],
+					activeTerminalTabId: 'tab-1'
+				})
+			];
+
+			store.splitTerminal('ws-a', 'horizontal', makeProject());
+
+			const ws = store.workspaces[0];
+			expect(ws.terminalTabs).toHaveLength(2);
+			expect(ws.splitView?.tabIds).toEqual(['tab-1', ws.terminalTabs[1].id]);
+			expect(ws.activeTerminalTabId).toBe('tab-1');
+		});
+
+		it('switches direction, then unsplits on the same direction', () => {
+			twoTabs();
+			store.splitTerminal('ws-a', 'horizontal', makeProject());
+
+			store.splitTerminal('ws-a', 'vertical', makeProject());
+			expect(store.workspaces[0].splitView?.direction).toBe('vertical');
+
+			store.splitTerminal('ws-a', 'vertical', makeProject());
+			expect(store.workspaces[0].splitView).toBeUndefined();
 		});
 
 		it('no-ops when no active tab found', () => {
@@ -648,9 +676,81 @@ describe('WorkspaceStore', () => {
 			});
 			store.workspaces = [ws];
 
-			store.splitTerminal('ws-a', 'horizontal');
+			store.splitTerminal('ws-a', 'horizontal', makeProject());
 
 			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
+			expect(store.workspaces[0].splitView).toBeUndefined();
+		});
+
+		it('replaces a split whose tab no longer exists instead of toggling it off', () => {
+			twoTabs();
+			store.workspaces[0].splitView = { direction: 'horizontal', tabIds: ['tab-1', 'gone'] };
+
+			store.splitTerminal('ws-a', 'horizontal', makeProject());
+
+			expect(store.workspaces[0].splitView?.tabIds).toEqual(['tab-1', 'tab-2']);
+		});
+
+		it('no-ops for native workspaces', () => {
+			twoTabs();
+			store.workspaces[0].renderer = 'native';
+
+			store.splitTerminal('ws-a', 'horizontal', makeProject());
+
+			expect(store.workspaces[0].splitView).toBeUndefined();
+		});
+
+		it('keeps the split when a paired AI tab restarts', () => {
+			store.workspaces = [
+				makeWorkspace({
+					id: 'ws-a',
+					terminalTabs: [
+						makeTab({ id: 'tab-1' }),
+						makeTab({ id: 'tab-2', type: 'claude', panes: [{ id: 'p2', type: 'claude' }] })
+					],
+					activeTerminalTabId: 'tab-1',
+					splitView: { direction: 'horizontal', tabIds: ['tab-1', 'tab-2'] }
+				})
+			];
+
+			store.restartAISession('ws-a', 'tab-2');
+
+			const ws = store.workspaces[0];
+			expect(ws.splitView?.tabIds).toEqual(['tab-1', ws.terminalTabs[1].id]);
+			expect(ws.terminalTabs[1].id).not.toBe('tab-2');
+		});
+
+		it('closing a split tab drops the split', () => {
+			twoTabs();
+			store.splitTerminal('ws-a', 'horizontal', makeProject());
+
+			store.closeTerminalTab('ws-a', 'tab-2');
+
+			expect(store.workspaces[0].splitView).toBeUndefined();
+		});
+	});
+
+	describe('reorderTerminalTab', () => {
+		it('moves a tab to the target position', () => {
+			store.workspaces = [
+				makeWorkspace({
+					id: 'ws-a',
+					terminalTabs: [makeTab({ id: 't1' }), makeTab({ id: 't2' }), makeTab({ id: 't3' })]
+				})
+			];
+
+			store.reorderTerminalTab('ws-a', 't3', 't1');
+
+			expect(store.workspaces[0].terminalTabs.map((t) => t.id)).toEqual(['t3', 't1', 't2']);
+		});
+
+		it('no-ops for unknown ids', () => {
+			const tabs = [makeTab({ id: 't1' }), makeTab({ id: 't2' })];
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: tabs })];
+
+			store.reorderTerminalTab('ws-a', 't1', 'nope');
+
+			expect(store.workspaces[0].terminalTabs.map((t) => t.id)).toEqual(['t1', 't2']);
 		});
 	});
 
@@ -671,6 +771,23 @@ describe('WorkspaceStore', () => {
 
 			expect(store.workspaces[0].terminalTabs[0].panes).toHaveLength(1);
 			expect(store.workspaces[0].terminalTabs[0].panes[0].id).toBe('pane-2');
+		});
+
+		it('removes a pane from a split tab that is not the active one', () => {
+			store.workspaces = [
+				makeWorkspace({
+					id: 'ws-a',
+					terminalTabs: [
+						makeTab({ id: 'tab-1' }),
+						makeTab({ id: 'tab-2', panes: [{ id: 'pane-1' }, { id: 'pane-2' }] })
+					],
+					activeTerminalTabId: 'tab-1'
+				})
+			];
+
+			store.removePane('ws-a', 'pane-1');
+
+			expect(store.workspaces[0].terminalTabs[1].panes.map((p) => p.id)).toEqual(['pane-2']);
 		});
 
 		it('does not remove last pane', () => {

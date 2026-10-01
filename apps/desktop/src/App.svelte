@@ -12,6 +12,7 @@
 	import NativeTerminalGrid from '$features/terminal/NativeTerminalGrid.svelte';
 	import TerminalGrid from '$features/terminal/TerminalGrid.svelte';
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
+	import { splitInset, visibleSplit } from '$features/terminal/split-view';
 	import WorkspaceLanding from '$features/workspaces/WorkspaceLanding.svelte';
 	import RightSidebar from '$features/sidebar/RightSidebar.svelte';
 	import WorkspaceTabs from '$features/workspaces/WorkspaceTabs.svelte';
@@ -207,7 +208,15 @@
 			}
 		}
 	});
+
+	// Native drag-drop is off (tauri.conf.json) so tab reordering gets HTML5 events;
+	// without this, a file dropped on the window would navigate the webview to it.
+	function blockFileDrop(event: DragEvent) {
+		if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+	}
 </script>
+
+<svelte:window ondragover={blockFileDrop} ondrop={blockFileDrop} />
 
 <Tooltip.Provider>
 	<div class="flex h-screen flex-col overflow-hidden bg-background text-foreground">
@@ -259,6 +268,7 @@
 										ws.terminalTabs.find((t) => t.id === ws.activeTerminalTabId) ??
 										ws.terminalTabs[0]}
 									{@const wsProject = projectStore.getByPath(ws.projectPath)}
+									{@const split = visibleSplit(ws)}
 									<div class="flex min-h-0 flex-1 flex-col" class:hidden={!isActiveWs}>
 										{#if activeTab && wsProject}
 											<TerminalTabs workspace={ws} />
@@ -266,16 +276,28 @@
 											<div class="relative min-h-0 flex-1">
 												{#each ws.terminalTabs as tab (tab.id)}
 													{@const isActiveTab = tab.id === ws.activeTerminalTabId}
+													{@const inSplit = split?.tabs.some((t) => t.id === tab.id) ?? false}
+													{@const isShown = (isActiveTab || inSplit) && isActiveWs}
+													<!-- Clicking into a split half makes its tab the active one. -->
 													<div
-														class="absolute inset-0 flex"
-														class:invisible={!isActiveTab || !isActiveWs}
-														class:z-10={isActiveTab && isActiveWs}
-														class:z-0={!isActiveTab || !isActiveWs}
+														class={[
+															'absolute flex',
+															isShown ? 'z-10' : 'invisible z-0',
+															split?.tabs[1].id === tab.id &&
+																(split.direction === 'horizontal'
+																	? 'border-l border-wb-hair'
+																	: 'border-t border-wb-hair')
+														]}
+														style:inset={splitInset(split, tab.id)}
+														onfocusin={() => {
+															if (inSplit && !isActiveTab)
+																workspaceStore.setActiveTab(ws.id, tab.id);
+														}}
 													>
 														{#if ws.renderer === 'native'}
 															<NativeTerminalGrid
 																panes={tab.panes}
-																active={isActiveTab && isActiveWs}
+																active={isShown}
 																project={wsProject}
 																cwd={ws.worktreePath}
 															/>
@@ -284,7 +306,7 @@
 																workspaceId={ws.id}
 																panes={tab.panes}
 																split={tab.split}
-																active={isActiveTab && isActiveWs}
+																active={isShown}
 																project={wsProject}
 																cwd={ws.worktreePath}
 															/>

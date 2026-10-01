@@ -1,5 +1,11 @@
 export type SplitDirection = 'horizontal' | 'vertical';
 
+/** Two terminal tabs of one workspace shown side by side (horizontal) or stacked (vertical). */
+export interface SplitView {
+	direction: SplitDirection;
+	tabIds: [string, string];
+}
+
 export interface ProjectTask {
 	name: string;
 	command: string;
@@ -200,6 +206,7 @@ export interface ProjectWorkspace {
 	projectName: string;
 	terminalTabs: TerminalTabState[];
 	activeTerminalTabId: string;
+	splitView?: SplitView;
 	worktreePath?: string;
 	branch?: string;
 	renderer?: TerminalRenderer;
