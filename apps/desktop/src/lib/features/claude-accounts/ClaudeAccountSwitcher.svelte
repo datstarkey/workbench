@@ -8,15 +8,18 @@
 	import { getWorkbenchSettingsStore, getWorkspaceStore } from '$stores/context';
 	import AddClaudeAccountDialog from './AddClaudeAccountDialog.svelte';
 	import {
-		ClaudeAuthStatuses,
+		ClaudeAccountStatuses,
 		DEFAULT_ACCOUNT_KEY,
 		LOGIN_TASK,
-		describeAuth
+		describeAuth,
+		describeUsage,
+		isHighUsage,
+		usageDetail
 	} from './claude-accounts.svelte';
 
 	const settings = getWorkbenchSettingsStore();
 	const workspaceStore = getWorkspaceStore();
-	const statuses = new ClaudeAuthStatuses();
+	const statuses = new ClaudeAccountStatuses();
 
 	let addOpen = $state(false);
 
@@ -49,13 +52,27 @@
 			New Claude sessions use
 		</DropdownMenu.Label>
 		{#each accounts as account (account.id ?? DEFAULT_ACCOUNT_KEY)}
+			{@const key = account.id ?? DEFAULT_ACCOUNT_KEY}
+			{@const usage = statuses.usageByKey[key]}
+			{@const usageLabel = describeUsage(usage)}
 			<DropdownMenu.Item onSelect={() => settings.setActiveClaudeAccount(account.id ?? null)}>
 				<CheckIcon class={['size-3.5', account.id !== activeId && 'invisible']} />
 				<span class="flex min-w-0 flex-1 flex-col">
 					<span class="truncate">{account.name}</span>
 					<span class="truncate text-[10px] text-wb-ink-soft" title={account.detail}>
-						{describeAuth(statuses.byKey[account.id ?? DEFAULT_ACCOUNT_KEY])}
+						{describeAuth(statuses.authByKey[key])}
 					</span>
+					{#if usageLabel}
+						<span
+							class={[
+								'truncate text-[10px]',
+								isHighUsage(usage) ? 'text-wb-warn' : 'text-wb-ink-soft'
+							]}
+							title={usageDetail(usage)}
+						>
+							{usageLabel}
+						</span>
+					{/if}
 				</span>
 			</DropdownMenu.Item>
 		{/each}

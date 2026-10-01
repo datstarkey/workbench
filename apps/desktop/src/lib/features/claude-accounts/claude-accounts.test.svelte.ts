@@ -1,10 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { invokeSpy, mockInvoke, clearInvokeMocks } from '../../../test/tauri-mocks';
+import type { UsageLimit } from '$types/workbench';
 import {
-	ClaudeAuthStatuses,
+	ClaudeAccountStatuses,
 	DEFAULT_ACCOUNT_KEY,
 	describeAuth,
-	suggestConfigDir
+	describeUsage,
+	isHighUsage,
+	suggestConfigDir,
+	usageDetail
 } from './claude-accounts.svelte';
 
 describe('suggestConfigDir', () => {
@@ -31,25 +35,61 @@ describe('describeAuth', () => {
 	});
 });
 
-describe('ClaudeAuthStatuses', () => {
+describe('usage formatting', () => {
+	const limits: UsageLimit[] = [
+		{ label: 'session', percent: 3, resets: 'Oct 1 at 5:10pm' },
+		{ label: 'week (all models)', percent: 89, resets: 'Oct 2 at 9am' },
+		{ label: 'week (Fable)', percent: 0 }
+	];
+
+	it('summarises the session and all-models week', () => {
+		expect(describeUsage(limits)).toBe('Session 3% · Week 89%');
+		expect(describeUsage([{ label: 'week (Opus)', percent: 12 }])).toBe('Week 12%');
+		expect(describeUsage([])).toBe('');
+		expect(describeUsage(null)).toBe('');
+	});
+
+	it('lists every limit with its reset for the tooltip', () => {
+		expect(usageDetail(limits)).toBe(
+			'session: 3% · resets Oct 1 at 5:10pm\nweek (all models): 89% · resets Oct 2 at 9am\nweek (Fable): 0%'
+		);
+	});
+
+	it('flags any limit at 80% or more', () => {
+		expect(isHighUsage(limits)).toBe(true);
+		expect(isHighUsage([{ label: 'session', percent: 79 }])).toBe(false);
+		expect(isHighUsage(undefined)).toBe(false);
+	});
+});
+
+describe('ClaudeAccountStatuses', () => {
 	afterEach(() => clearInvokeMocks());
 
-	it('checks the default and every account, recording failures as null', async () => {
+	it('checks login for every account and usage only for logged-in ones', async () => {
 		mockInvoke('claude_auth_status', (args) => {
 			const { accountId } = args as { accountId: string | null };
 			if (accountId === 'broken') throw new Error('no claude');
-			return { loggedIn: accountId === null };
+			return { loggedIn: accountId !== 'out' };
 		});
-		const statuses = new ClaudeAuthStatuses();
+		mockInvoke('claude_usage', (args) => {
+			const { accountId } = args as { accountId: string | null };
+			if (accountId === 'work') throw new Error('timed out');
+			return [{ label: 'session', percent: 3 }];
+		});
+		const statuses = new ClaudeAccountStatuses();
 
 		await statuses.refresh([
 			{ id: 'work', name: 'Work', configDir: '/w' },
+			{ id: 'out', name: 'Out', configDir: '/o' },
 			{ id: 'broken', name: 'Broken', configDir: '/b' }
 		]);
 
-		expect(invokeSpy).toHaveBeenCalledWith('claude_auth_status', { accountId: null });
-		expect(statuses.byKey[DEFAULT_ACCOUNT_KEY]).toEqual({ loggedIn: true });
-		expect(statuses.byKey.work).toEqual({ loggedIn: false });
-		expect(statuses.byKey.broken).toBeNull();
+		expect(statuses.authByKey[DEFAULT_ACCOUNT_KEY]).toEqual({ loggedIn: true });
+		expect(statuses.usageByKey[DEFAULT_ACCOUNT_KEY]).toEqual([{ label: 'session', percent: 3 }]);
+		expect(statuses.usageByKey.work).toBeNull();
+		expect(statuses.authByKey.out).toEqual({ loggedIn: false });
+		expect(statuses.authByKey.broken).toBeNull();
+		expect(invokeSpy).not.toHaveBeenCalledWith('claude_usage', { accountId: 'out' });
+		expect(invokeSpy).not.toHaveBeenCalledWith('claude_usage', { accountId: 'broken' });
 	});
 });

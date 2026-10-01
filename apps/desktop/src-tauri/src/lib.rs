@@ -56,6 +56,7 @@ macro_rules! build_invoke_handler {
             commands::save_workspaces,
             commands::discover_claude_sessions,
             commands::claude_auth_status,
+            commands::claude_usage,
             commands::load_claude_settings,
             commands::save_claude_settings,
             commands::list_claude_plugins,
