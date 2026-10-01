@@ -17,6 +17,9 @@ mod git_commands;
 mod git_watcher;
 mod github_poller;
 mod hook_bridge;
+// Windows and Linux menu bars can't follow the dark theme (Win32 draws a light
+// one regardless), and their title bars already have the window controls.
+#[cfg(target_os = "macos")]
 mod menu;
 #[cfg(target_os = "macos")]
 mod native_notification_commands;
@@ -160,6 +163,7 @@ pub fn run() {
         .manage(server_control::ServerControl::new())
         .setup(|app| {
             let handle = app.handle().clone();
+            #[cfg(target_os = "macos")]
             menu::build(&handle).expect("failed to build menu");
             let bridge = HookBridgeState::new(handle.clone());
             // The sandbox-runtime settings file has to name the hook bridge's
