@@ -5,6 +5,7 @@ import type {
 	AgentActionTarget,
 	ClaudeAccount,
 	ClaudePermissionMode,
+	PaneView,
 	SessionType,
 	SettingsWindowBounds,
 	TerminalPerformanceMode,
@@ -49,6 +50,7 @@ export class WorkbenchSettingsStore {
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
 	claudePermissionMode: ClaudePermissionMode = $state<ClaudePermissionMode>('default');
+	defaultClaudeView: PaneView = $state<PaneView>('terminal');
 	sandboxRuntimeEnabled = $state(false);
 	sandboxAllowedDomains: string[] = $state([]);
 	/**
@@ -107,6 +109,7 @@ export class WorkbenchSettingsStore {
 		this.claudePermissionMode = isClaudePermissionMode(settings.claudePermissionMode)
 			? settings.claudePermissionMode
 			: 'default';
+		this.defaultClaudeView = settings.defaultClaudeView === 'chat' ? 'chat' : 'terminal';
 		this.sandboxRuntimeEnabled = settings.sandboxRuntimeEnabled ?? false;
 		this.sandboxAllowedDomains = Array.isArray(settings.sandboxAllowedDomains)
 			? settings.sandboxAllowedDomains
@@ -267,6 +270,7 @@ export class WorkbenchSettingsStore {
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,
 			claudePermissionMode: this.claudePermissionMode,
+			defaultClaudeView: this.defaultClaudeView,
 			sandboxRuntimeEnabled: this.sandboxRuntimeEnabled,
 			sandboxAllowedDomains: this.sandboxAllowedDomains,
 			cloneBaseDir: this.cloneBaseDir,

@@ -433,6 +433,8 @@ export interface AgentAction {
 }
 
 export interface WorkbenchSettings {
+	/** How new Claude tabs open. */
+	defaultClaudeView: PaneView;
 	worktreeStrategy: WorktreeStrategy;
 	worktreeFetchBeforeCreate: boolean;
 	worktreeStartPoint: WorktreeStartPoint;

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
 	CLAUDE_NEW_SESSION_COMMAND,
 	CODEX_NEW_SESSION_COMMAND,
+	claudeNewSessionWithIdCommand,
 	claudeResumeCommand,
 	codexResumeCommand,
 	extractPromptArg,
@@ -485,5 +486,13 @@ describe('sandbox runtime wrapper hardening', () => {
 				`${prefix} claude --resume ${id}`
 			);
 		});
+	});
+});
+
+describe('claudeNewSessionWithIdCommand', () => {
+	it('starts claude on the given session id and refuses anything else', () => {
+		const id = '7b3c54f4-ba22-4654-9af9-037d1cd8e555';
+		expect(claudeNewSessionWithIdCommand(id)).toBe(`claude --session-id ${id}`);
+		expect(() => claudeNewSessionWithIdCommand('x; rm -rf /')).toThrow();
 	});
 });

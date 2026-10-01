@@ -7,7 +7,7 @@
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
 	import type { ChatImage, ProjectConfig } from '$types/workbench';
-	import { getClaudeSessionStore } from '$stores/context';
+	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 	import { acquireChat } from './chat-registry';
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
@@ -57,13 +57,18 @@
 
 	const workdir = $derived(cwd ?? project.path);
 	const claudeSessionStore = getClaudeSessionStore();
+	const settingsStore = getWorkbenchSettingsStore();
 	// svelte-ignore state_referenced_locally
 	const { chat } = acquireChat(paneId, {
 		projectPath: project.path,
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 		sessionId,
 		paneId,
-		...(claudeAccountId ? { claudeAccountId } : {})
+		...(claudeAccountId ? { claudeAccountId } : {}),
+		// The same --permission-mode terminal launches get from Settings.
+		...(settingsStore.claudePermissionMode !== 'default'
+			? { permissionMode: settingsStore.claudePermissionMode }
+			: {})
 	});
 	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 

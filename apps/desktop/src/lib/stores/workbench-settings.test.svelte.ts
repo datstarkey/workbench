@@ -23,6 +23,7 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 		terminalRenderer: 'xterm',
 		agentActions: [],
 		claudePermissionMode: 'default',
+		defaultClaudeView: 'terminal',
 		sandboxRuntimeEnabled: false,
 		sandboxAllowedDomains: [],
 		...overrides
@@ -259,6 +260,7 @@ describe('WorkbenchSettingsStore', () => {
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
 					claudePermissionMode: 'default',
+					defaultClaudeView: 'terminal',
 					sandboxRuntimeEnabled: false,
 					sandboxAllowedDomains: [],
 					cloneBaseDir: null,
@@ -520,6 +522,7 @@ describe('WorkbenchSettingsStore', () => {
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
 					claudePermissionMode: 'default',
+					defaultClaudeView: 'terminal',
 					sandboxRuntimeEnabled: false,
 					sandboxAllowedDomains: [],
 					cloneBaseDir: null,

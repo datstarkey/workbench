@@ -15,6 +15,7 @@ import {
 	newSessionCommand,
 	resumeCommand,
 	tryResumeCommand,
+	claudeNewSessionWithIdCommand,
 	applyClaudeLaunchOptions,
 	warnMissingSandboxSettingsPath,
 	type ClaudeLaunchOptions
@@ -25,7 +26,7 @@ import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
-import { releaseChat } from '$features/chat/chat-registry';
+import { chatHasHistory, releaseChat } from '$features/chat/chat-registry';
 import {
 	adoptionWorkspace,
 	paneDisplayName,
@@ -520,13 +521,25 @@ export class WorkspaceStore {
 					? explicit
 					: applyClaudeLaunchOptions(explicit, this.claudeLaunchOptions)
 				: newSessionCommand(type, this.claudeLaunchOptions);
+			// A plain new Claude tab can open straight into chat: chat picks the
+			// session id up front (`--session-id`), so it needs no terminal first.
+			// Not while the sandbox runtime is on — chat can't run inside it yet.
+			const asChat =
+				type === 'claude' &&
+				!explicit &&
+				this.settingsStore.defaultClaudeView === 'chat' &&
+				!this.settingsStore.sandboxRuntimeEnabled;
+			const sessionId = asChat ? crypto.randomUUID() : ''; // Claude requires a real UUID
 			const newTab = this.createAITab(
 				label,
-				'',
-				startupCommand,
+				sessionId,
+				asChat
+					? claudeNewSessionWithIdCommand(sessionId, this.claudeLaunchOptions)
+					: startupCommand,
 				type,
 				this.settingsStore.activeClaudeAccountId
 			);
+			if (asChat) newTab.panes[0].view = 'chat';
 			tabId = newTab.id;
 			return {
 				...w,
@@ -615,8 +628,16 @@ export class WorkspaceStore {
 				await deleteServerTerminal(serverId);
 			}
 		} else {
+			// A chat that never got a message has no session file to resume yet.
+			const started = chatHasHistory(paneId);
 			releaseChat(paneId);
-			if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
+			if (pane.claudeSessionId) {
+				await stopAgent(pane.claudeSessionId).catch(() => {});
+				const startupCommand = started
+					? tryResumeCommand('claude', pane.claudeSessionId, this.claudeLaunchOptions)
+					: claudeNewSessionWithIdCommand(pane.claudeSessionId, this.claudeLaunchOptions);
+				if (startupCommand) this.setPaneStartupCommand(paneId, startupCommand);
+			}
 		}
 		const location = this.findPaneLocation(paneId);
 		if (!location) return;
@@ -626,6 +647,22 @@ export class WorkspaceStore {
 				t.id !== location.tabId
 					? t
 					: { ...t, panes: t.panes.map((p) => (p.id === paneId ? { ...p, view } : p)) }
+			)
+		}));
+	}
+
+	private setPaneStartupCommand(paneId: string, startupCommand: string): void {
+		const location = this.findPaneLocation(paneId);
+		if (!location) return;
+		this.updateWorkspace(location.workspaceId, (w) => ({
+			...w,
+			terminalTabs: w.terminalTabs.map((t) =>
+				t.id !== location.tabId
+					? t
+					: {
+							...t,
+							panes: t.panes.map((p) => (p.id === paneId ? { ...p, startupCommand } : p))
+						}
 			)
 		}));
 	}

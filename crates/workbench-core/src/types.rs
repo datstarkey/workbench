@@ -358,6 +358,9 @@ pub struct WorkbenchSettings {
     pub worktree_custom_branch: String,
     #[serde(default = "default_claude_permission_mode")]
     pub claude_permission_mode: String,
+    /// How new Claude tabs open: `terminal` or `chat`.
+    #[serde(default = "default_claude_view")]
+    pub default_claude_view: String,
     #[serde(default)]
     pub sandbox_runtime_enabled: bool,
     #[serde(default = "default_sandbox_allowed_domains")]
@@ -431,6 +434,10 @@ fn default_terminal_renderer() -> String {
     "xterm".to_string()
 }
 
+fn default_claude_view() -> String {
+    "terminal".to_string()
+}
+
 fn default_claude_permission_mode() -> String {
     "default".to_string()
 }
@@ -454,6 +461,7 @@ impl Default for WorkbenchSettings {
             worktree_start_point: default_worktree_start_point(),
             worktree_custom_branch: String::new(),
             claude_permission_mode: default_claude_permission_mode(),
+            default_claude_view: default_claude_view(),
             sandbox_runtime_enabled: false,
             sandbox_allowed_domains: default_sandbox_allowed_domains(),
             terminal_renderer: default_terminal_renderer(),

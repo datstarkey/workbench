@@ -27,3 +27,13 @@ export function releaseChat(paneId: string): void {
 	chats.get(paneId)?.dispose();
 	chats.delete(paneId);
 }
+
+/**
+ * The pane's chat has a conversation on disk to resume. Unknown (no chat in
+ * this window, e.g. after a restart) counts as yes: resuming is the safe guess
+ * for a pane that was in chat before.
+ */
+export function chatHasHistory(paneId: string): boolean {
+	const chat = chats.get(paneId);
+	return !chat || chat.items.some((i) => i.kind === 'user');
+}
