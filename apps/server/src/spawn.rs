@@ -132,10 +132,7 @@ impl RemoteControlManager {
             })
             .context("failed to open PTY")?;
 
-        // Binary is overridable for tests (point at a fake script) and to support
-        // alternative CLIs later.
-        let bin = std::env::var("WORKBENCH_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
-        let mut cmd = CommandBuilder::new(&bin);
+        let mut cmd = CommandBuilder::new(workbench_core::claude_accounts::claude_binary());
         cmd.arg("remote-control");
         if let Some(ref n) = name {
             cmd.arg("--name");

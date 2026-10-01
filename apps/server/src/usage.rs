@@ -1,7 +1,8 @@
 //! Claude plan usage (`claude -p /usage`) per account, for the chat views.
 //! Each check starts the CLI and asks Anthropic (~2s), and every open chat on
 //! every device polls, so results are cached per account and concurrent
-//! requests share one run.
+//! requests share one run. A `fresh` request (a turn just ended) accepts only
+//! a run from the last few seconds, so a burst of them still shares one.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -11,26 +12,49 @@ use anyhow::Result;
 use workbench_core::claude_accounts::{self, UsageLimit};
 
 const TTL: Duration = Duration::from_secs(60);
+const FRESH_TTL: Duration = Duration::from_secs(10);
 
 /// The last outcome for one account, failures included, so a timing-out CLI
 /// isn't retried by every waiting request in turn.
 type Slot = Arc<tokio::sync::Mutex<Option<(Instant, Result<Vec<UsageLimit>, String>)>>>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct UsageCache {
     slots: Arc<Mutex<HashMap<Option<String>, Slot>>>,
+    fresh_ttl: Duration,
+}
+
+impl Default for UsageCache {
+    fn default() -> Self {
+        Self::with_fresh_ttl(FRESH_TTL)
+    }
 }
 
 impl UsageCache {
-    /// `account_id` must already be a known account (see `claude_accounts::resolve`),
-    /// so request input can't grow the map.
-    pub async fn get(&self, account_id: Option<String>) -> Result<Vec<UsageLimit>> {
-        let id = account_id.clone();
-        self.get_with(account_id, move || claude_accounts::usage(id.as_deref()))
-            .await
+    /// How old a result a `fresh` request still accepts (tests shorten it).
+    pub fn with_fresh_ttl(fresh_ttl: Duration) -> Self {
+        Self {
+            slots: Arc::default(),
+            fresh_ttl,
+        }
     }
 
-    async fn get_with<F>(&self, account_id: Option<String>, fetch: F) -> Result<Vec<UsageLimit>>
+    /// `account_id` must already be a known account (see `claude_accounts::resolve`),
+    /// so request input can't grow the map.
+    pub async fn get(&self, account_id: Option<String>, fresh: bool) -> Result<Vec<UsageLimit>> {
+        let id = account_id.clone();
+        self.get_with(account_id, fresh, move || {
+            claude_accounts::usage(id.as_deref())
+        })
+        .await
+    }
+
+    async fn get_with<F>(
+        &self,
+        account_id: Option<String>,
+        fresh: bool,
+        fetch: F,
+    ) -> Result<Vec<UsageLimit>>
     where
         F: FnOnce() -> Result<Vec<UsageLimit>> + Send + 'static,
     {
@@ -44,7 +68,7 @@ impl UsageCache {
         // Held across the run: concurrent requests wait for it rather than start their own.
         let mut cached = slot.lock().await;
         if let Some((at, result)) = cached.as_ref() {
-            if at.elapsed() < TTL {
+            if at.elapsed() < if fresh { self.fresh_ttl } else { TTL } {
                 return result.clone().map_err(anyhow::Error::msg);
             }
         }
@@ -81,31 +105,51 @@ mod tests {
             }
         };
         let (a, b) = tokio::join!(
-            cache.get_with(None, fetch(runs.clone())),
-            cache.get_with(None, fetch(runs.clone())),
+            cache.get_with(None, false, fetch(runs.clone())),
+            cache.get_with(None, false, fetch(runs.clone())),
         );
         assert_eq!(a.unwrap(), limit(42));
         assert_eq!(b.unwrap(), limit(42));
-        cache.get_with(None, fetch(runs.clone())).await.unwrap();
+        cache
+            .get_with(None, false, fetch(runs.clone()))
+            .await
+            .unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 1);
 
         // Another account has its own entry.
         cache
-            .get_with(Some("work".into()), fetch(runs.clone()))
+            .get_with(Some("work".into()), false, fetch(runs.clone()))
             .await
             .unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
+    async fn fresh_requests_rerun_only_past_the_floor() {
+        let cache = UsageCache::with_fresh_ttl(Duration::from_millis(50));
+        cache.get_with(None, false, || Ok(limit(1))).await.unwrap();
+        let shared = cache.get_with(None, true, || Ok(limit(2))).await.unwrap();
+        assert_eq!(
+            shared,
+            limit(1),
+            "within the floor a fresh request shares the run"
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let rerun = cache.get_with(None, true, || Ok(limit(3))).await.unwrap();
+        assert_eq!(rerun, limit(3));
+        let cached = cache.get_with(None, false, || Ok(limit(4))).await.unwrap();
+        assert_eq!(cached, limit(3), "a normal request takes the fresh result");
+    }
+
+    #[tokio::test]
     async fn failures_are_cached_too() {
         let cache = UsageCache::default();
         let err = cache
-            .get_with(None, || anyhow::bail!("timed out"))
+            .get_with(None, false, || anyhow::bail!("timed out"))
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "timed out");
-        let again = cache.get_with(None, || Ok(limit(1))).await;
+        let again = cache.get_with(None, false, || Ok(limit(1))).await;
         assert!(again.is_err());
     }
 }

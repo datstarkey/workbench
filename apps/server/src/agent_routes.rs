@@ -10,8 +10,8 @@
 //! - `POST /agent/claude/:id/message` applies one of those messages without a
 //!   socket (an approval from the phone's home screen): 200 with the reply
 //!   frame when there is one, else 204.
-//! - `GET /agent/usage?claudeAccountId=` is the account's plan usage
-//!   (`claude -p /usage`), cached a minute by [`crate::usage::UsageCache`].
+//! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
+//!   usage (`claude -p /usage`), cached by [`crate::usage::UsageCache`].
 
 use std::sync::Arc;
 
@@ -151,6 +151,9 @@ pub async fn agent_stop_pane(
 #[serde(rename_all = "camelCase")]
 pub struct UsageQuery {
     claude_account_id: Option<String>,
+    /// Skip all but a very recent cached result, e.g. right after a turn.
+    #[serde(default)]
+    fresh: bool,
 }
 
 pub async fn agent_usage(
@@ -161,7 +164,7 @@ pub async fn agent_usage(
     // An unknown id is refused, never answered with the default login's usage.
     claude_accounts::resolve(&settings, q.claude_account_id.as_deref())
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    Ok(Json(state.usage.get(q.claude_account_id).await?))
+    Ok(Json(state.usage.get(q.claude_account_id, q.fresh).await?))
 }
 
 pub async fn agent_attach(

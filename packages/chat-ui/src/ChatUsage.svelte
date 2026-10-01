@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { cn } from '@workbench/ui';
-	import type { UsageChip } from './chat-format';
+	import type { UsageChip } from './usage-format';
 
 	/** Plan limit chips; hover (title) or tap shows when each resets. */
 	let { chips, chipClass }: { chips: UsageChip[]; chipClass?: string } = $props();

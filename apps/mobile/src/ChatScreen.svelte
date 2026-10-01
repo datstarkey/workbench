@@ -20,8 +20,8 @@
 		isRunning,
 		latestTodos,
 		limitNotice,
-		PlanUsage,
-		setChatPlatform
+		setChatPlatform,
+		usePlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
@@ -63,8 +63,10 @@
 		)
 	);
 	const contextShare = $derived(contextUsed(chat.meta));
-	const usage = new PlanUsage(
-		() => client.agents.usage(ref.claudeAccountId),
+	// svelte-ignore state_referenced_locally
+	const usage = usePlanUsage(
+		`${client.url}|${ref.claudeAccountId ?? ''}`,
+		(fresh) => client.agents.usage(ref.claudeAccountId, fresh),
 		() => chat.meta
 	);
 	const waiting = $derived(

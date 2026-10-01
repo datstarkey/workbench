@@ -3,6 +3,9 @@
 #![cfg(unix)]
 
 use serde_json::{json, Value};
+use std::time::Duration;
+
+use workbench_server::usage::UsageCache;
 use workbench_server::{spawn_embedded, Managers};
 
 const TOKEN: &str = "e2e-token-0123456789abcdef0123456789";
@@ -38,7 +41,11 @@ async fn usage_is_parsed_cached_per_account_and_refuses_unknown_accounts() {
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
     std::env::set_var("WORKBENCH_TEST_RUNS", &runs);
 
-    let handle = spawn_embedded("127.0.0.1", 0, Managers::default(), TOKEN.to_string())
+    let managers = Managers {
+        usage: UsageCache::with_fresh_ttl(Duration::from_millis(300)),
+        ..Managers::default()
+    };
+    let handle = spawn_embedded("127.0.0.1", 0, managers, TOKEN.to_string())
         .await
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
@@ -71,6 +78,25 @@ async fn usage_is_parsed_cached_per_account_and_refuses_unknown_accounts() {
     assert_eq!(cached, first);
     assert_eq!(run_count(), 1, "a second request within the TTL is cached");
 
+    // A fresh request (a turn ended) shares a run from the last moments, then reruns.
+    get("?fresh=true").await.unwrap();
+    assert_eq!(
+        run_count(),
+        1,
+        "a fresh request within the floor shares the run"
+    );
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let (a, b) = tokio::join!(get("?fresh=true"), get("?fresh=true"));
+    assert_eq!(a.unwrap().status(), 200);
+    assert_eq!(b.unwrap().status(), 200);
+    assert_eq!(
+        run_count(),
+        2,
+        "past the floor, a burst of fresh requests runs once"
+    );
+    get("").await.unwrap();
+    assert_eq!(run_count(), 2, "a normal request takes the fresh result");
+
     let work: Value = get("?claudeAccountId=work")
         .await
         .unwrap()
@@ -78,11 +104,11 @@ async fn usage_is_parsed_cached_per_account_and_refuses_unknown_accounts() {
         .await
         .unwrap();
     assert_eq!(work[0]["percent"], 7, "the account's own login is checked");
-    assert_eq!(run_count(), 2);
+    assert_eq!(run_count(), 3);
 
     let unknown = get("?claudeAccountId=nope").await.unwrap();
     assert_eq!(unknown.status(), 400);
-    assert_eq!(run_count(), 2, "an unknown account never runs the CLI");
+    assert_eq!(run_count(), 3, "an unknown account never runs the CLI");
 
     let anon = reqwest::Client::new()
         .get(format!("{base}/agent/usage"))

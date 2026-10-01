@@ -17,8 +17,8 @@
 		isRunning,
 		latestTodos,
 		limitNotice,
-		PlanUsage,
-		setChatPlatform
+		setChatPlatform,
+		usePlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type {
@@ -139,8 +139,10 @@
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
 	const contextShare = $derived(contextUsed(chat.meta));
-	const usage = new PlanUsage(
-		() => planUsage(claudeAccountId),
+	// svelte-ignore state_referenced_locally
+	const usage = usePlanUsage(
+		`loopback|${claudeAccountId ?? ''}`,
+		(fresh) => planUsage(claudeAccountId, fresh),
 		() => chat.meta
 	);
 	const disabledReason = $derived.by(() => {

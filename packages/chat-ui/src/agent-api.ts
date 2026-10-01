@@ -57,12 +57,16 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		async list(): Promise<AgentSummary[]> {
 			return (await call<AgentSummary[]>('GET', '/agent/claude')) ?? [];
 		},
-		/** The account's plan limits (cached a minute server-side); empty without a plan. */
-		async usage(claudeAccountId?: string): Promise<UsageLimit[]> {
-			const query = claudeAccountId
-				? `?claudeAccountId=${encodeURIComponent(claudeAccountId)}`
-				: '';
-			return (await call<UsageLimit[]>('GET', `/agent/usage${query}`)) ?? [];
+		/**
+		 * The account's plan limits; empty without a plan. Cached a minute
+		 * server-side, or only a few seconds when `fresh` (a turn just ended).
+		 */
+		async usage(claudeAccountId?: string, fresh = false): Promise<UsageLimit[]> {
+			const query = new URLSearchParams({
+				...(claudeAccountId ? { claudeAccountId } : {}),
+				...(fresh ? { fresh: 'true' } : {})
+			}).toString();
+			return (await call<UsageLimit[]>('GET', `/agent/usage${query ? `?${query}` : ''}`)) ?? [];
 		},
 		/** One message without a socket, e.g. answering an approval from a list. */
 		async send(sessionId: string, msg: AgentClientMsg): Promise<void> {
