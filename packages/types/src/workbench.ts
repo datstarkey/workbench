@@ -683,4 +683,6 @@ export interface StartAgentBody {
 	permissionMode?: PermissionMode;
 	paneId?: string;
 	hookSocket?: string;
+	/** The pane's Claude account; absent is the default login. */
+	claudeAccountId?: string;
 }

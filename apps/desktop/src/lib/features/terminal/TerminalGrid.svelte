@@ -64,6 +64,7 @@
 							sessionId={chatSessionId}
 							{project}
 							{cwd}
+							claudeAccountId={pane.claudeAccountId}
 							onShowTerminal={() => switchView(pane.id, 'terminal')}
 							onSessionIdChange={(id) =>
 								workspaceStore.updateAISessionByPaneId(pane.id, id, 'claude')}

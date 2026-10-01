@@ -33,6 +33,8 @@ pub struct StartBody {
     pub permission_mode: Option<String>,
     pub pane_id: Option<String>,
     pub hook_socket: Option<String>,
+    /// Claude account to run under; an id, never a path (see `claude_accounts`).
+    pub claude_account_id: Option<String>,
 }
 
 pub async fn agent_start(
@@ -57,12 +59,15 @@ pub async fn agent_start(
             body.worktree_path.as_deref(),
             &registered,
         )?;
+        let config_dir =
+            workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
         let session = agents.start(StartAgent {
             cwd,
             session_id: body.session_id,
             permission_mode: body.permission_mode,
             pane_id: body.pane_id,
             hook_socket: body.hook_socket,
+            config_dir,
         })?;
         Ok(json!({"sessionId": session.id()}))
     })

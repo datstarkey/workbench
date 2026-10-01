@@ -33,6 +33,7 @@
 		sessionId,
 		project,
 		cwd,
+		claudeAccountId,
 		onShowTerminal,
 		onSessionIdChange
 	}: {
@@ -41,6 +42,8 @@
 		sessionId: string;
 		project: ProjectConfig;
 		cwd?: string;
+		/** The pane's Claude account; chat runs under the same login as its terminal. */
+		claudeAccountId?: string;
 		onShowTerminal: () => void;
 		/** `/clear` moved the conversation to a new session id. */
 		onSessionIdChange: (sessionId: string) => void;
@@ -59,7 +62,8 @@
 		projectPath: project.path,
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 		sessionId,
-		paneId
+		paneId,
+		...(claudeAccountId ? { claudeAccountId } : {})
 	});
 	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 

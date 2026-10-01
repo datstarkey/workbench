@@ -1135,6 +1135,16 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         res.text().await.unwrap_or_default()
     );
 
+    // An unknown Claude account is an error, never a silent fall-back to the default login.
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(),
+            "sessionId": "1d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5", "claudeAccountId": "nope" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_server_error() || res.status().is_client_error());
+
     match tokio_tungstenite::connect_async(ws_url("wrong")).await {
         Err(Error::Http(resp)) => assert_eq!(resp.status(), 401),
         other => panic!("wrong token must get 401, got {:?}", other.map(|_| ())),

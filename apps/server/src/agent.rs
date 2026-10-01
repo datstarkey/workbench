@@ -84,6 +84,8 @@ pub struct StartAgent {
     /// driving the desktop's activity tracking, as for terminal panes.
     pub pane_id: Option<String>,
     pub hook_socket: Option<String>,
+    /// The Claude account's config dir (`CLAUDE_CONFIG_DIR`); `None` is the default login.
+    pub config_dir: Option<PathBuf>,
 }
 
 pub struct AgentSession {
@@ -128,7 +130,11 @@ impl AgentManager {
             bail!("chat session limit reached ({max})");
         }
 
-        let projects = workbench_core::paths::claude_user_dir().join("projects");
+        let projects = req
+            .config_dir
+            .clone()
+            .unwrap_or_else(workbench_core::paths::claude_user_dir)
+            .join("projects");
         let history = claude_transcript::find_transcript(&projects, &req.session_id);
         let transcript = history.as_deref().map(Transcript::load).unwrap_or_default();
 
@@ -170,6 +176,9 @@ impl AgentManager {
         }
         if let Some(sock) = &req.hook_socket {
             cmd.env("WORKBENCH_HOOK_SOCKET", sock);
+        }
+        if let Some(dir) = &req.config_dir {
+            cmd.env(workbench_core::claude_accounts::CONFIG_DIR_ENV, dir);
         }
         // Own process group, so stopping also ends the shells Claude started.
         #[cfg(unix)]
