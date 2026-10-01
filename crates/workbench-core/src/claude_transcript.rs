@@ -23,7 +23,7 @@ mod parse;
 mod protocol;
 
 pub use items::{
-    ApprovalDecision, RateLimitInfo, RetryInfo, TaskInfo, ToolStatus, TranscriptItem,
+    ApprovalDecision, ModelOption, RateLimitInfo, RetryInfo, TaskInfo, ToolStatus, TranscriptItem,
     TranscriptMeta,
 };
 
@@ -125,6 +125,7 @@ impl Transcript {
                 applied.reply = self.apply_control_request(obj, &mut changed)
             }
             Some("control_cancel_request") => self.expire_approval(obj, &mut changed),
+            Some("control_response") => self.apply_control_response(obj),
             Some("conversation_reset") => {
                 let next = str_at(obj, "new_conversation_id").map(String::from);
                 self.reset();
@@ -346,6 +347,57 @@ impl Transcript {
     /// The mode just requested with `set_permission_mode`.
     pub fn set_permission_mode(&mut self, mode: &str) {
         self.meta.permission_mode = Some(mode.to_string());
+    }
+
+    /// The model just requested with `set_model`.
+    pub fn set_model_choice(&mut self, value: &str) {
+        self.meta.model_choice = Some(value.to_string());
+        let resolved = self
+            .meta
+            .models
+            .iter()
+            .find(|m| m.value == value)
+            .and_then(|m| m.resolved_model.clone());
+        if let Some(model) = resolved {
+            self.meta.model = Some(model);
+        }
+    }
+
+    /// The effort level just requested.
+    pub fn set_effort(&mut self, level: &str) {
+        self.meta.effort = Some(level.to_string());
+    }
+
+    /// Replies to the host's own requests; the `initialize` reply lists the
+    /// models the session can switch to.
+    fn apply_control_response(&mut self, obj: &Value) {
+        let Some(models) = obj
+            .pointer("/response/response/models")
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        self.meta.models = models
+            .iter()
+            .filter_map(|m| {
+                Some(ModelOption {
+                    value: str_at(m, "value")?.to_string(),
+                    display_name: str_at(m, "displayName").unwrap_or_default().to_string(),
+                    description: str_at(m, "description").unwrap_or_default().to_string(),
+                    resolved_model: str_at(m, "resolvedModel").map(String::from),
+                    effort_levels: m
+                        .get("supportedEffortLevels")
+                        .and_then(Value::as_array)
+                        .map(|l| {
+                            l.iter()
+                                .filter_map(Value::as_str)
+                                .map(String::from)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
     }
 
     /// Record the answer to an approval and build the `control_response` for

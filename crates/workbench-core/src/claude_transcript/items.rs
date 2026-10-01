@@ -95,6 +95,19 @@ impl TranscriptItem {
     }
 }
 
+/// A model the session can switch to (from the CLI's `initialize` reply).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    /// What `set_model` takes: an alias (`opus`), `default`, or a full id.
+    pub value: String,
+    pub display_name: String,
+    pub description: String,
+    pub resolved_model: Option<String>,
+    /// Effort levels it accepts; empty when it has no effort setting.
+    pub effort_levels: Vec<String>,
+}
+
 /// The API call is being retried (`api_retry`): overloaded, rate limited, …
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,6 +177,11 @@ pub struct TranscriptMeta {
     /// Set while the CLI waits to retry a failed API call.
     pub retry: Option<RetryInfo>,
     pub rate_limit: Option<RateLimitInfo>,
+    pub models: Vec<ModelOption>,
+    /// The model picked in Workbench (`ModelOption::value`); `None` until one is.
+    pub model_choice: Option<String>,
+    /// The effort level picked in Workbench; `None` means the model's default.
+    pub effort: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {

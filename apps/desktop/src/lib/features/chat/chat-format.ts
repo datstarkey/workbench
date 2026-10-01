@@ -1,4 +1,6 @@
 import type {
+	EffortLevel,
+	ModelOption,
 	PermissionMode,
 	RateLimitInfo,
 	RetryInfo,
@@ -313,4 +315,28 @@ export function limitNotice(
 /** `38 KB`, `1.2 MB`. */
 export function formatBytes(n: number): string {
 	return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
+}
+
+/** The model the session is on: the one picked here, else matched by id, else the default. */
+export function currentModel(meta: TranscriptMeta | null): ModelOption | null {
+	if (!meta || meta.models.length === 0) return null;
+	const running = meta.model?.replace(/\[1m\]$/, '');
+	return (
+		meta.models.find((m) => m.value === meta.modelChoice) ??
+		meta.models.find((m) => m.resolvedModel === running && m.value !== 'default') ??
+		meta.models.find((m) => m.value === 'default') ??
+		null
+	);
+}
+
+const EFFORT_LABELS: Record<EffortLevel, string> = {
+	low: 'Low',
+	medium: 'Medium',
+	high: 'High',
+	xhigh: 'Extra high',
+	max: 'Max'
+};
+
+export function effortLabel(level: EffortLevel | null): string {
+	return level ? EFFORT_LABELS[level] : 'Default effort';
 }

@@ -131,6 +131,12 @@ enum ClientMsg {
     Mode {
         mode: String,
     },
+    Model {
+        model: String,
+    },
+    Effort {
+        effort: String,
+    },
     /// Fetch the whole output of a tool shown as a preview.
     #[serde(rename_all = "camelCase")]
     Output {
@@ -173,6 +179,8 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
         } => session.approve(&request_id, decision, answers.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
         ClientMsg::Mode { mode } => session.set_mode(&mode),
+        ClientMsg::Model { model } => session.set_model(&model),
+        ClientMsg::Effort { effort } => session.set_effort(&effort),
     };
     reply.map(|()| None)
 }

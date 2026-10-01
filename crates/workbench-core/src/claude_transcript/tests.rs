@@ -544,3 +544,24 @@ fn pasted_images_are_counted_on_the_message() {
         "an image on its own is still a message"
     );
 }
+
+#[test]
+fn the_initialize_reply_lists_models_to_pick_from() {
+    let mut t = Transcript::default();
+    let a = t.apply(&json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[
+            {"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5",
+             "description":"For complex work","supportsEffort":true,"supportedEffortLevels":["low","high","max"]},
+            {"value":"haiku","resolvedModel":"claude-haiku-4-5","displayName":"Haiku 4.5","description":"Fastest"}]}}}));
+    assert!(a.meta);
+    let models = &t.meta().models;
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].effort_levels, vec!["low", "high", "max"]);
+    assert!(models[1].effort_levels.is_empty());
+
+    t.set_model_choice("haiku");
+    assert_eq!(t.meta().model_choice.as_deref(), Some("haiku"));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-haiku-4-5"));
+    t.set_effort("high");
+    assert_eq!(t.meta().effort.as_deref(), Some("high"));
+}

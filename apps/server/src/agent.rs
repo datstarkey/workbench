@@ -29,6 +29,9 @@ pub const PERMISSION_MODES: &[&str] = &[
     "bypassPermissions",
 ];
 
+/// Effort levels `effortLevel` accepts.
+const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
 const DEFAULT_MAX_AGENTS: usize = 16;
 /// Items in an attach snapshot; older history stays on disk.
 const SNAPSHOT_ITEMS: usize = 500;
@@ -318,6 +321,35 @@ impl AgentSession {
         };
         self.send(&response)?;
         self.broadcast_update(&t, &[i]);
+        Ok(())
+    }
+
+    pub fn set_model(&self, model: &str) -> Result<()> {
+        let valid = !model.is_empty()
+            && model.len() <= 80
+            && model
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-._[]".contains(&b));
+        if !valid {
+            bail!("unknown model: {model}");
+        }
+        self.control(json!({"subtype": "set_model", "model": model}))?;
+        let mut t = lock(&self.transcript);
+        t.set_model_choice(model);
+        self.broadcast_update(&t, &[]);
+        Ok(())
+    }
+
+    pub fn set_effort(&self, level: &str) -> Result<()> {
+        if !EFFORT_LEVELS.contains(&level) {
+            bail!("unknown effort level: {level}");
+        }
+        self.control(
+            json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": level}}),
+        )?;
+        let mut t = lock(&self.transcript);
+        t.set_effort(level);
+        self.broadcast_update(&t, &[]);
         Ok(())
     }
 

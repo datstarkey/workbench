@@ -565,6 +565,18 @@ export interface TaskInfo {
 	summary?: string;
 }
 
+/** A model the session can switch to. */
+export interface ModelOption {
+	value: string;
+	displayName: string;
+	description: string;
+	resolvedModel: string | null;
+	/** Effort levels it accepts; empty when it has no effort setting. */
+	effortLevels: EffortLevel[];
+}
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 /** The API call is being retried (overloaded, rate limited, …). */
 export interface RetryInfo {
 	attempt: number;
@@ -592,6 +604,11 @@ export interface TranscriptMeta {
 	tasks: TaskInfo[];
 	retry: RetryInfo | null;
 	rateLimit: RateLimitInfo | null;
+	models: ModelOption[];
+	/** The model picked in Workbench; null until one is. */
+	modelChoice: string | null;
+	/** The effort picked in Workbench; null means the model's default. */
+	effort: EffortLevel | null;
 }
 
 export type AgentServerMsg =
@@ -631,6 +648,8 @@ export type AgentClientMsg =
 	  }
 	| { t: 'interrupt' }
 	| { t: 'mode'; mode: PermissionMode }
+	| { t: 'model'; model: string }
+	| { t: 'effort'; effort: EffortLevel }
 	| { t: 'output'; toolId: string }
 	| { t: 'taskOutput'; taskId: string };
 

@@ -3,6 +3,7 @@ import type {
 	AgentServerMsg,
 	ApprovalDecision,
 	ChatImage,
+	EffortLevel,
 	PermissionMode,
 	StartAgentBody,
 	TranscriptItem,
@@ -254,6 +255,14 @@ export class AgentChat {
 
 	setMode(mode: PermissionMode): void {
 		this.send({ t: 'mode', mode });
+	}
+
+	setModel(model: string): void {
+		this.send({ t: 'model', model });
+	}
+
+	setEffort(effort: EffortLevel): void {
+		this.send({ t: 'effort', effort });
 	}
 
 	/** The whole output of a tool shown as a preview; null if it's gone. */

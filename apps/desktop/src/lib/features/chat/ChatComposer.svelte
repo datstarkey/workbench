@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import { invoke } from '@tauri-apps/api/core';
@@ -22,7 +23,8 @@
 		disabledReason,
 		onSend,
 		onStop,
-		onMode
+		onMode,
+		controls
 	}: {
 		id: string;
 		draft?: string;
@@ -34,6 +36,8 @@
 		onSend: (text: string, images: ChatImage[]) => boolean;
 		onStop: () => void;
 		onMode: (mode: PermissionMode) => void;
+		/** More pickers for the toolbar (model, effort). */
+		controls?: Snippet;
 	} = $props();
 
 	let images = $state<ChatImage[]>([]);
@@ -219,6 +223,7 @@
 				</DropdownMenu.RadioGroup>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
+		{@render controls?.()}
 		<button
 			type="button"
 			class="flex size-7 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"

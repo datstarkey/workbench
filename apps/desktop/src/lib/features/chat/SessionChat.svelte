@@ -12,6 +12,7 @@
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
 	import ChatComposer from './ChatComposer.svelte';
+	import ChatModelPicker from './ChatModelPicker.svelte';
 	import ChatPlan from './ChatPlan.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
 	import ChatTasks from './ChatTasks.svelte';
@@ -422,7 +423,16 @@
 					onSend={send}
 					onStop={() => chat.interrupt()}
 					onMode={(mode) => chat.setMode(mode)}
-				/>
+				>
+					{#snippet controls()}
+						<ChatModelPicker
+							meta={chat.meta}
+							disabled={disabledReason !== null}
+							onModel={(model) => chat.setModel(model)}
+							onEffort={(effort) => chat.setEffort(effort)}
+						/>
+					{/snippet}
+				</ChatComposer>
 			</div>
 		</div>
 		{#if tasks.length > 0}

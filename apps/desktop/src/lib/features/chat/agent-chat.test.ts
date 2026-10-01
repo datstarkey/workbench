@@ -32,7 +32,10 @@ const meta = (busy = false): TranscriptMeta => ({
 	busy,
 	tasks: [],
 	retry: null,
-	rateLimit: null
+	rateLimit: null,
+	models: [],
+	modelChoice: null,
+	effort: null
 });
 
 const body: StartAgentBody = { projectPath: '/repo', sessionId: 'sid', paneId: 'p1' };

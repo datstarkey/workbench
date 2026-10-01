@@ -4,6 +4,8 @@ import {
 	activity,
 	answerFor,
 	applyChanges,
+	currentModel,
+	effortLabel,
 	formatBytes,
 	formatCount,
 	limitNotice,
@@ -29,7 +31,10 @@ const meta: TranscriptMeta = {
 	busy: false,
 	tasks: [],
 	retry: null,
-	rateLimit: null
+	rateLimit: null,
+	models: [],
+	modelChoice: null,
+	effort: null
 };
 
 function tool(id: string, name: string, input: Record<string, unknown> = {}) {
@@ -299,5 +304,43 @@ describe('limits and retries', () => {
 	it('formats sizes', () => {
 		expect(formatBytes(38_000)).toBe('38 KB');
 		expect(formatBytes(1_300_000)).toBe('1.2 MB');
+	});
+});
+
+describe('model and effort', () => {
+	const models = [
+		{
+			value: 'default',
+			displayName: 'Default',
+			description: '',
+			resolvedModel: 'claude-opus-5-5',
+			effortLevels: []
+		},
+		{
+			value: 'opus',
+			displayName: 'Opus 5.5',
+			description: '',
+			resolvedModel: 'claude-opus-5-5',
+			effortLevels: []
+		},
+		{
+			value: 'sonnet',
+			displayName: 'Sonnet 5.5',
+			description: '',
+			resolvedModel: 'claude-sonnet-5-5',
+			effortLevels: []
+		}
+	];
+
+	it('shows the picked model, else the running one, else the default', () => {
+		expect(currentModel({ ...meta, models, modelChoice: 'sonnet' })?.value).toBe('sonnet');
+		expect(currentModel({ ...meta, models, model: 'claude-opus-5-5[1m]' })?.value).toBe('opus');
+		expect(currentModel({ ...meta, models, model: 'something-else' })?.value).toBe('default');
+		expect(currentModel({ ...meta, models: [] })).toBe(null);
+	});
+
+	it('labels effort', () => {
+		expect(effortLabel('xhigh')).toBe('Extra high');
+		expect(effortLabel(null)).toBe('Default effort');
 	});
 });

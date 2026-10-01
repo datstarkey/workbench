@@ -18,6 +18,7 @@ const HANDLED: &[&str] = &[
     "result",
     "control_request",
     "control_cancel_request",
+    "control_response",
     "conversation_reset",
     "system:init",
     "system:status",
@@ -40,7 +41,6 @@ const HANDLED: &[&str] = &[
 /// Kinds deliberately left out of the chat: bookkeeping, telemetry, or
 /// already represented by another message (a tool result, the final `result`).
 const IGNORED: &[&str] = &[
-    "control_response",
     "keep_alive",
     "tool_progress",
     "tool_use_summary",
