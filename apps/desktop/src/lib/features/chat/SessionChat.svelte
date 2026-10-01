@@ -6,6 +6,7 @@
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import {
 		activity,
+		agentName,
 		ChatComposer,
 		ChatModelPicker,
 		ChatPlan,
@@ -17,11 +18,13 @@
 		isRunning,
 		latestTodos,
 		limitNotice,
+		metaUsageChips,
 		setChatPlatform,
 		usePlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type {
+		AgentKind,
 		ChatImage,
 		DiscoveredClaudeSession,
 		ProjectConfig,
@@ -32,12 +35,14 @@
 		getWorkbenchSettingsStore,
 		getWorkspaceStore
 	} from '$stores/context';
+	import { codexChatMode } from '$lib/utils/claude';
 	import { planUsage } from './agent-api';
 	import { acquireChat } from './chat-registry';
 	import { desktopChatPlatform } from './chat-platform';
 	import ChatResumePicker from './ChatResumePicker.svelte';
 
 	let {
+		agent,
 		paneId,
 		sessionId,
 		project,
@@ -46,15 +51,19 @@
 		onShowTerminal,
 		onSessionIdChange
 	}: {
+		agent: AgentKind;
 		paneId: string;
-		/** Fixed for this component's life — the parent re-keys on a new session. */
-		sessionId: string;
+		/**
+		 * Fixed for this component's life — the parent re-keys on a new session.
+		 * Absent for a Codex pane with no thread yet: chat starts one.
+		 */
+		sessionId?: string;
 		project: ProjectConfig;
 		cwd?: string;
 		/** The pane's Claude account; chat runs under the same login as its terminal. */
 		claudeAccountId?: string;
 		onShowTerminal: () => void;
-		/** `/clear` moved the conversation to a new session id. */
+		/** The chat got its session id (a new Codex thread) or moved to a new one (`/clear`). */
 		onSessionIdChange: (sessionId: string) => void;
 	} = $props();
 
@@ -65,16 +74,27 @@
 	const settingsStore = getWorkbenchSettingsStore();
 	const workspaceStore = getWorkspaceStore();
 	// svelte-ignore state_referenced_locally
+	const agentLabel = agentName(agent);
+	const codexMode = codexChatMode(
+		settingsStore.codexApprovalPolicy,
+		settingsStore.codexSandboxMode
+	);
+	// svelte-ignore state_referenced_locally
 	const { chat } = acquireChat(paneId, {
+		agent,
 		projectPath: project.path,
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
-		sessionId,
+		...(sessionId ? { sessionId } : {}),
 		paneId,
-		...(claudeAccountId ? { claudeAccountId } : {}),
-		// The same --permission-mode terminal launches get from Settings.
-		...(settingsStore.claudePermissionMode !== 'default'
-			? { permissionMode: settingsStore.claudePermissionMode }
-			: {}),
+		// The same launch settings terminal sessions get from Settings.
+		...(agent === 'codex'
+			? codexMode && { codexMode }
+			: {
+					...(claudeAccountId ? { claudeAccountId } : {}),
+					...(settingsStore.claudePermissionMode !== 'default'
+						? { permissionMode: settingsStore.claudePermissionMode }
+						: {})
+				}),
 		// Another device's chat: join its process, never start one behind its back.
 		...(workspaceStore.isAdoptedPane(paneId) ? { attachOnly: true } : {})
 	});
@@ -103,10 +123,12 @@
 	}
 
 	async function earlierSessions(): Promise<DiscoveredClaudeSession[]> {
-		const all = await claudeSessionStore.peekSessions(workdir, 'claude');
+		const all = await claudeSessionStore.peekSessions(workdir, agent);
 		return all
 			.filter(
-				(s) => s.sessionId !== chat.sessionId && (s.accountId ?? '') === (claudeAccountId ?? '')
+				(s) =>
+					s.sessionId !== chat.sessionId &&
+					(agent === 'codex' || (s.accountId ?? '') === (claudeAccountId ?? ''))
 			)
 			.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 	}
@@ -139,23 +161,28 @@
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
 	const contextShare = $derived(contextUsed(chat.meta));
+	// Codex reports its limits in the stream; Claude's come from the server's `/usage` check.
 	// svelte-ignore state_referenced_locally
-	const usage = usePlanUsage(
-		`loopback|${claudeAccountId ?? ''}`,
-		(fresh) => planUsage(claudeAccountId, fresh),
-		() => chat.meta
-	);
+	const planLimits =
+		agent === 'claude'
+			? usePlanUsage(
+					`loopback|${claudeAccountId ?? ''}`,
+					(fresh) => planUsage(claudeAccountId, fresh),
+					() => chat.meta
+				)
+			: null;
+	const chips = $derived(planLimits?.chips ?? metaUsageChips(chat.meta));
 	const disabledReason = $derived.by(() => {
 		switch (chat.status) {
 			case 'starting':
-				return 'Starting Claude…';
+				return `Starting ${agentLabel}…`;
 			case 'reconnecting':
 				return 'Reconnecting…';
 			case 'exited':
 			case 'failed':
 				return 'Restart the session to send messages';
 			default:
-				return now.kind === 'approval' ? 'Answer Claude above first' : null;
+				return now.kind === 'approval' ? `Answer ${agentLabel} above first` : null;
 		}
 	});
 
@@ -196,24 +223,25 @@
 <div
 	{@attach measureWidth}
 	class="relative flex h-full min-h-0 flex-col bg-wb-bg text-sm text-wb-ink"
+	style:--wb-agent={agent === 'codex' ? 'var(--wb-codex)' : undefined}
 	onkeydown={onKeydown}
 >
 	<header class="flex h-9 shrink-0 items-center gap-3 border-b border-wb-hair pr-40 pl-4 text-xs">
 		<span
 			class={cn(
 				'size-1.5 shrink-0 rounded-full',
-				live && 'bg-wb-claude',
+				live && (agent === 'codex' ? 'bg-wb-codex' : 'bg-wb-claude'),
 				(chat.status === 'starting' || chat.status === 'reconnecting') &&
 					'animate-pulse bg-wb-warn',
 				(chat.status === 'exited' || chat.status === 'failed') && 'bg-wb-ink-soft'
 			)}
 		></span>
-		<span class="min-w-0 truncate font-medium">{chat.meta?.title ?? 'Claude'}</span>
+		<span class="min-w-0 truncate font-medium">{chat.meta?.title ?? agentLabel}</span>
 		{#if chat.meta?.model}
 			<span class="shrink-0 text-wb-ink-soft">{chat.meta.model.replace(/\[1m\]$/, '')}</span>
 		{/if}
 		<div class="ml-auto flex shrink-0 items-center gap-3">
-			<ChatUsage chips={usage.chips} chipClass="rounded px-0.5" />
+			<ChatUsage {chips} chipClass="rounded px-0.5" />
 			{#if contextShare > 0}
 				<span
 					class="flex shrink-0 items-center gap-1.5 text-wb-ink-soft tabular-nums"
@@ -236,7 +264,11 @@
 					type="button"
 					class={cn(
 						'flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
-						runningTasks > 0 ? 'text-wb-claude' : 'text-wb-ink-mute'
+						runningTasks > 0
+							? agent === 'codex'
+								? 'text-wb-codex'
+								: 'text-wb-claude'
+							: 'text-wb-ink-mute'
 					)}
 					aria-expanded={tasksOpen}
 					onclick={() => (tasksOpen = !tasksOpen)}
@@ -252,7 +284,7 @@
 		<div class="flex min-h-0 min-w-0 flex-1 flex-col">
 			{#if chat.status === 'reconnecting'}
 				<div class="reconnect relative h-0.5 shrink-0 overflow-hidden bg-wb-panel2" role="status">
-					<span class="sr-only">Reconnecting to Claude</span>
+					<span class="sr-only">Reconnecting to {agentLabel}</span>
 				</div>
 			{/if}
 
@@ -295,6 +327,7 @@
 				{/if}
 				<ChatComposer
 					id="chat-draft-{paneId}"
+					{agent}
 					bind:draft
 					mode={chat.meta?.permissionMode ?? null}
 					busy={Boolean(chat.meta?.busy) && live}

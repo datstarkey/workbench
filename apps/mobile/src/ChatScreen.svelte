@@ -8,6 +8,7 @@
 	import {
 		activity,
 		AgentChat,
+		agentName,
 		ChatApproval,
 		ChatComposer,
 		ChatModelPicker,
@@ -20,6 +21,7 @@
 		isRunning,
 		latestTodos,
 		limitNotice,
+		metaUsageChips,
 		setChatPlatform,
 		usePlanUsage
 	} from '@workbench/chat-ui';
@@ -38,13 +40,16 @@
 	// svelte-ignore state_referenced_locally
 	const chat = new AgentChat(
 		{
+			...(ref.agent === 'codex' ? { agent: 'codex' as const } : {}),
 			projectPath: ref.projectPath,
 			...(ref.worktreePath ? { worktreePath: ref.worktreePath } : {}),
-			sessionId: ref.sessionId,
+			...(ref.sessionId ? { sessionId: ref.sessionId } : {}),
 			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
 		},
 		client.agents
 	);
+	const name = agentName(chat.agent);
+	const isClaude = chat.agent === 'claude';
 
 	const cwd = $derived(ref.worktreePath ?? ref.projectPath);
 	const place = $derived(
@@ -63,12 +68,16 @@
 		)
 	);
 	const contextShare = $derived(contextUsed(chat.meta));
+	// Claude's plan limits come from the server's `/usage` poller; Codex reports its own in the stream.
 	// svelte-ignore state_referenced_locally
-	const usage = usePlanUsage(
-		`${client.connection?.url ?? ''}|${ref.claudeAccountId ?? ''}`,
-		(fresh) => client.agents.usage(ref.claudeAccountId, fresh),
-		() => chat.meta
-	);
+	const planUsage = isClaude
+		? usePlanUsage(
+				`${client.connection?.url ?? ''}|${ref.claudeAccountId ?? ''}`,
+				(fresh) => client.agents.usage(ref.claudeAccountId, fresh),
+				() => chat.meta
+			)
+		: null;
+	const usageChips = $derived(planUsage ? planUsage.chips : metaUsageChips(chat.meta));
 	const waiting = $derived(
 		chat.items.find(
 			(i): i is Extract<TranscriptItem, { kind: 'approval' }> =>
@@ -85,14 +94,14 @@
 	const disabledReason = $derived.by(() => {
 		switch (chat.status) {
 			case 'starting':
-				return 'Starting Claude…';
+				return `Starting ${name}…`;
 			case 'reconnecting':
 				return 'Reconnecting…';
 			case 'exited':
 			case 'failed':
 				return 'Restart the session to send messages';
 			default:
-				return waiting ? 'Answer Claude first' : null;
+				return waiting ? `Answer ${name} first` : null;
 		}
 	});
 
@@ -133,7 +142,10 @@
 
 <svelte:document onvisibilitychange={onVisibility} />
 
-<div class="flex h-full flex-col bg-wb-bg text-sm text-wb-ink">
+<div
+	class="flex h-full flex-col bg-wb-bg text-sm text-wb-ink"
+	style:--wb-agent={isClaude ? undefined : 'var(--wb-codex)'}
+>
 	<header
 		class="flex shrink-0 items-center gap-2 border-b border-wb-hair bg-wb-rail pr-2 pl-1"
 		style="padding-top: env(safe-area-inset-top); min-height: calc(3rem + env(safe-area-inset-top));"
@@ -161,7 +173,9 @@
 				{place}
 			</span>
 		</div>
-		<ViewSwitch view="chat" disabled={client.switching} onSwitch={showTerminal} />
+		{#if isClaude}
+			<ViewSwitch view="chat" disabled={client.switching} onSwitch={showTerminal} />
+		{/if}
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
 				{#snippet child({ props })}
@@ -176,7 +190,7 @@
 				{/snippet}
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Content align="end" class="w-52">
-				<DropdownMenu.Item onSelect={() => chat.open()}>Restart Claude</DropdownMenu.Item>
+				<DropdownMenu.Item onSelect={() => chat.open()}>Restart {name}</DropdownMenu.Item>
 				<DropdownMenu.Item class="text-wb-err" onSelect={() => client.endChat(chat.sessionId)}>
 					End session
 				</DropdownMenu.Item>
@@ -189,7 +203,7 @@
 			class={cn('bar relative h-0.5 shrink-0 overflow-hidden bg-wb-hair-soft', !live && 'warn')}
 			role="status"
 		>
-			<span class="sr-only">{live ? 'Claude is working' : 'Reconnecting'}</span>
+			<span class="sr-only">{live ? `${name} is working` : 'Reconnecting'}</span>
 		</div>
 	{/if}
 
@@ -198,7 +212,7 @@
 			{chat}
 			{cwd}
 			projectName={place}
-			onShowTerminal={showTerminal}
+			onShowTerminal={isClaude ? showTerminal : undefined}
 			onStarter={(text) => (draft = text)}
 			inlineApprovals={false}
 			class="px-4 py-4"
@@ -212,12 +226,12 @@
 			onclick={() => (sheetHiddenFor = null)}
 		>
 			<span class="size-1.5 animate-pulse rounded-full bg-wb-warn"></span>
-			<span class="flex-1 font-medium text-wb-warn">Claude is waiting on you</span>
+			<span class="flex-1 font-medium text-wb-warn">{name} is waiting on you</span>
 			<span class="text-wb-ink-mute">Review</span>
 		</button>
 	{/if}
 
-	{#if tasks.length > 0 || contextShare > 0 || usage.chips.length > 0}
+	{#if tasks.length > 0 || contextShare > 0 || usageChips.length > 0}
 		<div class="flex shrink-0 gap-1.5 overflow-x-auto border-t border-wb-hair-soft px-3 py-1.5">
 			{#if tasks.length > 0}
 				<button
@@ -243,7 +257,7 @@
 				</span>
 			{/if}
 			<ChatUsage
-				chips={usage.chips}
+				chips={usageChips}
 				chipClass="h-7 rounded-full border border-wb-hair px-2.5 text-[11.5px]"
 			/>
 		</div>
@@ -273,6 +287,7 @@
 		{/if}
 		<ChatComposer
 			id="chat-draft-{ref.sessionId}"
+			agent={chat.agent}
 			bind:draft
 			mode={chat.meta?.permissionMode ?? null}
 			busy={Boolean(chat.meta?.busy) && live}
@@ -295,15 +310,17 @@
 </div>
 
 {#if sheetOpen && waiting}
-	<Sheet label="Claude is waiting on you" onClose={() => (sheetHiddenFor = waiting.id)}>
+	<Sheet label="{name} is waiting on you" onClose={() => (sheetHiddenFor = waiting.id)}>
 		{#if waiting.tool === 'AskUserQuestion'}
 			<ChatQuestion
 				approval={waiting}
+				agent={chat.agent}
 				onAnswer={(decision, answers) => chat.approve(waiting.id, decision, answers)}
 			/>
 		{:else}
 			<ChatApproval
 				approval={waiting}
+				agent={chat.agent}
 				{cwd}
 				onDecide={(decision) => chat.approve(waiting.id, decision)}
 			/>

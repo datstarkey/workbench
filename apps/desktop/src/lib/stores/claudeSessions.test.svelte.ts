@@ -708,6 +708,13 @@ describe('ClaudeSessionStore', () => {
 			});
 		});
 
+		it("codex:notify leaves a chat pane's thread id to its chat", () => {
+			setupCodexPane();
+			(mockWorkspaceStore.isChatPane as ReturnType<typeof vi.fn>).mockReturnValue(true);
+			emitMockEvent('codex:notify', { paneId: 'pane-1', sessionId: 'codex-sess-2' });
+			expect(mockWorkspaceStore.updateAISessionByPaneId).not.toHaveBeenCalled();
+		});
+
 		it('claude:hook with sessionId sets fallback then resolves to discovered label', async () => {
 			// Setup a claude pane
 			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [

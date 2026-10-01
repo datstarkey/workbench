@@ -1,6 +1,7 @@
 import type {
 	ClaudePermissionMode,
 	CodexApprovalPolicy,
+	CodexMode,
 	CodexSandboxMode,
 	SessionType
 } from '$types/workbench';
@@ -66,6 +67,20 @@ function codexBinary(opts?: LaunchOptions): string {
 		codexOverride('approval_policy', opts?.codexApprovalPolicy, CODEX_APPROVAL_POLICIES) +
 		codexOverride('sandbox_mode', opts?.codexSandboxMode, CODEX_SANDBOX_MODES)
 	);
+}
+
+/**
+ * The chat preset matching the Codex launch settings, or undefined when they
+ * aren't one of its presets (chat then leaves `~/.codex/config.toml` in charge).
+ */
+export function codexChatMode(
+	approval: CodexApprovalPolicy,
+	sandbox: CodexSandboxMode
+): CodexMode | undefined {
+	if (approval === 'on-request' && sandbox === 'read-only') return 'read-only';
+	if (approval === 'on-request' && sandbox === 'workspace-write') return 'auto';
+	if (approval === 'never' && sandbox === 'danger-full-access') return 'full-access';
+	return undefined;
 }
 
 /** How Claude and Codex sessions should be launched. */
@@ -174,6 +189,9 @@ export function claudeNewSessionWithIdCommand(sessionId: string, opts?: LaunchOp
 
 /** Build the CLI command to resume an existing Codex session */
 export function codexResumeCommand(sessionId: string, opts?: LaunchOptions): string {
+	if (!UUID_RE.test(sessionId)) {
+		throw new Error(`Invalid session ID: ${sessionId}`);
+	}
 	return `${codexBinary(opts)} resume ${sessionId}`;
 }
 

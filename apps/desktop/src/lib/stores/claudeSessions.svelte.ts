@@ -550,7 +550,10 @@ export class ClaudeSessionStore {
 		if (this.paneType(paneId) !== 'codex') return;
 
 		if (event.sessionId) {
-			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'codex');
+			// A chat pane's thread id comes only from its chat, as for Claude.
+			if (!this.workspaces.isChatPane(paneId)) {
+				this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'codex');
+			}
 			this.latestCodexSessionByPane.set(paneId, event.sessionId);
 			void this.syncLabelFromSession(
 				paneId,

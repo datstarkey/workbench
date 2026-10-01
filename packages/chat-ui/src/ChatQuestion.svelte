@@ -3,17 +3,20 @@
 	import MessageCircleQuestionIcon from '@lucide/svelte/icons/message-circle-question-mark';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import type { ApprovalDecision } from '@workbench/types';
-	import { answerFor, type ApprovalItem, parseQuestions } from './chat-format';
+	import type { AgentKind, ApprovalDecision } from '@workbench/types';
+	import { agentName, answerFor, type ApprovalItem, parseQuestions } from './chat-format';
 
 	let {
 		approval,
+		agent = 'claude',
 		onAnswer
 	}: {
 		approval: ApprovalItem;
+		agent?: AgentKind;
 		onAnswer: (decision: ApprovalDecision, answers?: Record<string, string>) => void;
 	} = $props();
 
+	const name = $derived(agentName(agent));
 	const questions = $derived(parseQuestions(approval.input));
 	const resolved = $derived(Boolean(approval.decision) || approval.expired);
 
@@ -64,7 +67,7 @@
 		{#if approval.expired || approval.decision === 'deny'}
 			<span class="flex items-center gap-2">
 				<XIcon class="size-3.5" />
-				{approval.expired ? 'Question withdrawn by Claude' : 'You skipped the question'}
+				{approval.expired ? `Question withdrawn by ${name}` : 'You skipped the question'}
 			</span>
 		{:else}
 			{#each questions as q (q.question)}
@@ -79,11 +82,11 @@
 {:else}
 	<section
 		class="question overflow-hidden rounded-lg border border-wb-accent/40 bg-wb-panel"
-		aria-label="Claude has a question"
+		aria-label="{name} has a question"
 	>
 		<header class="flex items-center gap-2 px-3.5 pt-3 text-xs text-wb-ink-mute">
 			<MessageCircleQuestionIcon class="size-4 text-wb-accent" />
-			Claude needs your input
+			{name} needs your input
 		</header>
 		{#if questions.length > 1}
 			<div class="flex flex-wrap gap-1 px-3.5 pt-3" role="tablist" aria-label="Questions">

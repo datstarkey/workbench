@@ -46,7 +46,6 @@
 				)
 			: store.projects;
 	});
-	const startLabel = $derived(client.defaultView === 'chat' ? 'Chat' : 'Claude');
 
 	const where = (chat: AgentSummary) =>
 		chat.worktreePath
@@ -78,9 +77,18 @@
 		<button
 			type="button"
 			class="h-8 bg-wb-accent px-3 text-[12.5px] font-semibold text-wb-accent-ink active:brightness-90"
+			aria-label="Start Claude in {name}"
 			onclick={() => client.startClaude(projectPath, worktreePath, name)}
 		>
-			{startLabel}
+			Claude
+		</button>
+		<button
+			type="button"
+			class="h-8 border border-l-0 border-wb-hair bg-wb-panel2 px-2.5 text-[12.5px] font-semibold text-wb-codex active:bg-wb-panel"
+			aria-label="Start a Codex chat in {name}"
+			onclick={() => client.startCodex(projectPath, worktreePath, name)}
+		>
+			Codex
 		</button>
 		<button
 			type="button"
@@ -154,6 +162,11 @@
 					>
 						<div class="flex items-center gap-2 text-xs">
 							<span class="font-semibold text-wb-warn">{waitingLabel(waiting)}</span>
+							{#if chat.agent === 'codex'}
+								<span class="rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-codex"
+									>codex</span
+								>
+							{/if}
 							<span class="ml-auto font-mono text-[11px] text-wb-ink-soft"
 								>{age(chat.updatedAt, now)}</span
 							>
@@ -207,7 +220,10 @@
 						onclick={() => client.openChat(client.chatRef(chat))}
 					>
 						<span
-							class="row-span-2 grid size-8 place-items-center rounded-lg bg-wb-panel2 text-wb-claude"
+							class={cn(
+								'row-span-2 grid size-8 place-items-center rounded-lg bg-wb-panel2',
+								chat.agent === 'codex' ? 'text-wb-codex' : 'text-wb-claude'
+							)}
 						>
 							<MessageSquareIcon class="size-4" />
 						</span>
@@ -224,6 +240,12 @@
 							{/if}
 						</span>
 						<span class="flex min-w-0 items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
+							{#if chat.agent === 'codex'}
+								<span
+									class="shrink-0 rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-codex"
+									>codex</span
+								>
+							{/if}
 							<span
 								class="shrink-0 rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-ink-mute"
 								>{where(chat)}</span

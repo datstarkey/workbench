@@ -1,8 +1,10 @@
 import type {
 	AgentClientMsg,
+	AgentKind,
 	AgentServerMsg,
 	ApprovalDecision,
 	ChatImage,
+	CodexMode,
 	EffortLevel,
 	PermissionMode,
 	SlashCommand,
@@ -11,19 +13,19 @@ import type {
 	TranscriptMeta
 } from '@workbench/types';
 import type { AgentApi } from './agent-api';
-import { applyChanges } from './chat-format';
+import { agentName, applyChanges } from './chat-format';
 import { previewUrl } from './image-intake';
 
 /**
- * - `starting`: launching or resuming the `claude` process.
- * - `live`: attached; prompts go straight to Claude.
- * - `reconnecting`: the socket dropped; Claude keeps running server-side.
+ * - `starting`: launching or resuming the `claude` / `codex` process.
+ * - `live`: attached; prompts go straight to the agent.
+ * - `reconnecting`: the socket dropped; the agent keeps running server-side.
  * - `exited`: the process ended (crash, `/exit`, server stopped).
  * - `failed`: it could not be started at all.
  */
 export type ChatStatus = 'starting' | 'live' | 'reconnecting' | 'exited' | 'failed';
 
-/** A prompt shown at once, until Claude echoes it back as a real item. */
+/** A prompt shown at once, until the agent echoes it back as a real item. */
 export interface PendingPrompt {
 	id: string;
 	text: string;
@@ -41,8 +43,9 @@ export interface TaskOutput {
 	bytes: number;
 }
 
-/** One chat view's connection to its `claude -p` session on a Workbench server. */
+/** One chat view's connection to its Claude or Codex session on a Workbench server. */
 export class AgentChat {
+	readonly agent: AgentKind;
 	items = $state.raw<TranscriptItem[]>([]);
 	meta = $state.raw<TranscriptMeta | null>(null);
 	/** First item index held; above zero, older history was left out. */
@@ -55,7 +58,10 @@ export class AgentChat {
 	pending = $state.raw<PendingPrompt[]>([]);
 	/** When the current turn started (client clock), for the elapsed timer. */
 	busySince = $state<number | null>(null);
-	/** The session continued under a new id (`/clear`); the pane follows it. */
+	/**
+	 * The session's id: the one the server's start returned (a new Codex thread
+	 * has none before), then any new id `/clear` moved it to. The pane follows it.
+	 */
 	sessionId = $state('');
 	/** Slash commands for the composer's `/` menu. */
 	commands = $state.raw<SlashCommand[]>([]);
@@ -69,9 +75,10 @@ export class AgentChat {
 	private ws: WebSocket | null = null;
 	private retryTimer: ReturnType<typeof setTimeout> | null = null;
 	private disposed = false;
+	private threadStart: Promise<string> | null = null;
 	/** Bumped by every connect; an older one still awaiting the server gives up. */
 	private generation = 0;
-	/** Called when Claude starts or stops waiting on the person (approval, question). */
+	/** Called when the agent starts or stops waiting on the person (approval, question). */
 	onNeedsYou: ((waiting: boolean) => void) | null = null;
 	/** An `attachOnly` chat that ended was restarted here: this device now owns it. */
 	onTakeOver: (() => void) | null = null;
@@ -83,7 +90,8 @@ export class AgentChat {
 	constructor(body: StartAgentBody, api: AgentApi) {
 		this.body = body;
 		this.api = api;
-		this.sessionId = body.sessionId;
+		this.agent = body.agent ?? 'claude';
+		this.sessionId = body.sessionId ?? '';
 		void this.open();
 	}
 
@@ -104,6 +112,22 @@ export class AgentChat {
 	}
 
 	/**
+	 * A new Codex thread has no id to make its start idempotent, so a restart
+	 * or reconnect mid-start joins the one in flight, and its id is kept even
+	 * when the connect that asked for it has gone stale.
+	 */
+	private startThread(): Promise<string> {
+		this.threadStart ??= this.api
+			.start({ ...this.body, sessionId: undefined })
+			.then((id) => {
+				this.sessionId ||= id;
+				return id;
+			})
+			.finally(() => (this.threadStart = null));
+		return this.threadStart;
+	}
+
+	/**
 	 * Starting is idempotent server-side (it returns the running session), so
 	 * every (re)connect starts first: after an app restart the process is gone
 	 * and this brings it back with the conversation resumed.
@@ -113,8 +137,12 @@ export class AgentChat {
 		const stale = () => this.disposed || generation !== this.generation;
 		let url: string;
 		try {
-			await this.api.start({ ...this.body, sessionId: this.sessionId });
-			url = await this.api.socketUrl(this.sessionId);
+			const sessionId = this.sessionId
+				? await this.api.start({ ...this.body, sessionId: this.sessionId })
+				: await this.startThread();
+			if (stale()) return;
+			this.sessionId = sessionId;
+			url = await this.api.socketUrl(sessionId);
 		} catch (e) {
 			if (stale()) return;
 			// Waking phones lose the network for a moment; keep retrying rather than give up.
@@ -234,7 +262,7 @@ export class AgentChat {
 		this.onNeedsYou?.(waiting);
 	}
 
-	/** Drop optimistic prompts Claude has echoed back. */
+	/** Drop optimistic prompts the agent has echoed back. */
 	private settlePending(): void {
 		if (this.pending.length === 0) return;
 		const users = this.items.filter((i) => i.kind === 'user');
@@ -263,7 +291,7 @@ export class AgentChat {
 
 	private send(msg: AgentClientMsg): boolean {
 		if (this.ws?.readyState !== WebSocket.OPEN) {
-			this.notice = 'Not connected to Claude yet. Try again in a moment.';
+			this.notice = `Not connected to ${agentName(this.agent)} yet. Try again in a moment.`;
 			return false;
 		}
 		this.ws.send(JSON.stringify(msg));
@@ -298,7 +326,7 @@ export class AgentChat {
 		this.send({ t: 'interrupt' });
 	}
 
-	setMode(mode: PermissionMode): void {
+	setMode(mode: PermissionMode | CodexMode): void {
 		this.send({ t: 'mode', mode });
 	}
 

@@ -3,7 +3,8 @@ import type { AgentClientMsg, AgentSummary, StartAgentBody, UsageLimit } from '@
 
 /** What an {@link AgentChat} needs from the server; injectable for tests. */
 export interface AgentApi {
-	start(body: StartAgentBody): Promise<void>;
+	/** Resolves to the session's id: a new Codex thread only gets one here. */
+	start(body: StartAgentBody): Promise<string>;
 	socketUrl(sessionId: string): Promise<string>;
 }
 
@@ -32,21 +33,29 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 				.json()
 				.then((j: { error?: string }) => j.error)
 				.catch(() => undefined);
-			throw new Error(message || `${resp.status} ${resp.statusText}`);
+			throw Object.assign(new Error(message || `${resp.status} ${resp.statusText}`), {
+				status: resp.status
+			});
 		}
 		return resp.status === 204 ? null : ((await resp.json()) as T);
 	}
 	const path = (id: string) => `/agent/claude/${encodeURIComponent(id)}`;
 
 	return {
-		async start(body: StartAgentBody): Promise<void> {
-			await call('POST', '/agent/claude', body);
+		async start(body: StartAgentBody): Promise<string> {
+			const res = await call<{ sessionId: string }>(
+				'POST',
+				`/agent/${body.agent ?? 'claude'}`,
+				body
+			);
+			if (!res?.sessionId) throw new Error('The server did not return a session id');
+			return res.sessionId;
 		},
 		async socketUrl(sessionId: string): Promise<string> {
 			const { baseUrl, token } = await server();
 			return agentWsUrl(baseUrl, sessionId, token ?? undefined);
 		},
-		/** Stop a session's `claude` process, e.g. before a terminal takes it over. */
+		/** Stop a session's process, e.g. before a terminal takes it over. */
 		async stop(sessionId: string): Promise<void> {
 			await call('DELETE', path(sessionId));
 		},
@@ -54,8 +63,15 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		async stopPane(paneId: string): Promise<void> {
 			await call('DELETE', `/agent/claude?paneId=${encodeURIComponent(paneId)}`);
 		},
+		/** Every live session, Claude and Codex. Servers older than Codex chat list Claude only. */
 		async list(): Promise<AgentSummary[]> {
-			return (await call<AgentSummary[]>('GET', '/agent/claude')) ?? [];
+			try {
+				return (await call<AgentSummary[]>('GET', '/agent')) ?? [];
+			} catch (e) {
+				if ((e as { status?: number }).status !== 404) throw e;
+				const claude = (await call<AgentSummary[]>('GET', '/agent/claude')) ?? [];
+				return claude.map((s) => ({ ...s, agent: 'claude' as const }));
+			}
 		},
 		/**
 		 * The account's plan limits; empty without a plan. Cached a minute

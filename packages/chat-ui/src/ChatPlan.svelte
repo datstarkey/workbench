@@ -36,7 +36,7 @@
 					class={cn(
 						'mt-0.5 flex size-3 shrink-0 items-center justify-center rounded-[3px] border',
 						step.status === 'completed' && 'border-wb-ok bg-wb-ok text-wb-accent-ink',
-						step.status === 'in_progress' && 'border-wb-claude',
+						step.status === 'in_progress' && 'border-[var(--wb-agent,var(--wb-claude))]',
 						step.status === 'pending' && 'border-wb-ink-soft'
 					)}
 				>

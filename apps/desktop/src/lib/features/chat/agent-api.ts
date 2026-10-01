@@ -10,7 +10,7 @@ export const loopbackAgentApi: AgentApi = {
 	async start(body) {
 		// Hooks then report this session's activity to the sidebar, as for terminals.
 		const hookSocket = body.hookSocket ?? (await terminalHookSocket().catch(() => null));
-		await loopback.start({ ...body, hookSocket: hookSocket ?? undefined });
+		return loopback.start({ ...body, hookSocket: hookSocket ?? undefined });
 	},
 	socketUrl: loopback.socketUrl
 };
@@ -18,7 +18,7 @@ export const loopbackAgentApi: AgentApi = {
 /** A Claude account's plan limits, cached by the loopback server. */
 export const planUsage = loopback.usage;
 
-/** Stop a chat session's `claude` process, e.g. before the terminal takes it over. */
+/** Stop a chat session's process, e.g. before the terminal takes it over. */
 export const stopAgent = loopback.stop;
 
 /** Live chat sessions on the loopback server, or null when it can't be reached. */

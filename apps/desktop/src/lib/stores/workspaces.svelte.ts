@@ -27,6 +27,7 @@ import { suppressLayout } from '$features/terminal/layout-guard';
 import { visibleSplit } from '$features/terminal/split-view';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
+import { paneAgent, terminalAfterChat } from '$features/chat/pane-handoff';
 import {
 	chatHasHistory,
 	isChatClaimed,
@@ -297,8 +298,8 @@ export class WorkspaceStore {
 	 * it first, so the re-keyed session isn't mistaken for a new one.
 	 */
 	adoptableServerChats(list: AgentSummary[]): AgentSummary[] {
-		for (const { paneId, sessionId } of this.adoption.rekeys(this.workspaces, list)) {
-			this.updateAISessionByPaneId(paneId, sessionId, 'claude');
+		for (const { paneId, sessionId, type } of this.adoption.rekeys(this.workspaces, list)) {
+			this.updateAISessionByPaneId(paneId, sessionId, type);
 		}
 		return this.adoption.adoptableChats(this.workspaces, list, isChatClaimed);
 	}
@@ -327,7 +328,7 @@ export class WorkspaceStore {
 	}
 
 	/**
-	 * Kill the server-side PTYs (and any chat-mode `claude` process) for panes
+	 * Kill the server-side PTYs (and any chat-mode agent process) for panes
 	 * being intentionally closed (vs a webview reload, which only detaches). Without this the PTYs leak on the server and
 	 * count against the terminal cap. Best-effort / fire-and-forget; also drops the
 	 * persisted re-attach mappings so a stale id is never reused. Adopted panes
@@ -643,19 +644,23 @@ export class WorkspaceStore {
 	}
 
 	/**
-	 * Move a Claude pane's session between its terminal and chat. Only one
-	 * `claude` process may own a session, so the current one stops first: the
-	 * PTY (and the TUI in it) is killed before chat resumes the session, and the
-	 * chat process is stopped before the terminal reopens with `claude --resume`.
+	 * Move an AI pane's session between its terminal and chat. Only one process
+	 * may own a session, so the current one stops first: the PTY (and the TUI in
+	 * it) is killed before chat resumes the session, and the chat process is
+	 * stopped before the terminal reopens it. A Codex pane with no session yet
+	 * starts a new thread in chat, whose id the chat hands back to the pane.
 	 */
 	async setPaneView(paneId: string, view: PaneView): Promise<void> {
 		const pane = this.workspaces
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
 		if (!pane || (pane.view ?? 'terminal') === view) return;
-		// Chat can't run inside the sandbox runtime: refuse before killing the terminal.
-		if (view === 'chat' && this.settingsStore.sandboxRuntimeEnabled) return;
+		// Claude chat can't run inside the sandbox runtime (which never wraps Codex):
+		// refuse before killing the terminal.
+		if (view === 'chat' && paneAgent(pane) === 'claude' && this.settingsStore.sandboxRuntimeEnabled)
+			return;
 		this.adoption.takeOver(paneId);
+		let patch: Partial<TerminalPaneState> = { view };
 		if (view === 'chat') {
 			const serverId = this.serverTerminalIds[paneId];
 			if (serverId) {
@@ -668,27 +673,15 @@ export class WorkspaceStore {
 			// A chat that never got a message has no session file to resume yet.
 			const started = chatHasHistory(paneId);
 			releaseChat(paneId);
-			if (pane.claudeSessionId) {
-				await stopAgent(pane.claudeSessionId).catch(() => {});
-				const startupCommand = started
-					? tryResumeCommand('claude', pane.claudeSessionId, this.launchOptions)
-					: claudeNewSessionWithIdCommand(pane.claudeSessionId, this.launchOptions);
-				if (startupCommand) this.setPaneStartupCommand(paneId, startupCommand);
-			}
+			await (
+				pane.claudeSessionId ? stopAgent(pane.claudeSessionId) : stopAgentForPane(paneId)
+			).catch(() => {});
+			patch = { ...terminalAfterChat(pane, started, this.launchOptions), view };
 		}
-		const location = this.findPaneLocation(paneId);
-		if (!location) return;
-		this.updateWorkspace(location.workspaceId, (w) => ({
-			...w,
-			terminalTabs: w.terminalTabs.map((t) =>
-				t.id !== location.tabId
-					? t
-					: { ...t, panes: t.panes.map((p) => (p.id === paneId ? { ...p, view } : p)) }
-			)
-		}));
+		this.patchPane(paneId, patch);
 	}
 
-	private setPaneStartupCommand(paneId: string, startupCommand: string): void {
+	private patchPane(paneId: string, patch: Partial<TerminalPaneState>): void {
 		const location = this.findPaneLocation(paneId);
 		if (!location) return;
 		this.updateWorkspace(location.workspaceId, (w) => ({
@@ -696,10 +689,7 @@ export class WorkspaceStore {
 			terminalTabs: w.terminalTabs.map((t) =>
 				t.id !== location.tabId
 					? t
-					: {
-							...t,
-							panes: t.panes.map((p) => (p.id === paneId ? { ...p, startupCommand } : p))
-						}
+					: { ...t, panes: t.panes.map((p) => (p.id === paneId ? { ...p, ...patch } : p)) }
 			)
 		}));
 	}
@@ -723,11 +713,12 @@ export class WorkspaceStore {
 		this.adoption.takeOver(paneId);
 		releaseChat(paneId);
 		if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
-		this.updateAISessionByPaneId(paneId, sessionId, 'claude');
-		this.updateAITabLabelByPaneId(paneId, label, 'claude');
+		const type = paneAgent(pane);
+		this.updateAISessionByPaneId(paneId, sessionId, type);
+		this.updateAITabLabelByPaneId(paneId, label, type);
 	}
 
-	/** The pane shows its Claude session as chat (see `setPaneView`). */
+	/** The pane shows its Claude or Codex session as chat (see `setPaneView`). */
 	isChatPane(paneId: string): boolean {
 		return this.workspaces.some((w) =>
 			w.terminalTabs.some((t) => t.panes.some((p) => p.id === paneId && p.view === 'chat'))
@@ -797,7 +788,11 @@ export class WorkspaceStore {
 			for (const pane of adopted) reopenChat(pane.id);
 			return;
 		}
-		// A chat pane's claude must be gone before the new pane starts the same
+		// An empty Codex thread may never have been written: restart a fresh one.
+		const first = oldTab?.panes[0];
+		const freshCodex =
+			first?.type === 'codex' && first.view === 'chat' && !chatHasHistory(first.id);
+		// A chat pane's agent must be gone before the new pane starts the same
 		// session, or two processes own it. Terminal tabs skip this and stay sync.
 		for (const pane of oldTab?.panes ?? []) {
 			if (pane.view !== 'chat' || !pane.claudeSessionId) continue;
@@ -811,7 +806,7 @@ export class WorkspaceStore {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);
 			if (!tab || !isAISessionType(tab.type)) return w;
 			const type = tab.type;
-			const sessionId = tab.panes[0]?.claudeSessionId;
+			const sessionId = freshCodex ? undefined : tab.panes[0]?.claudeSessionId;
 			const command = sessionId
 				? resumeCommand(type, sessionId, this.launchOptions)
 				: newSessionCommand(type, this.launchOptions);
@@ -823,9 +818,10 @@ export class WorkspaceStore {
 				type,
 				tab.panes[0]?.claudeAccountId
 			);
-			if (tab.panes[0]?.view === 'chat' && sessionId && !this.settingsStore.sandboxRuntimeEnabled) {
-				newTab.panes[0].view = 'chat';
-			}
+			// Codex chat needs no id (a new thread) and never runs inside the sandbox runtime.
+			const chatAllowed =
+				type === 'codex' || (sessionId && !this.settingsStore.sandboxRuntimeEnabled);
+			if (tab.panes[0]?.view === 'chat' && chatAllowed) newTab.panes[0].view = 'chat';
 			const splitView = w.splitView && {
 				...w.splitView,
 				tabIds: w.splitView.tabIds.map((id) => (id === tabId ? newTab.id : id)) as [string, string]

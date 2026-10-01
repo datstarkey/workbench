@@ -9,14 +9,28 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import type { ChatImage, PermissionMode, SlashCommand } from '@workbench/types';
-	import { matchCommands, MODE_OPTIONS, modeLabel, slashQuery } from './chat-format';
+	import type {
+		AgentKind,
+		ChatImage,
+		CodexMode,
+		PermissionMode,
+		SlashCommand
+	} from '@workbench/types';
+	import {
+		agentName,
+		isRiskyMode,
+		matchCommands,
+		modeLabel,
+		modeOptions,
+		slashQuery
+	} from './chat-format';
 	import ChatSlashMenu from './ChatSlashMenu.svelte';
 	import { fileToChatImage, IMAGE_TYPES, imageFiles, MAX_IMAGES, previewUrl } from './image-intake';
 	import { getChatPlatform } from './platform';
 
 	let {
 		id,
+		agent = 'claude',
 		draft = $bindable(''),
 		mode,
 		busy,
@@ -30,24 +44,33 @@
 		popover
 	}: {
 		id: string;
+		agent?: AgentKind;
 		draft?: string;
-		mode: PermissionMode | null;
+		mode: PermissionMode | CodexMode | null;
 		busy: boolean;
 		/** Set when nothing can be sent right now; shown as the placeholder. */
 		disabledReason: string | null;
 		/** Returns false if the message could not be sent (the draft is kept). */
 		onSend: (text: string, images: ChatImage[]) => boolean;
 		onStop: () => void;
-		onMode: (mode: PermissionMode) => void;
+		onMode: (mode: PermissionMode | CodexMode) => void;
 		/** More pickers for the toolbar (model, effort). */
 		controls?: Snippet;
 		/** For the `/` menu. */
 		commands?: SlashCommand[];
-		/** Commands handled in the app rather than by Claude; true when it took it. */
+		/** Commands handled in the app rather than by the agent; true when it took it. */
 		onCommand?: (name: string) => boolean;
 		/** Shown above the composer, e.g. the resume picker. */
 		popover?: Snippet;
 	} = $props();
+
+	const name = $derived(agentName(agent));
+	const modes = $derived(modeOptions(agent));
+	const placeholder = $derived(
+		agent === 'codex'
+			? 'Message Codex or paste an image'
+			: 'Message Claude, / for commands, or paste an image'
+	);
 
 	const platform = getChatPlatform();
 	const enterSends = platform.enterSends ?? true;
@@ -208,7 +231,7 @@
 			{/each}
 		</ul>
 	{/if}
-	<label for={id} class="sr-only">Message Claude</label>
+	<label for={id} class="sr-only">Message {name}</label>
 	<textarea
 		{id}
 		bind:value={draft}
@@ -226,7 +249,7 @@
 		rows="1"
 		enterkeyhint={enterSends ? 'send' : 'enter'}
 		disabled={disabledReason !== null}
-		placeholder={disabledReason ?? 'Message Claude, / for commands, or paste an image'}
+		placeholder={disabledReason ?? placeholder}
 		class="scrollbar-thin block max-h-[180px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm leading-relaxed text-wb-ink placeholder:text-wb-ink-soft focus:outline-none disabled:cursor-not-allowed"
 	></textarea>
 	{#if imageError}
@@ -242,23 +265,23 @@
 						disabled={disabledReason !== null}
 						class={cn(
 							'flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-xs whitespace-nowrap hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50',
-							mode === 'bypassPermissions' ? 'text-wb-err' : 'text-wb-ink-mute'
+							isRiskyMode(mode) ? 'text-wb-err' : 'text-wb-ink-mute'
 						)}
-						title="Permission mode"
+						title={agent === 'codex' ? 'Approvals and sandbox' : 'Permission mode'}
 					>
-						<span class="truncate">{modeLabel(mode)}</span>
+						<span class="truncate">{modeLabel(mode, agent)}</span>
 						<ChevronDownIcon class="size-3 shrink-0" />
 					</button>
 				{/snippet}
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Content align="start" class="w-64">
 				<DropdownMenu.RadioGroup
-					value={mode ?? 'default'}
-					onValueChange={(value) => onMode(value as PermissionMode)}
+					value={mode ?? (agent === 'codex' ? '' : 'default')}
+					onValueChange={(value) => onMode(value as PermissionMode | CodexMode)}
 				>
-					{#each MODE_OPTIONS as option (option.mode)}
+					{#each modes as option (option.mode)}
 						<DropdownMenu.RadioItem value={option.mode} class="flex-col items-start gap-0">
-							<span class={cn(option.mode === 'bypassPermissions' && 'text-wb-err')}>
+							<span class={cn(option.risky && 'text-wb-err')}>
 								{option.label}
 							</span>
 							<span class="text-[11px] text-muted-foreground">{option.hint}</span>
@@ -308,7 +331,7 @@
 			class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-wb-accent text-wb-accent-ink transition-opacity hover:brightness-110 focus-visible:ring-2 focus-visible:ring-wb-accent/50 focus-visible:outline-none disabled:opacity-30"
 			aria-label={busy ? 'Queue message' : 'Send'}
 			title={busy
-				? 'Claude will read this after the current step'
+				? `${name} will read this after the current step`
 				: enterSends
 					? 'Send (Enter)'
 					: 'Send'}

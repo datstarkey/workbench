@@ -178,9 +178,10 @@ describe('MobileClient', () => {
 		expect(c.activeTerminalId).toBeNull();
 	});
 
-	describe('Claude sessions', () => {
+	describe('chat sessions', () => {
 		const SID = '4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5';
 		const summary = {
+			agent: 'claude' as const,
 			sessionId: SID,
 			projectPath: '/repo',
 			worktreePath: '/repo-wt',
@@ -195,6 +196,15 @@ describe('MobileClient', () => {
 			waiting: null,
 			running: null,
 			previousIds: []
+		};
+
+		const codexSummary = {
+			...summary,
+			agent: 'codex' as const,
+			sessionId: 'thread-1',
+			worktreePath: null,
+			claudeAccountId: null,
+			title: 'Tidy the docs'
 		};
 
 		/** A fake server recording each call; terminals it creates are listed until killed. */
@@ -215,8 +225,8 @@ describe('MobileClient', () => {
 					const path = url.pathname + (url.search || '');
 					const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 					calls.push({ method, path, body });
-					if (path === '/agent/claude' && method === 'GET')
-						return Promise.resolve(jsonResponse([summary]));
+					if (path === '/agent' && method === 'GET')
+						return Promise.resolve(jsonResponse([summary, codexSummary]));
 					if (path === '/remote/terminals' && method === 'POST') {
 						const meta = {
 							id: `t${terminals.length + 1}`,
@@ -249,7 +259,7 @@ describe('MobileClient', () => {
 			const c = await connected();
 			fakeServer();
 			await c.refreshChats();
-			expect(c.chats.map((s) => s.title)).toEqual(['Fix the build']);
+			expect(c.chats.map((s) => s.title)).toEqual(['Fix the build', 'Tidy the docs']);
 			const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
 			expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
 		});
@@ -324,6 +334,50 @@ describe('MobileClient', () => {
 			expect(c.activeChat).toBeNull();
 			expect(c.activeTerminalId).toBe('t1');
 			expect(c.notice).toMatch(/Couldn't stop the terminal/);
+		});
+
+		it('starts a Codex chat with no id, so the server picks the thread', async () => {
+			const c = await connected();
+			c.setDefaultView('terminal');
+			c.startCodex('/repo', '/repo-wt', 'repo · wt');
+			expect(c.activeChat).toEqual({
+				sessionId: '',
+				agent: 'codex',
+				projectPath: '/repo',
+				worktreePath: '/repo-wt',
+				name: 'repo · wt'
+			});
+			expect(c.activeTerminalId).toBeNull();
+		});
+
+		it('opens a listed Codex session as a Codex chat', async () => {
+			const c = await connected();
+			expect(c.chatRef(codexSummary)).toEqual({
+				sessionId: 'thread-1',
+				agent: 'codex',
+				projectPath: '/repo',
+				worktreePath: undefined,
+				name: 'Tidy the docs'
+			});
+			expect(c.chatRef(summary).agent).toBeUndefined();
+		});
+
+		it('names Codex when answering one of its approvals fails', async () => {
+			const c = await connected();
+			fakeServer();
+			await c.refreshChats();
+			vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 500 }));
+			await c.answer('thread-1', 'perm-1', 'allow');
+			expect(c.notice).toMatch(/^Couldn't answer Codex/);
+		});
+
+		it('ending a Codex chat before it has a thread just leaves its screen', async () => {
+			const c = await connected();
+			const calls = fakeServer();
+			c.startCodex('/repo', undefined, 'repo');
+			await c.endChat('');
+			expect(c.activeChat).toBeNull();
+			expect(calls.some((x) => x.method === 'DELETE')).toBe(false);
 		});
 
 		it('ending a chat leaves its screen even after /clear changed its id', async () => {

@@ -90,6 +90,7 @@ mod tests {
             label: "session".into(),
             percent,
             resets: None,
+            resets_at: None,
         }]
     }
 

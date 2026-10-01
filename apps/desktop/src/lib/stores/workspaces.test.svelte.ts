@@ -5,7 +5,7 @@ import { SANDBOX_RUNTIME_PACKAGE } from '$lib/utils/claude';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { adoptableTerminals } from '$features/terminal/server-terminals';
 import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
-import { reopenChat } from '$features/chat/chat-registry';
+import { chatHasHistory, reopenChat } from '$features/chat/chat-registry';
 import type {
 	AgentSummary,
 	ClaudePermissionMode,
@@ -35,6 +35,7 @@ vi.mock('$features/chat/agent-api', async (importOriginal) => ({
 
 vi.mock('$features/chat/chat-registry', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$features/chat/chat-registry')>()),
+	chatHasHistory: vi.fn(() => true),
 	reopenChat: vi.fn()
 }));
 
@@ -1215,11 +1216,13 @@ describe('WorkspaceStore', () => {
 			store.workspaces = [ws];
 			invokeSpy.mockClear();
 
-			store.updateAISessionByPaneId('pane-1', 'any-session-id', 'codex');
+			store.updateAISessionByPaneId('pane-1', '01a0f8bd-343d-7ae3-a22b-74d35455ef7f', 'codex');
 
 			const pane = store.workspaces[0].terminalTabs[0].panes[0];
-			expect(pane.claudeSessionId).toBe('any-session-id');
-			expect(pane.startupCommand).toBe('codex -c tui.alternate_screen=never resume any-session-id');
+			expect(pane.claudeSessionId).toBe('01a0f8bd-343d-7ae3-a22b-74d35455ef7f');
+			expect(pane.startupCommand).toBe(
+				'codex -c tui.alternate_screen=never resume 01a0f8bd-343d-7ae3-a22b-74d35455ef7f'
+			);
 		});
 
 		it('does not persist when session ID is already the same', () => {
@@ -2176,6 +2179,7 @@ describe('WorkspaceStore', () => {
 
 	describe('adoptServerChat', () => {
 		const remote: AgentSummary = {
+			agent: 'claude',
 			sessionId: 'sess-phone',
 			projectPath: '/projects/test',
 			worktreePath: null,
@@ -2342,6 +2346,120 @@ describe('WorkspaceStore', () => {
 			expect(stopAgent).toHaveBeenCalledWith('sess-phone');
 			const { snapshot } = lastSnapshot();
 			expect(snapshot.workspaces[0].terminalTabs[0].panes[0].id).toBe(paneId);
+		});
+	});
+
+	describe('codex chat', () => {
+		const thread = '0199a213-81c0-7800-8aa1-bbab2a035a53';
+		const codexPane = () => store.workspaces[0].terminalTabs[0].panes[0];
+
+		beforeEach(() => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.addAISession('ws-a', 'codex');
+			vi.mocked(stopAgent).mockClear();
+			vi.mocked(stopAgentForPane).mockClear();
+			vi.mocked(deleteServerTerminal).mockClear();
+			vi.mocked(chatHasHistory).mockReturnValue(true);
+		});
+
+		it('moves to chat by killing the PTY, even with the sandbox runtime on', async () => {
+			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
+			store.setServerTerminalId(codexPane().id, 'srv-1');
+
+			await store.setPaneView(codexPane().id, 'chat');
+
+			expect(deleteServerTerminal).toHaveBeenCalledWith('srv-1');
+			expect(store.getServerTerminalId(codexPane().id)).toBeUndefined();
+			expect(codexPane().view).toBe('chat');
+		});
+
+		it('keeps the thread id a new chat reports, and resumes it in the terminal', async () => {
+			await store.setPaneView(codexPane().id, 'chat');
+			store.updateAISessionByPaneId(codexPane().id, thread, 'codex');
+			expect(codexPane().claudeSessionId).toBe(thread);
+
+			await store.setPaneView(codexPane().id, 'terminal');
+
+			expect(stopAgent).toHaveBeenCalledWith(thread);
+			expect(codexPane()).toMatchObject({
+				view: 'terminal',
+				claudeSessionId: thread,
+				startupCommand: `codex -c tui.alternate_screen=never resume ${thread}`
+			});
+		});
+
+		it('starts a fresh codex in the terminal when the chat never had a message', async () => {
+			await store.setPaneView(codexPane().id, 'chat');
+			store.updateAISessionByPaneId(codexPane().id, thread, 'codex');
+			vi.mocked(chatHasHistory).mockReturnValue(false);
+
+			await store.setPaneView(codexPane().id, 'terminal');
+
+			expect(codexPane()).toMatchObject({
+				claudeSessionId: '',
+				startupCommand: 'codex -c tui.alternate_screen=never'
+			});
+		});
+
+		it('stops a chat with no thread id yet by its pane', async () => {
+			await store.setPaneView(codexPane().id, 'chat');
+			await store.setPaneView(codexPane().id, 'terminal');
+
+			expect(stopAgentForPane).toHaveBeenCalledWith(codexPane().id);
+			expect(stopAgent).not.toHaveBeenCalled();
+		});
+
+		it('restarts a chat pane in chat, a never-used thread as a new one', async () => {
+			await store.setPaneView(codexPane().id, 'chat');
+			store.updateAISessionByPaneId(codexPane().id, thread, 'codex');
+			vi.mocked(chatHasHistory).mockReturnValue(false);
+
+			await store.restartAISession('ws-a', store.workspaces[0].terminalTabs[0].id);
+
+			expect(stopAgent).toHaveBeenCalledWith(thread);
+			expect(codexPane()).toMatchObject({ type: 'codex', view: 'chat', claudeSessionId: '' });
+		});
+
+		it('resumes another thread in place and relabels the Codex tab', async () => {
+			await store.setPaneView(codexPane().id, 'chat');
+			await store.resumeInChat(codexPane().id, thread, 'Older');
+
+			expect(codexPane().claudeSessionId).toBe(thread);
+			expect(store.workspaces[0].terminalTabs[0].label).toBe('Older');
+		});
+
+		it('adopts a Codex chat from another device as a background Codex tab', () => {
+			const summary: AgentSummary = {
+				agent: 'codex',
+				sessionId: thread,
+				projectPath: '/projects/test',
+				worktreePath: null,
+				paneId: null,
+				claudeAccountId: 'work',
+				title: 'Phone thread',
+				model: null,
+				busy: false,
+				exited: false,
+				busySince: null,
+				updatedAt: 0,
+				waiting: null,
+				running: null,
+				previousIds: []
+			};
+
+			expect(store.adoptableServerChats([summary])).toEqual([summary]);
+			expect(store.adoptServerChat(summary)).toBe(true);
+
+			const tab = store.workspaces[0].terminalTabs[1];
+			expect(tab.type).toBe('codex');
+			expect(tab.panes[0]).toEqual({
+				id: tab.panes[0].id,
+				type: 'codex',
+				claudeSessionId: thread,
+				view: 'chat'
+			});
+			expect(store.isAdoptedPane(tab.panes[0].id)).toBe(true);
+			expect(store.adoptableServerChats([summary])).toEqual([]);
 		});
 	});
 });

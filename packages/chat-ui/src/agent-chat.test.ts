@@ -40,7 +40,10 @@ const meta = (busy = false): TranscriptMeta => ({
 
 const body: StartAgentBody = { projectPath: '/repo', sessionId: 'sid', paneId: 'p1' };
 
-function fakeApi(start = vi.fn<AgentApi['start']>().mockResolvedValue()): AgentApi {
+/** Like the server: resumes the id it's given; a Codex start without one gets a new thread. */
+function fakeApi(
+	start = vi.fn<AgentApi['start']>(async (b) => b.sessionId ?? 'new-thread')
+): AgentApi {
 	return { start, socketUrl: async (id) => `ws://test/agent/claude/${id}/ws` };
 }
 
@@ -72,7 +75,7 @@ describe('AgentChat', () => {
 	});
 
 	it('starts the session, then streams updates into the chat', async () => {
-		const start = vi.fn<AgentApi['start']>().mockResolvedValue();
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));
 		expect(start).toHaveBeenCalledWith(body);
 		expect(chat.status).toBe('live');
@@ -176,7 +179,7 @@ describe('AgentChat', () => {
 		const start = vi
 			.fn<AgentApi['start']>()
 			.mockRejectedValueOnce(new Error('Chat mode does not run inside the sandbox runtime yet.'))
-			.mockResolvedValue();
+			.mockResolvedValue('sid');
 		const chat = new AgentChat(body, fakeApi(start));
 		await vi.waitFor(() => expect(chat.status).toBe('failed'));
 		expect(chat.error).toContain('sandbox');
@@ -188,7 +191,7 @@ describe('AgentChat', () => {
 	});
 
 	it('re-attaches an attach-only chat, and only a restart after it ended starts it here', async () => {
-		const start = vi.fn<AgentApi['start']>().mockResolvedValue();
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const attach = { ...body, attachOnly: true };
 		const chat = new AgentChat(attach, fakeApi(start));
 		const onTakeOver = vi.fn();
@@ -227,7 +230,7 @@ describe('AgentChat', () => {
 	});
 
 	it('reconnects after a dropped socket, starting the session again', async () => {
-		const start = vi.fn<AgentApi['start']>().mockResolvedValue();
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));
 		ws.onclose?.();
 		expect(chat.status).toBe('reconnecting');
@@ -240,9 +243,9 @@ describe('AgentChat', () => {
 	it('keeps retrying while the network is still down after a phone wakes', async () => {
 		const start = vi
 			.fn<AgentApi['start']>()
-			.mockResolvedValueOnce()
+			.mockResolvedValueOnce('sid')
 			.mockRejectedValueOnce(new Error('Failed to fetch'))
-			.mockResolvedValue();
+			.mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));
 		chat.reconnect();
 		await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
@@ -260,7 +263,7 @@ describe('AgentChat', () => {
 	});
 
 	it('re-attaches at once on reconnect(), dropping the old socket quietly', async () => {
-		const start = vi.fn<AgentApi['start']>().mockResolvedValue();
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));
 		chat.reconnect();
 		expect(chat.status).toBe('reconnecting');
@@ -271,19 +274,19 @@ describe('AgentChat', () => {
 	});
 
 	it('abandons a connect still waiting on the server when reconnect() starts another', async () => {
-		let release!: () => void;
+		let release!: (id: string) => void;
 		const start = vi
 			.fn<AgentApi['start']>()
-			.mockResolvedValueOnce()
+			.mockResolvedValueOnce('sid')
 			.mockImplementationOnce(() => new Promise((r) => (release = r)))
-			.mockResolvedValue();
+			.mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));
 		ws.onclose?.(); // dropped: the retry timer fires and its start hangs
 		await vi.advanceTimersByTimeAsync(1500);
 		chat.reconnect();
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
 		const current = FakeSocket.last;
-		release();
+		release('sid');
 		await vi.advanceTimersByTimeAsync(0);
 		expect(FakeSocket.last).toBe(current); // the stale connect opened no socket
 		chat.dispose();
@@ -387,6 +390,57 @@ describe('AgentChat', () => {
 			exited: false
 		});
 		expect(chat.sessionId).toBe('new-id');
+		chat.dispose();
+	});
+	it('starts a new Codex thread and keeps its id for reconnects', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('thread-1');
+		const socketUrl = vi.fn(async (id: string) => `ws://test/agent/codex/${id}/ws`);
+		const codex: StartAgentBody = { agent: 'codex', projectPath: '/repo' };
+		const chat = new AgentChat(codex, { start, socketUrl });
+		expect(chat.agent).toBe('codex');
+		expect(chat.sessionId).toBe('');
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		expect(start).toHaveBeenCalledWith({ ...codex, sessionId: undefined });
+		expect(chat.sessionId).toBe('thread-1');
+		expect(socketUrl).toHaveBeenCalledWith('thread-1');
+
+		const ws = FakeSocket.last!;
+		ws.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(start).toHaveBeenLastCalledWith({ ...codex, sessionId: 'thread-1' });
+		chat.dispose();
+	});
+
+	it('a restart while a new Codex thread starts joins that start, not a second thread', async () => {
+		let resolve!: (id: string) => void;
+		const start = vi.fn<AgentApi['start']>((b) =>
+			b.sessionId ? Promise.resolve(b.sessionId) : new Promise((r) => (resolve = r))
+		);
+		const socketUrl = vi.fn(async (id: string) => `ws://test/agent/codex/${id}/ws`);
+		const chat = new AgentChat({ agent: 'codex', projectPath: '/repo' }, { start, socketUrl });
+		await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+		void chat.open();
+		resolve('thread-1');
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		expect(start).toHaveBeenCalledTimes(1);
+		expect(chat.sessionId).toBe('thread-1');
+		expect(socketUrl).toHaveBeenCalledWith('thread-1');
+		chat.dispose();
+	});
+
+	it('names Codex when a Codex chat cannot send', async () => {
+		const chat = new AgentChat({ agent: 'codex', projectPath: '/repo' }, fakeApi());
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		FakeSocket.last!.readyState = 3;
+		expect(chat.prompt('hi')).toBe(false);
+		expect(chat.notice).toBe('Not connected to Codex yet. Try again in a moment.');
+		chat.dispose();
+	});
+
+	it('defaults to Claude', () => {
+		const chat = new AgentChat(body, fakeApi());
+		expect(chat.agent).toBe('claude');
+		expect(chat.sessionId).toBe('sid');
 		chat.dispose();
 	});
 });

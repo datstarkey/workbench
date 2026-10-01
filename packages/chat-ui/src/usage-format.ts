@@ -1,4 +1,4 @@
-import type { RateLimitInfo, UsageLimit } from '@workbench/types';
+import type { RateLimitInfo, TranscriptMeta, UsageLimit } from '@workbench/types';
 
 /** Usage at or above this is flagged, so a limit about to bite stands out. */
 export const HIGH_USAGE_PERCENT = 80;
@@ -92,7 +92,11 @@ export function usageChips(
 	const merged = limits.map((l) => ({
 		label: l.label,
 		percent: l.percent,
-		resets: l.resets ? shortenReset(l.resets, now, timeZone) : null
+		resets: l.resets
+			? shortenReset(l.resets, now, timeZone)
+			: l.resetsAt != null
+				? formatEventReset(l.resetsAt, now, timeZone)
+				: null
 	}));
 	if (
 		event?.kind &&
@@ -124,4 +128,12 @@ export function usageChips(
 				title: `${long}: ${l.percent}% used${l.resets ? ` · resets ${l.resets}` : ''}`
 			};
 		});
+}
+
+/** Chips from the limits a chat's own stream reports (Codex); Claude's come from {@link usePlanUsage}. */
+export function metaUsageChips(
+	meta: TranscriptMeta | null,
+	clock?: { now?: Date; timeZone?: string }
+): UsageChip[] {
+	return usageChips(meta?.usageLimits ?? [], null, clock);
 }

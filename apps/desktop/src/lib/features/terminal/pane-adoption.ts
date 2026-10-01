@@ -1,10 +1,12 @@
 import type {
+	AgentKind,
 	AgentSummary,
 	ProjectWorkspace,
 	TerminalPaneState,
 	TerminalTabState
 } from '$types/workbench';
 import { uid } from '$lib/utils/uid';
+import { paneAgent } from '$features/chat/pane-handoff';
 import {
 	adoptableChats,
 	adoptionWorkspace,
@@ -77,20 +79,22 @@ export class PaneAdoption {
 		if (!ws) return null;
 		const paneId = uid();
 		this.adopted.add(paneId);
+		const type = paneAgent({ type: chat.agent });
 		return {
 			workspaceId: ws.id,
 			tab: {
 				id: uid(),
 				label: chat.title?.trim() || 'Remote chat',
 				split: 'horizontal',
-				type: 'claude',
+				type,
 				panes: [
 					{
 						id: paneId,
-						type: 'claude',
+						type,
 						claudeSessionId: chat.sessionId,
 						view: 'chat',
-						...(chat.claudeAccountId && { claudeAccountId: chat.claudeAccountId })
+						...(type === 'claude' &&
+							chat.claudeAccountId && { claudeAccountId: chat.claudeAccountId })
 					}
 				]
 			}
@@ -101,13 +105,13 @@ export class PaneAdoption {
 	rekeys(
 		workspaces: ProjectWorkspace[],
 		list: AgentSummary[]
-	): { paneId: string; sessionId: string }[] {
+	): { paneId: string; sessionId: string; type: AgentKind }[] {
 		const moved = new Map(
 			list.flatMap((c) => c.previousIds.map((id): [string, string] => [id, c.sessionId]))
 		);
 		return panesOf(workspaces).flatMap((p) => {
 			const sessionId = p.claudeSessionId && moved.get(p.claudeSessionId);
-			return sessionId ? [{ paneId: p.id, sessionId }] : [];
+			return sessionId ? [{ paneId: p.id, sessionId, type: paneAgent(p) }] : [];
 		});
 	}
 

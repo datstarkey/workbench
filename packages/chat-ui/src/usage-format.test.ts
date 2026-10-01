@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { RateLimitInfo } from '@workbench/types';
+import type { RateLimitInfo, TranscriptMeta } from '@workbench/types';
 import {
 	formatEventReset,
+	metaUsageChips,
 	shortenReset,
 	usageChips,
 	usageLabelForKind,
@@ -80,6 +81,35 @@ describe('usage chips', () => {
 	it('adds a chip for an event naming a limit /usage did not list', () => {
 		const opus = usageChips(limits, event('seven_day_opus', 0.5, oct2at9am), clock).at(-1);
 		expect(opus).toMatchObject({ label: 'opus wk', percent: 50 });
+	});
+});
+
+describe('Codex usage chips', () => {
+	it('come from the stream, resets given as a time', () => {
+		const meta = {
+			usageLimits: [
+				{ label: 'session', percent: 40, resetsAt: today510pm },
+				{ label: 'week (all models)', percent: 85, resetsAt: oct2at9am }
+			]
+		} as TranscriptMeta;
+		expect(metaUsageChips(meta, clock)).toEqual([
+			{
+				label: '5h',
+				percent: 40,
+				high: false,
+				resets: '5:10pm',
+				title: '5-hour session: 40% used · resets 5:10pm'
+			},
+			{
+				label: 'Week',
+				percent: 85,
+				high: true,
+				resets: 'Oct 2 at 9am',
+				title: 'Weekly limit: 85% used · resets Oct 2 at 9am'
+			}
+		]);
+		expect(metaUsageChips({ usageLimits: undefined } as TranscriptMeta, clock)).toEqual([]);
+		expect(metaUsageChips(null, clock)).toEqual([]);
 	});
 });
 
