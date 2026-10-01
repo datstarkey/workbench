@@ -17,6 +17,7 @@ import {
 	formatElapsed,
 	formatTokens,
 	groupBlocks,
+	stepNames,
 	latestTodos,
 	modeLabel,
 	parseQuestions,
@@ -128,20 +129,40 @@ describe('modes and time', () => {
 
 describe('groupBlocks', () => {
 	it('collapses runs of read-only tools and hides TodoWrite', () => {
+		const running = { ...tool('b1', 'Bash'), status: 'running' as const };
+		const blocks = groupBlocks([
+			tool('r1', 'Read'),
+			tool('todo', 'TodoWrite'),
+			running,
+			tool('g1', 'Grep'),
+			text('a', 'Found it.')
+		]);
+		expect(blocks).toEqual([
+			{ kind: 'quiet', id: 'r1', tools: [tool('r1', 'Read')] },
+			{ kind: 'item', item: running },
+			{ kind: 'quiet', id: 'g1', tools: [tool('g1', 'Grep')] },
+			{ kind: 'item', item: text('a', 'Found it.') }
+		]);
+	});
+
+	it('folds finished calls and the thinking between them into one row', () => {
+		const thinking: TranscriptItem = { kind: 'thinking', id: 'th', text: 'hmm' };
+		const failed = { ...tool('b2', 'Bash'), status: 'error' as const };
 		const blocks = groupBlocks([
 			text('a', 'Looking around.'),
 			tool('r1', 'Read'),
-			tool('g1', 'Grep'),
-			tool('todo', 'TodoWrite'),
+			thinking,
+			tool('b1', 'Bash'),
 			tool('e1', 'Edit'),
-			tool('r2', 'Read')
+			failed,
+			tool('b3', 'Bash')
 		]);
-		expect(blocks.map((b) => (b.kind === 'quiet' ? b.tools.map((t) => t.id) : b.item.id))).toEqual([
-			'a',
-			['r1', 'g1'],
-			'e1',
-			['r2']
-		]);
+		expect(blocks.map((b) => b.kind)).toEqual(['item', 'steps', 'item', 'item']);
+		const steps = blocks[1];
+		if (steps.kind !== 'steps') throw new Error('expected steps');
+		expect(steps.id).toBe('r1');
+		expect(steps.tools.map((t) => t.id)).toEqual(['r1', 'b1', 'e1']);
+		expect(stepNames(steps.tools)).toBe('Read, Bash, Edit');
 	});
 
 	it('keeps a failed read as its own card', () => {

@@ -17,9 +17,14 @@ export type ApprovalItem = Extract<TranscriptItem, { kind: 'approval' }>;
 /** Tools that only look around. Runs of these collapse into one row of chips. */
 const QUIET_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'ToolSearch']);
 
-export type ChatBlock =
+export type StepBlock =
 	| { kind: 'item'; item: TranscriptItem }
 	| { kind: 'quiet'; id: string; tools: ToolItem[] };
+
+export type ChatBlock =
+	| StepBlock
+	/** Finished tool calls (and the thinking between them), folded into one row. */
+	| { kind: 'steps'; id: string; blocks: StepBlock[]; tools: ToolItem[] };
 
 /**
  * Apply an update's `[index, item]` changes: replace by id, append new ones.
@@ -48,7 +53,7 @@ export function applyChanges(
 
 /** Group consecutive read-only tool calls so a turn reads as prose, not a log. */
 export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
-	const blocks: ChatBlock[] = [];
+	const blocks: StepBlock[] = [];
 	for (const item of items) {
 		const last = blocks[blocks.length - 1];
 		if (item.kind === 'tool' && QUIET_TOOLS.has(item.name) && item.status !== 'error') {
@@ -58,7 +63,50 @@ export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
 			blocks.push({ kind: 'item', item });
 		}
 	}
-	return blocks;
+	return foldSteps(blocks);
+}
+
+function stepTools(block: StepBlock): ToolItem[] | null {
+	if (block.kind === 'quiet') return block.tools;
+	if (block.item.kind === 'thinking') return [];
+	return block.item.kind === 'tool' && block.item.status === 'ok' ? [block.item] : null;
+}
+
+/** Runs with two or more finished calls fold; running and failed calls stay in view. */
+function foldSteps(blocks: StepBlock[]): ChatBlock[] {
+	const out: ChatBlock[] = [];
+	let run: StepBlock[] = [];
+	let tools: ToolItem[] = [];
+	const flush = () => {
+		if (tools.length >= 2) {
+			const first = run[0];
+			out.push({
+				kind: 'steps',
+				id: first.kind === 'quiet' ? first.id : first.item.id,
+				blocks: run,
+				tools
+			});
+		} else out.push(...run);
+		run = [];
+		tools = [];
+	};
+	for (const block of blocks) {
+		const found = stepTools(block);
+		if (found === null) {
+			flush();
+			out.push(block);
+		} else {
+			run.push(block);
+			tools.push(...found);
+		}
+	}
+	flush();
+	return out;
+}
+
+/** `Bash, Read, Edit` — the tools in a folded run, in first-use order. */
+export function stepNames(tools: ToolItem[]): string {
+	return [...new Set(tools.map((t) => t.name))].join(', ');
 }
 
 function str(input: ToolItem['input'], key: string): string {
