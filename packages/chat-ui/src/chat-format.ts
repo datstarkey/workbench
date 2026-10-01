@@ -8,7 +8,8 @@ import type {
 	TaskInfo,
 	TranscriptItem,
 	TranscriptMeta,
-	TranscriptPatchHunk
+	TranscriptPatchHunk,
+	UsageLimit
 } from '@workbench/types';
 
 export type ToolItem = Extract<TranscriptItem, { kind: 'tool' }>;
@@ -355,6 +356,82 @@ export function limitNotice(
 	}
 	const used = info.utilization != null ? `${Math.round(info.utilization * 100)}% of ` : 'most of ';
 	return { tone: 'warn', text: `You've used ${used}your ${name}usage limit.${resets}` };
+}
+
+/** Usage at or above this is flagged, so a limit about to bite stands out. */
+export const HIGH_USAGE_PERCENT = 80;
+
+const SESSION = 'session';
+const WEEK_ALL_MODELS = 'week (all models)';
+
+/** The `/usage` label a `rate_limit_event` kind reports on: five_hour → "session", seven_day_opus → "week (Opus)". */
+export function usageLabelForKind(kind: string): string | null {
+	if (kind === 'five_hour') return SESSION;
+	if (kind === 'seven_day') return WEEK_ALL_MODELS;
+	const model = /^seven_day_(.+)$/.exec(kind)?.[1];
+	return model ? `week (${model[0].toUpperCase()}${model.slice(1)})` : null;
+}
+
+function usageNames(label: string): { chip: string; long: string } {
+	if (label === SESSION) return { chip: '5h', long: '5-hour session' };
+	if (label === WEEK_ALL_MODELS) return { chip: 'Week', long: 'Weekly limit' };
+	const model = /^week \((.+)\)$/.exec(label)?.[1];
+	if (model) return { chip: `${model} wk`, long: `Weekly ${model} limit` };
+	return { chip: label, long: label };
+}
+
+export interface UsageChip {
+	label: string;
+	percent: number;
+	high: boolean;
+	resets: string | null;
+	title: string;
+}
+
+/**
+ * Header chips for the plan's limits: the 5-hour session and weekly limit always,
+ * per-model weekly limits once used. A `rate_limit_event` naming a limit is
+ * fresher than the cached `/usage` figure, so it wins for that limit.
+ */
+export function usageChips(
+	limits: UsageLimit[],
+	rateLimit: RateLimitInfo | null,
+	formatTime: (unixSeconds: number) => string,
+	now = new Date()
+): UsageChip[] {
+	// "Oct 1 at 5:10pm (Europe/London)" → "5:10pm" today, "Oct 2 at 9am" otherwise.
+	const today = `${now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at `;
+	const shorten = (resets: string) => {
+		const local = resets.replace(/\s*\([^)]*\)$/, '');
+		return local.startsWith(today) ? local.slice(today.length) : local;
+	};
+	const merged: { label: string; percent: number; resets: string | null }[] = limits.map((l) => ({
+		...l,
+		resets: l.resets ? shorten(l.resets) : null
+	}));
+	const label = rateLimit?.kind ? usageLabelForKind(rateLimit.kind) : null;
+	if (label && rateLimit?.utilization != null) {
+		const live = {
+			label,
+			percent: Math.round(rateLimit.utilization * 100),
+			resets: rateLimit.resetsAt ? formatTime(rateLimit.resetsAt) : null
+		};
+		const i = merged.findIndex((l) => l.label === label);
+		if (i >= 0) merged[i] = { ...live, resets: live.resets ?? merged[i].resets };
+		else merged.push(live);
+	}
+	return merged
+		.filter((l) => l.label === SESSION || l.label === WEEK_ALL_MODELS || l.percent > 0)
+		.map((l) => {
+			const { chip, long } = usageNames(l.label);
+			return {
+				label: chip,
+				percent: l.percent,
+				high: l.percent >= HIGH_USAGE_PERCENT,
+				resets: l.resets,
+				title: `${long}: ${l.percent}% used${l.resets ? ` · resets ${l.resets}` : ''}`
+			};
+		});
 }
 
 /** `38 KB`, `1.2 MB`. */

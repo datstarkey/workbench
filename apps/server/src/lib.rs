@@ -10,6 +10,7 @@ pub mod routes;
 pub mod spawn;
 pub mod state;
 pub mod terminal;
+pub mod usage;
 
 use anyhow::Context;
 use std::net::SocketAddr;

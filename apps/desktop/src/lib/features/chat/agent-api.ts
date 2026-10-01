@@ -15,6 +15,9 @@ export const loopbackAgentApi: AgentApi = {
 	socketUrl: loopback.socketUrl
 };
 
+/** A Claude account's plan limits, cached by the loopback server. */
+export const planUsage = loopback.usage;
+
 /** Stop a chat session's `claude` process, e.g. before the terminal takes it over. */
 export const stopAgent = loopback.stop;
 

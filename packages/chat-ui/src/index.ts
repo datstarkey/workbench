@@ -5,6 +5,7 @@ export {
 	type TaskOutput
 } from './agent-chat.svelte.ts';
 export { agentClient, type AgentApi, type AgentClient, type AgentServer } from './agent-api.ts';
+export { PlanUsage } from './plan-usage.svelte.ts';
 export { getChatPlatform, setChatPlatform, type ChatPlatform } from './platform.ts';
 export * from './chat-format.ts';
 export * from './image-intake.ts';
@@ -18,4 +19,5 @@ export { default as ChatQuestion } from './ChatQuestion.svelte';
 export { default as ChatTasks } from './ChatTasks.svelte';
 export { default as ChatToolCard } from './ChatToolCard.svelte';
 export { default as ChatTranscript } from './ChatTranscript.svelte';
+export { default as ChatUsage } from './ChatUsage.svelte';
 export { default as Elapsed } from './Elapsed.svelte';

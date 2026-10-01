@@ -23,7 +23,9 @@ import {
 	parseQuestions,
 	patchStats,
 	shortPath,
-	toolDetail
+	toolDetail,
+	usageChips,
+	usageLabelForKind
 } from './chat-format';
 
 const meta: TranscriptMeta = {
@@ -325,6 +327,84 @@ describe('limits and retries', () => {
 		expect(
 			limitNotice({ status: 'allowed', resetsAt: null, kind: null, utilization: 0.1 }, at)
 		).toBe(null);
+	});
+
+	describe('plan usage chips', () => {
+		// Verbatim labels and reset strings from `claude -p /usage` (Claude Code 2.1.286).
+		const limits = [
+			{ label: 'session', percent: 3, resets: 'Oct 1 at 5:10pm (Europe/London)' },
+			{ label: 'week (all models)', percent: 89, resets: 'Oct 2 at 9am (Europe/London)' },
+			{ label: 'week (Fable)', percent: 0, resets: 'Oct 2 at 9am (Europe/London)' }
+		];
+		const oct1 = new Date(2026, 9, 1, 12);
+
+		it('maps limits to short chips, drops unused per-model ones and flags high usage', () => {
+			expect(usageChips(limits, null, at, oct1)).toEqual([
+				{
+					label: '5h',
+					percent: 3,
+					high: false,
+					resets: '5:10pm',
+					title: '5-hour session: 3% used · resets 5:10pm'
+				},
+				{
+					label: 'Week',
+					percent: 89,
+					high: true,
+					resets: 'Oct 2 at 9am',
+					title: 'Weekly limit: 89% used · resets Oct 2 at 9am'
+				}
+			]);
+			const fable = usageChips([{ label: 'week (Fable)', percent: 12 }], null, at, oct1);
+			expect(fable).toEqual([
+				{
+					label: 'Fable wk',
+					percent: 12,
+					high: false,
+					resets: null,
+					title: 'Weekly Fable limit: 12% used'
+				}
+			]);
+			expect(usageChips([], null, at, oct1)).toEqual([]);
+		});
+
+		it('lets a rate_limit_event with utilization override its limit', () => {
+			const event = {
+				status: 'allowed_warning',
+				resetsAt: 1,
+				kind: 'five_hour',
+				utilization: 0.81
+			} as const;
+			const [session, week] = usageChips(limits, event, at, oct1);
+			expect(session).toMatchObject({ label: '5h', percent: 81, high: true, resets: '15:00' });
+			expect(week.percent).toBe(89);
+			// A bare `allowed` event changes nothing; one for a limit not listed yet adds it.
+			expect(
+				usageChips(
+					limits,
+					{ status: 'allowed', resetsAt: null, kind: null, utilization: null },
+					at,
+					oct1
+				)[0].percent
+			).toBe(3);
+			const opus = {
+				status: 'allowed_warning',
+				resetsAt: null,
+				kind: 'seven_day_opus',
+				utilization: 0.5
+			} as const;
+			expect(usageChips(limits, opus, at, oct1).at(-1)).toMatchObject({
+				label: 'Opus wk',
+				percent: 50
+			});
+		});
+
+		it('maps rate_limit_event kinds to /usage labels', () => {
+			expect(usageLabelForKind('five_hour')).toBe('session');
+			expect(usageLabelForKind('seven_day')).toBe('week (all models)');
+			expect(usageLabelForKind('seven_day_sonnet')).toBe('week (Sonnet)');
+			expect(usageLabelForKind('overage')).toBe(null);
+		});
 	});
 
 	it('shows a retry ahead of other activity', () => {

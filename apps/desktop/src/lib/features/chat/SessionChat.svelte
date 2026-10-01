@@ -11,11 +11,13 @@
 		ChatPlan,
 		ChatTasks,
 		ChatTranscript,
+		ChatUsage,
 		contextUsed,
 		formatTokens,
 		isRunning,
 		latestTodos,
 		limitNotice,
+		PlanUsage,
 		setChatPlatform
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
@@ -30,6 +32,7 @@
 		getWorkbenchSettingsStore,
 		getWorkspaceStore
 	} from '$stores/context';
+	import { planUsage } from './agent-api';
 	import { acquireChat } from './chat-registry';
 	import { desktopChatPlatform } from './chat-platform';
 	import ChatResumePicker from './ChatResumePicker.svelte';
@@ -136,6 +139,10 @@
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
 	const contextShare = $derived(contextUsed(chat.meta));
+	const usage = new PlanUsage(
+		() => planUsage(claudeAccountId),
+		() => chat.meta
+	);
 	const disabledReason = $derived.by(() => {
 		switch (chat.status) {
 			case 'starting':
@@ -203,38 +210,40 @@
 		{#if chat.meta?.model}
 			<span class="shrink-0 text-wb-ink-soft">{chat.meta.model.replace(/\[1m\]$/, '')}</span>
 		{/if}
-		{#if contextShare > 0}
-			<span
-				class="ml-auto flex shrink-0 items-center gap-1.5 text-wb-ink-soft tabular-nums"
-				title="{formatTokens(chat.meta?.contextTokens ?? null)} tokens of context in use"
-			>
-				<span class="h-1 w-12 overflow-hidden rounded-full bg-wb-panel2">
-					<span
-						class={cn(
-							'block h-full rounded-full',
-							contextShare > 0.8 ? 'bg-wb-warn' : 'bg-wb-ink-soft'
-						)}
-						style:width="{contextShare * 100}%"
-					></span>
+		<div class="ml-auto flex shrink-0 items-center gap-3">
+			<ChatUsage chips={usage.chips} chipClass="rounded px-0.5" />
+			{#if contextShare > 0}
+				<span
+					class="flex shrink-0 items-center gap-1.5 text-wb-ink-soft tabular-nums"
+					title="{formatTokens(chat.meta?.contextTokens ?? null)} tokens of context in use"
+				>
+					<span class="h-1 w-12 overflow-hidden rounded-full bg-wb-panel2">
+						<span
+							class={cn(
+								'block h-full rounded-full',
+								contextShare > 0.8 ? 'bg-wb-warn' : 'bg-wb-ink-soft'
+							)}
+							style:width="{contextShare * 100}%"
+						></span>
+					</span>
+					{Math.round(contextShare * 100)}%
 				</span>
-				{Math.round(contextShare * 100)}%
-			</span>
-		{/if}
-		{#if tasks.length > 0 && !wide}
-			<button
-				type="button"
-				class={cn(
-					'flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
-					contextShare > 0 ? '' : 'ml-auto',
-					runningTasks > 0 ? 'text-wb-claude' : 'text-wb-ink-mute'
-				)}
-				aria-expanded={tasksOpen}
-				onclick={() => (tasksOpen = !tasksOpen)}
-			>
-				<BotIcon class="size-3.5" />
-				{runningTasks > 0 ? `${runningTasks} running` : 'Tasks'}
-			</button>
-		{/if}
+			{/if}
+			{#if tasks.length > 0 && !wide}
+				<button
+					type="button"
+					class={cn(
+						'flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
+						runningTasks > 0 ? 'text-wb-claude' : 'text-wb-ink-mute'
+					)}
+					aria-expanded={tasksOpen}
+					onclick={() => (tasksOpen = !tasksOpen)}
+				>
+					<BotIcon class="size-3.5" />
+					{runningTasks > 0 ? `${runningTasks} running` : 'Tasks'}
+				</button>
+			{/if}
+		</div>
 	</header>
 
 	<div class="flex min-h-0 flex-1">

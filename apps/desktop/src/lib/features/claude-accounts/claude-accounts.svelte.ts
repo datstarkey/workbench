@@ -1,5 +1,6 @@
 // Desktop-local: logins live in this machine's keychain / config dirs.
 import { invoke } from '@tauri-apps/api/core';
+import { HIGH_USAGE_PERCENT } from '@workbench/chat-ui';
 import type { ClaudeAccount, ClaudeAuthStatus, UsageLimit } from '$types/workbench';
 
 /** Status-map key for the implicit default `~/.claude` account. */
@@ -27,9 +28,6 @@ export function describeAuth(status: ClaudeAuthStatus | null | undefined): strin
 	if (!status.loggedIn) return 'Not logged in';
 	return [status.email, status.subscriptionType].filter(Boolean).join(' · ') || 'Logged in';
 }
-
-/** Usage at or above this is flagged, so a near-limit account stands out. */
-export const HIGH_USAGE_PERCENT = 80;
 
 const WEEK_ALL_MODELS = 'week (all models)';
 
