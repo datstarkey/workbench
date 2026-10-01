@@ -278,9 +278,6 @@ pub fn git_info(path: &str) -> Result<GitInfo> {
         branch,
         repo_root,
         is_worktree,
-        github_url: crate::github::get_github_remote(path)
-            .ok()
-            .map(|r| r.html_url),
     })
 }
 
@@ -814,24 +811,6 @@ mod tests {
         ];
         full.extend_from_slice(args);
         git_output(&full, dir).unwrap();
-    }
-
-    #[test]
-    fn git_info_reports_github_url_only_for_github_origins() {
-        let repo = tempfile::tempdir().unwrap();
-        let dir = repo.path().to_str().unwrap();
-        git(dir, &["init", "-q"]);
-        git(dir, &["commit", "-q", "--allow-empty", "-m", "a"]);
-        assert_eq!(git_info(dir).unwrap().github_url, None);
-
-        git(dir, &["remote", "add", "origin", "git@github.com:o/r.git"]);
-        assert_eq!(
-            git_info(dir).unwrap().github_url.as_deref(),
-            Some("https://github.com/o/r")
-        );
-
-        git(dir, &["remote", "set-url", "origin", "https://gitlab.com/o/r.git"]);
-        assert_eq!(git_info(dir).unwrap().github_url, None);
     }
 
     #[test]

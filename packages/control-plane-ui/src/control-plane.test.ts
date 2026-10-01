@@ -40,19 +40,62 @@ describe('ControlPlaneStore', () => {
 		expect(store.worktrees['/a']).toHaveLength(1);
 	});
 
-	it('loadGithubUrl stores the repo URL from git_info', async () => {
-		transport.mockInvoke('git_info', () => ({ githubUrl: 'https://github.com/o/r' }));
-		await store.loadGithubUrl('/a');
-		expect(store.githubUrls['/a']).toBe('https://github.com/o/r');
-	});
+	describe('loadGithubUrl', () => {
+		let calls: number;
+		const remote = (result: unknown) =>
+			transport.mockInvoke('github_get_remote', () => {
+				calls++;
+				return result;
+			});
 
-	it('loadGithubUrl records null without surfacing an error when git_info fails', async () => {
-		transport.mockInvoke('git_info', () => {
-			throw new Error('not a git repository');
+		beforeEach(() => (calls = 0));
+
+		it('stores the repo web URL and loads each path once', async () => {
+			remote({ owner: 'o', repo: 'r', htmlUrl: 'https://github.com/o/r' });
+			await store.loadGithubUrl('/a');
+			await store.loadGithubUrl('/a');
+			expect(store.githubUrls['/a']).toBe('https://github.com/o/r');
+			expect(calls).toBe(1);
 		});
-		await store.loadGithubUrl('/a');
-		expect(store.githubUrls['/a']).toBeNull();
-		expect(store.error).toBeNull();
+
+		it('caches null for a folder without a GitHub origin', async () => {
+			remote(null);
+			await store.loadGithubUrl('/a');
+			await store.loadGithubUrl('/a');
+			expect(store.githubUrls['/a']).toBeNull();
+			expect(calls).toBe(1);
+		});
+
+		it('leaves a failed request uncached, without an error, so the next call retries', async () => {
+			transport.mockInvoke('github_get_remote', () => {
+				throw new Error('offline');
+			});
+			await store.loadGithubUrl('/a');
+			expect('/a' in store.githubUrls).toBe(false);
+			expect(store.error).toBeNull();
+
+			remote({ owner: 'o', repo: 'r', htmlUrl: 'https://github.com/o/r' });
+			await store.loadGithubUrl('/a');
+			expect(store.githubUrls['/a']).toBe('https://github.com/o/r');
+		});
+
+		it('collapses concurrent calls for one path into one request', async () => {
+			remote(null);
+			await Promise.all([store.loadGithubUrl('/a'), store.loadGithubUrl('/a')]);
+			expect(calls).toBe(1);
+		});
+
+		it('is re-fetched by refresh()', async () => {
+			remote(null);
+			transport.mockInvoke('list_projects', () => []);
+			transport.mockInvoke('remote_sessions', () => []);
+			await store.loadGithubUrl('/a');
+
+			remote({ owner: 'o', repo: 'r', htmlUrl: 'https://github.com/o/r' });
+			await store.refresh();
+			expect(calls).toBe(2);
+			expect(store.githubUrls).toEqual({ '/a': 'https://github.com/o/r' });
+		});
 	});
 
 	it('createWorktree reloads worktrees on success', async () => {

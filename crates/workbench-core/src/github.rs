@@ -60,7 +60,7 @@ fn parse_github_remote_parts(url: &str) -> Result<(String, String, String)> {
             if parts.len() != 2 {
                 bail!("Cannot parse SSH remote: {url}");
             }
-            return Ok((host.to_string(), parts[0].to_string(), parts[1].to_string()));
+            return Ok((web_host(host), parts[0].to_string(), parts[1].to_string()));
         }
     }
 
@@ -80,10 +80,24 @@ fn parse_github_remote_parts(url: &str) -> Result<(String, String, String)> {
         }
         let owner = segments[0].to_string();
         let repo = segments[1].trim_end_matches(".git").to_string();
-        return Ok((host.to_string(), owner, repo));
+        // An ssh port (e.g. ssh.github.com:443) is never the web server's port.
+        let host = match parsed.port() {
+            Some(port) if matches!(parsed.scheme(), "http" | "https") => format!("{host}:{port}"),
+            _ => web_host(host),
+        };
+        return Ok((host, owner, repo));
     }
 
     bail!("Cannot parse remote: {url}");
+}
+
+/// GitHub's SSH-over-443 endpoint serves no web pages; its repos live on github.com.
+fn web_host(host: &str) -> String {
+    if host.eq_ignore_ascii_case("ssh.github.com") {
+        "github.com".to_string()
+    } else {
+        host.to_string()
+    }
 }
 
 fn is_supported_github_host(host: &str) -> bool {
@@ -635,6 +649,28 @@ mod tests {
     #[test]
     fn parse_https_remote_drops_credentials() {
         let remote = parse_github_remote("https://user:secret@github.com/user/repo.git").unwrap();
+        assert_eq!(remote.html_url, "https://github.com/user/repo");
+    }
+
+    #[test]
+    fn parse_ssh_over_443_remote_maps_to_github_com() {
+        let remote = parse_github_remote("ssh://git@ssh.github.com:443/user/repo.git").unwrap();
+        assert_eq!(remote.html_url, "https://github.com/user/repo");
+        let remote = parse_github_remote("git@ssh.github.com:user/repo.git").unwrap();
+        assert_eq!(remote.html_url, "https://github.com/user/repo");
+    }
+
+    #[test]
+    fn parse_ssh_url_remote_drops_the_ssh_port() {
+        let remote = parse_github_remote("ssh://git@github.corp:2222/user/repo.git").unwrap();
+        assert_eq!(remote.html_url, "https://github.corp/user/repo");
+    }
+
+    #[test]
+    fn parse_https_remote_keeps_a_non_default_port() {
+        let remote = parse_github_remote("https://github.corp:8443/user/repo.git").unwrap();
+        assert_eq!(remote.html_url, "https://github.corp:8443/user/repo");
+        let remote = parse_github_remote("https://github.com:443/user/repo.git").unwrap();
         assert_eq!(remote.html_url, "https://github.com/user/repo");
     }
 

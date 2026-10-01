@@ -23,6 +23,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/projects/branches", get(list_branches))
         .route("/projects/git-info", get(git_info))
+        .route("/projects/github-remote", get(github_remote))
         .route("/sessions/claude", get(discover_claude_sessions))
         .route("/sessions/codex", get(discover_codex_sessions))
         .route("/settings/claude", get(load_claude_settings))
@@ -136,6 +137,15 @@ async fn list_branches(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
 async fn git_info(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
     let info = blocking(move || workbench_core::git::git_info(&q.path)).await?;
     Ok(Json(serde_json::to_value(info)?))
+}
+
+/// `null` when the folder has no GitHub `origin` (not a repo, no remote, other host).
+async fn github_remote(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
+    let remote = blocking(move || {
+        Ok::<_, anyhow::Error>(workbench_core::github::get_github_remote(&q.path).ok())
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(remote)?))
 }
 
 // --- control plane: session discovery (read-only) ---

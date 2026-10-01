@@ -2,7 +2,6 @@
 	import { onDestroy } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
-	import { openUrl } from '@tauri-apps/plugin-opener';
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import EllipsisVerticalIcon from '@lucide/svelte/icons/ellipsis-vertical';
@@ -25,16 +24,13 @@
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import type { ChatImage, TranscriptItem } from '@workbench/types';
-	import { baseName, type ChatRef, type MobileClient } from './client.svelte.ts';
+	import { baseName, openExternal, type ChatRef, type MobileClient } from './client.svelte.ts';
 	import Sheet from './Sheet.svelte';
 	import ViewSwitch from './ViewSwitch.svelte';
 
 	let { client, ref }: { client: MobileClient; ref: ChatRef } = $props();
 
-	setChatPlatform({
-		openLink: (href) => void openUrl(href).catch((e) => console.warn('[chat] open link', e)),
-		enterSends: false
-	});
+	setChatPlatform({ openLink: openExternal, enterSends: false });
 
 	// svelte-ignore state_referenced_locally
 	const chat = new AgentChat(

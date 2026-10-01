@@ -4,6 +4,7 @@ import { createHttpTransport, parsePairingUri, type PairingInfo } from '@workben
 import type { AgentSummary, ApprovalDecision } from '@workbench/types';
 import * as barcodeScanner from '@tauri-apps/plugin-barcode-scanner';
 import { onBackButtonPress } from '@tauri-apps/api/app';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import type { PluginListener } from '@tauri-apps/api/core';
 
 /** The plugin surface pairing uses (injectable for tests). */
@@ -90,6 +91,11 @@ export function baseName(path: string): string {
 			.split(/[\\/]/)
 			.pop() || path
 	);
+}
+
+/** Opens `url` in the system browser; a failure is logged, never thrown. */
+export function openExternal(url: string): void {
+	openUrl(url).catch((e) => console.warn('[mobile] open url', url, e));
 }
 
 // Accept a bare Tailscale IP / host: add http:// and the default port so you can
@@ -416,6 +422,7 @@ export class MobileClient {
 				const data = await res.json();
 				// Guard the {#each terminals} render: a non-array body would throw.
 				this.terminals = Array.isArray(data) ? data : [];
+				// eslint-disable-next-line svelte/prefer-svelte-reactivity -- local lookup only
 				const live = new Set(this.terminals.map((t) => t.id));
 				const links = Object.entries(this.claudeTerminals);
 				if (links.some(([id]) => !live.has(id)))

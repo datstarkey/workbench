@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { openUrl } from '@tauri-apps/plugin-opener';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
@@ -13,7 +12,7 @@
 	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { AgentSummary, ProjectConfig } from '@workbench/types';
-	import { baseName, type MobileClient } from './client.svelte.ts';
+	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
 	import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
 	import Sheet from './Sheet.svelte';
 
@@ -52,7 +51,7 @@
 	async function toggle(path: string) {
 		if (expanded.has(path)) return void expanded.delete(path);
 		expanded.add(path);
-		if (!(path in store.githubUrls)) void store.loadGithubUrl(path);
+		void store.loadGithubUrl(path);
 		if (!store.worktrees[path]) await store.loadWorktrees(path);
 	}
 </script>
@@ -320,8 +319,7 @@
 								<button
 									type="button"
 									class="flex items-center gap-2 border-b border-wb-hair-soft py-2.5 pr-3 pl-10 text-left text-wb-ink-mute active:bg-wb-panel2"
-									onclick={() =>
-										openUrl(githubUrl).catch((e) => console.warn('[home] open repo', e))}
+									onclick={() => openExternal(githubUrl)}
 								>
 									<span class="min-w-0 flex-1 truncate font-mono text-[12px]"
 										><span class="sr-only">Open on GitHub: </span>{repoLabel(githubUrl)}</span

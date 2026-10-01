@@ -169,8 +169,6 @@ pub struct GitInfo {
     pub branch: String,
     pub repo_root: String,
     pub is_worktree: bool,
-    /// Web URL of `origin` when it is a GitHub remote.
-    pub github_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -36,6 +36,14 @@ describe('HttpTransport route mapping', () => {
 		expect(f.mock.calls[0][0]).toBe('http://host:4317/projects/worktrees?path=%2Frepo');
 	});
 
+	it('maps github_get_remote to GET /projects/github-remote and passes null through', async () => {
+		const f = mockFetch(() => json(null));
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		const res = await t.invoke('github_get_remote', { path: '/repo' });
+		expect(f.mock.calls[0][0]).toBe('http://host:4317/projects/github-remote?path=%2Frepo');
+		expect(res).toBeNull();
+	});
+
 	it('drops undefined query params instead of serializing "undefined"', async () => {
 		const f = mockFetch(() => json(null));
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
