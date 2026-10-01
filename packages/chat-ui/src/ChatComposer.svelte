@@ -148,9 +148,9 @@
 				return;
 			}
 			const chosen = matches[Math.min(menuIndex, matches.length - 1)];
-			if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+			if ((event.key === 'Enter' && !event.shiftKey && !event.isComposing) || event.key === 'Tab') {
 				event.preventDefault();
-				pick(chosen, event.key === 'Enter');
+				pick(chosen, event.key === 'Enter' && enterSends);
 				return;
 			}
 			if (event.key === 'Escape') {

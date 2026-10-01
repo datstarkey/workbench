@@ -7,7 +7,7 @@
 	import { cn } from '@workbench/ui';
 	import type { TaskInfo } from '@workbench/types';
 	import type { TaskOutput } from './agent-chat.svelte';
-	import { formatCount, formatElapsed, isRunning, sortTasks } from './chat-format';
+	import { formatCount, formatElapsed, isRunning, pickTasks, type TaskTab } from './chat-format';
 	import ChatTaskOutput from './ChatTaskOutput.svelte';
 
 	let {
@@ -32,23 +32,13 @@
 		return () => clearInterval(timer);
 	});
 
-	const groups = $derived(sortTasks(tasks));
+	const uid = $props.id();
 	const running = $derived(tasks.filter(isRunning).length);
-
-	/** Agents and background jobs are separate tabs; until one is picked, agents if any. */
-	let pickedTab = $state<'agents' | 'jobs' | null>(null);
-	const tab = $derived(
-		pickedTab && groups[pickedTab].length > 0
-			? pickedTab
-			: groups.agents.length > 0
-				? 'agents'
-				: 'jobs'
-	);
-	const list = $derived(groups[tab]);
-
-	/** The task whose detail and output are shown; the first (running first) until one is picked. */
+	let pickedTab = $state<TaskTab | null>(null);
 	let pickedId = $state<string | null>(null);
-	const selected = $derived(list.find((t) => t.id === pickedId) ?? list[0] ?? null);
+	const view = $derived(pickTasks(tasks, pickedTab, pickedId));
+	const list = $derived(view[view.tab]);
+	const selected = $derived(view.selected);
 
 	function elapsed(task: TaskInfo): string {
 		if (isRunning(task) && seenAt[task.id]) return formatElapsed(now - seenAt[task.id]);
@@ -71,14 +61,17 @@
 	{/if}
 {/snippet}
 
-{#snippet tabButton(key: 'agents' | 'jobs', label: string, count: number)}
+{#snippet tabButton(key: TaskTab, label: string, count: number)}
 	<button
 		type="button"
-		aria-pressed={tab === key}
+		role="tab"
+		id="{uid}-{key}"
+		aria-selected={view.tab === key}
+		aria-controls="{uid}-panel"
 		disabled={count === 0}
 		class={cn(
 			'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[11px] focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-40',
-			tab === key ? 'bg-wb-panel2 text-wb-ink' : 'text-wb-ink-mute hover:text-wb-ink'
+			view.tab === key ? 'bg-wb-panel2 text-wb-ink' : 'text-wb-ink-mute hover:text-wb-ink'
 		)}
 		onclick={() => (pickedTab = key)}
 	>
@@ -116,73 +109,86 @@
 			Subagents and background commands Claude starts appear here while they run.
 		</p>
 	{:else}
-		<div class="flex shrink-0 gap-1 border-b border-wb-hair p-1.5" role="group" aria-label="Show">
-			{@render tabButton('agents', 'Agents', groups.agents.length)}
-			{@render tabButton('jobs', 'Background', groups.jobs.length)}
-		</div>
-		<ul
-			class="scrollbar-thin flex max-h-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-b border-wb-hair p-1.5"
-			aria-label={tab === 'agents' ? 'Agents' : 'Background tasks'}
+		<div
+			class="flex shrink-0 gap-1 border-b border-wb-hair p-1.5"
+			role="tablist"
+			aria-label="Agents and tasks"
 		>
-			{#each list as task (task.id)}
-				<li>
-					<button
-						type="button"
-						aria-current={selected?.id === task.id}
-						class={cn(
-							'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
-							selected?.id === task.id
-								? 'bg-wb-panel2 text-wb-ink'
-								: 'text-wb-ink-mute hover:bg-wb-panel2/60'
-						)}
-						onclick={() => (pickedId = task.id)}
-					>
-						{@render status(task)}
-						<span class="min-w-0 flex-1 truncate">{task.description || title(task)}</span>
-						<span class="shrink-0 text-[10.5px] text-wb-ink-soft tabular-nums">{elapsed(task)}</span
-						>
-					</button>
-				</li>
-			{/each}
-		</ul>
-		{#if selected}
-			{@const live = isRunning(selected)}
-			<section
-				class="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-2.5"
-				aria-label="{title(selected)} details"
+			{@render tabButton('agents', 'Agents', view.agents.length)}
+			{@render tabButton('jobs', 'Background', view.jobs.length)}
+		</div>
+		<div
+			id="{uid}-panel"
+			role="tabpanel"
+			aria-labelledby="{uid}-{view.tab}"
+			class="flex min-h-0 flex-1 flex-col"
+		>
+			<ul
+				class="scrollbar-thin flex max-h-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-b border-wb-hair p-1.5"
 			>
-				<div class="flex items-center gap-2 text-xs">
-					{@render status(selected)}
-					<span class="min-w-0 truncate font-medium text-wb-ink">{title(selected)}</span>
-					{#if selected.background}
-						<span class="shrink-0 text-[10px] text-wb-ink-soft">background</span>
+				{#each list as task (task.id)}
+					<li>
+						<button
+							type="button"
+							aria-pressed={selected?.id === task.id}
+							aria-controls="{uid}-detail"
+							class={cn(
+								'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
+								selected?.id === task.id
+									? 'bg-wb-panel2 text-wb-ink'
+									: 'text-wb-ink-mute hover:bg-wb-panel2/60'
+							)}
+							onclick={() => (pickedId = task.id)}
+						>
+							{@render status(task)}
+							<span class="min-w-0 flex-1 truncate">{task.description || title(task)}</span>
+							<span class="shrink-0 text-[10.5px] text-wb-ink-soft tabular-nums"
+								>{elapsed(task)}</span
+							>
+						</button>
+					</li>
+				{/each}
+			</ul>
+			{#if selected}
+				{@const live = isRunning(selected)}
+				<section
+					id="{uid}-detail"
+					class="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-2.5"
+					aria-label="{title(selected)} details"
+				>
+					<div class="flex items-center gap-2 text-xs">
+						{@render status(selected)}
+						<span class="min-w-0 truncate font-medium text-wb-ink">{title(selected)}</span>
+						{#if selected.background}
+							<span class="shrink-0 text-[10px] text-wb-ink-soft">background</span>
+						{/if}
+						<span class="ml-auto shrink-0 text-[11px] text-wb-ink-soft tabular-nums">
+							{elapsed(selected)}
+						</span>
+					</div>
+					<p class="mt-1 text-xs leading-snug text-wb-ink">{selected.description}</p>
+					{#if live && (selected.activity || selected.lastTool)}
+						<p class="mt-1 truncate text-[11px] text-wb-ink-mute">
+							{selected.activity ?? `Using ${selected.lastTool}`}
+						</p>
+					{:else if !live && selected.summary}
+						<p class="mt-1 text-[11px] leading-snug text-wb-ink-soft">{selected.summary}</p>
 					{/if}
-					<span class="ml-auto shrink-0 text-[11px] text-wb-ink-soft tabular-nums">
-						{elapsed(selected)}
-					</span>
-				</div>
-				<p class="mt-1 text-xs leading-snug text-wb-ink">{selected.description}</p>
-				{#if live && (selected.activity || selected.lastTool)}
-					<p class="mt-1 truncate text-[11px] text-wb-ink-mute">
-						{selected.activity ?? `Using ${selected.lastTool}`}
-					</p>
-				{:else if !live && selected.summary}
-					<p class="mt-1 text-[11px] leading-snug text-wb-ink-soft">{selected.summary}</p>
-				{/if}
-				{#if selected.toolUses > 0 || selected.tokens > 0}
-					<p class="mt-1.5 text-[10px] text-wb-ink-soft tabular-nums">
-						{formatCount(selected.toolUses, selected.toolUses === 1 ? 'tool call' : 'tool calls')}
-						{#if selected.tokens > 0}<span class="px-1">/</span>{formatCount(
-								selected.tokens,
-								'tokens'
-							)}{/if}
-					</p>
-				{/if}
-				{#key selected.id}
-					<ChatTaskOutput taskId={selected.id} {live} {fetchOutput} />
-				{/key}
-			</section>
-		{/if}
+					{#if selected.toolUses > 0 || selected.tokens > 0}
+						<p class="mt-1.5 text-[10px] text-wb-ink-soft tabular-nums">
+							{formatCount(selected.toolUses, selected.toolUses === 1 ? 'tool call' : 'tool calls')}
+							{#if selected.tokens > 0}<span class="px-1">/</span>{formatCount(
+									selected.tokens,
+									'tokens'
+								)}{/if}
+						</p>
+					{/if}
+					{#key selected.id}
+						<ChatTaskOutput taskId={selected.id} {live} {fetchOutput} />
+					{/key}
+				</section>
+			{/if}
+		</div>
 	{/if}
 </aside>
 

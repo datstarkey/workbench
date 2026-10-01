@@ -12,7 +12,7 @@ import {
 	limitNotice,
 	matchCommands,
 	slashQuery,
-	sortTasks,
+	pickTasks,
 	approvalPreview,
 	formatElapsed,
 	formatTokens,
@@ -256,14 +256,27 @@ describe('tasks panel', () => {
 		durationMs: 0
 	});
 
-	it('splits agents from other jobs, running first', () => {
-		const { agents, jobs } = sortTasks([
+	it('splits agents from other jobs in start order', () => {
+		const tasks = [
 			task('a-done', 'agent', 'completed'),
 			task('shell', 'local_bash', 'running'),
 			task('a-live', 'agent', 'running')
-		]);
-		expect(agents.map((t) => t.id)).toEqual(['a-live', 'a-done']);
+		];
+		const { agents, jobs, tab, selected } = pickTasks(tasks, null, null);
+		expect(agents.map((t) => t.id)).toEqual(['a-done', 'a-live']);
 		expect(jobs.map((t) => t.id)).toEqual(['shell']);
+		expect(tab).toBe('agents');
+		expect(selected?.id).toBe('a-done');
+	});
+
+	it('keeps the pick while it exists and falls back when it is gone', () => {
+		const tasks = [task('shell', 'local_bash', 'running'), task('a1', 'agent', 'running')];
+		expect(pickTasks(tasks, 'jobs', null).selected?.id).toBe('shell');
+		expect(pickTasks(tasks, 'agents', 'a1').selected?.id).toBe('a1');
+		expect(pickTasks(tasks, 'agents', 'gone').selected?.id).toBe('a1');
+		const onlyJobs = [task('shell', 'local_bash', 'running')];
+		expect(pickTasks(onlyJobs, 'agents', null).tab).toBe('jobs');
+		expect(pickTasks([], null, null).selected).toBeNull();
 	});
 
 	it('abbreviates counts', () => {

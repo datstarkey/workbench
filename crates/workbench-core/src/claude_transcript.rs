@@ -400,7 +400,8 @@ impl Transcript {
             .find(|m| m.value == value)
             .and_then(|m| m.resolved_model.clone());
         if let Some(model) = resolved {
-            self.meta.model = Some(model);
+            let wide = value.ends_with("[1m]") && !model.ends_with("[1m]");
+            self.meta.model = Some(if wide { format!("{model}[1m]") } else { model });
         }
     }
 
@@ -834,12 +835,13 @@ impl Transcript {
 
     /// Messages carry the bare API id; keep init's `[1m]`, the only sign of the 1M context window.
     fn note_model(&mut self, model: &str) {
-        if self
-            .meta
-            .model
-            .as_deref()
-            .and_then(|m| m.strip_suffix("[1m]"))
-            != Some(model)
+        if !model.starts_with('<')
+            && self
+                .meta
+                .model
+                .as_deref()
+                .and_then(|m| m.strip_suffix("[1m]"))
+                != Some(model)
         {
             self.meta.model = Some(model.to_string());
         }
@@ -849,7 +851,7 @@ impl Transcript {
         let Some(message) = obj.get("message") else {
             return;
         };
-        if let Some(model) = str_at(message, "model").filter(|m| !m.starts_with('<')) {
+        if let Some(model) = str_at(message, "model") {
             self.note_model(model);
         }
         if let Some(usage) = message.get("usage") {

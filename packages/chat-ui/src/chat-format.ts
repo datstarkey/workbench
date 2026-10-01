@@ -259,13 +259,25 @@ export function isRunning(task: TaskInfo): boolean {
 	return RUNNING.includes(task.status);
 }
 
-/** Tasks for the side panel: agents and other jobs, running ones first. */
-export function sortTasks(tasks: TaskInfo[]): { agents: TaskInfo[]; jobs: TaskInfo[] } {
-	const byRunning = (a: TaskInfo, b: TaskInfo) => Number(isRunning(b)) - Number(isRunning(a));
-	return {
-		agents: tasks.filter((t) => t.kind === 'agent').sort(byRunning),
-		jobs: tasks.filter((t) => t.kind !== 'agent').sort(byRunning)
-	};
+export type TaskTab = 'agents' | 'jobs';
+
+/**
+ * What the tasks panel shows: the picked tab unless it's empty (then agents, then
+ * jobs), and the picked task unless it's gone (then the tab's first). Lists keep
+ * start order so rows and the default pick don't move as tasks finish.
+ */
+export function pickTasks(
+	tasks: TaskInfo[],
+	pickedTab: TaskTab | null,
+	pickedId: string | null
+): { agents: TaskInfo[]; jobs: TaskInfo[]; tab: TaskTab; selected: TaskInfo | null } {
+	const agents = tasks.filter((t) => t.kind === 'agent');
+	const jobs = tasks.filter((t) => t.kind !== 'agent');
+	const groups = { agents, jobs };
+	const tab =
+		pickedTab && groups[pickedTab].length > 0 ? pickedTab : agents.length > 0 ? 'agents' : 'jobs';
+	const list = groups[tab];
+	return { agents, jobs, tab, selected: list.find((t) => t.id === pickedId) ?? list[0] ?? null };
 }
 
 /** `1.8k tokens`, `24k tokens`. */

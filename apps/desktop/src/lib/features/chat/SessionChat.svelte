@@ -115,6 +115,13 @@
 	let stickToBottom = true;
 	/** The tasks panel as an overlay, for panes too narrow to dock it. */
 	let tasksOpen = $state(false);
+	/** Wide enough to dock the tasks panel; one panel is mounted, since it polls task output. */
+	let wide = $state(false);
+	const measureWidth: Attachment<HTMLElement> = (node) => {
+		const observer = new ResizeObserver(([entry]) => (wide = entry.contentRect.width >= 1024));
+		observer.observe(node);
+		return () => observer.disconnect();
+	};
 
 	const limit = $derived(
 		limitNotice(chat.meta?.rateLimit ?? null, (secs) =>
@@ -176,7 +183,8 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="@container relative flex h-full min-h-0 flex-col bg-wb-bg text-sm text-wb-ink"
+	{@attach measureWidth}
+	class="relative flex h-full min-h-0 flex-col bg-wb-bg text-sm text-wb-ink"
 	onkeydown={onKeydown}
 >
 	<header class="flex h-9 shrink-0 items-center gap-3 border-b border-wb-hair pr-40 pl-4 text-xs">
@@ -210,11 +218,11 @@
 				{Math.round(contextShare * 100)}%
 			</span>
 		{/if}
-		{#if tasks.length > 0}
+		{#if tasks.length > 0 && !wide}
 			<button
 				type="button"
 				class={cn(
-					'flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none @5xl:hidden',
+					'flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
 					contextShare > 0 ? '' : 'ml-auto',
 					runningTasks > 0 ? 'text-wb-claude' : 'text-wb-ink-mute'
 				)}
@@ -304,15 +312,13 @@
 				</ChatComposer>
 			</div>
 		</div>
-		{#if tasks.length > 0}
-			<div class="hidden @5xl:flex">
-				<ChatTasks {tasks} seenAt={chat.seenAt} fetchOutput={(id) => chat.taskOutput(id)} />
-			</div>
+		{#if tasks.length > 0 && wide}
+			<ChatTasks {tasks} seenAt={chat.seenAt} fetchOutput={(id) => chat.taskOutput(id)} />
 		{/if}
 	</div>
 
-	{#if tasksOpen && tasks.length > 0}
-		<div class="absolute inset-y-0 right-0 z-20 flex shadow-2xl @5xl:hidden">
+	{#if tasksOpen && tasks.length > 0 && !wide}
+		<div class="absolute inset-y-0 right-0 z-20 flex shadow-2xl">
 			<ChatTasks
 				{tasks}
 				seenAt={chat.seenAt}

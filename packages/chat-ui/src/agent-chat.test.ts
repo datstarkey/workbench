@@ -209,6 +209,28 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('keeps retrying while the network is still down after a phone wakes', async () => {
+		const start = vi
+			.fn<AgentApi['start']>()
+			.mockResolvedValueOnce()
+			.mockRejectedValueOnce(new Error('Failed to fetch'))
+			.mockResolvedValue();
+		const { chat, ws } = await connected(fakeApi(start));
+		chat.reconnect();
+		await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+		expect(chat.status).toBe('reconnecting');
+
+		await vi.advanceTimersByTimeAsync(1500);
+		const retry = FakeSocket.last!;
+		expect(retry).not.toBe(ws);
+		retry.onclose?.(); // the socket couldn't open either
+		expect(chat.status).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(start).toHaveBeenCalledTimes(4);
+		expect(FakeSocket.last).not.toBe(retry);
+		chat.dispose();
+	});
+
 	it('re-attaches at once on reconnect(), dropping the old socket quietly', async () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue();
 		const { chat, ws } = await connected(fakeApi(start));

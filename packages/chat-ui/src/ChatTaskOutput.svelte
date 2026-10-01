@@ -30,8 +30,11 @@
 			loaded = true;
 		};
 		void load();
+		// One more fetch after it finishes, for the lines written since the last poll.
+		let wasLive = live;
 		const timer = setInterval(() => {
-			if (live) void load();
+			if (live || wasLive) void load();
+			wasLive = live;
 		}, REFRESH_MS);
 		return () => {
 			stopped = true;
