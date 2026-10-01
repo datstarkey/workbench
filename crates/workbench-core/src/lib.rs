@@ -5,6 +5,7 @@
 //! and the server's JSON API.
 
 pub mod chat_image;
+pub mod claude_accounts;
 pub mod claude_sessions;
 pub mod claude_transcript;
 pub mod codex_config;

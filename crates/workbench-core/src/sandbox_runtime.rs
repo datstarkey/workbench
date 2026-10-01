@@ -196,7 +196,16 @@ pub fn build_config(
     home: &Path,
     config_dir: &Path,
 ) -> SandboxRuntimeConfig {
-    let claude_dir = home.join(".claude");
+    // `~/.claude` plus each extra Claude account's `CLAUDE_CONFIG_DIR`; every one
+    // gets the same narrow allowlist, since a session may run under any of them.
+    let mut claude_dirs = vec![home.join(".claude")];
+    claude_dirs.extend(
+        settings
+            .claude_accounts
+            .iter()
+            .map(|a| PathBuf::from(&a.config_dir))
+            .filter(|dir| dir.is_absolute()),
+    );
 
     // `.` is the pane's cwd; project roots are listed too because a sibling-layout
     // worktree writes its metadata into the *main* repo's `.git/worktrees/*`.
@@ -208,11 +217,13 @@ pub fn build_config(
     let mut allow_write = vec![".".to_string()];
     allow_write.extend(projects.iter().map(|p| resolved(Path::new(&p.path))));
     // Narrow allowlist rather than the whole of ~/.claude — see CLAUDE_ALLOW_WRITE.
-    allow_write.extend(
-        CLAUDE_ALLOW_WRITE
-            .iter()
-            .map(|p| resolved(&claude_dir.join(p))),
-    );
+    for claude_dir in &claude_dirs {
+        allow_write.extend(
+            CLAUDE_ALLOW_WRITE
+                .iter()
+                .map(|p| resolved(&claude_dir.join(p))),
+        );
+    }
     allow_write.push(resolved(Path::new("/tmp")));
     if let Some(tmpdir) = std::env::var_os("TMPDIR") {
         let tmpdir = tmpdir.to_string_lossy().to_string();
@@ -225,12 +236,18 @@ pub fn build_config(
     let mut deny_write = Vec::new();
     // `mcpServers` here is a list of commands the user's next *unsandboxed*
     // `claude` will execute, so it is read-only despite living outside ~/.claude.
+    // Under a `CLAUDE_CONFIG_DIR` that file moves inside the dir.
     deny_write.push(resolved(&home.join(".claude.json")));
-    deny_write.extend(
-        CLAUDE_DENY_WRITE
-            .iter()
-            .map(|p| resolved(&claude_dir.join(p))),
-    );
+    for claude_dir in &claude_dirs[1..] {
+        deny_write.push(resolved(&claude_dir.join(".claude.json")));
+    }
+    for claude_dir in &claude_dirs {
+        deny_write.extend(
+            CLAUDE_DENY_WRITE
+                .iter()
+                .map(|p| resolved(&claude_dir.join(p))),
+        );
+    }
     // Redundant while the config dir is absent from allowWrite, but keeps the
     // sandbox sealed if a project root is ever an ancestor of it.
     deny_write.push(resolved(config_dir));
@@ -496,6 +513,40 @@ mod tests {
         assert_contains(
             &cfg.filesystem.deny_write,
             "/wb-test-home/u/.claude.json",
+            "denyWrite",
+        );
+    }
+
+    /// A session may run under any Claude account, so each account's config dir
+    /// gets the same narrow allowlist, its own read-only `.claude.json`, and the
+    /// same explicit denies — never the dir wholesale.
+    #[test]
+    fn extra_claude_accounts_get_the_same_narrow_allowlist() {
+        let account = "/wb-test-home/u/.claude-work";
+        let settings = WorkbenchSettings {
+            claude_accounts: vec![crate::types::ClaudeAccount {
+                id: "work".into(),
+                name: "Work".into(),
+                config_dir: account.into(),
+            }],
+            ..Default::default()
+        };
+        let cfg = build_config(&settings, &[], None, Path::new(HOME), Path::new(CONFIG_DIR));
+
+        assert_contains(
+            &cfg.filesystem.allow_write,
+            &format!("{account}/projects"),
+            "allowWrite",
+        );
+        assert!(!cfg.filesystem.allow_write.iter().any(|p| p == account));
+        assert_contains(
+            &cfg.filesystem.deny_write,
+            &format!("{account}/.claude.json"),
+            "denyWrite",
+        );
+        assert_contains(
+            &cfg.filesystem.deny_write,
+            &format!("{account}/hooks"),
             "denyWrite",
         );
     }

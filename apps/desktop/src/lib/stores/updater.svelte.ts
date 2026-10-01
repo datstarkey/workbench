@@ -1,5 +1,6 @@
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
 export type UpdateStatus =
@@ -71,7 +72,7 @@ export class UpdaterStore {
 		this.progress = 0;
 
 		try {
-			await this.update.downloadAndInstall((event) => {
+			await this.update.download((event) => {
 				if (event.event === 'Started') {
 					this.contentLength = event.data.contentLength ?? 0;
 				} else if (event.event === 'Progress') {
@@ -79,6 +80,10 @@ export class UpdaterStore {
 				}
 			});
 
+			// Before install: on Windows it exits the app, and any shell left running
+			// keeps the old instance's Dock tile (macOS) or console window (Windows).
+			await invoke('kill_all_sessions');
+			await this.update.install();
 			await relaunch();
 		} catch (e) {
 			this.status = 'error';

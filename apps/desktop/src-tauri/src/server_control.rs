@@ -230,6 +230,17 @@ pub fn terminal_server_status(state: tauri::State<'_, ServerControl>) -> ServerS
     }
 }
 
+/// Kill every terminal and remote-control session and wait for them to exit.
+/// The updater calls this before installing: children outliving the old process
+/// keep its macOS Dock tile alive and leave stray console windows on Windows.
+#[tauri::command]
+pub async fn kill_all_sessions(state: tauri::State<'_, ServerControl>) -> Result<(), String> {
+    let managers = state.managers.clone();
+    tauri::async_runtime::spawn_blocking(move || managers.kill_all())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +354,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("create terminal");
 
@@ -383,6 +395,34 @@ mod tests {
 
         sc.managers.terminals.kill(&meta.id);
         stop_server(app.state()).await.expect("stop LAN");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_all_sessions_empties_the_shared_terminals() {
+        let app = mock_app();
+        let sc: tauri::State<'_, ServerControl> = app.state();
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a", "b"] {
+            sc.managers
+                .terminals
+                .create(
+                    tmp.path().to_string_lossy().into_owned(),
+                    Some(name.to_string()),
+                    None,
+                    80,
+                    24,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("create terminal");
+        }
+        assert_eq!(sc.managers.terminals.list().len(), 2);
+
+        kill_all_sessions(app.state()).await.expect("kill all");
+        assert!(sc.managers.terminals.list().is_empty());
     }
 
     #[tokio::test]

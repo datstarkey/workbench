@@ -161,6 +161,8 @@ export interface TerminalPaneState {
 	serverTerminalId?: string;
 	/** Claude panes can show their session as chat; the terminal keeps running underneath. */
 	view?: PaneView;
+	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
+	claudeAccountId?: string;
 }
 
 export type PaneView = 'terminal' | 'chat';
@@ -188,6 +190,8 @@ export interface DiscoveredClaudeSession {
 	label: string;
 	timestamp: string;
 	lastMessageRole?: 'user' | 'assistant';
+	/** Claude account whose config dir holds the transcript; absent is the default. */
+	accountId?: string;
 }
 
 export interface ProjectWorkspace {
@@ -453,6 +457,25 @@ export interface WorkbenchSettings {
 	/** Bearer token the LAN server requires; generated on first enable. */
 	serverToken?: string | null;
 	settingsWindowBounds?: SettingsWindowBounds | null;
+	/** Extra Claude logins, each its own `CLAUDE_CONFIG_DIR`. `~/.claude` is implicit. */
+	claudeAccounts?: ClaudeAccount[];
+	/** Account new Claude sessions launch with; absent/null is the default `~/.claude`. */
+	activeClaudeAccount?: string | null;
+}
+
+export interface ClaudeAccount {
+	id: string;
+	name: string;
+	/** Absolute path, exported to the session as `CLAUDE_CONFIG_DIR`. */
+	configDir: string;
+}
+
+/** `claude auth status --json`, trimmed to what the UI shows. */
+export interface ClaudeAuthStatus {
+	loggedIn: boolean;
+	email?: string;
+	orgName?: string;
+	subscriptionType?: string;
 }
 
 /** Persisted position + size of the draggable settings window. */

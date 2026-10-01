@@ -148,6 +148,7 @@ impl TerminalManager {
         pane_id: Option<String>,
         hook_socket: Option<String>,
         shell: Option<String>,
+        claude_config_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -182,6 +183,10 @@ impl TerminalManager {
         }
         if let Some(sock) = &hook_socket {
             cmd.env("WORKBENCH_HOOK_SOCKET", sock);
+        }
+        // Set on the shell, so every `claude` run in this pane uses that login.
+        if let Some(dir) = claude_config_dir {
+            cmd.env(workbench_core::claude_accounts::CONFIG_DIR_ENV, dir);
         }
         // CommandBuilder inherits the whole server env; never hand the shell the
         // standalone server's bearer token.
@@ -327,6 +332,23 @@ impl TerminalManager {
             None => false,
         }
     }
+
+    /// Kill every terminal and block until each process group is torn down. For
+    /// app shutdown/relaunch: descendants that outlive the app keep its old macOS
+    /// Dock tile alive and leave stray console windows on Windows.
+    pub fn kill_all(&self) {
+        let sessions: Vec<_> = lock(&self.inner).drain().map(|(_, s)| s).collect();
+        let handles: Vec<_> = sessions
+            .into_iter()
+            .map(|s| {
+                let _ = s.done_tx.send(true);
+                std::thread::spawn(move || terminate_process_group(&s))
+            })
+            .collect();
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,6 +372,9 @@ pub struct CreateTerminalBody {
     /// Shell to launch (desktop forwards the project's configured shell). Empty /
     /// absent falls back to the platform default (`workbench_core::shell`).
     pub shell: Option<String>,
+    /// Saved Claude account whose config dir becomes the shell's
+    /// `CLAUDE_CONFIG_DIR`. An id, never a path, so clients can't point it anywhere.
+    pub claude_account_id: Option<String>,
 }
 
 pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TerminalMeta>>> {
@@ -373,6 +398,8 @@ pub async fn terminal_create(
             body.worktree_path.as_deref(),
             &registered,
         )?;
+        let claude_config_dir =
+            workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
         terminals.create(
             cwd,
             body.name,
@@ -382,6 +409,7 @@ pub async fn terminal_create(
             body.pane_id,
             body.hook_socket,
             body.shell,
+            claude_config_dir.as_deref(),
         )
     })
     .await

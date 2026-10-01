@@ -7,6 +7,7 @@
 		getWorkspaceStore
 	} from '$stores/context';
 	import { getVersion } from '@tauri-apps/api/app';
+	import ClaudeAccountSwitcher from '$features/claude-accounts/ClaudeAccountSwitcher.svelte';
 
 	const workspaceStore = getWorkspaceStore();
 	const gitStore = getGitStore();
@@ -75,6 +76,7 @@
 
 	<span class="flex-1"></span>
 
+	<ClaudeAccountSwitcher />
 	{#if sessionCounts.claude > 0}
 		<span class="text-wb-claude">● {sessionCounts.claude} Claude</span>
 	{/if}

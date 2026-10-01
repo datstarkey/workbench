@@ -996,6 +996,82 @@ async fn terminal_create_forwards_env() {
     handle.stop().await;
 }
 
+/// A saved Claude account's dir becomes the shell's `CLAUDE_CONFIG_DIR`; an id
+/// that names no account is refused rather than run under the default login.
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_create_sets_claude_config_dir_for_a_saved_account() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = register_project(&env, tmp.path());
+    let account_dir = tmp.path().join("claude-work");
+    std::fs::write(
+        cfg.path().join("settings.json"),
+        json!({ "claudeAccounts": [{ "id": "work", "name": "Work", "configDir": account_dir }] })
+            .to_string(),
+    )
+    .unwrap();
+
+    let (handle, base) = start().await;
+    let addr = handle.addr().to_string();
+    let http = client();
+
+    let unknown = http
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({ "projectPath": tmp.path(), "claudeAccountId": "nope" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !unknown.status().is_success(),
+        "unknown account must be refused"
+    );
+
+    let meta: Value = http
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({
+            "projectPath": tmp.path(),
+            "claudeAccountId": "work",
+            "command": "printf 'CFG=%s\\n' \"$CLAUDE_CONFIG_DIR\""
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = meta["id"].as_str().expect("terminal id").to_string();
+    assert!(
+        account_dir.is_dir(),
+        "config dir is created for a first login"
+    );
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
+        .await
+        .expect("WS should connect");
+    let marker = format!("CFG={}", account_dir.display());
+    let found = tokio::time::timeout(Duration::from_secs(8), async {
+        let mut out = String::new();
+        while let Some(Ok(msg)) = ws.next().await {
+            if let Message::Binary(bytes) = msg {
+                out.push_str(&String::from_utf8_lossy(&bytes));
+                if out.contains(&marker) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await;
+    let _ = ws.send(Message::Binary(b"\x03exit\n".to_vec())).await;
+
+    assert_eq!(found.ok(), Some(true), "shell must see CLAUDE_CONFIG_DIR");
+    handle.stop().await;
+}
+
 /// A stand-in for `claude -p` speaking stream-json: on a prompt it streams a
 /// reply and asks permission for a Bash call, then finishes the turn once the
 /// host answers. Every line it receives is appended to `$FAKE_CLAUDE_LOG`.

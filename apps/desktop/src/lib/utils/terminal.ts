@@ -76,6 +76,7 @@ export async function createNativeTerminal(request: {
 	height: number;
 	fontSize: number;
 	startupCommand?: string;
+	claudeAccountId?: string;
 }): Promise<void> {
 	await invoke('create_native_terminal', {
 		sessionId: request.sessionId,
@@ -86,7 +87,8 @@ export async function createNativeTerminal(request: {
 		width: request.width,
 		height: request.height,
 		fontSize: request.fontSize,
-		startupCommand: request.startupCommand ?? null
+		startupCommand: request.startupCommand ?? null,
+		claudeAccountId: request.claudeAccountId ?? null
 	});
 }
 

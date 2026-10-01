@@ -62,17 +62,19 @@ describe('claudeResumeCommand', () => {
 describe('codexResumeCommand', () => {
 	it('returns correct command for a session ID', () => {
 		const id = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-		expect(codexResumeCommand(id)).toBe(`codex resume ${id}`);
+		expect(codexResumeCommand(id)).toBe(`codex -c tui.alternate_screen=never resume ${id}`);
 	});
 
 	it('does not validate UUID format', () => {
-		expect(codexResumeCommand('any-string')).toBe('codex resume any-string');
+		expect(codexResumeCommand('any-string')).toBe(
+			'codex -c tui.alternate_screen=never resume any-string'
+		);
 	});
 });
 
 describe('newSessionCommand', () => {
 	it('returns codex command for "codex" type', () => {
-		expect(newSessionCommand('codex')).toBe('codex');
+		expect(newSessionCommand('codex')).toBe('codex -c tui.alternate_screen=never');
 	});
 
 	it('returns claude command for "claude" type', () => {
@@ -88,7 +90,9 @@ describe('resumeCommand', () => {
 	const validId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
 	it('dispatches to codexResumeCommand for "codex" type', () => {
-		expect(resumeCommand('codex', validId)).toBe(`codex resume ${validId}`);
+		expect(resumeCommand('codex', validId)).toBe(
+			`codex -c tui.alternate_screen=never resume ${validId}`
+		);
 	});
 
 	it('dispatches to claudeResumeCommand for "claude" type', () => {
@@ -107,7 +111,9 @@ describe('resumeCommand', () => {
 describe('newSessionCommandWithPrompt', () => {
 	it('returns base command when prompt is blank', () => {
 		expect(newSessionCommandWithPrompt('claude', '   ')).toBe('claude');
-		expect(newSessionCommandWithPrompt('codex', '\n\t')).toBe('codex');
+		expect(newSessionCommandWithPrompt('codex', '\n\t')).toBe(
+			'codex -c tui.alternate_screen=never'
+		);
 	});
 
 	it('adds a safely-quoted prompt for claude', () => {
@@ -118,7 +124,7 @@ describe('newSessionCommandWithPrompt', () => {
 
 	it('adds a safely-quoted prompt for codex', () => {
 		expect(newSessionCommandWithPrompt('codex', 'Find DRY violations')).toBe(
-			"codex 'Find DRY violations'"
+			"codex -c tui.alternate_screen=never 'Find DRY violations'"
 		);
 	});
 
@@ -127,7 +133,9 @@ describe('newSessionCommandWithPrompt', () => {
 	});
 
 	it('normalizes windows newlines', () => {
-		expect(newSessionCommandWithPrompt('codex', 'line1\r\nline2')).toBe("codex 'line1\nline2'");
+		expect(newSessionCommandWithPrompt('codex', 'line1\r\nline2')).toBe(
+			"codex -c tui.alternate_screen=never 'line1\nline2'"
+		);
 	});
 });
 
@@ -187,15 +195,17 @@ describe('permission mode', () => {
 	});
 
 	it('leaves codex commands untouched', () => {
-		expect(newSessionCommand('codex', { permissionMode: 'bypassPermissions' })).toBe('codex');
+		expect(newSessionCommand('codex', { permissionMode: 'bypassPermissions' })).toBe(
+			'codex -c tui.alternate_screen=never'
+		);
 		expect(resumeCommand('codex', validId, { permissionMode: 'bypassPermissions' })).toBe(
-			`codex resume ${validId}`
+			`codex -c tui.alternate_screen=never resume ${validId}`
 		);
 		expect(
 			newSessionCommandWithPrompt('codex', 'Find DRY violations', {
 				permissionMode: 'bypassPermissions'
 			})
-		).toBe("codex 'Find DRY violations'");
+		).toBe("codex -c tui.alternate_screen=never 'Find DRY violations'");
 	});
 });
 
@@ -218,6 +228,12 @@ describe('extractPromptArg', () => {
 	it('returns the prompt argument with no flag present', () => {
 		expect(extractPromptArg('claude', "claude 'Review this PR'")).toBe("'Review this PR'");
 		expect(extractPromptArg('codex', "codex 'Find DRY violations'")).toBe("'Find DRY violations'");
+	});
+
+	it('strips codex inline flag so a rebuilt command never doubles it', () => {
+		const built = newSessionCommandWithPrompt('codex', 'Find DRY violations');
+		expect(extractPromptArg('codex', built)).toBe("'Find DRY violations'");
+		expect(extractPromptArg('codex', 'codex -c tui.alternate_screen=never')).toBeUndefined();
 	});
 
 	it('strips a permission-mode flag before the prompt', () => {
@@ -282,8 +298,10 @@ describe('sandbox runtime wrapper', () => {
 	});
 
 	it('never wraps codex', () => {
-		expect(newSessionCommand('codex', opts)).toBe(CODEX_NEW_SESSION_COMMAND);
-		expect(resumeCommand('codex', sessionId, opts)).toBe(`codex resume ${sessionId}`);
+		expect(newSessionCommand('codex', opts)).toBe('codex -c tui.alternate_screen=never');
+		expect(resumeCommand('codex', sessionId, opts)).toBe(
+			`codex -c tui.alternate_screen=never resume ${sessionId}`
+		);
 	});
 
 	it('does not wrap when no settings path is configured', () => {

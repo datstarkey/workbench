@@ -31,7 +31,8 @@ const mockGitStore = {
 const mockWorkbenchSettingsStore = {
 	claudePermissionMode: 'default',
 	sandboxRuntimeEnabled: false,
-	sandboxSettingsPath: undefined as string | undefined
+	sandboxSettingsPath: undefined as string | undefined,
+	activeClaudeAccountId: undefined as string | undefined
 };
 vi.mock('./context', () => ({
 	getGitStore: () => mockGitStore,
@@ -75,6 +76,7 @@ describe('WorkspaceStore', () => {
 		mockWorkbenchSettingsStore.claudePermissionMode = 'default';
 		mockWorkbenchSettingsStore.sandboxRuntimeEnabled = false;
 		mockWorkbenchSettingsStore.sandboxSettingsPath = undefined;
+		mockWorkbenchSettingsStore.activeClaudeAccountId = undefined;
 		store = new WorkspaceStore();
 	});
 
@@ -728,7 +730,7 @@ describe('WorkspaceStore', () => {
 			expect(tab.type).toBe('codex');
 			expect(tab.label).toBe('Codex 1');
 			expect(tab.panes[0].type).toBe('codex');
-			expect(tab.panes[0].startupCommand).toBe('codex');
+			expect(tab.panes[0].startupCommand).toBe('codex -c tui.alternate_screen=never');
 		});
 
 		it('defaults to claude type', () => {
@@ -777,6 +779,62 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
+	describe('claude accounts', () => {
+		const sessionId = '12345678-1234-1234-1234-123456789abc';
+
+		it('a new claude pane runs under the active account; codex and default panes carry none', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.addAISession('ws-a', 'codex');
+			store.addAISession('ws-a', 'claude');
+			mockWorkbenchSettingsStore.activeClaudeAccountId = 'work';
+			store.addAISession('ws-a', 'claude');
+			store.addAISession('ws-a', 'codex');
+
+			const accounts = store.workspaces[0].terminalTabs.map((t) => t.panes[0].claudeAccountId);
+			expect(accounts).toEqual([undefined, undefined, 'work', undefined]);
+		});
+
+		it('resume uses the account owning the transcript, not the active one', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			mockWorkbenchSettingsStore.activeClaudeAccountId = 'personal';
+
+			store.resumeAISession('ws-a', sessionId, 'Old', 'claude', 'work');
+
+			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBe('work');
+		});
+
+		it('restart keeps the pane on its account', () => {
+			const tab = makeTab({
+				id: 'tab-1',
+				type: 'claude',
+				panes: [
+					{ id: 'pane-1', type: 'claude', claudeSessionId: sessionId, claudeAccountId: 'work' }
+				]
+			});
+			store.workspaces = [
+				makeWorkspace({ id: 'ws-a', terminalTabs: [tab], activeTerminalTabId: 'tab-1' })
+			];
+			mockWorkbenchSettingsStore.activeClaudeAccountId = undefined;
+
+			store.restartAISession('ws-a', 'tab-1');
+
+			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBe('work');
+		});
+
+		it('a login task tab runs its shell under the given account', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+
+			store.runTaskInWorkspace(
+				'ws-a',
+				{ name: 'Claude login', command: 'claude auth login' },
+				'work'
+			);
+
+			const pane = store.workspaces[0].terminalTabs[0].panes[0];
+			expect(pane).toMatchObject({ startupCommand: 'claude auth login', claudeAccountId: 'work' });
+		});
+	});
+
 	describe('resumeAISession', () => {
 		it('creates a tab with resume command for claude', () => {
 			const ws = makeWorkspace({ id: 'ws-a' });
@@ -802,7 +860,9 @@ describe('WorkspaceStore', () => {
 
 			const tab = store.workspaces[0].terminalTabs[0];
 			expect(tab.type).toBe('codex');
-			expect(tab.panes[0].startupCommand).toBe(`codex resume ${sessionId}`);
+			expect(tab.panes[0].startupCommand).toBe(
+				`codex -c tui.alternate_screen=never resume ${sessionId}`
+			);
 		});
 	});
 
@@ -938,7 +998,7 @@ describe('WorkspaceStore', () => {
 
 			const pane = store.workspaces[0].terminalTabs[0].panes[0];
 			expect(pane.claudeSessionId).toBe('any-session-id');
-			expect(pane.startupCommand).toBe('codex resume any-session-id');
+			expect(pane.startupCommand).toBe('codex -c tui.alternate_screen=never resume any-session-id');
 		});
 
 		it('does not persist when session ID is already the same', () => {
@@ -1305,7 +1365,7 @@ describe('WorkspaceStore', () => {
 			store.ensureShape();
 
 			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe(
-				`codex resume ${sessionId}`
+				`codex -c tui.alternate_screen=never resume ${sessionId}`
 			);
 		});
 
@@ -1535,7 +1595,7 @@ describe('WorkspaceStore', () => {
 
 			store.ensureShape();
 
-			expect(startupCommand()).toBe("codex 'Find DRY violations'");
+			expect(startupCommand()).toBe("codex -c tui.alternate_screen=never 'Find DRY violations'");
 		});
 	});
 
@@ -1656,7 +1716,7 @@ describe('WorkspaceStore', () => {
 
 			store.ensureShape();
 
-			expect(startupCommand()).toBe("codex 'Find DRY violations'");
+			expect(startupCommand()).toBe("codex -c tui.alternate_screen=never 'Find DRY violations'");
 		});
 
 		/** Commands persisted before the version was pinned must still normalise. */
