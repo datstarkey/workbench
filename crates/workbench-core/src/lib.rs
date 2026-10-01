@@ -20,6 +20,7 @@ pub mod session_utils;
 pub mod settings;
 pub mod shell;
 pub mod shell_integration;
+pub mod task_output;
 pub mod text;
 pub mod token;
 pub mod trello;

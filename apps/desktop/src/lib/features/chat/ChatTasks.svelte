@@ -6,16 +6,21 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import type { TaskInfo } from '$types/workbench';
+	import { SvelteSet } from 'svelte/reactivity';
+	import type { TaskOutput } from './agent-chat.svelte';
 	import { formatCount, formatElapsed, isRunning, sortTasks } from './chat-format';
+	import ChatTaskOutput from './ChatTaskOutput.svelte';
 
 	let {
 		tasks,
 		seenAt,
+		fetchOutput,
 		onClose
 	}: {
 		tasks: TaskInfo[];
 		/** When each task was first seen, for running timers. */
 		seenAt: Record<string, number>;
+		fetchOutput: (taskId: string) => Promise<TaskOutput | null>;
 		/** Set when shown as an overlay (narrow pane). */
 		onClose?: () => void;
 	} = $props();
@@ -27,6 +32,8 @@
 	});
 
 	const groups = $derived(sortTasks(tasks));
+	/** Tasks whose output is open. */
+	const showing = new SvelteSet<string>();
 	const running = $derived(tasks.filter(isRunning).length);
 
 	function elapsed(task: TaskInfo): string {
@@ -80,6 +87,17 @@
 				{formatCount(task.toolUses, task.toolUses === 1 ? 'tool call' : 'tool calls')}
 				{#if task.tokens > 0}<span class="px-1">/</span>{formatCount(task.tokens, 'tokens')}{/if}
 			</p>
+		{/if}
+		<button
+			type="button"
+			class="mt-1.5 text-[11px] text-wb-accent hover:underline focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+			aria-expanded={showing.has(task.id)}
+			onclick={() => (showing.has(task.id) ? showing.delete(task.id) : showing.add(task.id))}
+		>
+			{showing.has(task.id) ? 'Hide output' : live ? 'Watch output' : 'Show output'}
+		</button>
+		{#if showing.has(task.id)}
+			<ChatTaskOutput taskId={task.id} {live} {fetchOutput} />
 		{/if}
 		{#if live}
 			<span class="sweep" aria-hidden="true"></span>

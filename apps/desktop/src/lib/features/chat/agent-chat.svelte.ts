@@ -34,6 +34,12 @@ export interface PendingPrompt {
 
 const RECONNECT_MS = 1500;
 
+export interface TaskOutput {
+	text: string;
+	/** Total size of the output so far. */
+	bytes: number;
+}
+
 /** One chat pane's connection to its `claude -p` session on the loopback server. */
 export class AgentChat {
 	items = $state.raw<TranscriptItem[]>([]);
@@ -63,8 +69,9 @@ export class AgentChat {
 	/** Called when Claude starts or stops waiting on the person (approval, question). */
 	onNeedsYou: ((waiting: boolean) => void) | null = null;
 	private waitingOnYou = false;
-	/** Callbacks waiting on `output` replies; not UI state, so not reactive. */
+	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
+	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
 
 	constructor(body: StartAgentBody, api: AgentApi = loopbackAgentApi) {
 		this.body = body;
@@ -153,6 +160,12 @@ export class AgentChat {
 			case 'output':
 				this.outputWaiters[msg.toolId]?.(msg.text);
 				delete this.outputWaiters[msg.toolId];
+				break;
+			case 'taskOutput':
+				this.taskWaiters[msg.taskId]?.(
+					msg.text === null ? null : { text: msg.text, bytes: msg.bytes ?? msg.text.length }
+				);
+				delete this.taskWaiters[msg.taskId];
 				break;
 			case 'revoked':
 				this.status = 'exited';
@@ -248,6 +261,14 @@ export class AgentChat {
 		return new Promise((resolve) => {
 			if (!this.send({ t: 'output', toolId })) return resolve(null);
 			this.outputWaiters[toolId] = resolve;
+		});
+	}
+
+	/** The end of a background task's live output; null until the CLI writes it. */
+	taskOutput(taskId: string): Promise<TaskOutput | null> {
+		return new Promise((resolve) => {
+			if (!this.send({ t: 'taskOutput', taskId })) return resolve(null);
+			this.taskWaiters[taskId] = resolve;
 		});
 	}
 

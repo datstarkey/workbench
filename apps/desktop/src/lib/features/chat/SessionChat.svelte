@@ -427,14 +427,19 @@
 		</div>
 		{#if tasks.length > 0}
 			<div class="hidden @5xl:flex">
-				<ChatTasks {tasks} seenAt={chat.seenAt} />
+				<ChatTasks {tasks} seenAt={chat.seenAt} fetchOutput={(id) => chat.taskOutput(id)} />
 			</div>
 		{/if}
 	</div>
 
 	{#if tasksOpen && tasks.length > 0}
 		<div class="absolute inset-y-0 right-0 z-20 flex shadow-2xl @5xl:hidden">
-			<ChatTasks {tasks} seenAt={chat.seenAt} onClose={() => (tasksOpen = false)} />
+			<ChatTasks
+				{tasks}
+				seenAt={chat.seenAt}
+				fetchOutput={(id) => chat.taskOutput(id)}
+				onClose={() => (tasksOpen = false)}
+			/>
 		</div>
 	{/if}
 </div>

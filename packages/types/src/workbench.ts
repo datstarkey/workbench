@@ -610,6 +610,8 @@ export type AgentServerMsg =
 	| { t: 'error'; message: string }
 	/** Reply to `output`: the whole output of a tool shown as a preview. */
 	| { t: 'output'; toolId: string; text: string | null }
+	/** Reply to `taskOutput`: the end of a background task's output, null until it exists. */
+	| { t: 'taskOutput'; taskId: string; text: string | null; bytes: number | null }
 	| { t: 'revoked' };
 
 /** An image attached to a chat message: base64 data the Claude API accepts. */
@@ -629,7 +631,8 @@ export type AgentClientMsg =
 	  }
 	| { t: 'interrupt' }
 	| { t: 'mode'; mode: PermissionMode }
-	| { t: 'output'; toolId: string };
+	| { t: 'output'; toolId: string }
+	| { t: 'taskOutput'; taskId: string };
 
 export interface StartAgentBody {
 	projectPath: string;

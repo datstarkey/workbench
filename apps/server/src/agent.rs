@@ -33,6 +33,8 @@ const DEFAULT_MAX_AGENTS: usize = 16;
 /// Items in an attach snapshot; older history stays on disk.
 const SNAPSHOT_ITEMS: usize = 500;
 const STOP_GRACE: Duration = Duration::from_secs(3);
+/// How much of a background task's output the panel shows.
+const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -89,6 +91,7 @@ pub struct AgentSession {
     tx: broadcast::Sender<String>,
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Child>,
+    task_files: Mutex<HashMap<String, PathBuf>>,
 }
 
 #[derive(Clone, Default)]
@@ -184,6 +187,7 @@ impl AgentManager {
             tx,
             stdin: Mutex::new(Some(stdin)),
             child: Mutex::new(child),
+            task_files: Mutex::new(HashMap::new()),
         });
         // The SDK handshake: without it the CLI won't route permission prompts here.
         session.send(&json!({
@@ -315,6 +319,18 @@ impl AgentSession {
         self.send(&response)?;
         self.broadcast_update(&t, &[i]);
         Ok(())
+    }
+
+    /// The end of a background task's live output and its total size. The
+    /// file's path is cached once found.
+    pub fn task_output(&self, task_id: &str) -> Option<(String, u64)> {
+        let known = lock(&self.task_files).get(task_id).cloned();
+        let path = known.or_else(|| {
+            let found = workbench_core::task_output::find(task_id)?;
+            lock(&self.task_files).insert(task_id.to_string(), found.clone());
+            Some(found)
+        })?;
+        workbench_core::task_output::tail(&path, TASK_OUTPUT_TAIL).ok()
     }
 
     /// The whole output of a tool whose chat item carries a preview.

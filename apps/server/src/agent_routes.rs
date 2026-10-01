@@ -136,11 +136,22 @@ enum ClientMsg {
     Output {
         tool_id: String,
     },
+    /// Fetch the end of a background task's live output.
+    #[serde(rename_all = "camelCase")]
+    TaskOutput {
+        task_id: String,
+    },
 }
 
 /// Apply a client message; `Some` is a reply for that client alone.
 fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
     let reply = match serde_json::from_str::<ClientMsg>(text)? {
+        ClientMsg::TaskOutput { task_id } => {
+            let (text, bytes) = session.task_output(&task_id).unzip();
+            return Ok(Some(
+                json!({"t": "taskOutput", "taskId": task_id, "text": text, "bytes": bytes}),
+            ));
+        }
         ClientMsg::Output { tool_id } => {
             let text = session.full_output(&tool_id);
             return Ok(Some(

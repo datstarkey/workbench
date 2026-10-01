@@ -196,6 +196,15 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it("fetches a background task's live output", async () => {
+		const { chat, ws } = await connected();
+		const out = chat.taskOutput('b1');
+		expect(ws.sent).toEqual([{ t: 'taskOutput', taskId: 'b1' }]);
+		ws.emit({ t: 'taskOutput', taskId: 'b1', text: 'compiling…', bytes: 40_000 });
+		await expect(out).resolves.toEqual({ text: 'compiling…', bytes: 40_000 });
+		chat.dispose();
+	});
+
 	it('follows /clear to the new session id', async () => {
 		const { chat, ws } = await connected();
 		ws.emit({
