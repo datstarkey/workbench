@@ -22,7 +22,7 @@
 	const effort = $derived(meta?.effort && levels.includes(meta.effort) ? meta.effort : null);
 
 	const trigger =
-		'flex items-center gap-1 rounded-md px-2 py-1 text-xs text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50';
+		'flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-xs whitespace-nowrap text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50';
 </script>
 
 {#if meta && meta.models.length > 0}
@@ -30,8 +30,8 @@
 		<DropdownMenu.Trigger>
 			{#snippet child({ props })}
 				<button {...props} type="button" {disabled} class={trigger} title="Model">
-					{model?.displayName ?? 'Model'}
-					<ChevronDownIcon class="size-3" />
+					<span class="truncate">{model?.displayName ?? 'Model'}</span>
+					<ChevronDownIcon class="size-3 shrink-0" />
 				</button>
 			{/snippet}
 		</DropdownMenu.Trigger>
@@ -54,8 +54,8 @@
 			<DropdownMenu.Trigger>
 				{#snippet child({ props })}
 					<button {...props} type="button" {disabled} class={trigger} title="Effort">
-						{effortLabel(effort)}
-						<ChevronDownIcon class="size-3" />
+						<span class="truncate">{effortLabel(effort)}</span>
+						<ChevronDownIcon class="size-3 shrink-0" />
 					</button>
 				{/snippet}
 			</DropdownMenu.Trigger>

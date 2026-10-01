@@ -108,6 +108,8 @@ export class AgentChat {
 			url = await this.api.socketUrl(this.sessionId);
 		} catch (e) {
 			if (stale()) return;
+			// Waking phones lose the network for a moment; keep retrying rather than give up.
+			if (this.status === 'reconnecting') return this.scheduleReconnect();
 			this.status = 'failed';
 			this.error = e instanceof Error ? e.message : String(e);
 			return;
@@ -123,14 +125,16 @@ export class AgentChat {
 			}
 		};
 		ws.onclose = () => {
-			if (this.ws === ws) this.ws = null;
-			if (this.status === 'live' || this.status === 'starting') this.scheduleReconnect();
+			if (this.ws !== ws) return; // replaced by a Restart
+			this.ws = null;
+			if (this.status !== 'exited' && this.status !== 'failed') this.scheduleReconnect();
 		};
 	}
 
 	private scheduleReconnect(): void {
 		if (this.disposed) return;
 		this.status = 'reconnecting';
+		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.retryTimer = setTimeout(() => void this.connect(), RECONNECT_MS);
 	}
 
@@ -301,7 +305,7 @@ export class AgentChat {
 	fullOutput(toolId: string): Promise<string | null> {
 		return new Promise((resolve) => {
 			if (!this.send({ t: 'output', toolId })) return resolve(null);
-			this.outputWaiters[toolId] = resolve;
+			this.outputWaiters[toolId] = chain(this.outputWaiters[toolId], resolve);
 		});
 	}
 
@@ -309,7 +313,7 @@ export class AgentChat {
 	taskOutput(taskId: string): Promise<TaskOutput | null> {
 		return new Promise((resolve) => {
 			if (!this.send({ t: 'taskOutput', taskId })) return resolve(null);
-			this.taskWaiters[taskId] = resolve;
+			this.taskWaiters[taskId] = chain(this.taskWaiters[taskId], resolve);
 		});
 	}
 
@@ -337,4 +341,9 @@ export class AgentChat {
 		this.ws?.close();
 		this.ws = null;
 	}
+}
+
+/** Two requests for the same id share one reply; both callers get it. */
+function chain<T>(prev: ((v: T) => void) | undefined, next: (v: T) => void): (v: T) => void {
+	return prev ? (v) => (prev(v), next(v)) : next;
 }

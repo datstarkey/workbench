@@ -1,4 +1,6 @@
 <script lang="ts">
+	import CheckIcon from '@lucide/svelte/icons/check';
+	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
 	import type { AgentChat } from './agent-chat.svelte';
@@ -7,7 +9,7 @@
 	import ChatMarkdown from './ChatMarkdown.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
-	import { activity, groupBlocks, toolDetail } from './chat-format';
+	import { activity, groupBlocks, stepNames, toolDetail, type StepBlock } from './chat-format';
 
 	let {
 		chat,
@@ -40,6 +42,37 @@
 	const live = $derived(chat.status === 'live');
 	const lastId = $derived(chat.items[chat.items.length - 1]?.id);
 </script>
+
+{#snippet step(block: StepBlock)}
+	{#if block.kind === 'quiet'}
+		<div class="flex flex-wrap gap-1.5">
+			{#each block.tools as tool (tool.id)}
+				<span
+					class="max-w-full truncate rounded-md border border-wb-hair px-1.5 py-0.5 font-mono text-[11px] text-wb-ink-mute"
+					title={toolDetail(tool, cwd)}
+				>
+					{tool.name} <span class="text-wb-ink">{toolDetail(tool, cwd)}</span>
+				</span>
+			{/each}
+		</div>
+	{:else if block.item.kind === 'thinking'}
+		{#if block.item.text}
+			<details class="text-xs text-wb-ink-soft">
+				<summary class="w-fit cursor-pointer select-none hover:text-wb-ink-mute">Thinking</summary>
+				<p class="mt-1.5 border-l border-wb-hair pl-3 whitespace-pre-wrap">
+					{block.item.text}
+				</p>
+			</details>
+		{/if}
+	{:else if block.item.kind === 'tool'}
+		<ChatToolCard
+			tool={block.item}
+			{cwd}
+			startedAt={chat.seenAt[block.item.id]}
+			fetchFullOutput={(id) => chat.fullOutput(id)}
+		/>
+	{/if}
+{/snippet}
 
 <div class={cn('flex flex-col gap-3.5', className)}>
 	{#if chat.status === 'failed'}
@@ -91,17 +124,26 @@
 	{/if}
 
 	{#each blocks as block (block.kind === 'item' ? block.item.id : block.id)}
-		{#if block.kind === 'quiet'}
-			<div class="flex flex-wrap gap-1.5">
-				{#each block.tools as tool (tool.id)}
-					<span
-						class="max-w-full truncate rounded-md border border-wb-hair px-1.5 py-0.5 font-mono text-[11px] text-wb-ink-mute"
-						title={toolDetail(tool, cwd)}
-					>
-						{tool.name} <span class="text-wb-ink">{toolDetail(tool, cwd)}</span>
-					</span>
-				{/each}
-			</div>
+		{#if block.kind === 'steps'}
+			<details class="group/steps">
+				<summary
+					class="steps-summary flex w-fit max-w-full cursor-pointer list-none items-center gap-1.5 rounded-md py-0.5 text-xs text-wb-ink-mute select-none hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+				>
+					<CheckIcon class="size-3.5 shrink-0 text-wb-ok" aria-hidden="true" />
+					<span class="shrink-0">{block.tools.length} tool calls</span>
+					<span class="min-w-0 truncate text-wb-ink-soft">{stepNames(block.tools)}</span>
+					<ChevronRightIcon
+						class="size-3 shrink-0 text-wb-ink-soft transition-transform group-open/steps:rotate-90"
+					/>
+				</summary>
+				<div class="mt-2 flex flex-col gap-2 border-l border-wb-hair pl-3">
+					{#each block.blocks as inner (inner.kind === 'item' ? inner.item.id : inner.id)}
+						{@render step(inner)}
+					{/each}
+				</div>
+			</details>
+		{:else if block.kind === 'quiet' || block.item.kind === 'thinking' || block.item.kind === 'tool'}
+			{@render step(block)}
 		{:else if block.item.kind === 'user'}
 			{@const previews = chat.imagePreviews[block.item.id] ?? []}
 			<div class="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
@@ -133,23 +175,6 @@
 					<span class="caret" aria-hidden="true"></span>
 				{/if}
 			</div>
-		{:else if block.item.kind === 'thinking'}
-			{#if block.item.text}
-				<details class="text-xs text-wb-ink-soft">
-					<summary class="w-fit cursor-pointer select-none hover:text-wb-ink-mute">Thinking</summary
-					>
-					<p class="mt-1.5 border-l border-wb-hair pl-3 whitespace-pre-wrap">
-						{block.item.text}
-					</p>
-				</details>
-			{/if}
-		{:else if block.item.kind === 'tool'}
-			<ChatToolCard
-				tool={block.item}
-				{cwd}
-				startedAt={chat.seenAt[block.item.id]}
-				fetchFullOutput={(id) => chat.fullOutput(id)}
-			/>
 		{:else if block.item.kind === 'approval'}
 			{@const approval = block.item}
 			{#if inlineApprovals || approval.decision || approval.expired}
@@ -211,6 +236,10 @@
 </div>
 
 <style>
+	/* WebKit ignores list-style on summary; the chevron replaces the marker. */
+	.steps-summary::-webkit-details-marker {
+		display: none;
+	}
 	.skeleton {
 		background: linear-gradient(
 				90deg,

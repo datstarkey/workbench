@@ -5,6 +5,8 @@ import type { ChatImage } from '@workbench/types';
 export interface ChatPlatform {
 	/** Open an http(s) or mailto link outside the app. */
 	openLink(href: string): void;
+	/** Enter sends and Shift+Enter breaks the line (default). Phones set false: no Shift, so Enter breaks and the button sends. */
+	enterSends?: boolean;
 	/**
 	 * Desktop: the webview takes OS file drops before the page sees them, so the
 	 * host watches drops over `node` and hands over the images it read.

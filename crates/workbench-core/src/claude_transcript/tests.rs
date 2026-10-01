@@ -249,6 +249,38 @@ fn init_and_errors_update_the_chat() {
 }
 
 #[test]
+fn messages_keep_the_1m_window_init_reported() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
+    t.apply(&stream(
+        json!({"type":"message_start","message":{"id":"m1","model":"claude-opus-5-5"}}),
+    ));
+    t.apply(&assistant("a1", "m1", json!({"type":"text","text":"hi"})));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5[1m]"));
+    t.apply(&json!({"type":"assistant","uuid":"a2","message":{"id":"m2","model":"claude-sonnet-5-5","content":[]}}));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
+    t.apply(&stream(
+        json!({"type":"message_start","message":{"id":"m3","model":"<synthetic>"}}),
+    ));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
+}
+
+#[test]
+fn picking_a_1m_model_keeps_the_1m_window() {
+    let mut t = Transcript::default();
+    t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[
+            {"value":"opus[1m]","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5 (1M)"},
+            {"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5"}]}}}),
+    );
+    t.set_model_choice("opus[1m]");
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5[1m]"));
+    t.set_model_choice("opus");
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5"));
+}
+
+#[test]
 fn subagent_events_are_left_to_their_task_card() {
     let mut t = Transcript::default();
     let mut line = assistant("a", "m", json!({"type":"text","text":"inside a subagent"}));

@@ -17,9 +17,14 @@ export type ApprovalItem = Extract<TranscriptItem, { kind: 'approval' }>;
 /** Tools that only look around. Runs of these collapse into one row of chips. */
 const QUIET_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'ToolSearch']);
 
-export type ChatBlock =
+export type StepBlock =
 	| { kind: 'item'; item: TranscriptItem }
 	| { kind: 'quiet'; id: string; tools: ToolItem[] };
+
+export type ChatBlock =
+	| StepBlock
+	/** Finished tool calls (and the thinking between them), folded into one row. */
+	| { kind: 'steps'; id: string; blocks: StepBlock[]; tools: ToolItem[] };
 
 /**
  * Apply an update's `[index, item]` changes: replace by id, append new ones.
@@ -48,7 +53,7 @@ export function applyChanges(
 
 /** Group consecutive read-only tool calls so a turn reads as prose, not a log. */
 export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
-	const blocks: ChatBlock[] = [];
+	const blocks: StepBlock[] = [];
 	for (const item of items) {
 		const last = blocks[blocks.length - 1];
 		if (item.kind === 'tool' && QUIET_TOOLS.has(item.name) && item.status !== 'error') {
@@ -58,7 +63,50 @@ export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
 			blocks.push({ kind: 'item', item });
 		}
 	}
-	return blocks;
+	return foldSteps(blocks);
+}
+
+function stepTools(block: StepBlock): ToolItem[] | null {
+	if (block.kind === 'quiet') return block.tools;
+	if (block.item.kind === 'thinking') return [];
+	return block.item.kind === 'tool' && block.item.status === 'ok' ? [block.item] : null;
+}
+
+/** Runs with two or more finished calls fold; running and failed calls stay in view. */
+function foldSteps(blocks: StepBlock[]): ChatBlock[] {
+	const out: ChatBlock[] = [];
+	let run: StepBlock[] = [];
+	let tools: ToolItem[] = [];
+	const flush = () => {
+		if (tools.length >= 2) {
+			const first = run[0];
+			out.push({
+				kind: 'steps',
+				id: first.kind === 'quiet' ? first.id : first.item.id,
+				blocks: run,
+				tools
+			});
+		} else out.push(...run);
+		run = [];
+		tools = [];
+	};
+	for (const block of blocks) {
+		const found = stepTools(block);
+		if (found === null) {
+			flush();
+			out.push(block);
+		} else {
+			run.push(block);
+			tools.push(...found);
+		}
+	}
+	flush();
+	return out;
+}
+
+/** `Bash, Read, Edit` — the tools in a folded run, in first-use order. */
+export function stepNames(tools: ToolItem[]): string {
+	return [...new Set(tools.map((t) => t.name))].join(', ');
 }
 
 function str(input: ToolItem['input'], key: string): string {
@@ -259,13 +307,25 @@ export function isRunning(task: TaskInfo): boolean {
 	return RUNNING.includes(task.status);
 }
 
-/** Tasks for the side panel: agents and other jobs, running ones first. */
-export function sortTasks(tasks: TaskInfo[]): { agents: TaskInfo[]; jobs: TaskInfo[] } {
-	const byRunning = (a: TaskInfo, b: TaskInfo) => Number(isRunning(b)) - Number(isRunning(a));
-	return {
-		agents: tasks.filter((t) => t.kind === 'agent').sort(byRunning),
-		jobs: tasks.filter((t) => t.kind !== 'agent').sort(byRunning)
-	};
+export type TaskTab = 'agents' | 'jobs';
+
+/**
+ * What the tasks panel shows: the picked tab unless it's empty (then agents, then
+ * jobs), and the picked task unless it's gone (then the tab's first). Lists keep
+ * start order so rows and the default pick don't move as tasks finish.
+ */
+export function pickTasks(
+	tasks: TaskInfo[],
+	pickedTab: TaskTab | null,
+	pickedId: string | null
+): { agents: TaskInfo[]; jobs: TaskInfo[]; tab: TaskTab; selected: TaskInfo | null } {
+	const agents = tasks.filter((t) => t.kind === 'agent');
+	const jobs = tasks.filter((t) => t.kind !== 'agent');
+	const groups = { agents, jobs };
+	const tab =
+		pickedTab && groups[pickedTab].length > 0 ? pickedTab : agents.length > 0 ? 'agents' : 'jobs';
+	const list = groups[tab];
+	return { agents, jobs, tab, selected: list.find((t) => t.id === pickedId) ?? list[0] ?? null };
 }
 
 /** `1.8k tokens`, `24k tokens`. */
@@ -300,6 +360,13 @@ export function limitNotice(
 /** `38 KB`, `1.2 MB`. */
 export function formatBytes(n: number): string {
 	return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
+}
+
+/** How full the context window is, 0–1; `[1m]` on the model means a 1M window, else 200k. */
+export function contextUsed(meta: TranscriptMeta | null): number {
+	if (!meta?.contextTokens) return 0;
+	const limit = meta.model?.endsWith('[1m]') ? 1_000_000 : 200_000;
+	return Math.min(1, meta.contextTokens / limit);
 }
 
 /** The model the session is on: the one picked here, else matched by id, else the default. */

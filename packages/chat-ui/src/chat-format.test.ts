@@ -4,6 +4,7 @@ import {
 	activity,
 	answerFor,
 	applyChanges,
+	contextUsed,
 	currentModel,
 	effortLabel,
 	formatBytes,
@@ -11,11 +12,12 @@ import {
 	limitNotice,
 	matchCommands,
 	slashQuery,
-	sortTasks,
+	pickTasks,
 	approvalPreview,
 	formatElapsed,
 	formatTokens,
 	groupBlocks,
+	stepNames,
 	latestTodos,
 	modeLabel,
 	parseQuestions,
@@ -43,6 +45,15 @@ function tool(id: string, name: string, input: Record<string, unknown> = {}) {
 }
 
 const text = (id: string, t: string): TranscriptItem => ({ kind: 'text', id, text: t });
+
+describe('contextUsed', () => {
+	it('measures against a 1M window only when the model says [1m]', () => {
+		const used = { ...meta, contextTokens: 126_000 };
+		expect(contextUsed({ ...used, model: 'claude-opus-5-5[1m]' })).toBeCloseTo(0.126);
+		expect(contextUsed({ ...used, model: 'claude-opus-5-5' })).toBeCloseTo(0.63);
+		expect(contextUsed(meta)).toBe(0);
+	});
+});
 
 describe('applyChanges', () => {
 	it('updates items in place by id and appends new ones', () => {
@@ -118,20 +129,40 @@ describe('modes and time', () => {
 
 describe('groupBlocks', () => {
 	it('collapses runs of read-only tools and hides TodoWrite', () => {
+		const running = { ...tool('b1', 'Bash'), status: 'running' as const };
+		const blocks = groupBlocks([
+			tool('r1', 'Read'),
+			tool('todo', 'TodoWrite'),
+			running,
+			tool('g1', 'Grep'),
+			text('a', 'Found it.')
+		]);
+		expect(blocks).toEqual([
+			{ kind: 'quiet', id: 'r1', tools: [tool('r1', 'Read')] },
+			{ kind: 'item', item: running },
+			{ kind: 'quiet', id: 'g1', tools: [tool('g1', 'Grep')] },
+			{ kind: 'item', item: text('a', 'Found it.') }
+		]);
+	});
+
+	it('folds finished calls and the thinking between them into one row', () => {
+		const thinking: TranscriptItem = { kind: 'thinking', id: 'th', text: 'hmm' };
+		const failed = { ...tool('b2', 'Bash'), status: 'error' as const };
 		const blocks = groupBlocks([
 			text('a', 'Looking around.'),
 			tool('r1', 'Read'),
-			tool('g1', 'Grep'),
-			tool('todo', 'TodoWrite'),
+			thinking,
+			tool('b1', 'Bash'),
 			tool('e1', 'Edit'),
-			tool('r2', 'Read')
+			failed,
+			tool('b3', 'Bash')
 		]);
-		expect(blocks.map((b) => (b.kind === 'quiet' ? b.tools.map((t) => t.id) : b.item.id))).toEqual([
-			'a',
-			['r1', 'g1'],
-			'e1',
-			['r2']
-		]);
+		expect(blocks.map((b) => b.kind)).toEqual(['item', 'steps', 'item', 'item']);
+		const steps = blocks[1];
+		if (steps.kind !== 'steps') throw new Error('expected steps');
+		expect(steps.id).toBe('r1');
+		expect(steps.tools.map((t) => t.id)).toEqual(['r1', 'b1', 'e1']);
+		expect(stepNames(steps.tools)).toBe('Read, Bash, Edit');
 	});
 
 	it('keeps a failed read as its own card', () => {
@@ -246,14 +277,27 @@ describe('tasks panel', () => {
 		durationMs: 0
 	});
 
-	it('splits agents from other jobs, running first', () => {
-		const { agents, jobs } = sortTasks([
+	it('splits agents from other jobs in start order', () => {
+		const tasks = [
 			task('a-done', 'agent', 'completed'),
 			task('shell', 'local_bash', 'running'),
 			task('a-live', 'agent', 'running')
-		]);
-		expect(agents.map((t) => t.id)).toEqual(['a-live', 'a-done']);
+		];
+		const { agents, jobs, tab, selected } = pickTasks(tasks, null, null);
+		expect(agents.map((t) => t.id)).toEqual(['a-done', 'a-live']);
 		expect(jobs.map((t) => t.id)).toEqual(['shell']);
+		expect(tab).toBe('agents');
+		expect(selected?.id).toBe('a-done');
+	});
+
+	it('keeps the pick while it exists and falls back when it is gone', () => {
+		const tasks = [task('shell', 'local_bash', 'running'), task('a1', 'agent', 'running')];
+		expect(pickTasks(tasks, 'jobs', null).selected?.id).toBe('shell');
+		expect(pickTasks(tasks, 'agents', 'a1').selected?.id).toBe('a1');
+		expect(pickTasks(tasks, 'agents', 'gone').selected?.id).toBe('a1');
+		const onlyJobs = [task('shell', 'local_bash', 'running')];
+		expect(pickTasks(onlyJobs, 'agents', null).tab).toBe('jobs');
+		expect(pickTasks([], null, null).selected).toBeNull();
 	});
 
 	it('abbreviates counts', () => {
