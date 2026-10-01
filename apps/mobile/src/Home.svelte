@@ -14,6 +14,7 @@
 	import type { AgentSummary, ProjectConfig } from '@workbench/types';
 	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
 	import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
+	import MachinesSheet from './MachinesSheet.svelte';
 	import Sheet from './Sheet.svelte';
 
 	let { client }: { client: MobileClient } = $props();
@@ -21,6 +22,11 @@
 	const store = $derived(client.store!);
 	let query = $state('');
 	let settingsOpen = $state(false);
+	let machinesOpen = $state(false);
+	const machineName = $derived(client.machine?.name ?? client.connection?.url ?? '');
+	const status = $derived(
+		client.connecting ? 'switching' : client.online ? 'connected' : 'not responding'
+	);
 	const expanded = new SvelteSet<string>();
 	let newBranch = $state<Record<string, string>>({});
 	/** Re-render relative times without refetching. */
@@ -93,12 +99,21 @@
 		style="padding-top: env(safe-area-inset-top); min-height: calc(3rem + env(safe-area-inset-top));"
 	>
 		<span class="text-[15px] font-semibold tracking-tight">Workbench</span>
-		<span
-			class="ml-auto flex min-w-0 items-center gap-1.5 rounded-full border border-wb-hair px-2.5 py-1 font-mono text-[11px] text-wb-ink-mute"
+		<button
+			type="button"
+			class="ml-auto flex h-9 min-w-0 items-center gap-1.5 rounded-full border border-wb-hair px-3 text-[12px] text-wb-ink-mute active:bg-wb-panel2"
+			aria-label="Machine: {machineName}, {status}. Switch machine"
+			onclick={() => (machinesOpen = true)}
 		>
-			<span class="size-1.5 shrink-0 rounded-full bg-wb-ok"></span>
-			<span class="truncate">{client.serverLabel}</span>
-		</span>
+			<span
+				class={cn(
+					'size-1.5 shrink-0 rounded-full',
+					client.connecting ? 'animate-pulse bg-wb-warn' : client.online ? 'bg-wb-ok' : 'bg-wb-err'
+				)}
+			></span>
+			<span class="truncate font-medium">{machineName}</span>
+			<ChevronDownIcon class="size-3.5 shrink-0" />
+		</button>
 		<button
 			type="button"
 			class="grid size-9 shrink-0 place-items-center rounded-lg text-wb-ink-mute active:bg-wb-panel2"
@@ -376,6 +391,10 @@
 	</main>
 </div>
 
+{#if machinesOpen}
+	<MachinesSheet {client} onClose={() => (machinesOpen = false)} />
+{/if}
+
 {#if settingsOpen}
 	<Sheet label="Settings" onClose={() => (settingsOpen = false)}>
 		<div class="flex flex-col gap-5 pb-2">
@@ -404,7 +423,7 @@
 			</div>
 			<div class="flex flex-col gap-1">
 				<span class="text-[13px] font-semibold">Server</span>
-				<span class="font-mono text-xs break-all text-wb-ink-mute">{client.url}</span>
+				<span class="font-mono text-xs break-all text-wb-ink-mute">{client.connection?.url}</span>
 			</div>
 			<div class="flex gap-2">
 				<button

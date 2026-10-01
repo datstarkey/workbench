@@ -1,69 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MobileClient, openExternal } from './client.svelte.ts';
+import { CAMERA_DENIED, NOT_A_PAIRING_CODE, type QrScanner } from './qr-scan.svelte.ts';
 import {
-	CAMERA_DENIED,
-	MobileClient,
-	NOT_A_PAIRING_CODE,
-	normalizeUrl,
-	openExternal,
-	type QrScanner
-} from './client.svelte.ts';
+	CONNECT_ROUTES,
+	jsonResponse,
+	routeFetch,
+	stubLocalStorage,
+	TOKEN,
+	type Route
+} from './test-helpers.ts';
 import { buildPairingUri } from '@workbench/transport';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
-
-/** Object-backed localStorage stub (jsdom's may lack `clear`). */
-function stubLocalStorage() {
-	const mem: Record<string, string> = {};
-	vi.stubGlobal('localStorage', {
-		getItem: (k: string) => (k in mem ? mem[k] : null),
-		setItem: (k: string, v: string) => void (mem[k] = String(v)),
-		removeItem: (k: string) => void delete mem[k],
-		clear: () => {
-			for (const k of Object.keys(mem)) delete mem[k];
-		}
-	});
-}
-
-function jsonResponse(body: unknown, status = 200) {
-	return new Response(JSON.stringify(body), {
-		status,
-		headers: { 'content-type': 'application/json' }
-	});
-}
-
-/** Stub fetch, routing by URL pathname; unknown paths return null JSON 200. */
-type Route = (init?: RequestInit) => Response | Promise<Response>;
-
-function routeFetch(routes: Record<string, Route>) {
-	const spy = vi.fn((input: string, init?: RequestInit) => {
-		const path = new URL(input).pathname;
-		const handler = routes[path];
-		return Promise.resolve(handler ? handler(init) : jsonResponse(null));
-	});
-	vi.stubGlobal('fetch', spy);
-	return spy;
-}
-
-const TOKEN = 'mobile-token-0123456789abcdef012345';
-
-const CONNECT_ROUTES: Record<string, Route> = {
-	'/health': () => jsonResponse('ok'),
-	'/projects': () => jsonResponse([]),
-	'/remote/sessions': () => jsonResponse([])
-};
-
-describe('normalizeUrl', () => {
-	it('adds scheme and default port to a bare host', () => {
-		expect(normalizeUrl('100.1.2.3')).toBe('http://100.1.2.3:4317');
-	});
-	it('keeps an explicit scheme/port and strips a trailing slash', () => {
-		expect(normalizeUrl('https://box:9000/')).toBe('https://box:9000');
-	});
-	it('returns empty for blank input', () => {
-		expect(normalizeUrl('   ')).toBe('');
-	});
-});
 
 describe('openExternal', () => {
 	it('logs a failed open instead of throwing', async () => {
@@ -111,7 +60,7 @@ describe('MobileClient', () => {
 		expect(c.store).toBeNull();
 		expect(c.connectError).toBe('enter the server token');
 		expect(fetchSpy).not.toHaveBeenCalled();
-		expect(localStorage.getItem('wb.serverUrl')).toBeNull();
+		expect(c.machines.list).toEqual([]);
 	});
 
 	it('connect() reports an invalid token and does not save it', async () => {
@@ -128,7 +77,7 @@ describe('MobileClient', () => {
 		await c.connect();
 		expect(c.store).toBeNull();
 		expect(c.connectError).toBe('invalid token');
-		expect(localStorage.getItem('wb.token')).toBeNull();
+		expect(localStorage.getItem('wb.machines')).toBeNull();
 	});
 
 	it('connect() saves the url and token and sends the token on requests', async () => {
@@ -139,8 +88,7 @@ describe('MobileClient', () => {
 			}
 		});
 		expect(c.connectError).toBeNull();
-		expect(localStorage.getItem('wb.serverUrl')).toBe('http://box:4317');
-		expect(localStorage.getItem('wb.token')).toBe(TOKEN);
+		expect(c.machines.active).toMatchObject({ url: 'http://box:4317', token: TOKEN });
 	});
 
 	it('connect() records an error and leaves the store null on a failed health check', async () => {
@@ -151,6 +99,21 @@ describe('MobileClient', () => {
 		await c.connect();
 		expect(c.store).toBeNull();
 		expect(c.connectError).toMatch(/503/);
+	});
+
+	it('connect() gives up on a machine that does not answer', async () => {
+		const fetchSpy = vi.fn((_input: string, init?: RequestInit) => {
+			expect(init?.signal).toBeInstanceOf(AbortSignal);
+			return Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'));
+		});
+		vi.stubGlobal('fetch', fetchSpy);
+		const c = new MobileClient();
+		c.url = 'box:4317';
+		c.token = TOKEN;
+		await c.connect();
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(c.connectError).toBe('not responding (timed out)');
+		expect(c.connecting).toBe(false);
 	});
 
 	it('refreshTerminals() guards a non-array body instead of throwing', async () => {
@@ -372,12 +335,11 @@ describe('MobileClient', () => {
 		});
 	});
 
-	it('restores a previously saved server address and token from localStorage', () => {
-		localStorage.setItem('wb.serverUrl', 'http://saved:4317');
+	it('restores the active machine on the next launch', async () => {
 		expect(new MobileClient().hasSavedServer).toBe(false);
-		localStorage.setItem('wb.token', TOKEN);
+		await connected();
 		const c = new MobileClient();
-		expect(c.url).toBe('http://saved:4317');
+		expect(c.url).toBe('http://box:4317');
 		expect(c.token).toBe(TOKEN);
 		expect(c.hasSavedServer).toBe(true);
 	});
@@ -426,7 +388,7 @@ describe('MobileClient', () => {
 			expect(c.store).not.toBeNull();
 			expect(c.url).toBe(PAIR_URL);
 			expect(c.token).toBe(TOKEN);
-			expect(localStorage.getItem('wb.token')).toBe(TOKEN);
+			expect(c.machines.active?.token).toBe(TOKEN);
 			expect(fetchSpy).toHaveBeenCalledWith(`${PAIR_URL}/remote/terminals`, expect.anything());
 			expect(c.scanning).toBe(false);
 		});
@@ -570,14 +532,14 @@ describe('MobileClient', () => {
 			await c.scanAndConnect();
 
 			expect(c.url).toBe(origin);
-			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`);
-			expect(localStorage.getItem('wb.serverUrl')).toBe(origin);
+			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`, expect.anything());
+			expect(c.machines.active?.url).toBe(origin);
 
 			// Relaunch: the saved origin is reused as-is too.
 			fetchSpy.mockClear();
 			const relaunched = new MobileClient(s);
 			await relaunched.connect();
-			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`);
+			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`, expect.anything());
 		});
 
 		it('surfaces other scanner errors', async () => {

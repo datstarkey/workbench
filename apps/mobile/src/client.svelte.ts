@@ -1,79 +1,21 @@
 import { agentClient } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
-import { createHttpTransport, parsePairingUri, type PairingInfo } from '@workbench/transport';
+import { createHttpTransport } from '@workbench/transport';
 import type { AgentSummary, ApprovalDecision } from '@workbench/types';
-import * as barcodeScanner from '@tauri-apps/plugin-barcode-scanner';
-import { onBackButtonPress } from '@tauri-apps/api/app';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import type { PluginListener } from '@tauri-apps/api/core';
+import { hostOf, LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
+import { verifyServer } from './server-check.ts';
+import { lsGet, lsSet } from './storage.ts';
+import type { ChatRef, ClaudeLaunch, ClaudeView, TerminalMeta } from './types.ts';
 
-/** The plugin surface pairing uses (injectable for tests). */
-export type QrScanner = Pick<
-	typeof barcodeScanner,
-	'checkPermissions' | 'requestPermissions' | 'scan' | 'cancel'
-> & { onBackButtonPress: typeof onBackButtonPress };
-
-const defaultScanner: QrScanner = { ...barcodeScanner, onBackButtonPress };
-
-export const CAMERA_DENIED =
-	'Camera permission denied. Allow it in system settings, or enter the server details below.';
-export const NOT_A_PAIRING_CODE = 'Not a Workbench pairing code';
-
-export type TerminalMeta = {
-	id: string;
-	name?: string;
-	cwd: string;
-	createdAt: number;
-	alive: boolean;
-};
-
-/** How a new Claude session opens on this phone. */
-export type ClaudeView = 'chat' | 'terminal';
-
-/** A Claude conversation, shown as chat or as a terminal running `claude`. */
-export interface ChatRef {
-	sessionId: string;
-	projectPath: string;
-	worktreePath?: string;
-	name: string;
-	/** The Claude account it belongs to; absent is the default login. */
-	claudeAccountId?: string;
-}
-
-/** Extras for a terminal that runs `claude` on a conversation (the server builds the command). */
-interface ClaudeLaunch {
-	claudeSession: { id: string; resume: boolean };
-	claudeAccountId?: string;
-}
-
-const LS_URL = 'wb.serverUrl';
-const LS_TOKEN = 'wb.token';
 const LS_VIEW = 'wb.claudeView';
-/** Terminal id → the conversation its `claude` runs, so it can switch back to chat. */
-const LS_LINKS = 'wb.claudeTerminals';
-const DEFAULT_PORT = '4317';
 /** Home-screen refresh while the app is in front. */
 const POLL_MS = 4000;
 
-// localStorage can throw in some webview contexts — never let it crash mount.
-function lsGet(key: string): string | null {
+function readLinks(machineId: string): Record<string, ChatRef> {
 	try {
-		return localStorage.getItem(key);
-	} catch {
-		return null;
-	}
-}
-function lsSet(key: string, value: string) {
-	try {
-		localStorage.setItem(key, value);
-	} catch {
-		/* ignore */
-	}
-}
-
-function readLinks(): Record<string, ChatRef> {
-	try {
-		const parsed: unknown = JSON.parse(lsGet(LS_LINKS) ?? '{}');
+		const parsed: unknown = JSON.parse(lsGet(machineKey(LS_LINKS, machineId)) ?? '{}');
 		return parsed && typeof parsed === 'object' ? (parsed as Record<string, ChatRef>) : {};
 	} catch {
 		return {};
@@ -98,187 +40,204 @@ export function openExternal(url: string): void {
 	openUrl(url).catch((e) => console.warn('[mobile] open url', url, e));
 }
 
-// Accept a bare Tailscale IP / host: add http:// and the default port so you can
-// just paste the IP.
-export function normalizeUrl(raw: string): string {
-	let s = raw.trim();
-	if (!s) return s;
-	if (!/^https?:\/\//.test(s)) s = `http://${s}`;
-	try {
-		const u = new URL(s);
-		if (!u.port) u.port = DEFAULT_PORT;
-		return u.toString().replace(/\/$/, '');
-	} catch {
-		return s.replace(/\/$/, '');
-	}
-}
-
 /**
  * Phone-side connection + terminal state for the mobile app. Owns the
  * control-plane store (over HTTP) plus the persistent-terminal list and the
  * active terminal. Kept out of the component so it can be unit-tested.
  */
 export class MobileClient {
-	url = $state(lsGet(LS_URL) ?? '');
-	token = $state(lsGet(LS_TOKEN) ?? '');
+	readonly machines = new SavedMachines();
+	/** The connect form's fields (they show the last connected machine). */
+	url = $state(this.machines.active?.url ?? '');
+	token = $state(this.machines.active?.token ?? '');
+	/** The server every request goes to; null while disconnected. */
+	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
 	connecting = $state(false);
+	/** The saved machine a connect is in flight to (null for one not saved yet). */
+	connectingTo = $state<string | null>(null);
 	connectError = $state<string | null>(null);
+	/** The connected machine's id (null while disconnected). */
+	machineId = $state<string | null>(null);
+	/** Whether the connected machine answered the last terminal-list refresh. */
+	online = $state(true);
 	terminals = $state<TerminalMeta[]>([]);
 	activeTerminalId = $state<string | null>(null);
-
-	scanning = $state(false);
 
 	/** Chat sessions running on the server (any device's). */
 	chats = $state<AgentSummary[]>([]);
 	activeChat = $state<ChatRef | null>(null);
 	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
-	claudeTerminals = $state<Record<string, ChatRef>>(readLinks());
+	claudeTerminals = $state<Record<string, ChatRef>>({});
 	/** A chat ↔ terminal switch is stopping one process and starting the other. */
 	switching = $state(false);
 	/** Why the last action failed (switch, approve, open); shown on whichever screen is up. */
 	notice = $state<string | null>(null);
 
-	readonly agents = agentClient(() => ({ baseUrl: this.url, token: this.token }));
+	readonly agents = agentClient(() => ({
+		baseUrl: this.connection?.url ?? '',
+		token: this.connection?.token ?? ''
+	}));
 
-	serverLabel = $derived(this.url.replace(/^https?:\/\//, ''));
+	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
 
-	private readonly scanner: QrScanner;
-	/** Bumped on every scan start and cancel; a scan whose number is stale is ignored. */
-	private scanGeneration = 0;
-	private backButton: PluginListener | null = null;
+	private readonly pairing: PairingScan;
 	/** A URL that is already a complete origin (saved, or from a pairing code): never re-normalised. */
 	private exactUrl: string | null;
+	/** Bumped whenever the connection goes; a response for an older connection is dropped. */
+	private generation = 0;
+	/** Bumped on every connect attempt; a newer attempt, a disconnect or forgetting its machine supersedes it. */
+	private attempt = 0;
 
-	constructor(scanner: QrScanner = defaultScanner) {
-		this.scanner = scanner;
+	constructor(scanner?: QrScanner) {
+		this.pairing = new PairingScan(scanner);
 		this.exactUrl = this.url || null;
 	}
 
-	/** Whether a server address and token were previously saved (auto-reconnect on launch). */
+	/** Whether a machine was saved as active (auto-reconnect on launch). */
 	get hasSavedServer(): boolean {
-		return !!lsGet(LS_URL) && !!lsGet(LS_TOKEN);
+		return !!this.machines.active;
 	}
 
 	private authHeaders(): Record<string, string> {
-		return { authorization: `Bearer ${this.token}` };
+		return { authorization: `Bearer ${this.connection?.token ?? ''}` };
 	}
 
-	async connect(): Promise<void> {
-		this.connecting = true;
-		this.connectError = null;
-		try {
-			// Only hand-typed input gets a scheme and the default port added: a scanned
-			// `https://box.ts.net` must not become `https://box.ts.net:4317`.
-			const base = this.url === this.exactUrl ? this.url : normalizeUrl(this.url);
-			if (!base) throw new Error('enter a server address');
-			this.token = this.token.trim();
-			// Every Workbench server requires a token (see Settings → Server mode).
-			if (!this.token) throw new Error('enter the server token');
-			const res = await fetch(`${base}/health`);
-			if (!res.ok) throw new Error(`health check returned ${res.status}`);
-			// /health is unauthenticated, so check the token on a protected route.
-			const authed = await fetch(`${base}/remote/terminals`, { headers: this.authHeaders() });
-			if (authed.status === 401) throw new Error('invalid token');
-			if (!authed.ok) throw new Error(`server returned ${authed.status}`);
+	private get base(): string {
+		return this.connection?.url ?? '';
+	}
 
-			this.url = base;
-			this.exactUrl = base;
-			lsSet(LS_URL, base);
-			lsSet(LS_TOKEN, this.token);
+	/** True while the connection it was taken on is still the current one. */
+	private live(): () => boolean {
+		const generation = this.generation;
+		return () => generation === this.generation;
+	}
 
-			const transport = createHttpTransport({ baseUrl: base, token: this.token });
-			const next = new ControlPlaneStore(transport);
-			await next.refresh();
-			this.store = next;
-			await Promise.all([this.refreshTerminals(), this.refreshChats()]);
-		} catch (e) {
-			this.connectError = e instanceof Error ? e.message : String(e);
-		} finally {
-			this.connecting = false;
-		}
+	/** Connect to the form's server; on success it is saved and active. */
+	connect(): Promise<void> {
+		// Only hand-typed input gets a scheme and the default port added: a scanned
+		// `https://box.ts.net` must not become `https://box.ts.net:4317`.
+		return this.open(this.url, this.token, this.url === this.exactUrl);
+	}
+
+	/** Switch to a saved machine. The current connection stays until the new one has answered. */
+	async switchTo(id: string): Promise<void> {
+		const machine = this.machines.list.find((m) => m.id === id);
+		if (machine) await this.open(machine.url, machine.token, true);
 	}
 
 	/**
-	 * Scan the desktop's pairing QR code (Settings → Server mode → Pair phone),
-	 * fill in the server details and connect.
-	 *
-	 * The scan is windowed: the camera renders behind the (transparent) webview so
-	 * our overlay can offer Cancel. Cancel and the Android back button end the scan
-	 * here rather than waiting on the plugin, whose promise never settles once
-	 * cancelled (nor on a device without a camera).
+	 * Verify a server (health + token), then replace the current connection with
+	 * it. A failure leaves the current connection as it was.
 	 */
-	async scanAndConnect(): Promise<void> {
-		if (this.scanning) return;
+	private async open(rawUrl: string, rawToken: string, exact: boolean): Promise<void> {
+		const attempt = ++this.attempt;
+		const superseded = () => attempt !== this.attempt;
+		const base = exact ? rawUrl : normalizeUrl(rawUrl);
+		const token = rawToken.trim();
+		const saved = this.machines.find(base, token);
+		this.connectingTo = saved?.id ?? null;
+		this.connecting = true;
 		this.connectError = null;
-		this.scanning = true;
-		const generation = ++this.scanGeneration;
-		const stale = () => generation !== this.scanGeneration;
-		let pairing: PairingInfo | null;
 		try {
-			let permission = await this.scanner.checkPermissions();
-			if (permission !== 'granted') permission = await this.scanner.requestPermissions();
-			if (stale()) return;
-			if (permission !== 'granted') {
-				this.connectError = CAMERA_DENIED;
-				return;
-			}
-			const listener = await this.scanner.onBackButtonPress(() => void this.cancelScan());
-			if (stale()) {
-				void listener.unregister();
-				return;
-			}
-			this.backButton = listener;
-			const { content } = await this.scanner.scan({
-				windowed: true,
-				formats: [barcodeScanner.Format.QRCode]
-			});
-			if (stale()) return;
-			pairing = parsePairingUri(content);
-			if (!pairing) {
-				this.connectError = NOT_A_PAIRING_CODE;
-				return;
-			}
+			if (!base) throw new Error('enter a server address');
+			// Every Workbench server requires a token (see Settings → Server mode).
+			if (!token) throw new Error('enter the server token');
+			await verifyServer(base, token);
+			if (superseded()) return;
+			const next = new ControlPlaneStore(createHttpTransport({ baseUrl: base, token }));
+			await next.refresh();
+			if (superseded()) return next.dispose();
+
+			this.teardown();
+			const machine = this.machines.save(base, token);
+			this.url = base;
+			this.exactUrl = base;
+			this.token = token;
+			this.connection = { url: base, token };
+			this.machineId = machine.id;
+			this.claudeTerminals = readLinks(machine.id);
+			this.online = true;
+			this.store = next;
+			await Promise.all([this.refreshTerminals(), this.refreshChats()]);
 		} catch (e) {
-			if (stale()) return;
-			const message = e instanceof Error ? e.message : String(e);
-			if (!/cancel/i.test(message)) this.connectError = message;
-			return;
+			if (superseded()) return;
+			if (this.store)
+				this.notice = `Couldn't switch to ${saved?.name ?? hostOf(base)}: ${errorText(e)}`;
+			else this.connectError = saved ? `${saved.name}: ${errorText(e)}` : errorText(e);
 		} finally {
-			if (!stale()) this.endScan();
+			if (!superseded()) this.endConnecting();
 		}
-		this.url = pairing.url;
-		this.exactUrl = pairing.url;
-		this.token = pairing.token;
-		await this.connect();
 	}
 
-	/** Overlay Cancel / Android back: end the scan now; a late result is ignored. */
-	cancelScan = async (): Promise<void> => {
-		if (!this.scanning) return;
-		this.scanGeneration++;
-		this.endScan();
+	private endConnecting(): void {
+		this.connecting = false;
+		this.connectingTo = null;
+	}
+
+	/** Leave the current machine for an empty connect form (scan or type a new one). */
+	addMachine(): void {
+		this.disconnect();
+		this.url = '';
+		this.token = '';
+		this.exactUrl = null;
+	}
+
+	/** Forget a saved machine; forgetting the connected one returns to the connect form. */
+	forget(id: string): void {
+		if (id === this.connectingTo) {
+			this.attempt++;
+			this.endConnecting();
+		}
+		const current = id === this.machineId;
+		this.machines.remove(id);
+		if (current) this.addMachine();
+	}
+
+	/** Scan the desktop's pairing QR code, then connect to (and save) that machine. */
+	async scanAndConnect(): Promise<void> {
+		this.connectError = null;
 		try {
-			await this.scanner.cancel();
-		} catch {
-			/* nothing was scanning on the native side */
+			const pairing = await this.pairing.scan();
+			if (!pairing) return;
+			this.url = pairing.url;
+			this.exactUrl = pairing.url;
+			this.token = pairing.token;
+			await this.connect();
+		} catch (e) {
+			this.connectError = errorText(e);
 		}
-	};
-
-	private endScan(): void {
-		this.scanning = false;
-		void this.backButton?.unregister();
-		this.backButton = null;
 	}
 
+	get scanning(): boolean {
+		return this.pairing.scanning;
+	}
+
+	/** Overlay Cancel / Android back. */
+	cancelScan = (): Promise<void> => this.pairing.cancel();
+
+	/** Close the connection (and any connect in flight). */
 	disconnect(): void {
+		this.attempt++;
+		this.endConnecting();
+		this.connectError = null;
+		this.teardown();
+	}
+
+	/** Drop the connection: every screen of it goes, and late responses for it are dropped. */
+	private teardown(): void {
+		this.generation++;
 		this.store?.dispose();
 		this.store = null;
+		this.connection = null;
+		this.machineId = null;
+		this.claudeTerminals = {};
 		this.terminals = [];
 		this.chats = [];
 		this.activeTerminalId = null;
 		this.activeChat = null;
+		this.switching = false;
 		this.notice = null;
 	}
 
@@ -289,8 +248,10 @@ export class MobileClient {
 
 	async refreshChats(): Promise<void> {
 		if (!this.store) return;
+		const live = this.live();
 		try {
-			this.chats = await this.agents.list();
+			const chats = await this.agents.list();
+			if (live()) this.chats = chats;
 		} catch {
 			/* keep the last list */
 		}
@@ -348,18 +309,21 @@ export class MobileClient {
 
 	/** Answer an approval from the home screen, without opening the chat. */
 	async answer(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+		const live = this.live();
 		this.notice = null;
 		try {
 			await this.agents.send(sessionId, { t: 'approve', requestId, decision });
 		} catch (e) {
-			this.notice = `Couldn't answer Claude: ${errorText(e)}`;
+			if (live()) this.notice = `Couldn't answer Claude: ${errorText(e)}`;
 		}
-		await this.refreshChats();
+		if (live()) await this.refreshChats();
 	}
 
 	/** End a chat session's `claude` process and leave its screen; the conversation stays on disk. */
 	async endChat(sessionId: string): Promise<void> {
+		const live = this.live();
 		await this.agents.stop(sessionId).catch(() => {});
+		if (!live()) return;
 		this.activeChat = null;
 		await this.refreshChats();
 	}
@@ -369,29 +333,35 @@ export class MobileClient {
 	 * file), then continue the conversation in a real `claude`.
 	 */
 	async showAsTerminal(ref: ChatRef, hasHistory: boolean): Promise<void> {
+		const live = this.live();
 		this.switching = true;
 		this.notice = null;
 		try {
 			await this.agents.stop(ref.sessionId);
 		} catch (e) {
+			if (!live()) return;
 			this.notice = `Couldn't stop the chat: ${errorText(e)}`;
 			this.switching = false;
 			return;
 		}
+		// A session id only means something on the machine it came from.
+		if (!live()) return;
 		this.activeChat = null;
 		await this.openClaudeTerminal(ref, hasHistory);
-		this.switching = false;
+		if (live()) this.switching = false;
 	}
 
 	/** Terminal → chat: end the terminal's `claude`, then pick the conversation up in chat. */
 	async showAsChat(terminalId: string): Promise<void> {
 		const ref = this.claudeTerminals[terminalId];
 		if (!ref) return;
+		const live = this.live();
 		this.switching = true;
 		this.notice = null;
 		// Wait until the terminal's process group is gone: two `claude`s on one
 		// session would both write its transcript.
 		const stopped = await this.deleteTerminal(terminalId, true);
+		if (!live()) return;
 		if (stopped) {
 			this.openChat(ref);
 			await this.refreshTerminals();
@@ -411,15 +381,18 @@ export class MobileClient {
 
 	private setLinks(links: Record<string, ChatRef>): void {
 		this.claudeTerminals = links;
-		lsSet(LS_LINKS, JSON.stringify(links));
+		if (this.machineId) lsSet(machineKey(LS_LINKS, this.machineId), JSON.stringify(links));
 	}
 
 	async refreshTerminals(): Promise<void> {
 		if (!this.store) return;
+		const current = this.live();
 		try {
-			const res = await fetch(`${this.url}/remote/terminals`, { headers: this.authHeaders() });
+			const res = await fetch(`${this.base}/remote/terminals`, { headers: this.authHeaders() });
+			if (current()) this.online = res.ok;
 			if (res.ok) {
 				const data = await res.json();
+				if (!current()) return;
 				// Guard the {#each terminals} render: a non-array body would throw.
 				this.terminals = Array.isArray(data) ? data : [];
 				// eslint-disable-next-line svelte/prefer-svelte-reactivity -- local lookup only
@@ -429,7 +402,7 @@ export class MobileClient {
 					this.setLinks(Object.fromEntries(links.filter(([id]) => live.has(id))));
 			}
 		} catch {
-			/* ignore */
+			if (current()) this.online = false;
 		}
 	}
 
@@ -442,8 +415,9 @@ export class MobileClient {
 	): Promise<string | null> => {
 		if (!this.store) return null;
 		this.notice = null;
+		const live = this.live();
 		try {
-			const res = await fetch(`${this.url}/remote/terminals`, {
+			const res = await fetch(`${this.base}/remote/terminals`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', ...this.authHeaders() },
 				body: JSON.stringify({ projectPath, worktreePath, name, ...claude, cols: 80, rows: 24 })
@@ -456,6 +430,7 @@ export class MobileClient {
 				throw new Error(reason || `the server returned ${res.status}`);
 			}
 			const meta: TerminalMeta = await res.json();
+			if (!live()) return null;
 			// Show the new terminal immediately AND keep it after refreshTerminals()
 			// reconciles — otherwise the refresh overwrites `terminals` with a server
 			// list that hasn't surfaced the new id yet, the $derived activeTerminal goes
@@ -472,28 +447,32 @@ export class MobileClient {
 			ensureVisible();
 			return meta.id;
 		} catch (e) {
-			this.notice = `Couldn't open a terminal: ${errorText(e)}`;
+			if (live()) this.notice = `Couldn't open a terminal: ${errorText(e)}`;
 			return null;
 		}
 	};
 
 	/** `wait` returns only once its processes are gone. */
 	private async deleteTerminal(id: string, wait = false): Promise<boolean> {
+		const live = this.live();
 		try {
 			const res = await fetch(
-				`${this.url}/remote/terminals/${encodeURIComponent(id)}${wait ? '?wait=true' : ''}`,
+				`${this.base}/remote/terminals/${encodeURIComponent(id)}${wait ? '?wait=true' : ''}`,
 				{ method: 'DELETE', headers: this.authHeaders() }
 			);
 			if (!res.ok) return false;
 		} catch {
 			return false;
 		}
+		if (!live()) return false;
 		if (this.activeTerminalId === id) this.activeTerminalId = null;
 		return true;
 	}
 
 	async killTerminal(id: string): Promise<void> {
+		const live = this.live();
 		await this.deleteTerminal(id);
+		if (!live()) return;
 		if (this.activeTerminalId === id) this.activeTerminalId = null;
 		await this.refreshTerminals();
 	}

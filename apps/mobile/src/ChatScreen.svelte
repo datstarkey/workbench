@@ -24,7 +24,8 @@
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import type { ChatImage, TranscriptItem } from '@workbench/types';
-	import { baseName, openExternal, type ChatRef, type MobileClient } from './client.svelte.ts';
+	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
+	import type { ChatRef } from './types.ts';
 	import Sheet from './Sheet.svelte';
 	import ViewSwitch from './ViewSwitch.svelte';
 

@@ -4,6 +4,7 @@
 	import { Input } from '@workbench/ui/input';
 	import ChatScreen from './ChatScreen.svelte';
 	import Home from './Home.svelte';
+	import MachineList from './MachineList.svelte';
 	import Terminal from './Terminal.svelte';
 	import ScanOverlay from './ScanOverlay.svelte';
 	import { MobileClient } from './client.svelte.ts';
@@ -30,8 +31,8 @@
 	{@const terminalId = c.activeTerminal.id}
 	{#key terminalId}
 		<Terminal
-			serverUrl={c.url}
-			token={c.token}
+			serverUrl={c.connection?.url ?? ''}
+			token={c.connection?.token ?? ''}
 			id={terminalId}
 			name={c.activeTerminal.name ?? 'terminal'}
 			onClose={c.closeTerminal}
@@ -55,9 +56,17 @@
 		</header>
 
 		<main class="flex min-h-0 flex-1 flex-col overflow-hidden bg-wb-panel">
-			<div class="flex h-full items-start justify-center overflow-y-auto p-5">
+			<div class="flex h-full flex-col items-center overflow-y-auto p-5">
+				{#if c.machines.list.length > 0}
+					<section class="mt-3 flex w-full max-w-sm flex-col gap-2">
+						<h2 class="text-sm font-semibold">Saved machines</h2>
+						<MachineList client={c} />
+					</section>
+				{/if}
 				<div class="mt-8 w-full max-w-sm rounded-lg border border-wb-hair bg-wb-panel2 p-4">
-					<h1 class="text-sm font-semibold">Connect to server</h1>
+					<h1 class="text-sm font-semibold">
+						{c.machines.list.length > 0 ? 'Add a machine' : 'Connect to server'}
+					</h1>
 					<p class="mb-4 font-mono text-[11px] text-wb-ink-soft">workbench-server control plane</p>
 
 					<Button
