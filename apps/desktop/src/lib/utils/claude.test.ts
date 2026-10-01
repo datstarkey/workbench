@@ -210,6 +210,44 @@ describe('permission mode', () => {
 	});
 });
 
+describe('codex overrides', () => {
+	const validId = '550e8400-e29b-41d4-a716-446655440000';
+	const opts = {
+		codexApprovalPolicy: 'never',
+		codexSandboxMode: 'workspace-write'
+	} as const;
+
+	it('passes approval policy and sandbox mode as -c overrides', () => {
+		expect(newSessionCommand('codex', opts)).toBe(
+			'codex -c tui.alternate_screen=never -c approval_policy=never -c sandbox_mode=workspace-write'
+		);
+		expect(resumeCommand('codex', validId, opts)).toBe(
+			`codex -c tui.alternate_screen=never -c approval_policy=never -c sandbox_mode=workspace-write resume ${validId}`
+		);
+	});
+
+	it('writes nothing for default or unknown values', () => {
+		expect(
+			newSessionCommand('codex', { codexApprovalPolicy: 'default', codexSandboxMode: 'default' })
+		).toBe('codex -c tui.alternate_screen=never');
+		expect(
+			newSessionCommand('codex', {
+				// Settings JSON is user-editable; nothing outside the allowlist reaches the shell.
+				codexSandboxMode: 'read-only; rm -rf ~' as unknown as 'read-only'
+			})
+		).toBe('codex -c tui.alternate_screen=never');
+	});
+
+	it('never adds codex overrides to claude', () => {
+		expect(newSessionCommand('claude', opts)).toBe('claude');
+	});
+
+	it('strips the overrides when recovering a prompt', () => {
+		const built = newSessionCommandWithPrompt('codex', 'Find DRY violations', opts);
+		expect(extractPromptArg('codex', built)).toBe("'Find DRY violations'");
+	});
+});
+
 describe('extractPromptArg', () => {
 	it('returns undefined for a bare binary', () => {
 		expect(extractPromptArg('claude', 'claude')).toBeUndefined();

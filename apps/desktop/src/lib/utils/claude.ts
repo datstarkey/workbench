@@ -1,4 +1,9 @@
-import type { ClaudePermissionMode, SessionType } from '$types/workbench';
+import type {
+	ClaudePermissionMode,
+	CodexApprovalPolicy,
+	CodexSandboxMode,
+	SessionType
+} from '$types/workbench';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -15,15 +20,59 @@ export const CODEX_NEW_SESSION_COMMAND = 'codex';
  * older Codex builds ignore unknown config keys but refuse unknown flags.
  */
 const CODEX_INLINE_FLAG = '-c tui.alternate_screen=never';
-const CODEX_INLINE_FLAG_RE = /^-c[ \t]+tui\.alternate_screen=\S+[ \t]*/;
+/** Every `-c` override Workbench writes, so a persisted command round-trips. */
+const CODEX_OVERRIDES_RE =
+	/^(?:-c[ \t]+(?:tui\.alternate_screen|approval_policy|sandbox_mode)=\S+[ \t]*)+/;
 
-function codexBinary(): string {
-	return `${CODEX_NEW_SESSION_COMMAND} ${CODEX_INLINE_FLAG}`;
+/** Values Codex accepts for `approval_policy`; 'default' writes no override. */
+export const CODEX_APPROVAL_POLICIES: readonly CodexApprovalPolicy[] = [
+	'default',
+	'on-request',
+	'never'
+];
+
+/** Values Codex accepts for `sandbox_mode`; 'default' writes no override. */
+export const CODEX_SANDBOX_MODES: readonly CodexSandboxMode[] = [
+	'default',
+	'read-only',
+	'workspace-write',
+	'danger-full-access'
+];
+
+function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+	return typeof value === 'string' && (values as readonly string[]).includes(value);
 }
 
-/** How a Claude session should be launched. */
-export interface ClaudeLaunchOptions {
+export const isCodexApprovalPolicy = (value: unknown): value is CodexApprovalPolicy =>
+	isOneOf(CODEX_APPROVAL_POLICIES, value);
+
+export const isCodexSandboxMode = (value: unknown): value is CodexSandboxMode =>
+	isOneOf(CODEX_SANDBOX_MODES, value);
+
+/**
+ * Render a `-c key=value` override, or '' for 'default' or an unknown value.
+ * A `-c` key rather than `-a`/`-s` for the same reason as the inline flag, and
+ * checked against the allowlist because settings JSON is user-editable and this
+ * lands in a shell command.
+ */
+function codexOverride(key: string, value: string | undefined, allowed: readonly string[]) {
+	if (!value || value === 'default' || !isOneOf(allowed, value)) return '';
+	return ` -c ${key}=${value}`;
+}
+
+function codexBinary(opts?: LaunchOptions): string {
+	return (
+		`${CODEX_NEW_SESSION_COMMAND} ${CODEX_INLINE_FLAG}` +
+		codexOverride('approval_policy', opts?.codexApprovalPolicy, CODEX_APPROVAL_POLICIES) +
+		codexOverride('sandbox_mode', opts?.codexSandboxMode, CODEX_SANDBOX_MODES)
+	);
+}
+
+/** How Claude and Codex sessions should be launched. */
+export interface LaunchOptions {
 	permissionMode?: ClaudePermissionMode;
+	codexApprovalPolicy?: CodexApprovalPolicy;
+	codexSandboxMode?: CodexSandboxMode;
 	/**
 	 * Absolute path to a generated `@anthropic-ai/sandbox-runtime` settings file.
 	 * When set, the Claude launch is wrapped so file tools, MCP servers and hooks
@@ -44,9 +93,7 @@ export const CLAUDE_PERMISSION_MODES: readonly ClaudePermissionMode[] = [
 
 /** Narrow an untrusted value (settings JSON, a persisted command) to a known mode. */
 export function isClaudePermissionMode(value: unknown): value is ClaudePermissionMode {
-	return (
-		typeof value === 'string' && (CLAUDE_PERMISSION_MODES as readonly string[]).includes(value)
-	);
+	return isOneOf(CLAUDE_PERMISSION_MODES, value);
 }
 
 /**
@@ -102,12 +149,12 @@ function sandboxPrefix(settingsPath: string | undefined): string {
 }
 
 /** Return the base Claude invocation, including any sandbox wrapper and permission-mode flag */
-function claudeBinary(opts?: ClaudeLaunchOptions): string {
+function claudeBinary(opts?: LaunchOptions): string {
 	return `${sandboxPrefix(opts?.sandboxSettingsPath)}${CLAUDE_NEW_SESSION_COMMAND}${permissionModeFlag(opts?.permissionMode)}`;
 }
 
 /** Build the CLI command to resume an existing Claude session */
-export function claudeResumeCommand(sessionId: string, opts?: ClaudeLaunchOptions): string {
+export function claudeResumeCommand(sessionId: string, opts?: LaunchOptions): string {
 	if (!UUID_RE.test(sessionId)) {
 		throw new Error(`Invalid session ID: ${sessionId}`);
 	}
@@ -118,10 +165,7 @@ export function claudeResumeCommand(sessionId: string, opts?: ClaudeLaunchOption
  * Start Claude on a session id chosen up front — a chat tab picks its id before
  * any message exists, and the terminal must use that id, not a new one.
  */
-export function claudeNewSessionWithIdCommand(
-	sessionId: string,
-	opts?: ClaudeLaunchOptions
-): string {
+export function claudeNewSessionWithIdCommand(sessionId: string, opts?: LaunchOptions): string {
 	if (!UUID_RE.test(sessionId)) {
 		throw new Error(`Invalid session ID: ${sessionId}`);
 	}
@@ -129,29 +173,27 @@ export function claudeNewSessionWithIdCommand(
 }
 
 /** Build the CLI command to resume an existing Codex session */
-export function codexResumeCommand(sessionId: string): string {
-	return `${codexBinary()} resume ${sessionId}`;
+export function codexResumeCommand(sessionId: string, opts?: LaunchOptions): string {
+	return `${codexBinary(opts)} resume ${sessionId}`;
 }
 
 /** Generic helper: get the new-session command for a given session type */
-export function newSessionCommand(type: SessionType, opts?: ClaudeLaunchOptions): string {
-	return type === 'codex' ? codexBinary() : claudeBinary(opts);
+export function newSessionCommand(type: SessionType, opts?: LaunchOptions): string {
+	return type === 'codex' ? codexBinary(opts) : claudeBinary(opts);
 }
 
 /** Generic helper: get the resume command for a given session type */
-export function resumeCommand(
-	type: SessionType,
-	sessionId: string,
-	opts?: ClaudeLaunchOptions
-): string {
-	return type === 'codex' ? codexResumeCommand(sessionId) : claudeResumeCommand(sessionId, opts);
+export function resumeCommand(type: SessionType, sessionId: string, opts?: LaunchOptions): string {
+	return type === 'codex'
+		? codexResumeCommand(sessionId, opts)
+		: claudeResumeCommand(sessionId, opts);
 }
 
 /** Like resumeCommand but returns undefined for invalid session IDs instead of throwing. */
 export function tryResumeCommand(
 	type: SessionType,
 	sessionId: string,
-	opts?: ClaudeLaunchOptions
+	opts?: LaunchOptions
 ): string | undefined {
 	try {
 		return resumeCommand(type, sessionId, opts);
@@ -181,7 +223,7 @@ function normalizePrompt(prompt: string): string {
 export function newSessionCommandWithPrompt(
 	type: SessionType,
 	prompt: string,
-	opts?: ClaudeLaunchOptions
+	opts?: LaunchOptions
 ): string {
 	const normalizedPrompt = normalizePrompt(prompt);
 	if (!normalizedPrompt) return newSessionCommand(type, opts);
@@ -213,7 +255,7 @@ function stripSandboxPrefix(command: string): string {
 /**
  * Recover the initial-prompt argument from a persisted launch command, ignoring
  * the binary, any sandbox-runtime wrapper, and any `--permission-mode` flag
- * written by an earlier build (or Codex's inline flag). Returns undefined when
+ * written by an earlier build (or Codex's `-c` overrides). Returns undefined when
  * the command is not a recognisable launch of `type`'s binary, so callers
  * normalise it back to a freshly built command.
  */
@@ -229,7 +271,7 @@ export function extractPromptArg(
 
 	let rest = trimmed.slice(binary.length + 1).trimStart();
 	if (type === 'codex') {
-		rest = rest.replace(CODEX_INLINE_FLAG_RE, '');
+		rest = rest.replace(CODEX_OVERRIDES_RE, '');
 	} else {
 		const flag = /^--permission-mode[ \t]+(\S+)[ \t]*/.exec(rest);
 		// An unknown mode means we did not write this command; normalise it away.
@@ -252,7 +294,7 @@ export function extractPromptArg(
 const PERMISSION_FLAG_RE =
 	/(?:^|\s)--(?:permission-mode|dangerously-skip-permissions|allow-dangerously-skip-permissions)(?=\s|=|$)/;
 
-export function applyClaudeLaunchOptions(command: string, opts?: ClaudeLaunchOptions): string {
+export function applyClaudeLaunchOptions(command: string, opts?: LaunchOptions): string {
 	const trimmed = command.trim();
 	const bare = stripSandboxPrefix(trimmed);
 	const isClaudeLaunch =

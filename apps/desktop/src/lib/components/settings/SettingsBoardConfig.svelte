@@ -311,7 +311,7 @@
 			disabled={!trelloStore.authenticated}
 		>
 			<PlusIcon class="size-3" />
-			Add Board
+			Add board
 		</Button>
 	</div>
 
@@ -377,7 +377,7 @@
 			<!-- Column visibility -->
 			{#if columnsByBoard[board.boardId]}
 				<div class="mt-2">
-					<p class="mb-1 text-[10px] font-medium text-muted-foreground">Visible Columns</p>
+					<p class="mb-1 text-[10px] font-medium text-muted-foreground">Visible columns</p>
 					<div class="space-y-0.5">
 						{#each columnsByBoard[board.boardId] as col (col.id)}
 							<label class="flex items-center gap-2 text-xs">

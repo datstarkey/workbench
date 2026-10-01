@@ -1,69 +1,51 @@
 <script lang="ts">
 	import { ScrollArea } from '@workbench/ui/scroll-area';
 	import { getClaudeSettingsStore, getWorkbenchSettingsStore } from '$stores/context';
-	import type { ScopeGroup } from '$types/claude-settings';
 	import { baseName } from '$lib/utils/path';
 	import { emit } from '@tauri-apps/api/event';
+	import InfoIcon from '@lucide/svelte/icons/info';
 	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import SaveIcon from '@lucide/svelte/icons/save';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
-	import SettingsIcon from '@lucide/svelte/icons/settings';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
-	import LayoutListIcon from '@lucide/svelte/icons/layout-list';
-	import ZapIcon from '@lucide/svelte/icons/zap';
 
 	import SettingsAgentActions from './SettingsAgentActions.svelte';
+	import SettingsBashSandbox from './SettingsBashSandbox.svelte';
+	import SettingsBehaviour from './SettingsBehaviour.svelte';
+	import SettingsClaudeSessions from './SettingsClaudeSessions.svelte';
+	import SettingsCodexSessions from './SettingsCodexSessions.svelte';
 	import SettingsGeneral from './SettingsGeneral.svelte';
 	import SettingsHooks from './SettingsHooks.svelte';
 	import SettingsIntegrations from './SettingsIntegrations.svelte';
 	import SettingsMcp from './SettingsMcp.svelte';
+	import SettingsNav from './SettingsNav.svelte';
 	import SettingsPermissions from './SettingsPermissions.svelte';
 	import SettingsPlugins from './SettingsPlugins.svelte';
-	import SettingsSandbox from './SettingsSandbox.svelte';
+	import SettingsServerMode from './SettingsServerMode.svelte';
 	import SettingsSkills from './SettingsSkills.svelte';
-	import SettingsWorkbench from './SettingsWorkbench.svelte';
+	import SettingsTerminal from './SettingsTerminal.svelte';
+	import SettingsWorktrees from './SettingsWorktrees.svelte';
+	import {
+		WORKBENCH_SETTINGS_FILE,
+		claudeSettingsFile,
+		settingsPage,
+		type SettingsPageId
+	} from './settings-pages';
 
 	const claudeSettingsStore = getClaudeSettingsStore();
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
 
 	let { projectPath }: { projectPath: string | null } = $props();
 
-	type SettingsTab = 'general' | 'claude' | 'trello' | 'agent-actions';
+	let pageId = $state<SettingsPageId>('general');
 
-	let selectedTab = $state<SettingsTab>('general');
-	let activeSection = $state('general');
-
-	// Falls back to 'general' if Trello tab is selected but feature is disabled
-	let settingsMode = $derived<SettingsTab>(
-		selectedTab === 'trello' && !workbenchSettingsStore.trelloEnabled ? 'general' : selectedTab
-	);
-
-	const navItems = $derived([
-		{ id: 'general' as const, label: 'General', icon: SettingsIcon },
-		{ id: 'claude' as const, label: 'Claude Code', icon: SparklesIcon },
-		...(workbenchSettingsStore.trelloEnabled
-			? [{ id: 'trello' as const, label: 'Integrations', icon: LayoutListIcon }]
-			: []),
-		{ id: 'agent-actions' as const, label: 'Agent Actions', icon: ZapIcon }
-	]);
-
-	const claudeSections = [
-		{ id: 'general', label: 'General' },
-		{ id: 'permissions', label: 'Permissions' },
-		{ id: 'plugins', label: 'Plugins' },
-		{ id: 'mcp', label: 'MCP Servers' },
-		{ id: 'hooks', label: 'Hooks' },
-		{ id: 'sandbox', label: 'Sandbox' },
-		{ id: 'skills', label: 'Skills' }
-	];
-
-	let activeStore = $derived(
-		settingsMode === 'claude' ? claudeSettingsStore : workbenchSettingsStore
-	);
-
-	const contextLabel = $derived(projectPath ? baseName(projectPath) : '');
-	const scopeLabel = $derived(
-		settingsMode === 'claude' ? claudeSettingsStore.activeScopeGroup : 'workbench'
+	const page = $derived(settingsPage(pageId));
+	const isClaudePage = $derived(page.store === 'claude');
+	const activeStore = $derived(isClaudePage ? claudeSettingsStore : workbenchSettingsStore);
+	const projectName = $derived(projectPath ? baseName(projectPath) : '');
+	const savesTo = $derived(
+		isClaudePage
+			? claudeSettingsFile(claudeSettingsStore.activeScope, projectName)
+			: WORKBENCH_SETTINGS_FILE
 	);
 
 	async function handleSave() {
@@ -74,7 +56,7 @@
 	}
 
 	async function handleReset() {
-		if (settingsMode === 'claude') {
+		if (isClaudePage) {
 			await claudeSettingsStore.load(projectPath);
 		} else {
 			await workbenchSettingsStore.load();
@@ -82,186 +64,140 @@
 	}
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-wb-panel text-wb-ink">
-	<!-- Header -->
-	<div
-		class="flex h-12 flex-shrink-0 items-center gap-2.5 border-b border-wb-hair px-4.5 select-none"
-	>
-		<SettingsIcon size={15} class="text-wb-accent" />
-		<span class="text-[13.5px] font-semibold">Settings</span>
-		{#if contextLabel}
-			<span class="font-mono text-[11.5px] text-wb-ink-soft">{contextLabel}</span>
-		{/if}
-		<span class="flex-1"></span>
-		{#if activeStore.dirty}
-			<span class="rounded bg-wb-warn/20 px-1.5 py-0.5 font-mono text-[10px] text-wb-warn">
-				unsaved
-			</span>
-		{/if}
-	</div>
+<div class="flex h-full min-h-0 bg-wb-panel text-wb-ink">
+	<SettingsNav active={pageId} onSelect={(id) => (pageId = id)} />
 
-	<!-- Body -->
-	<div class="flex min-h-0 flex-1">
-		<!-- Left nav rail -->
-		<div
-			class="flex w-[210px] flex-shrink-0 flex-col gap-0.5 border-r border-wb-hair bg-wb-bg p-2"
-			role="tablist"
-			aria-label="Settings sections"
-		>
-			{#each navItems as item (item.id)}
-				{@const Icon = item.icon}
-				{@const active = settingsMode === item.id}
-				<button
-					type="button"
-					role="tab"
-					aria-selected={active}
-					class="flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-left text-[12.5px] transition-colors {active
-						? 'bg-wb-panel2 text-wb-ink'
-						: 'text-wb-ink-mute hover:text-wb-ink'}"
-					onclick={() => (selectedTab = item.id)}
-				>
-					<Icon size={13} class={active ? 'text-wb-accent' : 'text-wb-ink-soft'} />
-					<span class="flex-1 truncate">{item.label}</span>
-				</button>
-				{#if item.id === 'claude' && active}
+	<div class="flex min-w-0 flex-1 flex-col">
+		<header class="flex shrink-0 items-start gap-4 border-b border-wb-hair-soft px-7 pt-5.5 pb-4">
+			<div class="min-w-0 flex-1">
+				<h1 class="text-[17px] font-semibold tracking-tight">{page.title ?? page.label}</h1>
+				<p class="mt-1 text-[12.5px] leading-relaxed text-wb-ink-mute">{page.description}</p>
+			</div>
+			{#if isClaudePage}
+				<div class="flex shrink-0 flex-col items-end gap-2">
 					<div
-						class="mb-1 ml-3 flex flex-col gap-0.5 border-l border-wb-hair pl-2"
-						role="tablist"
-						aria-label="Claude Code sections"
+						class="inline-flex rounded-md border border-wb-hair bg-wb-bg p-0.5"
+						role="group"
+						aria-label="Settings scope"
 					>
-						{#each claudeSections as section (section.id)}
-							<button
-								type="button"
-								role="tab"
-								aria-selected={activeSection === section.id}
-								class="rounded px-2 py-1 text-left text-[12px] transition-colors {activeSection ===
-								section.id
-									? 'text-wb-ink'
-									: 'text-wb-ink-soft hover:text-wb-ink-mute'}"
-								onclick={() => (activeSection = section.id)}
-							>
-								{section.label}
-							</button>
-						{/each}
-					</div>
-				{/if}
-			{/each}
-		</div>
-
-		<!-- Form area -->
-		<div class="flex min-w-0 flex-1 flex-col">
-			{#if settingsMode === 'claude'}
-				<!-- Claude scope selector -->
-				<div class="flex flex-shrink-0 items-center gap-3 border-b border-wb-hair-soft px-5 py-2.5">
-					<div class="inline-flex rounded border border-wb-hair bg-wb-bg p-0.5">
 						<button
 							type="button"
-							class="rounded-sm px-2.5 py-1 text-[11.5px] transition-colors {claudeSettingsStore.activeScopeGroup ===
-							'user'
-								? 'bg-wb-panel2 text-wb-ink'
-								: 'text-wb-ink-mute'}"
-							onclick={() => claudeSettingsStore.setScopeGroup('user' as ScopeGroup)}
+							aria-pressed={claudeSettingsStore.activeScopeGroup === 'user'}
+							class={[
+								'rounded px-2.5 py-1 text-xs transition-colors',
+								claudeSettingsStore.activeScopeGroup === 'user'
+									? 'bg-wb-panel2 text-wb-ink'
+									: 'text-wb-ink-mute hover:text-wb-ink'
+							]}
+							onclick={() => claudeSettingsStore.setScopeGroup('user')}
 						>
 							User
 						</button>
 						<button
 							type="button"
 							disabled={!projectPath}
-							class="rounded-sm px-2.5 py-1 text-[11.5px] transition-colors disabled:opacity-40 {claudeSettingsStore.activeScopeGroup ===
-							'project'
-								? 'bg-wb-panel2 text-wb-ink'
-								: 'text-wb-ink-mute'}"
-							onclick={() => claudeSettingsStore.setScopeGroup('project' as ScopeGroup)}
+							aria-pressed={claudeSettingsStore.activeScopeGroup === 'project'}
+							class={[
+								'rounded px-2.5 py-1 text-xs transition-colors disabled:opacity-40',
+								claudeSettingsStore.activeScopeGroup === 'project'
+									? 'bg-wb-panel2 text-wb-ink'
+									: 'text-wb-ink-mute hover:text-wb-ink'
+							]}
+							onclick={() => claudeSettingsStore.setScopeGroup('project')}
 						>
-							Project
+							{projectName ? `Project · ${projectName}` : 'Project'}
 						</button>
 					</div>
-					<label class="flex items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
+					<label class="flex items-center gap-1.5 text-xs text-wb-ink-mute">
 						<input
 							type="checkbox"
 							class="rounded"
 							checked={claudeSettingsStore.localOnly}
-							onchange={(e) =>
-								claudeSettingsStore.setLocalOnly((e.target as HTMLInputElement).checked)}
+							onchange={(e) => claudeSettingsStore.setLocalOnly(e.currentTarget.checked)}
 						/>
 						Local only
 					</label>
 				</div>
 			{/if}
+		</header>
 
-			<ScrollArea class="min-h-0 flex-1">
-				<div class="p-6">
-					{#if settingsMode === 'general'}
-						{#if !workbenchSettingsStore.loaded}
-							<div class="flex items-center justify-center py-12">
-								<LoaderIcon class="size-5 animate-spin text-wb-ink-soft" />
-							</div>
-						{:else}
-							<SettingsWorkbench />
-						{/if}
-					{:else if settingsMode === 'claude'}
-						{#if !claudeSettingsStore.loaded}
-							<div class="flex items-center justify-center py-12">
-								<LoaderIcon class="size-5 animate-spin text-wb-ink-soft" />
-							</div>
-						{:else if activeSection === 'general'}
-							<SettingsGeneral />
-						{:else if activeSection === 'permissions'}
-							<SettingsPermissions />
-						{:else if activeSection === 'plugins'}
-							<SettingsPlugins />
-						{:else if activeSection === 'mcp'}
-							<SettingsMcp />
-						{:else if activeSection === 'hooks'}
-							<SettingsHooks />
-						{:else if activeSection === 'sandbox'}
-							<SettingsSandbox />
-						{:else if activeSection === 'skills'}
-							<SettingsSkills />
-						{/if}
-					{:else if settingsMode === 'trello'}
-						<SettingsIntegrations {projectPath} />
-					{:else if settingsMode === 'agent-actions'}
-						{#if !workbenchSettingsStore.loaded}
-							<div class="flex items-center justify-center py-12">
-								<LoaderIcon class="size-5 animate-spin text-wb-ink-soft" />
-							</div>
-						{:else}
-							<SettingsAgentActions />
-						{/if}
-					{/if}
-				</div>
-			</ScrollArea>
-		</div>
-	</div>
+		<ScrollArea class="min-h-0 flex-1">
+			<div class="flex flex-col gap-6 px-7 pt-5 pb-7">
+				{#if !activeStore.loaded}
+					<div class="flex items-center justify-center py-12">
+						<LoaderIcon class="size-5 animate-spin text-wb-ink-soft" />
+					</div>
+				{:else if pageId === 'general'}
+					<SettingsGeneral />
+				{:else if pageId === 'worktrees'}
+					<SettingsWorktrees />
+				{:else if pageId === 'terminal'}
+					<SettingsTerminal />
+				{:else if pageId === 'agent-actions'}
+					<SettingsAgentActions />
+				{:else if pageId === 'integrations'}
+					<SettingsIntegrations {projectPath} />
+				{:else if pageId === 'remote-access'}
+					<SettingsServerMode />
+				{:else if pageId === 'claude-sessions'}
+					<SettingsClaudeSessions />
+				{:else if pageId === 'behaviour'}
+					<SettingsBehaviour />
+				{:else if pageId === 'permissions'}
+					<SettingsPermissions />
+				{:else if pageId === 'bash-sandbox'}
+					<SettingsBashSandbox />
+				{:else if pageId === 'mcp'}
+					<SettingsMcp />
+				{:else if pageId === 'plugins'}
+					<SettingsPlugins />
+				{:else if pageId === 'hooks'}
+					<SettingsHooks />
+				{:else if pageId === 'skills'}
+					<SettingsSkills />
+				{:else if pageId === 'codex-sessions'}
+					<SettingsCodexSessions />
+				{/if}
+			</div>
+		</ScrollArea>
 
-	<!-- Footer -->
-	<div class="flex h-12 flex-shrink-0 items-center gap-2 border-t border-wb-hair px-4.5">
-		<span class="font-mono text-[11px] text-wb-ink-soft">
-			scope <span class="text-wb-accent">{scopeLabel}</span>
-		</span>
-		<span class="flex-1"></span>
-		<button
-			type="button"
-			class="flex items-center gap-1.5 rounded border border-wb-hair px-3.5 py-1.5 text-[12px] text-wb-ink transition-colors hover:bg-wb-panel2 disabled:opacity-40"
-			disabled={!activeStore.dirty || activeStore.saving}
-			onclick={handleReset}
-		>
-			<RotateCcwIcon size={12} />
-			Reset
-		</button>
-		<button
-			type="button"
-			class="flex items-center gap-1.5 rounded bg-primary px-3.5 py-1.5 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-			disabled={!activeStore.dirty || activeStore.saving}
-			onclick={handleSave}
-		>
-			{#if activeStore.saving}
-				<LoaderIcon class="size-3 animate-spin" />
+		<footer class="flex h-12 shrink-0 items-center gap-2 border-t border-wb-hair pr-4 pl-7">
+			{#if page.store === 'immediate'}
+				<span class="flex flex-1 items-center gap-2 text-[11.5px] text-wb-ink-mute">
+					<InfoIcon class="size-3.5" />
+					Changes on this page apply immediately.
+				</span>
 			{:else}
-				<SaveIcon class="size-3" />
+				<span class="flex min-w-0 flex-1 items-center gap-2 text-[11.5px] text-wb-ink-mute">
+					{#if activeStore.dirty}
+						<span class="size-1.5 shrink-0 rounded-full bg-wb-warn"></span>
+						<span class="text-wb-warn">Unsaved changes</span>
+					{/if}
+					<span class="truncate font-mono">{savesTo}</span>
+				</span>
+				<button
+					type="button"
+					class="flex items-center gap-1.5 rounded border border-wb-hair px-3.5 py-1.5 text-[12px] text-wb-ink transition-colors hover:bg-wb-panel2 disabled:opacity-40"
+					disabled={!activeStore.dirty || activeStore.saving}
+					onclick={handleReset}
+				>
+					<RotateCcwIcon size={12} />
+					Reset
+				</button>
+				<button
+					type="button"
+					class="flex items-center gap-1.5 rounded bg-primary px-3.5 py-1.5 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+					disabled={!activeStore.dirty || activeStore.saving}
+					onclick={handleSave}
+				>
+					{#if activeStore.saving}
+						<LoaderIcon class="size-3 animate-spin" />
+					{:else}
+						<SaveIcon class="size-3" />
+					{/if}
+					Save changes
+				</button>
 			{/if}
-			Save changes
-		</button>
+		</footer>
 	</div>
 </div>

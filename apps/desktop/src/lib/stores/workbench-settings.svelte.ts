@@ -5,6 +5,8 @@ import type {
 	AgentActionTarget,
 	ClaudeAccount,
 	ClaudePermissionMode,
+	CodexApprovalPolicy,
+	CodexSandboxMode,
 	PaneView,
 	SessionType,
 	SettingsWindowBounds,
@@ -18,7 +20,14 @@ import { invoke } from '$lib/transport';
 // Desktop-local, like terminal IO: the srt settings file lives on this machine,
 // so this one call must never be routed to a remote instance's control plane.
 import { invoke as invokeLocal } from '@tauri-apps/api/core';
-import { IS_WINDOWS, isClaudePermissionMode } from '$lib/utils/claude';
+import {
+	IS_WINDOWS,
+	isClaudePermissionMode,
+	isCodexApprovalPolicy,
+	isCodexSandboxMode,
+	warnMissingSandboxSettingsPath,
+	type LaunchOptions
+} from '$lib/utils/claude';
 import { rotateServerToken } from '$lib/server-mode';
 
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
@@ -50,6 +59,8 @@ export class WorkbenchSettingsStore {
 	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
 	claudePermissionMode: ClaudePermissionMode = $state<ClaudePermissionMode>('default');
+	codexApprovalPolicy: CodexApprovalPolicy = $state<CodexApprovalPolicy>('default');
+	codexSandboxMode: CodexSandboxMode = $state<CodexSandboxMode>('default');
 	defaultClaudeView: PaneView = $state<PaneView>('terminal');
 	sandboxRuntimeEnabled = $state(false);
 	sandboxAllowedDomains: string[] = $state([]);
@@ -81,6 +92,22 @@ export class WorkbenchSettingsStore {
 		return this.sandboxRuntimeSettingsPath || undefined;
 	}
 
+	/** How new Claude and Codex sessions are launched. */
+	get launchOptions(): LaunchOptions {
+		const sandboxSettingsPath = this.sandboxSettingsPath;
+		// Enabled but unresolved means the backend could not write the settings
+		// file; launching unwrapped is the safe-to-run fallback, but say so.
+		if (this.sandboxRuntimeEnabled && !sandboxSettingsPath) {
+			warnMissingSandboxSettingsPath();
+		}
+		return {
+			permissionMode: this.claudePermissionMode,
+			codexApprovalPolicy: this.codexApprovalPolicy,
+			codexSandboxMode: this.codexSandboxMode,
+			sandboxSettingsPath
+		};
+	}
+
 	/** Account id new Claude sessions launch with; undefined is the default `~/.claude`. */
 	readonly activeClaudeAccountId = $derived(
 		this.claudeAccounts.find((a) => a.id === this.activeClaudeAccount)?.id
@@ -108,6 +135,12 @@ export class WorkbenchSettingsStore {
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
 		this.claudePermissionMode = isClaudePermissionMode(settings.claudePermissionMode)
 			? settings.claudePermissionMode
+			: 'default';
+		this.codexApprovalPolicy = isCodexApprovalPolicy(settings.codexApprovalPolicy)
+			? settings.codexApprovalPolicy
+			: 'default';
+		this.codexSandboxMode = isCodexSandboxMode(settings.codexSandboxMode)
+			? settings.codexSandboxMode
 			: 'default';
 		this.defaultClaudeView = settings.defaultClaudeView === 'chat' ? 'chat' : 'terminal';
 		this.sandboxRuntimeEnabled = settings.sandboxRuntimeEnabled ?? false;
@@ -270,6 +303,8 @@ export class WorkbenchSettingsStore {
 			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,
 			claudePermissionMode: this.claudePermissionMode,
+			codexApprovalPolicy: this.codexApprovalPolicy,
+			codexSandboxMode: this.codexSandboxMode,
 			defaultClaudeView: this.defaultClaudeView,
 			sandboxRuntimeEnabled: this.sandboxRuntimeEnabled,
 			sandboxAllowedDomains: this.sandboxAllowedDomains,

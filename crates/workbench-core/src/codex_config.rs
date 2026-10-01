@@ -112,7 +112,7 @@ pub fn check_codex_config_status() -> crate::types::IntegrationStatus {
 
     let needs_changes = !has_fallback || !has_notify;
     let description = if needs_changes {
-        "Workbench will update your Codex config (~/.codex/config/config.toml) to add CLAUDE.md as a project doc fallback and install a notify bridge script.".to_string()
+        "Workbench will update your Codex config (~/.codex/config.toml) to add CLAUDE.md as a project doc fallback and install a notify bridge script.".to_string()
     } else {
         String::new()
     };

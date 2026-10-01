@@ -18,7 +18,10 @@
 		type ServerStatus
 	} from '$lib/server-mode';
 	import { getWorkbenchSettingsStore } from '$stores/context';
-	import SettingsToggle from './SettingsToggle.svelte';
+	import { Switch } from '@workbench/ui/switch';
+	import SettingsNote from './SettingsNote.svelte';
+	import SettingsRow from './SettingsRow.svelte';
+	import SettingsSection from './SettingsSection.svelte';
 	import ServerPairingDialog from './ServerPairingDialog.svelte';
 	import { boundPort } from './server-pairing';
 
@@ -109,49 +112,57 @@
 	}
 </script>
 
-<div class="space-y-6">
-	<div>
-		<h2 class="text-sm font-semibold">Server mode</h2>
-		<p class="mt-1 text-xs text-muted-foreground">
-			Run a control-plane server on this machine so other devices can create worktrees and spawn
-			<code>claude remote-control</code> sessions here. Secure it with a private network (e.g. Tailscale).
-			Spawned sessions appear in the Claude mobile app automatically.
-		</p>
-	</div>
+{#snippet status()}
+	<span class="flex items-center gap-2">
+		<span class={['size-2 rounded-full', server.running ? 'bg-wb-ok' : 'bg-wb-ink-soft']}></span>
+		{#if server.running && server.address}
+			Listening on <code class="text-wb-ink">{server.address}</code>
+		{:else}
+			Not running
+		{/if}
+	</span>
+{/snippet}
 
-	<SettingsToggle
-		label="Enable server mode"
-		description="Start the embedded Workbench server."
-		checked={store.serverMode}
-		onCheckedChange={toggleServerMode}
-	/>
+<SettingsSection>
+	<SettingsRow label="Server mode" description={status}>
+		{#snippet control()}
+			<Button variant="outline" size="sm" disabled={!server.running} onclick={openPairing}>
+				Pair phone
+			</Button>
+			<Switch
+				checked={store.serverMode}
+				onCheckedChange={toggleServerMode}
+				aria-label="Server mode"
+			/>
+		{/snippet}
+		{#if serverError}
+			<p class="mt-2 text-xs text-wb-err">{serverError}</p>
+		{/if}
+	</SettingsRow>
+</SettingsSection>
 
-	<div class="flex items-center justify-between gap-4">
-		<div>
-			<p class="text-sm font-medium">Port</p>
-			<p class="text-xs text-muted-foreground">TCP port the server listens on.</p>
-		</div>
-		<Input
-			type="number"
-			min="1"
-			max="65535"
-			class="w-28"
-			value={store.serverPort}
-			onchange={(e) => applyServerPort((e.currentTarget as HTMLInputElement).value)}
-		/>
-	</div>
+<SettingsSection title="Connection">
+	<SettingsRow label="Port" description="Restarts a running server when changed.">
+		{#snippet control()}
+			<Input
+				type="number"
+				min="1"
+				max="65535"
+				class="h-8 w-24 font-mono text-xs"
+				aria-label="Port"
+				value={store.serverPort}
+				onchange={(e) => applyServerPort((e.currentTarget as HTMLInputElement).value)}
+			/>
+		{/snippet}
+	</SettingsRow>
 
 	{#if store.serverToken}
-		<div class="space-y-2">
-			<div>
-				<p class="text-sm font-medium">Token</p>
-				<p class="text-xs text-muted-foreground">
-					Every client (phone, remote desktop) must present this token.
-				</p>
-			</div>
-			<div class="flex items-center gap-1">
-				<code class="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1.5 font-mono text-xs">
-					{tokenRevealed ? store.serverToken : '•'.repeat(32)}
+		<SettingsRow label="Token" description="Every phone or remote desktop must present it.">
+			{#snippet control()}
+				<code
+					class="flex h-8 w-44 items-center truncate rounded-md border border-wb-hair bg-wb-bg px-2.5 font-mono text-xs"
+				>
+					{tokenRevealed ? store.serverToken : '•'.repeat(24)}
 				</code>
 				<Button
 					variant="ghost"
@@ -165,33 +176,17 @@
 					{#if tokenCopied}<CheckIcon />{:else}<CopyIcon />{/if}
 				</Button>
 				<Button variant="outline" size="sm" onclick={() => tokenRotation.request(true)}>
-					Regenerate
+					Regenerate…
 				</Button>
-			</div>
-		</div>
+			{/snippet}
+		</SettingsRow>
 	{/if}
+</SettingsSection>
 
-	<p class="text-xs text-wb-warn">
-		Traffic, including the token, is plaintext HTTP. Only enable server mode on a private network
-		such as Tailscale.
-	</p>
-
-	<div class="flex items-center justify-between gap-4">
-		<p
-			class="text-xs"
-			class:text-wb-ok={server.running}
-			class:text-muted-foreground={!server.running}
-		>
-			{server.running && server.address ? `Listening on ${server.address}` : 'Not running'}
-		</p>
-		<Button variant="outline" size="sm" disabled={!server.running} onclick={openPairing}>
-			Pair phone
-		</Button>
-	</div>
-	{#if serverError}
-		<p class="text-xs text-wb-err">{serverError}</p>
-	{/if}
-</div>
+<SettingsNote tone="warn">
+	Traffic, including the token, is plain HTTP. Only turn this on over a private network such as
+	Tailscale. Sessions started from another device show up in the Claude mobile app.
+</SettingsNote>
 
 {#if pairing}
 	<ServerPairingDialog bind:open={pairingOpen} addresses={pairing.addresses} port={pairing.port} />

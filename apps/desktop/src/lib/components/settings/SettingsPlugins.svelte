@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { Switch } from '@workbench/ui/switch';
-	import { Badge } from '@workbench/ui/badge';
 	import { getClaudeSettingsStore } from '$stores/context';
 	import SettingsEmptyState from './SettingsEmptyState.svelte';
+	import SettingsSection from './SettingsSection.svelte';
+	import SettingsToggle from './SettingsToggle.svelte';
 
 	const claudeSettingsStore = getClaudeSettingsStore();
 
@@ -27,36 +27,20 @@
 	}
 </script>
 
-<div class="space-y-4">
-	<p class="text-xs text-muted-foreground">
-		Manage plugins installed in <code class="rounded bg-muted px-1">~/.claude/plugins/</code>.
-	</p>
-
-	{#if claudeSettingsStore.plugins.length === 0}
-		<SettingsEmptyState title="No plugins found." subtitle="Install plugins via Claude Code CLI." />
-	{:else}
-		<div class="space-y-2">
-			{#each claudeSettingsStore.plugins as plugin (plugin.dirName)}
-				<div class="flex items-center justify-between rounded-md border border-border/60 px-3 py-2">
-					<div class="min-w-0 flex-1">
-						<div class="flex items-center gap-2">
-							<span class="text-sm font-medium">{plugin.name}</span>
-							{#if plugin.version}
-								<Badge variant="secondary" class="text-[10px]">v{plugin.version}</Badge>
-							{/if}
-						</div>
-						{#if plugin.description}
-							<p class="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
-								{plugin.description}
-							</p>
-						{/if}
-					</div>
-					<Switch
-						checked={isEnabled(plugin.dirName)}
-						onCheckedChange={(v) => togglePlugin(plugin.dirName, v)}
-					/>
-				</div>
-			{/each}
-		</div>
-	{/if}
-</div>
+{#if claudeSettingsStore.plugins.length === 0}
+	<SettingsEmptyState
+		title="No plugins found."
+		subtitle="Install plugins with the Claude Code CLI."
+	/>
+{:else}
+	<SettingsSection>
+		{#each claudeSettingsStore.plugins as plugin (plugin.dirName)}
+			<SettingsToggle
+				label={plugin.version ? `${plugin.name} v${plugin.version}` : plugin.name}
+				description={plugin.description}
+				checked={isEnabled(plugin.dirName)}
+				onCheckedChange={(v) => togglePlugin(plugin.dirName, v)}
+			/>
+		{/each}
+	</SettingsSection>
+{/if}

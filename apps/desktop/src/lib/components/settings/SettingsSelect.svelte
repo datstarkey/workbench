@@ -1,5 +1,7 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import * as Select from '@workbench/ui/select';
+	import SettingsRow from './SettingsRow.svelte';
 
 	let {
 		label,
@@ -7,23 +9,23 @@
 		options,
 		value,
 		onValueChange,
-		triggerClass = 'w-40'
+		triggerClass = 'w-44',
+		children
 	}: {
 		label: string;
-		description: string;
+		description?: string | Snippet;
 		options: Array<{ value: string; label: string }>;
 		value: string;
 		onValueChange: (value: string) => void;
 		triggerClass?: string;
+		children?: Snippet;
 	} = $props();
 </script>
 
-<div>
-	<h3 class="text-sm font-medium">{label}</h3>
-	<p class="mt-1 text-xs text-muted-foreground">{description}</p>
-	<div class="mt-2">
+<SettingsRow {label} {description} {children}>
+	{#snippet control()}
 		<Select.Root type="single" {value} {onValueChange}>
-			<Select.Trigger class={triggerClass}>
+			<Select.Trigger class={triggerClass} aria-label={label}>
 				{options.find((o) => o.value === value)?.label ?? value}
 			</Select.Trigger>
 			<Select.Content>
@@ -32,5 +34,5 @@
 				{/each}
 			</Select.Content>
 		</Select.Root>
-	</div>
-</div>
+	{/snippet}
+</SettingsRow>
