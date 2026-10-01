@@ -15,6 +15,8 @@ pub fn run() {
                 ))
                 .build(),
         )
+        // Links in chat replies open in the phone's browser.
+        .plugin(tauri_plugin_opener::init())
         .setup(|_app| {
             // QR pairing: scan the code the desktop shows in Settings → Server mode.
             #[cfg(mobile)]

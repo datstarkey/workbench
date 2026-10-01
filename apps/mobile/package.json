@@ -13,9 +13,12 @@
 		"tauri": "tauri"
 	},
 	"dependencies": {
+		"@lucide/svelte": "catalog:",
 		"@tauri-apps/api": "catalog:",
 		"@tauri-apps/plugin-barcode-scanner": "^2",
 		"@tauri-apps/plugin-log": "^2",
+		"@tauri-apps/plugin-opener": "^2",
+		"@workbench/chat-ui": "workspace:*",
 		"@workbench/control-plane-ui": "workspace:*",
 		"@workbench/theme": "workspace:*",
 		"@workbench/transport": "workspace:*",
@@ -23,6 +26,7 @@
 		"@workbench/ui": "workspace:*",
 		"@xterm/addon-fit": "catalog:",
 		"@xterm/xterm": "catalog:",
+		"runed": "^0.37.1",
 		"svelte": "catalog:"
 	},
 	"devDependencies": {

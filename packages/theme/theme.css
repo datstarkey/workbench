@@ -13,6 +13,7 @@
  * Paths are relative to this file (packages/theme/theme.css). */
 @source '../ui/src';
 @source '../control-plane-ui/src';
+@source '../chat-ui/src';
 
 @custom-variant dark (&:is(.dark *));
 

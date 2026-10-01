@@ -21,6 +21,9 @@ use serde_json::{json, Value};
 mod items;
 mod parse;
 mod protocol;
+mod summary;
+
+pub use summary::{RunningSummary, WaitingSummary};
 
 pub use items::{
     ApprovalDecision, ModelOption, RateLimitInfo, RetryInfo, SlashCommand, TaskInfo, ToolStatus,
@@ -499,6 +502,29 @@ impl Transcript {
     /// Request ids still waiting for an answer.
     pub fn pending_approval_ids(&self) -> Vec<String> {
         self.approvals.keys().cloned().collect()
+    }
+
+    /// The oldest approval still waiting for an answer.
+    pub fn waiting_on(&self) -> Option<&TranscriptItem> {
+        let first = self.approvals.values().map(|p| p.item).min()?;
+        self.items.get(first)
+    }
+
+    /// The newest tool call still running. `None` while idle: an interrupted
+    /// turn leaves its calls marked running.
+    pub fn running_tool(&self) -> Option<&TranscriptItem> {
+        if !self.meta.busy {
+            return None;
+        }
+        self.items.iter().rev().find(|i| {
+            matches!(
+                i,
+                TranscriptItem::Tool {
+                    status: ToolStatus::Running,
+                    ..
+                }
+            )
+        })
     }
 
     /// Permission prompts become approval items; anything else the CLI asks of

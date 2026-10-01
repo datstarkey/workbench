@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const created: { sessionId: string; dispose: ReturnType<typeof vi.fn> }[] = [];
-vi.mock('./agent-chat.svelte', () => ({
+vi.mock('./agent-api', () => ({ loopbackAgentApi: {} }));
+vi.mock('@workbench/chat-ui', () => ({
 	AgentChat: class {
 		sessionId: string;
 		dispose = vi.fn();

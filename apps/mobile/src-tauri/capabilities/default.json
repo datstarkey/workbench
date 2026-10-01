@@ -3,5 +3,5 @@
 	"identifier": "default",
 	"description": "Default capability for the mobile webview.",
 	"windows": ["main"],
-	"permissions": ["core:default", "log:default"]
+	"permissions": ["core:default", "log:default", "opener:default"]
 }

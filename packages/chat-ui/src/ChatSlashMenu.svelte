@@ -2,7 +2,7 @@
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import { cn } from '@workbench/ui';
-	import type { SlashCommand } from '$types/workbench';
+	import type { SlashCommand } from '@workbench/types';
 
 	let {
 		id,

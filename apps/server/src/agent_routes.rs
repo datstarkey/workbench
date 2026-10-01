@@ -1,24 +1,28 @@
 //! HTTP + WebSocket surface for chat sessions:
+//! - `GET /agent/claude` lists live sessions ([`AgentSummary`]), newest change first.
 //! - `POST /agent/claude` starts (or returns) the session for a Claude session id.
 //! - `DELETE /agent/claude/:id` stops it; `DELETE /agent/claude?paneId=` stops
 //!   whatever a closed pane owned.
 //! - `WS /agent/claude/:id/ws` streams `snapshot` then `update`/`exit` frames and
 //!   takes `prompt` / `approve` / `interrupt` / `mode` messages. Any number of
 //!   clients may attach; the first answer to an approval wins.
+//! - `POST /agent/claude/:id/message` applies one of those messages without a
+//!   socket (an approval from the phone's home screen): 200 with the reply
+//!   frame when there is one, else 204.
 
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 use workbench_core::claude_transcript::ApprovalDecision;
 
-use crate::agent::{AgentSession, PromptImage, StartAgent, MAX_IMAGES};
+use crate::agent::{AgentSession, AgentSummary, PromptImage, StartAgent, MAX_IMAGES};
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
 use crate::state::{wait_revoked, AppState};
@@ -63,16 +67,45 @@ pub async fn agent_start(
             workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
         let session = agents.start(StartAgent {
             cwd,
+            project_path: body.project_path,
+            worktree_path: body.worktree_path,
             session_id: body.session_id,
             permission_mode: body.permission_mode,
             pane_id: body.pane_id,
             hook_socket: body.hook_socket,
             config_dir,
+            claude_account_id: body.claude_account_id,
         })?;
         Ok(json!({"sessionId": session.id()}))
     })
     .await
     .map(Json)
+}
+
+pub async fn agent_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
+    Json(state.agents.summaries())
+}
+
+pub async fn agent_message(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: String,
+) -> Result<Response, ApiError> {
+    let session = find(&state, &id)?;
+    let reply = crate::routes::blocking(move || Ok(handle(&session, &body)))
+        .await?
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(match reply {
+        Some(reply) => Json(reply).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
+}
+
+fn find(state: &AppState, id: &str) -> Result<Arc<AgentSession>, ApiError> {
+    state.agents.get(id).ok_or_else(|| ApiError {
+        status: StatusCode::NOT_FOUND,
+        message: format!("no chat session {id}"),
+    })
 }
 
 pub async fn agent_stop(
@@ -107,10 +140,7 @@ pub async fn agent_attach(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
     crate::auth::authorize_ws(&headers, auth.token.as_deref(), &state)?;
-    let session = state.agents.get(&id).ok_or_else(|| ApiError {
-        status: StatusCode::NOT_FOUND,
-        message: format!("no chat session {id}"),
-    })?;
+    let session = find(&state, &id)?;
     let revoked = state.revoked.clone();
     // A prompt can carry 10 images of up to ~6.7 MB base64 each; the default
     // 16 MiB frame limit would drop the socket instead of the prompt.

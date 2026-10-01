@@ -5,7 +5,7 @@
 	import TerminalSquareIcon from '@lucide/svelte/icons/square-terminal';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import type { TaskInfo } from '$types/workbench';
+	import type { TaskInfo } from '@workbench/types';
 	import { SvelteSet } from 'svelte/reactivity';
 	import type { TaskOutput } from './agent-chat.svelte';
 	import { formatCount, formatElapsed, isRunning, sortTasks } from './chat-format';
@@ -15,7 +15,8 @@
 		tasks,
 		seenAt,
 		fetchOutput,
-		onClose
+		onClose,
+		class: className
 	}: {
 		tasks: TaskInfo[];
 		/** When each task was first seen, for running timers. */
@@ -23,6 +24,7 @@
 		fetchOutput: (taskId: string) => Promise<TaskOutput | null>;
 		/** Set when shown as an overlay (narrow pane). */
 		onClose?: () => void;
+		class?: string;
 	} = $props();
 
 	let now = $state(Date.now());
@@ -124,7 +126,9 @@
 	{/if}
 {/snippet}
 
-<aside class="flex h-full min-h-0 w-72 flex-col border-l border-wb-hair bg-wb-panel">
+<aside
+	class={cn('flex h-full min-h-0 w-72 flex-col border-l border-wb-hair bg-wb-panel', className)}
+>
 	<header class="flex h-9 shrink-0 items-center gap-2 border-b border-wb-hair px-3 text-xs">
 		<span class="font-medium text-wb-ink">Agents and tasks</span>
 		{#if running > 0}

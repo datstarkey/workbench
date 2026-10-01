@@ -9,9 +9,8 @@ import type {
 	StartAgentBody,
 	TranscriptItem,
 	TranscriptMeta
-} from '$types/workbench';
-import { uid } from '$lib/utils/uid';
-import { type AgentApi, loopbackAgentApi } from './agent-api';
+} from '@workbench/types';
+import type { AgentApi } from './agent-api';
 import { applyChanges } from './chat-format';
 import { previewUrl } from './image-intake';
 
@@ -42,7 +41,7 @@ export interface TaskOutput {
 	bytes: number;
 }
 
-/** One chat pane's connection to its `claude -p` session on the loopback server. */
+/** One chat view's connection to its `claude -p` session on a Workbench server. */
 export class AgentChat {
 	items = $state.raw<TranscriptItem[]>([]);
 	meta = $state.raw<TranscriptMeta | null>(null);
@@ -70,6 +69,8 @@ export class AgentChat {
 	private ws: WebSocket | null = null;
 	private retryTimer: ReturnType<typeof setTimeout> | null = null;
 	private disposed = false;
+	/** Bumped by every connect; an older one still awaiting the server gives up. */
+	private generation = 0;
 	/** Called when Claude starts or stops waiting on the person (approval, question). */
 	onNeedsYou: ((waiting: boolean) => void) | null = null;
 	private waitingOnYou = false;
@@ -77,7 +78,7 @@ export class AgentChat {
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
 
-	constructor(body: StartAgentBody, api: AgentApi = loopbackAgentApi) {
+	constructor(body: StartAgentBody, api: AgentApi) {
 		this.body = body;
 		this.api = api;
 		this.sessionId = body.sessionId;
@@ -99,17 +100,19 @@ export class AgentChat {
 	 * and this brings it back with the conversation resumed.
 	 */
 	private async connect(): Promise<void> {
+		const generation = ++this.generation;
+		const stale = () => this.disposed || generation !== this.generation;
 		let url: string;
 		try {
 			await this.api.start({ ...this.body, sessionId: this.sessionId });
 			url = await this.api.socketUrl(this.sessionId);
 		} catch (e) {
-			if (this.disposed) return;
+			if (stale()) return;
 			this.status = 'failed';
 			this.error = e instanceof Error ? e.message : String(e);
 			return;
 		}
-		if (this.disposed) return;
+		if (stale()) return;
 		const ws = new WebSocket(url);
 		this.ws = ws;
 		ws.onmessage = (event) => {
@@ -227,6 +230,14 @@ export class AgentChat {
 		}
 	}
 
+	/**
+	 * The conversation has something on disk to resume. A snapshot that starts
+	 * past item 0 left older history out, prompts included.
+	 */
+	get hasHistory(): boolean {
+		return this.start > 0 || this.items.some((i) => i.kind === 'user');
+	}
+
 	private userTexts(): string[] {
 		return this.items.flatMap((i) => (i.kind === 'user' ? [i.text] : []));
 	}
@@ -250,7 +261,7 @@ export class AgentChat {
 		this.pending = [
 			...this.pending,
 			{
-				id: uid(),
+				id: crypto.randomUUID(),
 				text: trimmed,
 				previews: images.map(previewUrl),
 				after: this.userTexts().length
@@ -294,6 +305,23 @@ export class AgentChat {
 			if (!this.send({ t: 'taskOutput', taskId })) return resolve(null);
 			this.taskWaiters[taskId] = resolve;
 		});
+	}
+
+	/**
+	 * Re-attach now, e.g. when a phone wakes: after a long sleep the socket can
+	 * still read OPEN while the server has let it go.
+	 */
+	reconnect(): void {
+		if (this.disposed || this.status === 'failed' || this.status === 'exited') return;
+		if (this.retryTimer) clearTimeout(this.retryTimer);
+		const old = this.ws;
+		this.ws = null;
+		if (old) {
+			old.onclose = null;
+			old.close();
+		}
+		this.status = 'reconnecting';
+		void this.connect();
 	}
 
 	dispose(): void {
