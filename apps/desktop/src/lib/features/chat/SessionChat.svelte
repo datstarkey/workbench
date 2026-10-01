@@ -362,6 +362,19 @@
 				{#if chat.notice}
 					<p class="text-xs text-wb-err" role="alert">{chat.notice}</p>
 				{/if}
+				{#if limit}
+					<p
+						class={cn(
+							'rounded-md border px-3 py-2 text-xs',
+							limit.tone === 'blocked'
+								? 'border-wb-warn/50 bg-wb-warn/10 text-wb-ink'
+								: 'border-wb-hair text-wb-ink-mute'
+						)}
+						role={limit.tone === 'blocked' ? 'alert' : undefined}
+					>
+						{limit.text}
+					</p>
+				{/if}
 				{#if todos.length > 0}
 					<ChatPlan steps={todos} />
 				{/if}
