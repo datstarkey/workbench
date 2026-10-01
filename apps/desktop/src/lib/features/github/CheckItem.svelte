@@ -7,7 +7,7 @@
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import { cn } from '@workbench/ui';
 	import { iconButton, outlineButton } from '$features/sidebar/styles';
-	import { openInGitHub } from '$lib/utils/github';
+	import { openUrl } from '$lib/utils/open-url';
 	import { formatDuration, type RunCheck } from './pr-view';
 
 	let { check, onRerun }: { check: RunCheck; onRerun?: () => Promise<void> } = $props();
@@ -69,7 +69,7 @@
 				<button
 					type="button"
 					class={cn(outlineButton, 'bg-transparent')}
-					onclick={() => openInGitHub(check.link)}
+					onclick={() => openUrl(check.link)}
 				>
 					<ExternalLinkIcon class="size-[11px]" />
 					View logs
@@ -87,7 +87,7 @@
 				type="button"
 				class={[iconButton, 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100']}
 				aria-label="Open {check.name} on GitHub"
-				onclick={() => openInGitHub(check.link)}
+				onclick={() => openUrl(check.link)}
 			>
 				<ExternalLinkIcon class="size-3" />
 			</button>

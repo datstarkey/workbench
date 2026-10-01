@@ -6,7 +6,7 @@
 	import SidebarSection from '$features/sidebar/SidebarSection.svelte';
 	import { primaryButton } from '$features/sidebar/styles';
 	import { getGitHubStore, getGitStore, getWorktreeManager } from '$stores/context';
-	import { openInGitHub } from '$lib/utils/github';
+	import { openUrl } from '$lib/utils/open-url';
 	import { invoke } from '@tauri-apps/api/core';
 	import { onDestroy } from 'svelte';
 	import { watch } from 'runed';
@@ -121,7 +121,7 @@
 						<button
 							type="button"
 							class={cn(primaryButton, 'rounded-md')}
-							onclick={() => openInGitHub(compareUrl(repoUrl, branch))}
+							onclick={() => openUrl(compareUrl(repoUrl, branch))}
 						>
 							<PlusIcon class="size-3.5" />
 							Create pull request
