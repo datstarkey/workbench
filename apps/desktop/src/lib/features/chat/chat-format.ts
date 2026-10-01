@@ -137,22 +137,6 @@ export function latestTodos(items: TranscriptItem[]): TodoStep[] {
 	return [];
 }
 
-export type TextSegment = { kind: 'prose' | 'code'; text: string };
-
-/**
- * Split Markdown code fences out of assistant text. Rendered as plain text —
- * never as HTML — because model output can quote untrusted repo content.
- */
-export function splitFences(text: string): TextSegment[] {
-	const segments: TextSegment[] = [];
-	const parts = text.split(/^```[^\n]*\n?/m);
-	parts.forEach((part, i) => {
-		const body = i % 2 === 1 ? part.replace(/\n$/, '') : part.trim();
-		if (body) segments.push({ kind: i % 2 === 1 ? 'code' : 'prose', text: body });
-	});
-	return segments;
-}
-
 export function formatTokens(n: number | null): string {
 	if (n == null) return '';
 	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);

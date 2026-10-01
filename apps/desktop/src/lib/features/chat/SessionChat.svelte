@@ -12,6 +12,7 @@
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
 	import ChatComposer from './ChatComposer.svelte';
+	import ChatMarkdown from './ChatMarkdown.svelte';
 	import ChatModelPicker from './ChatModelPicker.svelte';
 	import ChatPlan from './ChatPlan.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
@@ -24,7 +25,6 @@
 		isRunning,
 		latestTodos,
 		limitNotice,
-		splitFences,
 		toolDetail
 	} from './chat-format';
 
@@ -298,15 +298,8 @@
 								{/if}
 							</div>
 						{:else if block.item.kind === 'text'}
-							<div class="flex min-w-0 flex-col gap-2 leading-relaxed">
-								{#each splitFences(block.item.text) as segment, i (i)}
-									{#if segment.kind === 'code'}
-										<pre
-											class="scrollbar-thin overflow-x-auto rounded-md border border-wb-hair bg-wb-panel px-3 py-2 font-mono text-xs">{segment.text}</pre>
-									{:else}
-										<p class="whitespace-pre-wrap">{segment.text}</p>
-									{/if}
-								{/each}
+							<div class="flex min-w-0 flex-col gap-2">
+								<ChatMarkdown text={block.item.text} />
 								{#if now.kind === 'writing' && block.item.id === lastId}
 									<span class="caret" aria-hidden="true"></span>
 								{/if}

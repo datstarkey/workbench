@@ -19,7 +19,6 @@ import {
 	parseQuestions,
 	patchStats,
 	shortPath,
-	splitFences,
 	toolDetail
 } from './chat-format';
 
@@ -184,20 +183,6 @@ describe('latestTodos', () => {
 		];
 		expect(latestTodos(items)).toEqual([{ content: 'new', status: 'completed' }]);
 		expect(latestTodos([text('a', 'x')])).toEqual([]);
-	});
-});
-
-describe('splitFences', () => {
-	it('separates prose from fenced code', () => {
-		expect(splitFences('Run this:\n```bash\nbun test\n```\nThen check.')).toEqual([
-			{ kind: 'prose', text: 'Run this:' },
-			{ kind: 'code', text: 'bun test' },
-			{ kind: 'prose', text: 'Then check.' }
-		]);
-	});
-
-	it('returns plain prose unchanged', () => {
-		expect(splitFences('Just words.')).toEqual([{ kind: 'prose', text: 'Just words.' }]);
 	});
 });
 
