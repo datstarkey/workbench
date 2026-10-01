@@ -532,6 +532,8 @@ export type TranscriptItem =
 			/** Claude withdrew the request (turn interrupted, answered elsewhere). */
 			expired: boolean;
 			decision?: ApprovalDecision;
+			/** `AskUserQuestion` answers: question text → chosen label(s) or own words. */
+			answers?: Record<string, string>;
 	  }
 	| { kind: 'notice'; id: string; text: string };
 
@@ -561,7 +563,12 @@ export type AgentServerMsg =
 
 export type AgentClientMsg =
 	| { t: 'prompt'; text: string }
-	| { t: 'approve'; requestId: string; decision: ApprovalDecision }
+	| {
+			t: 'approve';
+			requestId: string;
+			decision: ApprovalDecision;
+			answers?: Record<string, string>;
+	  }
 	| { t: 'interrupt' }
 	| { t: 'mode'; mode: PermissionMode };
 

@@ -120,6 +120,9 @@ enum ClientMsg {
     Approve {
         request_id: String,
         decision: ApprovalDecision,
+        /// `AskUserQuestion` answers: question text → chosen label or own words.
+        #[serde(default)]
+        answers: Option<serde_json::Map<String, Value>>,
     },
     Interrupt,
     Mode {
@@ -134,7 +137,8 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<()> {
         ClientMsg::Approve {
             request_id,
             decision,
-        } => session.approve(&request_id, decision),
+            answers,
+        } => session.approve(&request_id, decision, answers.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
         ClientMsg::Mode { mode } => session.set_mode(&mode),
     }

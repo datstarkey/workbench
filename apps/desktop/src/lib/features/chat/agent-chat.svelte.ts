@@ -172,8 +172,8 @@ export class AgentChat {
 		return true;
 	}
 
-	approve(requestId: string, decision: ApprovalDecision): void {
-		this.send({ t: 'approve', requestId, decision });
+	approve(requestId: string, decision: ApprovalDecision, answers?: Record<string, string>): void {
+		this.send({ t: 'approve', requestId, decision, ...(answers ? { answers } : {}) });
 	}
 
 	interrupt(): void {

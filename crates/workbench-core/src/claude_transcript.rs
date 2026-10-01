@@ -203,24 +203,50 @@ impl Transcript {
 
     /// Record the answer to an approval and build the `control_response` for
     /// the CLI. `None` if the request is unknown or already answered.
+    ///
+    /// `answers` (question text → chosen label, or the person's own words) is
+    /// how an `AskUserQuestion` call is answered: the tool reads them from its
+    /// `updatedInput`. Only string values are passed on.
     pub fn resolve_approval(
         &mut self,
         request_id: &str,
         decision: ApprovalDecision,
+        answers: Option<&serde_json::Map<String, Value>>,
     ) -> Option<(usize, Value)> {
         let pending = self.approvals.remove(request_id)?;
-        if let TranscriptItem::Approval { decision: d, .. } = &mut self.items[pending.item] {
+        let answers: Option<Value> = answers.map(|a| {
+            a.iter()
+                .filter(|(_, v)| v.is_string())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        });
+        let mut input = pending.input;
+        if let (Some(answers), Some(obj)) = (&answers, input.as_object_mut()) {
+            if decision != ApprovalDecision::Deny {
+                obj.insert("answers".into(), answers.clone());
+            }
+        }
+        if let TranscriptItem::Approval {
+            decision: d,
+            answers: a,
+            ..
+        } = &mut self.items[pending.item]
+        {
             *d = Some(decision);
+            if decision != ApprovalDecision::Deny {
+                *a = answers;
+            }
         }
         let response = match decision {
             ApprovalDecision::Deny => json!({
                 "behavior": "deny",
-                "message": "The user declined this tool call in Workbench.",
+                "message": "The user declined this in Workbench.",
             }),
-            ApprovalDecision::Allow => json!({"behavior": "allow", "updatedInput": pending.input}),
+            ApprovalDecision::Allow => json!({"behavior": "allow", "updatedInput": input}),
             ApprovalDecision::AlwaysAllow => json!({
                 "behavior": "allow",
-                "updatedInput": pending.input,
+                "updatedInput": input,
                 "updatedPermissions": pending.suggestions,
             }),
         };
@@ -270,6 +296,7 @@ impl Transcript {
                 can_always_allow,
                 expired: false,
                 decision: None,
+                answers: None,
             },
             changed,
         );

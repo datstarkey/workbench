@@ -25,6 +25,8 @@
 	const label = $derived.by(() => {
 		switch (activity.kind) {
 			case 'approval':
+				if (activity.approval.tool === 'AskUserQuestion') return 'Waiting for your answer';
+				if (activity.approval.tool === 'ExitPlanMode') return 'Waiting for you to review the plan';
 				return 'Waiting for your approval';
 			case 'tool':
 				return `Running ${activity.tool.name}`;

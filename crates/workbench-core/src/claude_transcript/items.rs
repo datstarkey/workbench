@@ -65,6 +65,9 @@ pub enum TranscriptItem {
         expired: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         decision: Option<ApprovalDecision>,
+        /// What the person chose, for `AskUserQuestion`: question text → answer.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        answers: Option<Value>,
     },
     Notice {
         id: String,

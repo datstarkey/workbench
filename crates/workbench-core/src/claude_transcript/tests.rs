@@ -149,7 +149,7 @@ fn approvals_round_trip_to_control_responses() {
     assert_eq!(t.pending_approval_ids(), vec!["req-1".to_string()]);
 
     let (i, response) = t
-        .resolve_approval("req-1", ApprovalDecision::AlwaysAllow)
+        .resolve_approval("req-1", ApprovalDecision::AlwaysAllow, None)
         .expect("pending approval");
     assert_eq!(i, 0);
     assert_eq!(response["type"], "control_response");
@@ -166,7 +166,7 @@ fn approvals_round_trip_to_control_responses() {
         }
     ));
     assert!(
-        t.resolve_approval("req-1", ApprovalDecision::Deny)
+        t.resolve_approval("req-1", ApprovalDecision::Deny, None)
             .is_none(),
         "answered once"
     );
@@ -176,7 +176,9 @@ fn approvals_round_trip_to_control_responses() {
 fn deny_tells_claude_why() {
     let mut t = Transcript::default();
     t.apply(&json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Write","input":{}}}));
-    let (_, response) = t.resolve_approval("r", ApprovalDecision::Deny).unwrap();
+    let (_, response) = t
+        .resolve_approval("r", ApprovalDecision::Deny, None)
+        .unwrap();
     assert_eq!(response["response"]["response"]["behavior"], "deny");
     assert!(response["response"]["response"]["message"]
         .as_str()
@@ -348,7 +350,9 @@ fn a_withdrawn_approval_expires_and_cannot_be_answered() {
         &t.items()[0],
         TranscriptItem::Approval { expired: true, .. }
     ));
-    assert!(t.resolve_approval("r", ApprovalDecision::Allow).is_none());
+    assert!(t
+        .resolve_approval("r", ApprovalDecision::Allow, None)
+        .is_none());
 }
 
 #[test]
@@ -381,4 +385,32 @@ fn slash_command_output_is_shown() {
     let mut t = Transcript::default();
     t.apply(&json!({"type":"system","subtype":"local_command_output","content":"Total cost: $0.42","uuid":"o1"}));
     assert!(matches!(&t.items()[0], TranscriptItem::Notice { text, .. } if text.contains("$0.42")));
+}
+
+#[test]
+fn questions_are_answered_through_updated_input() {
+    let mut t = Transcript::default();
+    let question = "Which library should we use?";
+    t.apply(&json!({"type":"control_request","request_id":"q","request":{
+        "subtype":"can_use_tool","tool_name":"AskUserQuestion",
+        "input":{"questions":[{"question":question,"header":"Library","multiSelect":false,
+            "options":[{"label":"date-fns","description":"Small"},{"label":"dayjs","description":"Tiny"}]}]}}}));
+    let mut answers = serde_json::Map::new();
+    answers.insert(question.into(), json!("dayjs"));
+    answers.insert("ignored".into(), json!(42));
+    let (_, response) = t
+        .resolve_approval("q", ApprovalDecision::Allow, Some(&answers))
+        .unwrap();
+    let input = &response["response"]["response"]["updatedInput"];
+    assert_eq!(
+        input["answers"],
+        json!({question: "dayjs"}),
+        "non-strings dropped"
+    );
+    assert_eq!(
+        input["questions"][0]["header"], "Library",
+        "the questions go back unchanged"
+    );
+    assert!(matches!(&t.items()[0],
+        TranscriptItem::Approval { answers: Some(a), .. } if a[question] == "dayjs"));
 }

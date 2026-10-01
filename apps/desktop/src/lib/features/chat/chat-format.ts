@@ -153,6 +153,53 @@ export function formatTokens(n: number | null): string {
 	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
+export interface QuestionOption {
+	label: string;
+	description: string;
+	preview?: string;
+}
+
+export interface Question {
+	question: string;
+	header: string;
+	multiSelect: boolean;
+	options: QuestionOption[];
+}
+
+/** The questions of an `AskUserQuestion` call; malformed entries are dropped. */
+export function parseQuestions(input: Record<string, unknown> | null): Question[] {
+	const raw = input?.questions;
+	if (!Array.isArray(raw)) return [];
+	return raw.flatMap((q): Question[] => {
+		if (typeof q?.question !== 'string' || !Array.isArray(q.options)) return [];
+		const options = (q.options as unknown[]).flatMap((o): QuestionOption[] => {
+			const opt = o as Partial<QuestionOption> | null;
+			return typeof opt?.label === 'string'
+				? [
+						{
+							label: opt.label,
+							description: typeof opt.description === 'string' ? opt.description : '',
+							...(typeof opt.preview === 'string' ? { preview: opt.preview } : {})
+						}
+					]
+				: [];
+		});
+		return [
+			{
+				question: q.question,
+				header: typeof q.header === 'string' ? q.header : '',
+				multiSelect: q.multiSelect === true,
+				options
+			}
+		];
+	});
+}
+
+/** One question's answer as the tool expects it: labels comma-joined, plus own words. */
+export function answerFor(selected: string[], other: string): string {
+	return [...selected, other.trim()].filter(Boolean).join(', ');
+}
+
 /** What Claude is doing right now, for the activity line under the chat. */
 export type Activity =
 	| { kind: 'idle' }

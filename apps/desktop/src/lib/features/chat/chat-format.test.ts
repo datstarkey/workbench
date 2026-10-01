@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TranscriptItem, TranscriptMeta } from '$types/workbench';
 import {
 	activity,
+	answerFor,
 	applyChanges,
 	approvalPreview,
 	formatElapsed,
@@ -9,6 +10,7 @@ import {
 	groupBlocks,
 	latestTodos,
 	modeLabel,
+	parseQuestions,
 	patchStats,
 	shortPath,
 	splitFences,
@@ -192,5 +194,43 @@ describe('formatTokens', () => {
 		expect(formatTokens(225684)).toBe('226k');
 		expect(formatTokens(512)).toBe('512');
 		expect(formatTokens(null)).toBe('');
+	});
+});
+
+describe('questions', () => {
+	it('parses AskUserQuestion input and drops malformed entries', () => {
+		const qs = parseQuestions({
+			questions: [
+				{
+					question: 'Which library?',
+					header: 'Library',
+					multiSelect: false,
+					options: [
+						{ label: 'date-fns', description: 'Small', preview: 'import { format }' },
+						{ label: 'dayjs' },
+						{ nope: true }
+					]
+				},
+				{ header: 'no question text' }
+			]
+		});
+		expect(qs).toEqual([
+			{
+				question: 'Which library?',
+				header: 'Library',
+				multiSelect: false,
+				options: [
+					{ label: 'date-fns', description: 'Small', preview: 'import { format }' },
+					{ label: 'dayjs', description: '' }
+				]
+			}
+		]);
+		expect(parseQuestions(null)).toEqual([]);
+	});
+
+	it('joins picks and own words the way the tool reads them', () => {
+		expect(answerFor(['A'], '')).toBe('A');
+		expect(answerFor(['A', 'B'], ' also C ')).toBe('A, B, also C');
+		expect(answerFor([], '')).toBe('');
 	});
 });

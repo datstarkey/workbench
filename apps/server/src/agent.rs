@@ -253,9 +253,14 @@ impl AgentSession {
         Ok(())
     }
 
-    pub fn approve(&self, request_id: &str, decision: ApprovalDecision) -> Result<()> {
+    pub fn approve(
+        &self,
+        request_id: &str,
+        decision: ApprovalDecision,
+        answers: Option<&serde_json::Map<String, Value>>,
+    ) -> Result<()> {
         let mut t = lock(&self.transcript);
-        let Some((i, response)) = t.resolve_approval(request_id, decision) else {
+        let Some((i, response)) = t.resolve_approval(request_id, decision, answers) else {
             return Ok(()); // already answered (another device, or twice)
         };
         self.send(&response)?;

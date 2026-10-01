@@ -99,10 +99,12 @@ describe('AgentChat', () => {
 	it('sends approvals, interrupts and mode changes', async () => {
 		const { chat, ws } = await connected();
 		chat.approve('req-1', 'alwaysAllow');
+		chat.approve('q-1', 'allow', { 'Which library?': 'dayjs' });
 		chat.interrupt();
 		chat.setMode('plan');
 		expect(ws.sent).toEqual([
 			{ t: 'approve', requestId: 'req-1', decision: 'alwaysAllow' },
+			{ t: 'approve', requestId: 'q-1', decision: 'allow', answers: { 'Which library?': 'dayjs' } },
 			{ t: 'interrupt' },
 			{ t: 'mode', mode: 'plan' }
 		]);

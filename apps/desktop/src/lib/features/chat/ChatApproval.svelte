@@ -30,21 +30,25 @@
 				return 'Change this file?';
 			case 'WebFetch':
 				return 'Fetch this page?';
+			case 'ExitPlanMode':
+				return 'Ready to start on this plan?';
 			default:
 				return `Use ${approval.tool}?`;
 		}
 	});
-	const preview = $derived(approvalPreview(approval, cwd));
+	const isPlan = $derived(approval.tool === 'ExitPlanMode');
+	const plan = $derived(typeof approval.input?.plan === 'string' ? approval.input.plan : '');
+	const preview = $derived(isPlan ? plan : approvalPreview(approval, cwd));
 	const isCommand = $derived(approval.tool === 'Bash');
 	const outcome = $derived.by(() => {
 		if (approval.expired) return 'Withdrawn by Claude';
 		switch (approval.decision) {
 			case 'allow':
-				return 'Allowed';
+				return isPlan ? 'Plan approved' : 'Allowed';
 			case 'alwaysAllow':
-				return 'Always allowed';
+				return isPlan ? 'Plan approved, accepting edits' : 'Always allowed';
 			case 'deny':
-				return 'Denied';
+				return isPlan ? 'Kept planning' : 'Denied';
 			default:
 				return null;
 		}
@@ -64,7 +68,9 @@
 			<CheckIcon class="size-3.5 shrink-0 text-wb-ok" />
 		{/if}
 		<span class="shrink-0">{outcome}</span>
-		<span class="min-w-0 truncate font-mono text-[11px]">{approval.tool} {preview}</span>
+		{#if !isPlan}
+			<span class="min-w-0 truncate font-mono text-[11px]">{approval.tool} {preview}</span>
+		{/if}
 	</div>
 {:else}
 	<section
@@ -74,13 +80,21 @@
 		<header class="flex items-center gap-2 px-3.5 pt-3 text-sm">
 			<ShieldQuestionIcon class="size-4 shrink-0 text-wb-warn" />
 			<span class="font-medium text-wb-ink">{question}</span>
-			<span class="ml-auto text-xs text-wb-ink-soft">{approval.tool}</span>
+			{#if !isPlan}<span class="ml-auto text-xs text-wb-ink-soft">{approval.tool}</span>{/if}
 		</header>
-		<pre
-			class={cn(
-				'scrollbar-thin mx-3.5 mt-2.5 max-h-48 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-wb-ink',
-				isCommand && 'command'
-			)}>{preview}</pre>
+		{#if isPlan}
+			<div
+				class="scrollbar-thin mx-3.5 mt-2.5 max-h-80 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3.5 py-3 text-sm leading-relaxed whitespace-pre-wrap text-wb-ink"
+			>
+				{preview}
+			</div>
+		{:else}
+			<pre
+				class={cn(
+					'scrollbar-thin mx-3.5 mt-2.5 max-h-48 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-wb-ink',
+					isCommand && 'command'
+				)}>{preview}</pre>
+		{/if}
 		{#if approval.description || approval.blockedPath}
 			<div class="flex flex-col gap-0.5 px-3.5 pt-2 text-xs text-wb-ink-mute">
 				{#if approval.description}<p>{approval.description}</p>{/if}
@@ -98,7 +112,7 @@
 				disabled={sent !== null}
 				onclick={() => decide('allow')}
 			>
-				{sent === 'allow' ? 'Allowing…' : 'Allow'}
+				{sent === 'allow' ? 'Sending…' : isPlan ? 'Start building' : 'Allow'}
 			</button>
 			{#if approval.canAlwaysAllow}
 				<button
@@ -107,7 +121,7 @@
 					disabled={sent !== null}
 					onclick={() => decide('alwaysAllow')}
 				>
-					Always allow
+					{isPlan ? 'Start, accept edits' : 'Always allow'}
 				</button>
 			{/if}
 			<button
@@ -116,7 +130,7 @@
 				disabled={sent !== null}
 				onclick={() => decide('deny')}
 			>
-				Deny
+				{isPlan ? 'Keep planning' : 'Deny'}
 			</button>
 		</div>
 	</section>

@@ -12,6 +12,7 @@
 	import ChatApproval from './ChatApproval.svelte';
 	import ChatComposer from './ChatComposer.svelte';
 	import ChatPlan from './ChatPlan.svelte';
+	import ChatQuestion from './ChatQuestion.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
 	import {
 		activity,
@@ -85,7 +86,7 @@
 			case 'failed':
 				return 'Restart the session to send messages';
 			default:
-				return now.kind === 'approval' ? 'Answer the request above first' : null;
+				return now.kind === 'approval' ? 'Answer Claude above first' : null;
 		}
 	});
 
@@ -265,6 +266,12 @@
 					{/if}
 				{:else if block.item.kind === 'tool'}
 					<ChatToolCard tool={block.item} cwd={workdir} />
+				{:else if block.item.kind === 'approval' && block.item.tool === 'AskUserQuestion'}
+					{@const approval = block.item}
+					<ChatQuestion
+						{approval}
+						onAnswer={(decision, answers) => chat.approve(approval.id, decision, answers)}
+					/>
 				{:else if block.item.kind === 'approval'}
 					{@const approval = block.item}
 					<ChatApproval
