@@ -2,6 +2,7 @@ import type {
 	AgentClientMsg,
 	AgentServerMsg,
 	ApprovalDecision,
+	ChatImage,
 	PermissionMode,
 	StartAgentBody,
 	TranscriptItem,
@@ -10,6 +11,7 @@ import type {
 import { uid } from '$lib/utils/uid';
 import { type AgentApi, loopbackAgentApi } from './agent-api';
 import { applyChanges } from './chat-format';
+import { previewUrl } from './image-intake';
 
 /**
  * - `starting`: launching or resuming the `claude` process.
@@ -24,6 +26,8 @@ export type ChatStatus = 'starting' | 'live' | 'reconnecting' | 'exited' | 'fail
 export interface PendingPrompt {
 	id: string;
 	text: string;
+	/** Data URLs of attached images, shown in the bubble. */
+	previews: string[];
 	/** User items already in the chat when it was sent; only later ones can echo it. */
 	after: number;
 }
@@ -46,6 +50,8 @@ export class AgentChat {
 	busySince = $state<number | null>(null);
 	/** The session continued under a new id (`/clear`); the pane follows it. */
 	sessionId = $state('');
+	/** Previews of images sent from here, by the user item that echoed them. */
+	imagePreviews = $state.raw<Record<string, string[]>>({});
 	/** When each task or running tool was first seen (client clock), for timers. */
 	seenAt = $state.raw<Record<string, number>>({});
 
@@ -180,8 +186,16 @@ export class AgentChat {
 	/** Drop optimistic prompts Claude has echoed back. */
 	private settlePending(): void {
 		if (this.pending.length === 0) return;
-		const users = this.userTexts();
-		this.pending = this.pending.filter((p) => !users.slice(p.after).includes(p.text));
+		const users = this.items.filter((i) => i.kind === 'user');
+		const previews: Record<string, string[]> = {};
+		this.pending = this.pending.filter((p) => {
+			const echo = users.slice(p.after).find((u) => u.kind === 'user' && u.text === p.text);
+			if (echo && p.previews.length > 0) previews[echo.id] = p.previews;
+			return !echo;
+		});
+		if (Object.keys(previews).length > 0) {
+			this.imagePreviews = { ...this.imagePreviews, ...previews };
+		}
 	}
 
 	private userTexts(): string[] {
@@ -197,10 +211,22 @@ export class AgentChat {
 		return true;
 	}
 
-	prompt(text: string): boolean {
+	prompt(text: string, images: ChatImage[] = []): boolean {
 		const trimmed = text.trim();
-		if (!trimmed || !this.send({ t: 'prompt', text: trimmed })) return false;
-		this.pending = [...this.pending, { id: uid(), text: trimmed, after: this.userTexts().length }];
+		if (!trimmed && images.length === 0) return false;
+		const payload = images.map(({ mediaType, data }) => ({ mediaType, data }));
+		const msg: AgentClientMsg = { t: 'prompt', text: trimmed };
+		if (payload.length > 0) msg.images = payload;
+		if (!this.send(msg)) return false;
+		this.pending = [
+			...this.pending,
+			{
+				id: uid(),
+				text: trimmed,
+				previews: images.map(previewUrl),
+				after: this.userTexts().length
+			}
+		];
 		this.busySince ??= Date.now();
 		return true;
 	}

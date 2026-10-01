@@ -28,6 +28,9 @@ pub enum TranscriptItem {
         id: String,
         text: String,
         timestamp: String,
+        /// Images attached to the message (content not kept).
+        #[serde(skip_serializing_if = "is_zero")]
+        images: u32,
     },
     Text {
         id: String,
@@ -161,4 +164,8 @@ pub struct TranscriptMeta {
     /// Set while the CLI waits to retry a failed API call.
     pub retry: Option<RetryInfo>,
     pub rate_limit: Option<RateLimitInfo>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }

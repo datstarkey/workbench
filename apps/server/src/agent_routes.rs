@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 use workbench_core::claude_transcript::ApprovalDecision;
 
-use crate::agent::{AgentSession, StartAgent};
+use crate::agent::{AgentSession, PromptImage, StartAgent, MAX_IMAGES};
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
 use crate::state::{wait_revoked, AppState};
@@ -114,7 +114,10 @@ pub async fn agent_attach(
 #[serde(tag = "t", rename_all = "camelCase")]
 enum ClientMsg {
     Prompt {
+        #[serde(default)]
         text: String,
+        #[serde(default)]
+        images: Vec<PromptImage>,
     },
     #[serde(rename_all = "camelCase")]
     Approve {
@@ -144,8 +147,14 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
                 json!({"t": "output", "toolId": tool_id, "text": text}),
             ));
         }
-        ClientMsg::Prompt { text } if text.trim().is_empty() => Ok(()),
-        ClientMsg::Prompt { text } => session.prompt(&text),
+        ClientMsg::Prompt { text, images } if text.trim().is_empty() && images.is_empty() => Ok(()),
+        ClientMsg::Prompt { text, images } => {
+            if images.len() > MAX_IMAGES {
+                anyhow::bail!("attach at most {MAX_IMAGES} images per message");
+            }
+            images.iter().try_for_each(PromptImage::validate)?;
+            session.prompt(&text, &images)
+        }
         ClientMsg::Approve {
             request_id,
             decision,

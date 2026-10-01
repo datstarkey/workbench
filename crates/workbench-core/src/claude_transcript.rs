@@ -490,12 +490,15 @@ impl Transcript {
             .get("toolUseResult")
             .or_else(|| obj.get("tool_use_result"));
         let content = obj.get("message").and_then(|m| m.get("content"));
+        let mut images = 0;
         let text = match content {
             Some(Value::String(s)) => Some(s.clone()),
             Some(Value::Array(blocks)) => {
                 for block in blocks {
-                    if str_at(block, "type") == Some("tool_result") {
-                        self.apply_tool_result(block, result, changed);
+                    match str_at(block, "type") {
+                        Some("tool_result") => self.apply_tool_result(block, result, changed),
+                        Some("image") => images += 1,
+                        _ => {}
                     }
                 }
                 let texts: Vec<&str> = blocks
@@ -503,11 +506,15 @@ impl Transcript {
                     .filter(|b| str_at(b, "type") == Some("text"))
                     .filter_map(|b| str_at(b, "text"))
                     .collect();
-                (!texts.is_empty()).then(|| texts.join("\n"))
+                (!texts.is_empty() || images > 0).then(|| texts.join("\n"))
             }
             _ => None,
         };
-        let Some(text) = text.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
+        let Some(text) = text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty() || images > 0)
+        else {
             return;
         };
         if text.starts_with("[Request interrupted") {
@@ -521,7 +528,11 @@ impl Transcript {
             );
             return;
         }
-        let text = match user_visible_text(text) {
+        let text = match if text.is_empty() {
+            Some(UserText::Prompt(String::new()))
+        } else {
+            user_visible_text(text)
+        } {
             Some(UserText::Prompt(text)) => {
                 self.meta.busy = true;
                 text
@@ -535,6 +546,7 @@ impl Transcript {
                 id,
                 text,
                 timestamp,
+                images,
             },
             changed,
         );
@@ -561,6 +573,7 @@ impl Transcript {
             id: str_at(obj, "uuid").unwrap_or_default().to_string(),
             text: text.to_string(),
             timestamp: str_at(att, "timestamp").unwrap_or_default().to_string(),
+            images: 0,
         };
         self.upsert(item, changed);
     }

@@ -99,6 +99,23 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('sends pasted images with the prompt and keeps their previews', async () => {
+		const { chat, ws } = await connected();
+		const png = { mediaType: 'image/png', data: 'iVBORw==', name: 'shot.png' };
+		expect(chat.prompt('', [png])).toBe(true);
+		expect(ws.sent).toEqual([
+			{ t: 'prompt', text: '', images: [{ mediaType: 'image/png', data: 'iVBORw==' }] }
+		]);
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'u1', text: '', timestamp: '', images: 1 }]],
+			meta: meta(true)
+		});
+		expect(chat.pending).toEqual([]);
+		expect(chat.imagePreviews.u1).toEqual(['data:image/png;base64,iVBORw==']);
+		chat.dispose();
+	});
+
 	it('sends approvals, interrupts and mode changes', async () => {
 		const { chat, ws } = await connected();
 		chat.approve('req-1', 'alwaysAllow');

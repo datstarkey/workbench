@@ -6,7 +6,7 @@
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
-	import type { ProjectConfig } from '$types/workbench';
+	import type { ChatImage, ProjectConfig } from '$types/workbench';
 	import { getClaudeSessionStore } from '$stores/context';
 	import { acquireChat } from './chat-registry';
 	import ChatActivity from './ChatActivity.svelte';
@@ -124,9 +124,9 @@
 		return () => node.removeEventListener('scroll', onScroll);
 	};
 
-	function send(text: string): boolean {
+	function send(text: string, images: ChatImage[]): boolean {
 		stickToBottom = true;
-		return chat.prompt(text);
+		return chat.prompt(text, images);
 	}
 
 	function onKeydown(event: KeyboardEvent) {
@@ -269,10 +269,32 @@
 								{/each}
 							</div>
 						{:else if block.item.kind === 'user'}
-							<div
-								class="max-w-[85%] self-end rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap"
-							>
-								{block.item.text}
+							{@const previews = chat.imagePreviews[block.item.id] ?? []}
+							<div class="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
+								{#if previews.length > 0}
+									<div class="flex flex-wrap justify-end gap-1.5">
+										{#each previews as src, i (i)}
+											<img
+												{src}
+												alt="Attached"
+												class="size-20 rounded-lg border border-wb-hair object-cover"
+											/>
+										{/each}
+									</div>
+								{:else if block.item.images}
+									<span
+										class="rounded-md border border-wb-hair px-2 py-0.5 text-[11px] text-wb-ink-mute"
+									>
+										{block.item.images === 1 ? '1 image' : `${block.item.images} images`}
+									</span>
+								{/if}
+								{#if block.item.text}
+									<div
+										class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap"
+									>
+										{block.item.text}
+									</div>
+								{/if}
 							</div>
 						{:else if block.item.kind === 'text'}
 							<div class="flex min-w-0 flex-col gap-2 leading-relaxed">
@@ -327,10 +349,23 @@
 					{/each}
 
 					{#each chat.pending as prompt (prompt.id)}
-						<div
-							class="pending max-w-[85%] self-end rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap"
-						>
-							{prompt.text}
+						<div class="pending flex max-w-[85%] flex-col items-end gap-1.5 self-end">
+							{#if prompt.previews.length > 0}
+								<div class="flex flex-wrap justify-end gap-1.5">
+									{#each prompt.previews as src, i (i)}
+										<img
+											{src}
+											alt="Attached"
+											class="size-20 rounded-lg border border-wb-hair object-cover"
+										/>
+									{/each}
+								</div>
+							{/if}
+							{#if prompt.text}
+								<div class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap">
+									{prompt.text}
+								</div>
+							{/if}
 						</div>
 					{/each}
 

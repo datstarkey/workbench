@@ -526,3 +526,21 @@ fn long_tool_output_keeps_a_preview_and_the_whole_text() {
     assert_eq!(*bytes, long.len());
     assert_eq!(t.full_output("toolu_l"), Some(long.as_str()));
 }
+
+#[test]
+fn pasted_images_are_counted_on_the_message() {
+    let mut t = Transcript::default();
+    let image =
+        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}});
+    t.apply(&user(
+        "u1",
+        json!([image.clone(), {"type":"text","text":"what's wrong here?"}]),
+    ));
+    t.apply(&user("u2", json!([image])));
+    assert!(matches!(&t.items()[0],
+        TranscriptItem::User { text, images: 1, .. } if text == "what's wrong here?"));
+    assert!(
+        matches!(&t.items()[1], TranscriptItem::User { text, images: 1, .. } if text.is_empty()),
+        "an image on its own is still a message"
+    );
+}

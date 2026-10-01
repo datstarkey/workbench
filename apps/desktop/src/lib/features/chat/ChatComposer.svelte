@@ -1,13 +1,18 @@
 <script lang="ts">
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
+	import { invoke } from '@tauri-apps/api/core';
+	import { getCurrentWebview } from '@tauri-apps/api/webview';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import ImagePlusIcon from '@lucide/svelte/icons/image-plus';
 	import SquareIcon from '@lucide/svelte/icons/square';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import type { PermissionMode } from '$types/workbench';
+	import type { ChatImage, PermissionMode } from '$types/workbench';
 	import { MODE_OPTIONS, modeLabel } from './chat-format';
+	import { fileToChatImage, IMAGE_TYPES, imageFiles, MAX_IMAGES, previewUrl } from './image-intake';
 
 	let {
 		id,
@@ -26,12 +31,18 @@
 		/** Set when nothing can be sent right now; shown as the placeholder. */
 		disabledReason: string | null;
 		/** Returns false if the message could not be sent (the draft is kept). */
-		onSend: (text: string) => boolean;
+		onSend: (text: string, images: ChatImage[]) => boolean;
 		onStop: () => void;
 		onMode: (mode: PermissionMode) => void;
 	} = $props();
 
-	const canSend = $derived(!disabledReason && draft.trim().length > 0);
+	let images = $state<ChatImage[]>([]);
+	let imageError = $state('');
+	/** A file is being dragged over this composer. */
+	let dropping = $state(false);
+	let picker: HTMLInputElement | null = null;
+
+	const canSend = $derived(!disabledReason && (draft.trim().length > 0 || images.length > 0));
 
 	/** Grow with the text up to ~8 lines, then scroll. */
 	const autosize: Attachment<HTMLTextAreaElement> = (node) => {
@@ -44,8 +55,79 @@
 		);
 	};
 
+	function addImages(added: ChatImage[]) {
+		const room = MAX_IMAGES - images.length;
+		if (added.length > room) imageError = `Attach up to ${MAX_IMAGES} images per message.`;
+		images = [...images, ...added.slice(0, Math.max(0, room))];
+	}
+
+	async function addFiles(files: File[]) {
+		imageError = '';
+		const results = await Promise.allSettled(files.map(fileToChatImage));
+		addImages(results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])));
+		const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+		if (failed)
+			imageError = failed.reason instanceof Error ? failed.reason.message : String(failed.reason);
+	}
+
+	function onPaste(event: ClipboardEvent) {
+		const files = imageFiles(event.clipboardData?.items);
+		if (files.length === 0) return;
+		event.preventDefault();
+		void addFiles(files);
+	}
+
+	/**
+	 * Tauri takes OS file drops before the page sees them, so listen to its
+	 * drop events and keep the ones that land on this composer.
+	 */
+	const dropTarget: Attachment<HTMLElement> = (node) => {
+		const inside = (x: number, y: number) => {
+			const r = node.getBoundingClientRect();
+			const px = x / window.devicePixelRatio;
+			const py = y / window.devicePixelRatio;
+			return px >= r.left && px <= r.right && py >= r.top && py <= r.bottom;
+		};
+		let stop: (() => void) | null = null;
+		let disposed = false;
+		void getCurrentWebview()
+			.onDragDropEvent(async (event) => {
+				const p = event.payload;
+				if (p.type === 'leave') {
+					dropping = false;
+					return;
+				}
+				const over = inside(p.position.x, p.position.y);
+				if (p.type !== 'drop') {
+					dropping = over && !disabledReason;
+					return;
+				}
+				dropping = false;
+				if (!over || disabledReason) return;
+				imageError = '';
+				const results = await Promise.allSettled(
+					p.paths.map((path) => invoke<ChatImage>('read_chat_image', { path }))
+				);
+				addImages(results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])));
+				const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+				if (failed) imageError = String(failed.reason);
+			})
+			.then((unlisten) => {
+				if (disposed) unlisten();
+				else stop = unlisten;
+			})
+			.catch(() => {});
+		return () => {
+			disposed = true;
+			stop?.();
+		};
+	};
+
 	function send() {
-		if (canSend && onSend(draft)) draft = '';
+		if (!canSend || !onSend(draft, images)) return;
+		draft = '';
+		images = [];
+		imageError = '';
 	}
 
 	function onKeydown(event: KeyboardEvent) {
@@ -57,19 +139,51 @@
 </script>
 
 <div
-	class="composer rounded-xl border border-wb-hair bg-wb-panel transition-colors focus-within:border-wb-ink-soft"
+	{@attach dropTarget}
+	class={cn(
+		'composer relative rounded-xl border bg-wb-panel transition-colors focus-within:border-wb-ink-soft',
+		dropping ? 'border-wb-accent' : 'border-wb-hair'
+	)}
 >
+	{#if dropping}
+		<div
+			class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-wb-accent-soft text-xs font-medium text-wb-ink"
+		>
+			Drop images to attach
+		</div>
+	{/if}
+	{#if images.length > 0}
+		<ul class="flex flex-wrap gap-2 px-3 pt-3" aria-label="Attached images">
+			{#each images as image, i (i)}
+				<li class="thumb group relative size-16 overflow-hidden rounded-md border border-wb-hair">
+					<img src={previewUrl(image)} alt={image.name} class="size-full object-cover" />
+					<button
+						type="button"
+						class="absolute top-0.5 right-0.5 flex size-5 items-center justify-center rounded-full bg-wb-bg/85 text-wb-ink opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+						aria-label="Remove {image.name}"
+						onclick={() => (images = images.filter((_, j) => j !== i))}
+					>
+						<XIcon class="size-3" />
+					</button>
+				</li>
+			{/each}
+		</ul>
+	{/if}
 	<label for={id} class="sr-only">Message Claude</label>
 	<textarea
 		{id}
 		bind:value={draft}
 		{@attach autosize}
 		onkeydown={onKeydown}
+		onpaste={onPaste}
 		rows="1"
 		disabled={disabledReason !== null}
-		placeholder={disabledReason ?? 'Message Claude'}
+		placeholder={disabledReason ?? 'Message Claude, or paste an image'}
 		class="scrollbar-thin block max-h-[180px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm leading-relaxed text-wb-ink placeholder:text-wb-ink-soft focus:outline-none disabled:cursor-not-allowed"
 	></textarea>
+	{#if imageError}
+		<p class="px-3.5 pb-1 text-[11px] text-wb-err" role="alert">{imageError}</p>
+	{/if}
 	<div class="flex items-center gap-1.5 px-2 pb-2">
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
@@ -105,6 +219,29 @@
 				</DropdownMenu.RadioGroup>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
+		<button
+			type="button"
+			class="flex size-7 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
+			title="Attach images"
+			aria-label="Attach images"
+			disabled={disabledReason !== null}
+			onclick={() => picker?.click()}
+		>
+			<ImagePlusIcon class="size-3.5" />
+		</button>
+		<input
+			{@attach (node: HTMLInputElement) => {
+				picker = node;
+			}}
+			type="file"
+			accept={IMAGE_TYPES.join(',')}
+			multiple
+			class="hidden"
+			onchange={(e) => {
+				void addFiles(imageFiles(e.currentTarget.files));
+				e.currentTarget.value = '';
+			}}
+		/>
 		<span class="flex-1"></span>
 		{#if busy}
 			<button
@@ -129,3 +266,20 @@
 		</button>
 	</div>
 </div>
+
+<style>
+	.thumb {
+		animation: pop 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+	}
+	@keyframes pop {
+		from {
+			opacity: 0;
+			transform: scale(0.92);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.thumb {
+			animation: none;
+		}
+	}
+</style>

@@ -509,7 +509,14 @@ export type PermissionMode =
 	| 'bypassPermissions';
 
 export type TranscriptItem =
-	| { kind: 'user'; id: string; text: string; timestamp: string }
+	| {
+			kind: 'user';
+			id: string;
+			text: string;
+			timestamp: string;
+			/** Images attached to the message (content isn't sent back). */
+			images?: number;
+	  }
 	| { kind: 'text'; id: string; text: string }
 	| { kind: 'thinking'; id: string; text: string }
 	| {
@@ -605,8 +612,15 @@ export type AgentServerMsg =
 	| { t: 'output'; toolId: string; text: string | null }
 	| { t: 'revoked' };
 
+/** An image attached to a chat message: base64 data the Claude API accepts. */
+export interface ChatImage {
+	mediaType: string;
+	data: string;
+	name: string;
+}
+
 export type AgentClientMsg =
-	| { t: 'prompt'; text: string }
+	| { t: 'prompt'; text: string; images?: Omit<ChatImage, 'name'>[] }
 	| {
 			t: 'approve';
 			requestId: string;
