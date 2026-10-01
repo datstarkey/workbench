@@ -86,7 +86,6 @@
 		<span class="text-wb-codex">● {sessionCounts.codex} Codex</span>
 	{/if}
 	{#if version}
-		<!-- The only manual update check on Windows/Linux, which have no app menu. -->
 		<button
 			type="button"
 			class="text-wb-ink-soft hover:text-wb-ink"

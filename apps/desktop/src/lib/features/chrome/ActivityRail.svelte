@@ -2,12 +2,14 @@
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import * as Tooltip from '@workbench/ui/tooltip';
 	import {
 		getGitHubStore,
 		getGitStore,
+		getUpdaterStore,
 		getWorkspaceStore,
 		getWorktreeManager
 	} from '$stores/context';
@@ -23,6 +25,7 @@
 	const gitStore = getGitStore();
 	const githubStore = getGitHubStore();
 	const worktreeManager = getWorktreeManager();
+	const updaterStore = getUpdaterStore();
 
 	const projectPath = $derived(workspaceStore.activeProjectPath);
 	const worktreeCount = $derived(
@@ -92,5 +95,12 @@
 	{@render railButton('Remote server', false, undefined, onOpenRemote, ServerIcon)}
 
 	<div class="flex-1"></div>
+	{@render railButton(
+		'Check for updates',
+		false,
+		undefined,
+		() => void updaterStore.manualCheck(),
+		RefreshCwIcon
+	)}
 	{@render railButton('Settings', false, undefined, onOpenSettings, SettingsIcon)}
 </nav>
