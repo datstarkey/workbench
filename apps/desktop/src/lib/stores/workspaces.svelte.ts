@@ -24,6 +24,7 @@ import { effectivePath } from '$lib/utils/path';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
+import { visibleSplit } from '$features/terminal/split-view';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
 import { chatHasHistory, releaseChat } from '$features/chat/chat-registry';
@@ -33,6 +34,15 @@ import {
 	withoutPanes,
 	type AdoptableTerminal
 } from '$features/terminal/server-terminals';
+
+function moveById<T extends { id: string }>(items: T[], fromId: string, toId: string): T[] | null {
+	const from = items.findIndex((i) => i.id === fromId);
+	const to = items.findIndex((i) => i.id === toId);
+	if (from === -1 || to === -1 || from === to) return null;
+	const next = [...items];
+	next.splice(to, 0, ...next.splice(from, 1));
+	return next;
+}
 
 interface WorkspaceSnapshot {
 	workspaces: ProjectWorkspace[];
@@ -393,15 +403,16 @@ export class WorkspaceStore {
 	}
 
 	reorder(fromId: string, toId: string) {
-		const fromIndex = this.workspaces.findIndex((w) => w.id === fromId);
-		const toIndex = this.workspaces.findIndex((w) => w.id === toId);
-		if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
-
-		const next = [...this.workspaces];
-		const [moved] = next.splice(fromIndex, 1);
-		next.splice(toIndex, 0, moved);
+		const next = moveById(this.workspaces, fromId, toId);
+		if (!next) return;
 		this.workspaces = next;
 		this.persist();
+	}
+
+	reorderTerminalTab(workspaceId: string, fromId: string, toId: string) {
+		const ws = this.workspaces.find((w) => w.id === workspaceId);
+		const tabs = ws && moveById(ws.terminalTabs, fromId, toId);
+		if (tabs) this.updateWorkspace(workspaceId, (w) => ({ ...w, terminalTabs: tabs }));
 	}
 
 	updateProjectInfo(previousPath: string, newPath: string, newName: string) {
@@ -452,7 +463,8 @@ export class WorkspaceStore {
 				...w,
 				terminalTabs: updatedTabs,
 				activeTerminalTabId:
-					w.activeTerminalTabId === tabId ? (fallback?.id ?? '') : w.activeTerminalTabId
+					w.activeTerminalTabId === tabId ? (fallback?.id ?? '') : w.activeTerminalTabId,
+				splitView: w.splitView?.tabIds.includes(tabId) ? undefined : w.splitView
 			};
 		});
 	}
@@ -461,21 +473,36 @@ export class WorkspaceStore {
 		this.updateWorkspace(workspaceId, (w) => ({ ...w, activeTerminalTabId: tabId }));
 	}
 
-	splitTerminal(workspaceId: string, direction: SplitDirection) {
-		suppressLayout(() => {
-			this.updateWorkspace(workspaceId, (w) => {
-				const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
-				if (!tab) return w;
-				const updatedTab: TerminalTabState = {
-					...tab,
-					split: direction,
-					panes: [...tab.panes, { id: uid() }]
-				};
+	/**
+	 * Show the active tab beside its neighbour (a new shell tab when it's the
+	 * only one). Re-pressing the current direction unsplits.
+	 */
+	splitTerminal(workspaceId: string, direction: SplitDirection, project: ProjectConfig) {
+		this.updateWorkspace(workspaceId, (w) => {
+			const index = w.terminalTabs.findIndex((t) => t.id === w.activeTerminalTabId);
+			if (index === -1 || w.renderer === 'native') return w;
+			// Judge by what's on screen: a stale splitView (a tab replaced or dropped) is replaced.
+			const shown = visibleSplit(w);
+			if (shown) {
 				return {
 					...w,
-					terminalTabs: w.terminalTabs.map((t) => (t.id === tab.id ? updatedTab : t))
+					splitView:
+						shown.direction === direction
+							? undefined
+							: { direction, tabIds: [shown.tabs[0].id, shown.tabs[1].id] }
 				};
-			});
+			}
+			let tabs = w.terminalTabs;
+			let partner = tabs[index + 1] ?? tabs[index - 1];
+			if (!partner) {
+				partner = this.createTerminalTab(project, false, tabs.length + 1);
+				tabs = [...tabs, partner];
+			}
+			return {
+				...w,
+				terminalTabs: tabs,
+				splitView: { direction, tabIds: [w.activeTerminalTabId, partner.id] }
+			};
 		});
 	}
 
@@ -483,10 +510,10 @@ export class WorkspaceStore {
 		let removed = false;
 		suppressLayout(() => {
 			this.updateWorkspace(workspaceId, (w) => {
-				const tab = w.terminalTabs.find((t) => t.id === w.activeTerminalTabId);
-				// Guard keeps the last pane; only remove when the active tab actually
-				// holds this pane and has more than one.
-				if (!tab || tab.panes.length <= 1 || !tab.panes.some((p) => p.id === paneId)) return w;
+				// A split shows two tabs, so the pane's tab may not be the active one.
+				const tab = w.terminalTabs.find((t) => t.panes.some((p) => p.id === paneId));
+				// Guard keeps the last pane.
+				if (!tab || tab.panes.length <= 1) return w;
 				removed = true;
 				const updatedTab: TerminalTabState = {
 					...tab,
@@ -780,10 +807,15 @@ export class WorkspaceStore {
 			if (tab.panes[0]?.view === 'chat' && sessionId && !this.settingsStore.sandboxRuntimeEnabled) {
 				newTab.panes[0].view = 'chat';
 			}
+			const splitView = w.splitView && {
+				...w.splitView,
+				tabIds: w.splitView.tabIds.map((id) => (id === tabId ? newTab.id : id)) as [string, string]
+			};
 			return {
 				...w,
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tabId ? newTab : t)),
-				activeTerminalTabId: newTab.id
+				activeTerminalTabId: newTab.id,
+				splitView
 			};
 		});
 	}

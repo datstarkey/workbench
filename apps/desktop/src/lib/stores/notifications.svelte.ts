@@ -8,6 +8,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap } from 'svelte/reactivity';
+import { visibleSplit } from '$features/terminal/split-view';
 import type { ClaudeSessionStore } from './claudeSessions.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 
@@ -103,9 +104,9 @@ export class NotificationStore {
 	private isPaneActive(paneId: string): boolean {
 		const ws = this.workspaces.activeWorkspace;
 		if (!ws) return false;
-		const activeTab = ws.terminalTabs.find((t) => t.id === ws.activeTerminalTabId);
-		if (!activeTab) return false;
-		return activeTab.panes.some((p) => p.id === paneId);
+		const shown =
+			visibleSplit(ws)?.tabs ?? ws.terminalTabs.filter((t) => t.id === ws.activeTerminalTabId);
+		return shown.some((tab) => tab.panes.some((p) => p.id === paneId));
 	}
 
 	private async notifyAwaitingInput(paneId: string): Promise<void> {
