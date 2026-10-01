@@ -170,6 +170,7 @@ impl NativeTerminalManager {
         font_size: f64,
         startup_command: Option<String>,
         hook_socket_path: Option<String>,
+        claude_config_dir: Option<std::path::PathBuf>,
         ns_view_ptr: *mut c_void,
         app_handle: AppHandle,
     ) -> Result<()> {
@@ -208,6 +209,9 @@ impl NativeTerminalManager {
         cmd.env("WORKBENCH_PANE_ID", session_id.clone());
         if let Some(socket_path) = hook_socket_path {
             cmd.env("WORKBENCH_HOOK_SOCKET", socket_path);
+        }
+        if let Some(dir) = claude_config_dir {
+            cmd.env(crate::claude_accounts::CONFIG_DIR_ENV, dir);
         }
 
         // Shell integration (OSC 133) — inject ZDOTDIR for zsh

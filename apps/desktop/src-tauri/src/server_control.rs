@@ -354,6 +354,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("create terminal");
 
@@ -411,6 +412,7 @@ mod tests {
                     None,
                     80,
                     24,
+                    None,
                     None,
                     None,
                     None,

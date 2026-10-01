@@ -169,10 +169,8 @@ pub fn list_hooks_scripts() -> Result<Vec<HookScriptInfo>> {
     Ok(scripts)
 }
 
-fn workbench_hook_script_path() -> PathBuf {
-    paths::claude_user_dir()
-        .join("hooks")
-        .join(WORKBENCH_HOOK_SCRIPT_NAME)
+fn workbench_hook_script_path(claude_dir: &Path) -> PathBuf {
+    claude_dir.join("hooks").join(WORKBENCH_HOOK_SCRIPT_NAME)
 }
 
 #[cfg(not(windows))]
@@ -206,8 +204,11 @@ try {\n\
 } catch { }\n"
 }
 
-fn ensure_workbench_hook_script() -> Result<PathBuf> {
-    paths::ensure_script(&workbench_hook_script_path(), workbench_hook_script_body())
+fn ensure_workbench_hook_script(claude_dir: &Path) -> Result<PathBuf> {
+    paths::ensure_script(
+        &workbench_hook_script_path(claude_dir),
+        workbench_hook_script_body(),
+    )
 }
 
 fn ensure_object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
@@ -435,11 +436,12 @@ fn hook_command_for_script(script_path: &Path) -> String {
     }
 }
 
-pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
-    let script_path = workbench_hook_script_path();
+/// Whether `claude_dir` lacks the hook script or any of its settings.json entries.
+fn hook_integration_missing(claude_dir: &Path) -> bool {
+    let script_path = workbench_hook_script_path(claude_dir);
     let script_exists = script_path.exists();
 
-    let settings_path = paths::claude_user_dir().join("settings.json");
+    let settings_path = claude_dir.join("settings.json");
     let settings = if settings_path.exists() {
         fs::read_to_string(&settings_path)
             .ok()
@@ -476,9 +478,17 @@ pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
         }
     }
 
-    let needs_changes = !script_exists || !missing_events.is_empty();
+    !script_exists || !missing_events.is_empty()
+}
+
+/// Checked across every Claude account's config dir, so a newly added account
+/// gets the hook before its first session.
+pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
+    let needs_changes = crate::claude_accounts::saved_config_dirs()
+        .iter()
+        .any(|(_, dir)| hook_integration_missing(dir));
     let description = if needs_changes {
-        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification, and PostToolUse (Bash only). This enables session activity tracking and immediate git/GitHub refresh after git or gh commands.".to_string()
+        "Workbench will install a hook script and register it in your Claude Code settings (~/.claude/settings.json, and each extra Claude account's settings.json) for the following events: SessionStart, UserPromptSubmit, Stop, Notification, and PostToolUse (Bash only). This enables session activity tracking and immediate git/GitHub refresh after git or gh commands.".to_string()
     } else {
         String::new()
     };
@@ -490,8 +500,15 @@ pub fn check_workbench_hook_integration() -> crate::types::IntegrationStatus {
 }
 
 pub fn ensure_workbench_hook_integration() -> Result<()> {
-    let script_path = ensure_workbench_hook_script()?;
-    let settings_path = paths::claude_user_dir().join("settings.json");
+    for (_, dir) in crate::claude_accounts::saved_config_dirs() {
+        ensure_hook_integration_in(&dir)?;
+    }
+    Ok(())
+}
+
+fn ensure_hook_integration_in(claude_dir: &Path) -> Result<()> {
+    let script_path = ensure_workbench_hook_script(claude_dir)?;
+    let settings_path = claude_dir.join("settings.json");
     let mut settings = if settings_path.exists() {
         let raw = fs::read_to_string(&settings_path)?;
         serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| serde_json::json!({}))
@@ -903,5 +920,17 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("/usr/local/bin/other-hook")
         );
+    }
+
+    #[test]
+    fn hook_integration_installs_into_an_account_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let account_dir = dir.path().join("claude-work");
+        assert!(hook_integration_missing(&account_dir));
+
+        ensure_hook_integration_in(&account_dir).unwrap();
+
+        assert!(!hook_integration_missing(&account_dir));
+        assert!(workbench_hook_script_path(&account_dir).exists());
     }
 }

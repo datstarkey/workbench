@@ -266,7 +266,9 @@ describe('WorkbenchSettingsStore', () => {
 					serverMode: false,
 					serverPort: 4317,
 					serverToken: null,
-					settingsWindowBounds: null
+					settingsWindowBounds: null,
+					claudeAccounts: [],
+					activeClaudeAccount: null
 				}
 			});
 		});
@@ -525,7 +527,9 @@ describe('WorkbenchSettingsStore', () => {
 					serverMode: false,
 					serverPort: 4317,
 					serverToken: null,
-					settingsWindowBounds: null
+					settingsWindowBounds: null,
+					claudeAccounts: [],
+					activeClaudeAccount: null
 				}
 			});
 			expect(store.agentActions[0].name).toBe('Review');
@@ -708,6 +712,51 @@ describe('WorkbenchSettingsStore', () => {
 			expect(store.sandboxRuntimeEnabled).toBe(true);
 			expect(store.worktreeCustomBranch).toBe('unsaved-branch');
 			expect(store.dirty).toBe(true);
+		});
+	});
+
+	describe('claude accounts', () => {
+		const saved = () => {
+			const saves = invokeSpy.mock.calls.filter((c) => c[0] === 'save_workbench_settings');
+			return (saves[saves.length - 1]?.[1] as { settings: WorkbenchSettings } | undefined)
+				?.settings;
+		};
+
+		it('adds an account and saves at once without clearing unsaved form edits', async () => {
+			store.set('worktreeCustomBranch', 'unsaved');
+
+			const account = await store.addClaudeAccount(' Work ', '/Users/me/.claude-work');
+
+			expect(account).toEqual({ id: 'uid-1', name: 'Work', configDir: '/Users/me/.claude-work' });
+			expect(saved()?.claudeAccounts).toEqual([account]);
+			expect(store.dirty).toBe(true);
+		});
+
+		it('rejects a blank name, a relative folder and a duplicate folder', async () => {
+			await expect(store.addClaudeAccount('', '/x')).rejects.toThrow('name');
+			await expect(store.addClaudeAccount('A', 'rel/dir')).rejects.toThrow('absolute');
+			await store.addClaudeAccount('A', 'C:\\Users\\me\\.claude-a');
+			await expect(store.addClaudeAccount('B', 'C:\\Users\\me\\.claude-a')).rejects.toThrow(
+				'already'
+			);
+		});
+
+		it('switching saves the active account; removing it falls back to the default', async () => {
+			const account = await store.addClaudeAccount('Work', '/w');
+
+			await store.setActiveClaudeAccount(account.id);
+			expect(store.activeClaudeAccountId).toBe(account.id);
+			expect(saved()?.activeClaudeAccount).toBe(account.id);
+
+			await store.removeClaudeAccount(account.id);
+			expect(store.activeClaudeAccountId).toBeUndefined();
+			expect(saved()?.activeClaudeAccount).toBeNull();
+		});
+
+		it('ignores an active id that names no account', async () => {
+			mockInvoke('load_workbench_settings', () => makeSettings({ activeClaudeAccount: 'gone' }));
+			await store.load();
+			expect(store.activeClaudeAccountId).toBeUndefined();
 		});
 	});
 });

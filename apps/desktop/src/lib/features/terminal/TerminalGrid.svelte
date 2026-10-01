@@ -37,6 +37,7 @@
 				{active}
 				{cwd}
 				startupCommand={pane.startupCommand}
+				claudeAccountId={pane.claudeAccountId}
 				existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
 				onServerTerminalIdChange={(paneId, serverTerminalId) =>
 					workspaceStore.setServerTerminalId(paneId, serverTerminalId)}

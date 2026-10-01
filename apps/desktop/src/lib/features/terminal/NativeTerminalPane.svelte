@@ -16,12 +16,15 @@
 		project,
 		active,
 		startupCommand,
+		claudeAccountId,
 		cwd
 	}: {
 		sessionId: string;
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
+		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
+		claudeAccountId?: string;
 		cwd?: string;
 	} = $props();
 
@@ -99,7 +102,8 @@
 				width: nsRect.width,
 				height: nsRect.height,
 				fontSize: 13,
-				startupCommand
+				startupCommand,
+				claudeAccountId
 			});
 
 			created = true;

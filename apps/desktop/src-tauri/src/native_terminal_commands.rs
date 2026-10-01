@@ -19,6 +19,7 @@ pub async fn create_native_terminal(
     height: f64,
     font_size: f64,
     startup_command: Option<String>,
+    claude_account_id: Option<String>,
     manager: tauri::State<'_, NativeTerminalManager>,
     window: tauri::WebviewWindow,
     app_handle: tauri::AppHandle,
@@ -26,6 +27,8 @@ pub async fn create_native_terminal(
 ) -> Result<(), String> {
     let ns_view = window.ns_view().map_err(|e| e.to_string())?;
     let hook_socket = hook_bridge.socket_path().map(str::to_string);
+    let claude_config_dir = crate::claude_accounts::resolve_saved(claude_account_id.as_deref())
+        .map_err(|e| e.to_string())?;
 
     manager
         .spawn(
@@ -39,6 +42,7 @@ pub async fn create_native_terminal(
             font_size,
             startup_command,
             hook_socket,
+            claude_config_dir,
             ns_view,
             app_handle,
         )

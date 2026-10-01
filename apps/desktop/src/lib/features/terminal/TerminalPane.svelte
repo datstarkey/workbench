@@ -30,6 +30,7 @@
 		project,
 		active,
 		startupCommand,
+		claudeAccountId,
 		cwd,
 		existingServerTerminalId,
 		onServerTerminalIdChange
@@ -43,6 +44,8 @@
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
+		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
+		claudeAccountId?: string;
 		cwd?: string;
 		/** If the workspace persisted a server terminal ID, try to re-attach on mount. */
 		existingServerTerminalId?: string;
@@ -589,7 +592,8 @@
 				rows: terminal.rows,
 				paneId,
 				shell: project.shell,
-				hookSocket
+				hookSocket,
+				claudeAccountId
 			};
 			if (existingServerTerminalId && workspaceStore.startsDetached(paneId)) {
 				conn.connectDetached(connectOpts, existingServerTerminalId);

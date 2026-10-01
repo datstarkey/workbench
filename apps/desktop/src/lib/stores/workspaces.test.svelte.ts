@@ -31,7 +31,8 @@ const mockGitStore = {
 const mockWorkbenchSettingsStore = {
 	claudePermissionMode: 'default',
 	sandboxRuntimeEnabled: false,
-	sandboxSettingsPath: undefined as string | undefined
+	sandboxSettingsPath: undefined as string | undefined,
+	activeClaudeAccountId: undefined as string | undefined
 };
 vi.mock('./context', () => ({
 	getGitStore: () => mockGitStore,
@@ -75,6 +76,7 @@ describe('WorkspaceStore', () => {
 		mockWorkbenchSettingsStore.claudePermissionMode = 'default';
 		mockWorkbenchSettingsStore.sandboxRuntimeEnabled = false;
 		mockWorkbenchSettingsStore.sandboxSettingsPath = undefined;
+		mockWorkbenchSettingsStore.activeClaudeAccountId = undefined;
 		store = new WorkspaceStore();
 	});
 
@@ -774,6 +776,62 @@ describe('WorkspaceStore', () => {
 			const tab = store.workspaces[0].terminalTabs[0];
 			expect(tab.label).toBe('Review PR');
 			expect(tab.panes[0].startupCommand).toBe("claude 'Review this PR for regressions'");
+		});
+	});
+
+	describe('claude accounts', () => {
+		const sessionId = '12345678-1234-1234-1234-123456789abc';
+
+		it('a new claude pane runs under the active account; codex and default panes carry none', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.addAISession('ws-a', 'codex');
+			store.addAISession('ws-a', 'claude');
+			mockWorkbenchSettingsStore.activeClaudeAccountId = 'work';
+			store.addAISession('ws-a', 'claude');
+			store.addAISession('ws-a', 'codex');
+
+			const accounts = store.workspaces[0].terminalTabs.map((t) => t.panes[0].claudeAccountId);
+			expect(accounts).toEqual([undefined, undefined, 'work', undefined]);
+		});
+
+		it('resume uses the account owning the transcript, not the active one', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			mockWorkbenchSettingsStore.activeClaudeAccountId = 'personal';
+
+			store.resumeAISession('ws-a', sessionId, 'Old', 'claude', 'work');
+
+			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBe('work');
+		});
+
+		it('restart keeps the pane on its account', () => {
+			const tab = makeTab({
+				id: 'tab-1',
+				type: 'claude',
+				panes: [
+					{ id: 'pane-1', type: 'claude', claudeSessionId: sessionId, claudeAccountId: 'work' }
+				]
+			});
+			store.workspaces = [
+				makeWorkspace({ id: 'ws-a', terminalTabs: [tab], activeTerminalTabId: 'tab-1' })
+			];
+			mockWorkbenchSettingsStore.activeClaudeAccountId = undefined;
+
+			store.restartAISession('ws-a', 'tab-1');
+
+			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBe('work');
+		});
+
+		it('a login task tab runs its shell under the given account', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+
+			store.runTaskInWorkspace(
+				'ws-a',
+				{ name: 'Claude login', command: 'claude auth login' },
+				'work'
+			);
+
+			const pane = store.workspaces[0].terminalTabs[0].panes[0];
+			expect(pane).toMatchObject({ startupCommand: 'claude auth login', claudeAccountId: 'work' });
 		});
 	});
 
