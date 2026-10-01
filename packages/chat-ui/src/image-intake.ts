@@ -1,4 +1,4 @@
-import type { ChatImage } from '$types/workbench';
+import type { ChatImage } from '@workbench/types';
 
 /** Formats the Claude API accepts. */
 export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];

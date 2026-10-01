@@ -9,10 +9,10 @@
 
 <script lang="ts">
 	import { marked } from 'marked';
-	import { open } from '@tauri-apps/plugin-shell';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import { cn } from '@workbench/ui';
+	import { getChatPlatform } from './platform';
 
 	/**
 	 * Claude's Markdown, rendered from `marked`'s tokens as Svelte elements —
@@ -35,9 +35,11 @@
 		}
 	}
 
+	const platform = getChatPlatform();
+
 	function openLink(event: MouseEvent, href: string) {
 		event.preventDefault();
-		open(href).catch((error) => console.warn('[chat] could not open link', error));
+		platform.openLink(href);
 	}
 
 	const HEADING = [

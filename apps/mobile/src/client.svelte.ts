@@ -1,5 +1,7 @@
+import { agentClient } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
 import { createHttpTransport, parsePairingUri, type PairingInfo } from '@workbench/transport';
+import type { AgentSummary, ApprovalDecision } from '@workbench/types';
 import * as barcodeScanner from '@tauri-apps/plugin-barcode-scanner';
 import { onBackButtonPress } from '@tauri-apps/api/app';
 import type { PluginListener } from '@tauri-apps/api/core';
@@ -24,9 +26,26 @@ export type TerminalMeta = {
 	alive: boolean;
 };
 
+/** How a new Claude session opens on this phone. */
+export type ClaudeView = 'chat' | 'terminal';
+
+/** A Claude conversation, shown as chat or as a terminal running `claude`. */
+export interface ChatRef {
+	sessionId: string;
+	projectPath: string;
+	worktreePath?: string;
+	name: string;
+}
+
 const LS_URL = 'wb.serverUrl';
 const LS_TOKEN = 'wb.token';
+const LS_VIEW = 'wb.claudeView';
+/** Terminal id → the conversation its `claude` runs, so it can switch back to chat. */
+const LS_LINKS = 'wb.claudeTerminals';
 const DEFAULT_PORT = '4317';
+/** Home-screen refresh while the app is in front. */
+const POLL_MS = 4000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // localStorage can throw in some webview contexts — never let it crash mount.
 function lsGet(key: string): string | null {
@@ -42,6 +61,30 @@ function lsSet(key: string, value: string) {
 	} catch {
 		/* ignore */
 	}
+}
+
+function readLinks(): Record<string, ChatRef> {
+	try {
+		const parsed: unknown = JSON.parse(lsGet(LS_LINKS) ?? '{}');
+		return parsed && typeof parsed === 'object' ? (parsed as Record<string, ChatRef>) : {};
+	} catch {
+		return {};
+	}
+}
+
+/** The CLI command a terminal runs for a conversation; the id goes into a shell, so check it. */
+export function claudeCommand(sessionId: string, resume: boolean): string {
+	if (!UUID.test(sessionId)) throw new Error('invalid session id');
+	return `claude ${resume ? '--resume' : '--session-id'} ${sessionId}`;
+}
+
+export function baseName(path: string): string {
+	return (
+		path
+			.replace(/[\\/]+$/, '')
+			.split(/[\\/]/)
+			.pop() || path
+	);
 }
 
 // Accept a bare Tailscale IP / host: add http:// and the default port so you can
@@ -74,6 +117,16 @@ export class MobileClient {
 	activeTerminalId = $state<string | null>(null);
 
 	scanning = $state(false);
+
+	/** Chat sessions running on the server (any device's). */
+	chats = $state<AgentSummary[]>([]);
+	activeChat = $state<ChatRef | null>(null);
+	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
+	claudeTerminals = $state<Record<string, ChatRef>>(readLinks());
+	/** A chat ↔ terminal switch is stopping one process and starting the other. */
+	switching = $state(false);
+
+	readonly agents = agentClient(() => ({ baseUrl: this.url, token: this.token }));
 
 	serverLabel = $derived(this.url.replace(/^https?:\/\//, ''));
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
@@ -126,7 +179,7 @@ export class MobileClient {
 			const next = new ControlPlaneStore(transport);
 			await next.refresh();
 			this.store = next;
-			await this.refreshTerminals();
+			await Promise.all([this.refreshTerminals(), this.refreshChats()]);
 		} catch (e) {
 			this.connectError = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -210,7 +263,134 @@ export class MobileClient {
 		this.store?.dispose();
 		this.store = null;
 		this.terminals = [];
+		this.chats = [];
 		this.activeTerminalId = null;
+		this.activeChat = null;
+	}
+
+	setDefaultView(view: ClaudeView): void {
+		this.defaultView = view;
+		lsSet(LS_VIEW, view);
+	}
+
+	async refreshChats(): Promise<void> {
+		if (!this.store) return;
+		try {
+			this.chats = await this.agents.list();
+		} catch {
+			/* keep the last list */
+		}
+	}
+
+	/**
+	 * Keep the home screen current while the app is in front, and catch up as
+	 * soon as it comes back from the lock screen. Returns a stop function.
+	 */
+	watch(): () => void {
+		const onHome = () =>
+			!document.hidden && this.store && !this.activeChat && !this.activeTerminalId;
+		const timer = setInterval(() => {
+			if (!onHome()) return;
+			void this.refreshTerminals();
+			void this.refreshChats();
+		}, POLL_MS);
+		const wake = () => {
+			if (!document.hidden && this.store) this.refreshAll();
+		};
+		document.addEventListener('visibilitychange', wake);
+		return () => {
+			clearInterval(timer);
+			document.removeEventListener('visibilitychange', wake);
+		};
+	}
+
+	/** A new Claude conversation in the phone's default view. */
+	startClaude = async (projectPath: string, worktreePath: string | undefined, name: string) => {
+		const ref: ChatRef = { sessionId: crypto.randomUUID(), projectPath, worktreePath, name };
+		if (this.defaultView === 'chat') this.openChat(ref);
+		else await this.openClaudeTerminal(ref, false);
+	};
+
+	chatRef(chat: AgentSummary): ChatRef {
+		return {
+			sessionId: chat.sessionId,
+			projectPath: chat.projectPath,
+			worktreePath: chat.worktreePath ?? undefined,
+			name: chat.title ?? baseName(chat.worktreePath ?? chat.projectPath)
+		};
+	}
+
+	openChat(ref: ChatRef): void {
+		this.activeTerminalId = null;
+		this.activeChat = ref;
+	}
+
+	/** Arrow field — the chat view's Back. The session keeps running on the server. */
+	closeChat = (): void => {
+		this.activeChat = null;
+		void this.refreshChats();
+	};
+
+	/** Answer an approval from the home screen, without opening the chat. */
+	async answer(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+		try {
+			await this.agents.send(sessionId, { t: 'approve', requestId, decision });
+		} catch (e) {
+			this.connectError = e instanceof Error ? e.message : String(e);
+		}
+		await this.refreshChats();
+	}
+
+	/** End a chat session's `claude` process; the conversation stays on disk. */
+	async endChat(sessionId: string): Promise<void> {
+		await this.agents.stop(sessionId).catch(() => {});
+		if (this.activeChat?.sessionId === sessionId) this.activeChat = null;
+		await this.refreshChats();
+	}
+
+	/**
+	 * Chat → terminal: stop the chat's process first (one writer per session
+	 * file), then continue the conversation in a real `claude`.
+	 */
+	async showAsTerminal(ref: ChatRef, hasHistory: boolean): Promise<void> {
+		this.switching = true;
+		try {
+			await this.agents.stop(ref.sessionId);
+			this.activeChat = null;
+			await this.openClaudeTerminal(ref, hasHistory);
+		} catch (e) {
+			this.connectError = e instanceof Error ? e.message : String(e);
+		} finally {
+			this.switching = false;
+		}
+	}
+
+	/** Terminal → chat: end the terminal's `claude`, then pick the conversation up in chat. */
+	async showAsChat(terminalId: string): Promise<void> {
+		const ref = this.claudeTerminals[terminalId];
+		if (!ref) return;
+		this.switching = true;
+		try {
+			await this.killTerminal(terminalId);
+			this.openChat(ref);
+		} finally {
+			this.switching = false;
+		}
+	}
+
+	private async openClaudeTerminal(ref: ChatRef, resume: boolean): Promise<void> {
+		const id = await this.createTerminal(
+			ref.projectPath,
+			ref.worktreePath,
+			ref.name,
+			claudeCommand(ref.sessionId, resume)
+		);
+		if (id) this.setLinks({ ...this.claudeTerminals, [id]: ref });
+	}
+
+	private setLinks(links: Record<string, ChatRef>): void {
+		this.claudeTerminals = links;
+		lsSet(LS_LINKS, JSON.stringify(links));
 	}
 
 	async refreshTerminals(): Promise<void> {
@@ -221,21 +401,24 @@ export class MobileClient {
 				const data = await res.json();
 				// Guard the {#each terminals} render: a non-array body would throw.
 				this.terminals = Array.isArray(data) ? data : [];
+				const live = new Set(this.terminals.map((t) => t.id));
+				const links = Object.entries(this.claudeTerminals);
+				if (links.some(([id]) => !live.has(id)))
+					this.setLinks(Object.fromEntries(links.filter(([id]) => live.has(id))));
 			}
 		} catch {
 			/* ignore */
 		}
 	}
 
-	/** Arrow field so it can be passed straight to ControlPlaneSidebar's
-	 *  onOpenTerminal callback without losing `this`. */
+	/** Open a terminal and show it; resolves to its id, or null if it failed. */
 	createTerminal = async (
 		projectPath: string,
 		worktreePath: string | undefined,
 		name: string,
 		command?: string
-	): Promise<void> => {
-		if (!this.store) return;
+	): Promise<string | null> => {
+		if (!this.store) return null;
 		try {
 			const res = await fetch(`${this.url}/remote/terminals`, {
 				method: 'POST',
@@ -254,11 +437,14 @@ export class MobileClient {
 				}
 			};
 			ensureVisible();
+			this.activeChat = null;
 			this.activeTerminalId = meta.id;
 			await this.refreshTerminals();
 			ensureVisible();
+			return meta.id;
 		} catch (e) {
 			this.connectError = e instanceof Error ? e.message : String(e);
+			return null;
 		}
 	};
 
@@ -276,6 +462,7 @@ export class MobileClient {
 	}
 
 	selectTerminal(id: string): void {
+		this.activeChat = null;
 		this.activeTerminalId = id;
 	}
 
@@ -285,9 +472,10 @@ export class MobileClient {
 		void this.refreshTerminals();
 	};
 
-	/** Header "Refresh": reload both the control plane and the terminal list. */
+	/** Reload the control plane, the terminal list and the chat list. */
 	refreshAll(): void {
 		void this.store?.refresh();
 		void this.refreshTerminals();
+		void this.refreshChats();
 	}
 }

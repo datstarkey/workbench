@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TaskInfo, TranscriptItem, TranscriptMeta } from '$types/workbench';
+import type { TaskInfo, TranscriptItem, TranscriptMeta } from '@workbench/types';
 import {
 	activity,
 	answerFor,

@@ -1,0 +1,37 @@
+{
+	"name": "@workbench/chat-ui",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Shared Claude chat view (stream-json sessions on a Workbench server) for the desktop and mobile apps.",
+	"svelte": "./src/index.ts",
+	"exports": {
+		".": {
+			"svelte": "./src/index.ts",
+			"default": "./src/index.ts"
+		}
+	},
+	"scripts": {
+		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"@lucide/svelte": "catalog:",
+		"@workbench/transport": "workspace:*",
+		"@workbench/types": "workspace:*",
+		"@workbench/ui": "workspace:*",
+		"marked": "^16",
+		"runed": "^0.37.1"
+	},
+	"peerDependencies": {
+		"svelte": "^5"
+	},
+	"devDependencies": {
+		"@sveltejs/vite-plugin-svelte": "catalog:",
+		"@tsconfig/svelte": "catalog:",
+		"svelte": "catalog:",
+		"svelte-check": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}

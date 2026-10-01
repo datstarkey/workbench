@@ -1,5 +1,6 @@
 import type { StartAgentBody } from '$types/workbench';
-import { AgentChat } from './agent-chat.svelte';
+import { AgentChat } from '@workbench/chat-ui';
+import { loopbackAgentApi } from './agent-api';
 
 /**
  * Chat connections by pane. A chat outlives its view: hidden workspaces
@@ -18,7 +19,7 @@ export function acquireChat(
 	// `/clear` re-keys the same chat; any other new id is a different conversation.
 	if (existing && existing.sessionId === body.sessionId) return { chat: existing, created: false };
 	existing?.dispose();
-	const chat = new AgentChat(body);
+	const chat = new AgentChat(body, loopbackAgentApi);
 	chats.set(paneId, chat);
 	return { chat, created: true };
 }

@@ -2,8 +2,6 @@
 	import type { Snippet } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
-	import { invoke } from '@tauri-apps/api/core';
-	import { getCurrentWebview } from '@tauri-apps/api/webview';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ImagePlusIcon from '@lucide/svelte/icons/image-plus';
@@ -11,10 +9,11 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import type { ChatImage, PermissionMode, SlashCommand } from '$types/workbench';
+	import type { ChatImage, PermissionMode, SlashCommand } from '@workbench/types';
 	import { matchCommands, MODE_OPTIONS, modeLabel, slashQuery } from './chat-format';
 	import ChatSlashMenu from './ChatSlashMenu.svelte';
 	import { fileToChatImage, IMAGE_TYPES, imageFiles, MAX_IMAGES, previewUrl } from './image-intake';
+	import { getChatPlatform } from './platform';
 
 	let {
 		id,
@@ -49,6 +48,8 @@
 		/** Shown above the composer, e.g. the resume picker. */
 		popover?: Snippet;
 	} = $props();
+
+	const platform = getChatPlatform();
 
 	let images = $state<ChatImage[]>([]);
 	let imageError = $state('');
@@ -112,51 +113,17 @@
 		void addFiles(files);
 	}
 
-	/**
-	 * Tauri takes OS file drops before the page sees them, so listen to its
-	 * drop events and keep the ones that land on this composer.
-	 */
-	const dropTarget: Attachment<HTMLElement> = (node) => {
-		const inside = (x: number, y: number) => {
-			const r = node.getBoundingClientRect();
-			const px = x / window.devicePixelRatio;
-			const py = y / window.devicePixelRatio;
-			return px >= r.left && px <= r.right && py >= r.top && py <= r.bottom;
-		};
-		let stop: (() => void) | null = null;
-		let disposed = false;
-		void getCurrentWebview()
-			.onDragDropEvent(async (event) => {
-				const p = event.payload;
-				if (p.type === 'leave') {
-					dropping = false;
-					return;
-				}
-				const over = inside(p.position.x, p.position.y);
-				if (p.type !== 'drop') {
-					dropping = over && !disabledReason;
-					return;
-				}
+	/** OS file drops the host reports (desktop); a phone pastes or picks instead. */
+	const dropTarget: Attachment<HTMLElement> = (node) =>
+		platform.watchImageDrops?.(node, {
+			hover: (over) => (dropping = over && !disabledReason),
+			drop: (dropped, error) => {
 				dropping = false;
-				if (!over || disabledReason) return;
-				imageError = '';
-				const results = await Promise.allSettled(
-					p.paths.map((path) => invoke<ChatImage>('read_chat_image', { path }))
-				);
-				addImages(results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])));
-				const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-				if (failed) imageError = String(failed.reason);
-			})
-			.then((unlisten) => {
-				if (disposed) unlisten();
-				else stop = unlisten;
-			})
-			.catch(() => {});
-		return () => {
-			disposed = true;
-			stop?.();
-		};
-	};
+				if (disabledReason) return;
+				imageError = error ?? '';
+				addImages(dropped);
+			}
+		});
 
 	function send() {
 		const typed = /^\/(\S+)$/.exec(draft.trim());

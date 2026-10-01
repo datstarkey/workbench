@@ -1,0 +1,67 @@
+import { agentWsUrl } from '@workbench/transport';
+import type { AgentClientMsg, AgentSummary, StartAgentBody } from '@workbench/types';
+
+/** What an {@link AgentChat} needs from the server; injectable for tests. */
+export interface AgentApi {
+	start(body: StartAgentBody): Promise<void>;
+	socketUrl(sessionId: string): Promise<string>;
+}
+
+export interface AgentServer {
+	baseUrl: string;
+	token?: string | null;
+}
+
+/**
+ * The chat-session routes of a Workbench server. `server` is read on every
+ * call, so a new address or rotated token applies without rebuilding this.
+ */
+export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
+	async function call<T>(method: string, path: string, body?: unknown): Promise<T | null> {
+		const { baseUrl, token } = await server();
+		const resp = await fetch(`${baseUrl}${path}`, {
+			method,
+			headers: {
+				...(token ? { authorization: `Bearer ${token}` } : {}),
+				...(body ? { 'content-type': 'application/json' } : {})
+			},
+			body: body ? JSON.stringify(body) : undefined
+		});
+		if (!resp.ok) {
+			const message = await resp
+				.json()
+				.then((j: { error?: string }) => j.error)
+				.catch(() => undefined);
+			throw new Error(message || `${resp.status} ${resp.statusText}`);
+		}
+		return resp.status === 204 ? null : ((await resp.json()) as T);
+	}
+	const path = (id: string) => `/agent/claude/${encodeURIComponent(id)}`;
+
+	return {
+		async start(body: StartAgentBody): Promise<void> {
+			await call('POST', '/agent/claude', body);
+		},
+		async socketUrl(sessionId: string): Promise<string> {
+			const { baseUrl, token } = await server();
+			return agentWsUrl(baseUrl, sessionId, token ?? undefined);
+		},
+		/** Stop a session's `claude` process, e.g. before a terminal takes it over. */
+		async stop(sessionId: string): Promise<void> {
+			await call('DELETE', path(sessionId));
+		},
+		/** Stop whatever chat session a closed pane owned. */
+		async stopPane(paneId: string): Promise<void> {
+			await call('DELETE', `/agent/claude?paneId=${encodeURIComponent(paneId)}`);
+		},
+		async list(): Promise<AgentSummary[]> {
+			return (await call<AgentSummary[]>('GET', '/agent/claude')) ?? [];
+		},
+		/** One message without a socket, e.g. answering an approval from a list. */
+		async send(sessionId: string, msg: AgentClientMsg): Promise<void> {
+			await call('POST', `${path(sessionId)}/message`, msg);
+		}
+	} satisfies AgentApi & Record<string, unknown>;
+}
+
+export type AgentClient = ReturnType<typeof agentClient>;

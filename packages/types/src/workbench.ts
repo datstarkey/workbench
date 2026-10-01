@@ -713,3 +713,23 @@ export interface StartAgentBody {
 	/** The pane's Claude account; absent is the default login. */
 	claudeAccountId?: string;
 }
+
+/** A running chat session, as `GET /agent/claude` lists it (phone home screen). */
+export interface AgentSummary {
+	sessionId: string;
+	projectPath: string;
+	worktreePath: string | null;
+	paneId: string | null;
+	title: string | null;
+	model: string | null;
+	busy: boolean;
+	exited: boolean;
+	/** Unix ms: when the current turn started; null while idle. */
+	busySince: number | null;
+	/** Unix ms of the last change, for "12m ago". */
+	updatedAt: number;
+	/** The oldest unanswered approval or question, if Claude is waiting on you. */
+	waiting: Extract<TranscriptItem, { kind: 'approval' }> | null;
+	/** The newest tool call still running. */
+	running: Extract<TranscriptItem, { kind: 'tool' }> | null;
+}

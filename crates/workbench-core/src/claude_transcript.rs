@@ -501,6 +501,29 @@ impl Transcript {
         self.approvals.keys().cloned().collect()
     }
 
+    /// The oldest approval still waiting for an answer.
+    pub fn waiting_on(&self) -> Option<&TranscriptItem> {
+        let first = self.approvals.values().map(|p| p.item).min()?;
+        self.items.get(first)
+    }
+
+    /// The newest tool call still running. `None` while idle: an interrupted
+    /// turn leaves its calls marked running.
+    pub fn running_tool(&self) -> Option<&TranscriptItem> {
+        if !self.meta.busy {
+            return None;
+        }
+        self.items.iter().rev().find(|i| {
+            matches!(
+                i,
+                TranscriptItem::Tool {
+                    status: ToolStatus::Running,
+                    ..
+                }
+            )
+        })
+    }
+
     /// Permission prompts become approval items; anything else the CLI asks of
     /// its host (MCP elicitation, hook callbacks, dialogs) gets an error reply.
     fn apply_control_request(&mut self, obj: &Value, changed: &mut Vec<usize>) -> Option<Value> {

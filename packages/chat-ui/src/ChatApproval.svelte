@@ -3,7 +3,7 @@
 	import ShieldQuestionIcon from '@lucide/svelte/icons/shield-question-mark';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import type { ApprovalDecision } from '$types/workbench';
+	import type { ApprovalDecision } from '@workbench/types';
 	import { type ApprovalItem, approvalPreview, shortPath } from './chat-format';
 
 	let {

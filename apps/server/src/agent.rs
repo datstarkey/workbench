@@ -11,14 +11,15 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript};
+use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript, TranscriptItem};
 
 /// The modes `--permission-mode` / `set_permission_mode` accept.
 pub const PERMISSION_MODES: &[&str] = &[
@@ -47,8 +48,17 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
 pub struct StartAgent {
     pub cwd: String,
+    /// As the client gave them, for listing; `cwd` is what they resolved to.
+    pub project_path: String,
+    pub worktree_path: Option<String>,
     pub session_id: String,
     pub permission_mode: Option<String>,
     /// Forwarded as `WORKBENCH_PANE_ID` / `WORKBENCH_HOOK_SOCKET` so hooks keep
@@ -63,7 +73,12 @@ pub struct AgentSession {
     /// Changes when `/clear` continues the conversation under a new id.
     session_id: Mutex<String>,
     pub pane_id: Option<String>,
+    project_path: String,
+    worktree_path: Option<String>,
     transcript: Mutex<Transcript>,
+    /// Unix ms; both are written under the transcript lock.
+    busy_since: Mutex<Option<u64>>,
+    updated_at: AtomicU64,
     tx: broadcast::Sender<String>,
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Child>,
@@ -71,6 +86,24 @@ pub struct AgentSession {
     pid: u32,
     exited: AtomicBool,
     task_files: Mutex<HashMap<String, PathBuf>>,
+}
+
+/// One live session as the phone's home screen lists it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSummary {
+    pub session_id: String,
+    pub project_path: String,
+    pub worktree_path: Option<String>,
+    pub pane_id: Option<String>,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub busy: bool,
+    pub exited: bool,
+    pub busy_since: Option<u64>,
+    pub updated_at: u64,
+    pub waiting: Option<TranscriptItem>,
+    pub running: Option<TranscriptItem>,
 }
 
 #[derive(Clone, Default)]
@@ -175,7 +208,11 @@ impl AgentManager {
         let session = Arc::new(AgentSession {
             session_id: Mutex::new(req.session_id.clone()),
             pane_id: req.pane_id,
+            project_path: req.project_path,
+            worktree_path: req.worktree_path,
             transcript: Mutex::new(transcript),
+            busy_since: Mutex::new(None),
+            updated_at: AtomicU64::new(now_ms()),
             tx,
             stdin: Mutex::new(Some(stdin)),
             child: Mutex::new(child),
@@ -254,6 +291,17 @@ impl AgentManager {
         }
     }
 
+    /// Every live session, most recently changed first.
+    pub fn summaries(&self) -> Vec<AgentSummary> {
+        let mut all: Vec<AgentSummary> = self
+            .sessions(|_| true)
+            .iter()
+            .map(|s| s.summary())
+            .collect();
+        all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        all
+    }
+
     /// Distinct sessions matching `keep` — a session with aliases appears once.
     fn sessions(&self, keep: impl Fn(&AgentSession) -> bool) -> Vec<Arc<AgentSession>> {
         let mut found: Vec<Arc<AgentSession>> = lock(&self.inner)
@@ -283,6 +331,25 @@ impl AgentSession {
 
     pub fn id(&self) -> String {
         lock(&self.session_id).clone()
+    }
+
+    pub fn summary(&self) -> AgentSummary {
+        let t = lock(&self.transcript);
+        let meta = t.meta();
+        AgentSummary {
+            session_id: self.id(),
+            project_path: self.project_path.clone(),
+            worktree_path: self.worktree_path.clone(),
+            pane_id: self.pane_id.clone(),
+            title: meta.title.clone(),
+            model: meta.model.clone(),
+            busy: meta.busy,
+            exited: self.has_exited(),
+            busy_since: *lock(&self.busy_since),
+            updated_at: self.updated_at.load(Ordering::SeqCst),
+            waiting: t.waiting_on().cloned(),
+            running: t.running_tool().cloned(),
+        }
     }
 
     fn send(&self, msg: &Value) -> Result<()> {
@@ -456,6 +523,7 @@ impl AgentSession {
         if let Some(new_id) = applied.new_session_id {
             *lock(&self.session_id) = new_id.clone();
             alias(&new_id);
+            self.touch(&t);
             let _ = self.tx.send(self.snapshot(&t));
             return;
         }
@@ -467,12 +535,20 @@ impl AgentSession {
     /// Frames go out while the transcript lock is held, so their order matches
     /// the order changes were applied in.
     fn broadcast_update(&self, t: &Transcript, changed: &[usize]) {
+        self.touch(t);
         let mut indices = changed.to_vec();
         indices.sort_unstable();
         indices.dedup();
         let changes: Vec<Value> = indices.iter().map(|&i| json!([i, &t.items()[i]])).collect();
         let frame = json!({"t": "update", "changes": changes, "meta": t.meta()});
         let _ = self.tx.send(frame.to_string());
+    }
+
+    fn touch(&self, t: &Transcript) {
+        let now = now_ms();
+        self.updated_at.store(now, Ordering::SeqCst);
+        let mut since = lock(&self.busy_since);
+        *since = t.meta().busy.then(|| since.unwrap_or(now));
     }
 
     fn finish(&self, stderr_tail: &str) {

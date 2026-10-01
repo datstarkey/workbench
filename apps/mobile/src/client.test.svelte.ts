@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	CAMERA_DENIED,
+	claudeCommand,
 	MobileClient,
 	NOT_A_PAIRING_CODE,
 	normalizeUrl,
@@ -198,6 +199,145 @@ describe('MobileClient', () => {
 		c.selectTerminal('t1');
 		await c.killTerminal('t1');
 		expect(c.activeTerminalId).toBeNull();
+	});
+
+	describe('Claude sessions', () => {
+		const SID = '4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5';
+		const summary = {
+			sessionId: SID,
+			projectPath: '/repo',
+			worktreePath: '/repo-wt',
+			paneId: null,
+			title: 'Fix the build',
+			model: null,
+			busy: false,
+			exited: false,
+			busySince: null,
+			updatedAt: 0,
+			waiting: null,
+			running: null
+		};
+
+		/** A fake server recording each call; terminals it creates are listed until killed. */
+		function fakeServer() {
+			const calls: { method: string; path: string; body: unknown }[] = [];
+			const terminals: {
+				id: string;
+				name: string;
+				cwd: string;
+				createdAt: number;
+				alive: boolean;
+			}[] = [];
+			vi.stubGlobal(
+				'fetch',
+				vi.fn((input: string, init?: RequestInit) => {
+					const method = init?.method ?? 'GET';
+					const path = new URL(input).pathname;
+					const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+					calls.push({ method, path, body });
+					if (path === '/agent/claude' && method === 'GET')
+						return Promise.resolve(jsonResponse([summary]));
+					if (path === '/remote/terminals' && method === 'POST') {
+						const meta = {
+							id: `t${terminals.length + 1}`,
+							name: body.name,
+							cwd: '/repo',
+							createdAt: 0,
+							alive: true
+						};
+						terminals.push(meta);
+						return Promise.resolve(jsonResponse(meta));
+					}
+					if (path === '/remote/terminals') return Promise.resolve(jsonResponse(terminals));
+					if (path.startsWith('/remote/terminals/') && method === 'DELETE') {
+						terminals.splice(
+							terminals.findIndex((t) => path.endsWith(t.id)),
+							1
+						);
+						return Promise.resolve(new Response(null, { status: 204 }));
+					}
+					if (method === 'DELETE' || path.endsWith('/message'))
+						return Promise.resolve(new Response(null, { status: 204 }));
+					return Promise.resolve(jsonResponse(null));
+				})
+			);
+			return calls;
+		}
+
+		it('lists running chats with the token', async () => {
+			const c = await connected();
+			fakeServer();
+			await c.refreshChats();
+			expect(c.chats.map((s) => s.title)).toEqual(['Fix the build']);
+			const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+			expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
+		});
+
+		it('opens new sessions as chat by default', async () => {
+			const c = await connected();
+			await c.startClaude('/repo', undefined, 'repo');
+			expect(c.activeChat?.projectPath).toBe('/repo');
+			expect(c.activeChat?.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+			expect(c.activeTerminalId).toBeNull();
+		});
+
+		it('opens new sessions in a terminal when that is the default, and remembers the choice', async () => {
+			const c = await connected();
+			const calls = fakeServer();
+			c.setDefaultView('terminal');
+			await c.startClaude('/repo', undefined, 'repo');
+			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
+			expect((create?.body as { command: string }).command).toMatch(
+				/^claude --session-id [0-9a-f-]{36}$/
+			);
+			expect(c.activeTerminalId).toBe('t1');
+			expect(c.claudeTerminals.t1.projectPath).toBe('/repo');
+			expect(new MobileClient().defaultView).toBe('terminal');
+		});
+
+		it('moves a chat to the terminal and back', async () => {
+			const c = await connected();
+			const calls = fakeServer();
+			const ref = c.chatRef(summary);
+			c.openChat(ref);
+
+			await c.showAsTerminal(ref, true);
+			const order = calls.map((x) => `${x.method} ${x.path}`);
+			expect(order.indexOf(`DELETE /agent/claude/${SID}`)).toBeLessThan(
+				order.indexOf('POST /remote/terminals')
+			);
+			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
+			expect(create?.body).toMatchObject({
+				projectPath: '/repo',
+				worktreePath: '/repo-wt',
+				command: `claude --resume ${SID}`
+			});
+			expect(c.activeChat).toBeNull();
+			expect(c.activeTerminalId).toBe('t1');
+
+			await c.showAsChat('t1');
+			expect(calls.some((x) => x.method === 'DELETE' && x.path === '/remote/terminals/t1')).toBe(
+				true
+			);
+			expect(c.activeChat).toEqual(ref);
+			expect(c.claudeTerminals).toEqual({});
+		});
+
+		it('answers an approval from the home screen', async () => {
+			const c = await connected();
+			const calls = fakeServer();
+			await c.answer(SID, 'perm-1', 'allow');
+			expect(calls[0]).toEqual({
+				method: 'POST',
+				path: `/agent/claude/${SID}/message`,
+				body: { t: 'approve', requestId: 'perm-1', decision: 'allow' }
+			});
+		});
+
+		it('refuses to put anything but a session id into a shell command', () => {
+			expect(claudeCommand(SID, false)).toBe(`claude --session-id ${SID}`);
+			expect(() => claudeCommand('x; rm -rf ~', true)).toThrow();
+		});
 	});
 
 	it('restores a previously saved server address and token from localStorage', () => {
