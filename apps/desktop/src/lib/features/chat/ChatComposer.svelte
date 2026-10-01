@@ -26,7 +26,9 @@
 		onStop,
 		onMode,
 		controls,
-		commands = []
+		commands = [],
+		onCommand,
+		popover
 	}: {
 		id: string;
 		draft?: string;
@@ -42,6 +44,10 @@
 		controls?: Snippet;
 		/** For the `/` menu. */
 		commands?: SlashCommand[];
+		/** Commands handled in the app rather than by Claude; true when it took it. */
+		onCommand?: (name: string) => boolean;
+		/** Shown above the composer, e.g. the resume picker. */
+		popover?: Snippet;
 	} = $props();
 
 	let images = $state<ChatImage[]>([]);
@@ -59,6 +65,10 @@
 
 	function pick(command: SlashCommand, sendNow: boolean) {
 		menuIndex = 0;
+		if (onCommand?.(command.name)) {
+			draft = '';
+			return;
+		}
 		if (command.argumentHint || !sendNow) {
 			draft = `/${command.name} `;
 			return;
@@ -149,6 +159,11 @@
 	};
 
 	function send() {
+		const typed = /^\/(\S+)$/.exec(draft.trim());
+		if (typed && images.length === 0 && onCommand?.(typed[1])) {
+			draft = '';
+			return;
+		}
 		if (!canSend || !onSend(draft, images)) return;
 		draft = '';
 		images = [];
@@ -191,6 +206,7 @@
 		dropping ? 'border-wb-accent' : 'border-wb-hair'
 	)}
 >
+	{@render popover?.()}
 	{#if menuOpen}
 		<ChatSlashMenu
 			id="{id}-commands"

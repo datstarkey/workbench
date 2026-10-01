@@ -545,10 +545,8 @@ export class ClaudeSessionStore {
 	}
 
 	/** Discover sessions without touching the shared `discovered*Sessions` state. */
-	private async peekSessions(
-		cwd: string,
-		type: 'claude' | 'codex'
-	): Promise<DiscoveredClaudeSession[]> {
+	/** Sessions in `cwd` without touching the store-wide resume list. */
+	async peekSessions(cwd: string, type: 'claude' | 'codex'): Promise<DiscoveredClaudeSession[]> {
 		const command = type === 'codex' ? 'discover_codex_sessions' : 'discover_claude_sessions';
 		try {
 			return await invoke<DiscoveredClaudeSession[]>(command, { projectPath: cwd });

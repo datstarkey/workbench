@@ -6,8 +6,17 @@
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
-	import type { ChatImage, ProjectConfig } from '$types/workbench';
-	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
+	import type {
+		ChatImage,
+		DiscoveredClaudeSession,
+		ProjectConfig,
+		SlashCommand
+	} from '$types/workbench';
+	import {
+		getClaudeSessionStore,
+		getWorkbenchSettingsStore,
+		getWorkspaceStore
+	} from '$stores/context';
 	import { acquireChat } from './chat-registry';
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
@@ -16,6 +25,7 @@
 	import ChatModelPicker from './ChatModelPicker.svelte';
 	import ChatPlan from './ChatPlan.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
+	import ChatResumePicker from './ChatResumePicker.svelte';
 	import ChatTasks from './ChatTasks.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
 	import {
@@ -78,6 +88,36 @@
 			if (id && id !== sessionId) onSessionIdChange(id);
 		}
 	);
+
+	const workspaceStore = getWorkspaceStore();
+
+	/** `/resume` is a terminal picker the CLI doesn't offer in chat, so the app provides it. */
+	const RESUME: SlashCommand = {
+		name: 'resume',
+		description: 'Continue an earlier conversation from this folder'
+	};
+	let resumeOpen = $state(false);
+	const commandList = $derived([RESUME, ...chat.commands.filter((c) => c.name !== 'resume')]);
+
+	function clientCommand(name: string): boolean {
+		if (name !== 'resume') return false;
+		resumeOpen = true;
+		return true;
+	}
+
+	async function earlierSessions(): Promise<DiscoveredClaudeSession[]> {
+		const all = await claudeSessionStore.peekSessions(workdir, 'claude');
+		return all
+			.filter(
+				(s) => s.sessionId !== chat.sessionId && (s.accountId ?? '') === (claudeAccountId ?? '')
+			)
+			.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+	}
+
+	function resume(session: DiscoveredClaudeSession) {
+		resumeOpen = false;
+		void workspaceStore.resumeInChat(paneId, session.sessionId, session.label);
+	}
 
 	let draft = $state('');
 	let stickToBottom = true;
@@ -424,9 +464,19 @@
 					{disabledReason}
 					onSend={send}
 					onStop={() => chat.interrupt()}
-					commands={chat.commands}
+					commands={commandList}
+					onCommand={clientCommand}
 					onMode={(mode) => chat.setMode(mode)}
 				>
+					{#snippet popover()}
+						{#if resumeOpen}
+							<ChatResumePicker
+								load={earlierSessions}
+								onPick={resume}
+								onClose={() => (resumeOpen = false)}
+							/>
+						{/if}
+					{/snippet}
 					{#snippet controls()}
 						<ChatModelPicker
 							meta={chat.meta}

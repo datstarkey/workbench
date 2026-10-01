@@ -862,6 +862,34 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
+	describe('chat resume', () => {
+		const older = '12345678-1234-1234-1234-123456789abc';
+		const current = '22345678-1234-1234-1234-123456789abc';
+
+		it('opens a resumed session as chat when that is the default', () => {
+			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.resumeAISession('ws-a', older, 'Older', 'claude');
+			const pane = store.workspaces[0].terminalTabs[0].panes[0];
+			expect(pane.view).toBe('chat');
+			expect(pane.claudeSessionId).toBe(older);
+		});
+
+		it('swaps a chat pane to another conversation in place', async () => {
+			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.resumeAISession('ws-a', current, 'Current', 'claude');
+			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
+
+			await store.resumeInChat(paneId, older, 'Older');
+
+			const tab = store.workspaces[0].terminalTabs[0];
+			expect(tab.panes[0].claudeSessionId).toBe(older);
+			expect(tab.panes[0].view).toBe('chat');
+			expect(tab.label).toBe('Older');
+		});
+	});
+
 	describe('resumeAISession', () => {
 		it('creates a tab with resume command for claude', () => {
 			const ws = makeWorkspace({ id: 'ws-a' });

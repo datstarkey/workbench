@@ -524,11 +524,7 @@ export class WorkspaceStore {
 			// A plain new Claude tab can open straight into chat: chat picks the
 			// session id up front (`--session-id`), so it needs no terminal first.
 			// Not while the sandbox runtime is on — chat can't run inside it yet.
-			const asChat =
-				type === 'claude' &&
-				!explicit &&
-				this.settingsStore.defaultClaudeView === 'chat' &&
-				!this.settingsStore.sandboxRuntimeEnabled;
+			const asChat = type === 'claude' && !explicit && this.opensAsChat;
 			const sessionId = asChat ? crypto.randomUUID() : ''; // Claude requires a real UUID
 			const newTab = this.createAITab(
 				label,
@@ -667,6 +663,28 @@ export class WorkspaceStore {
 		}));
 	}
 
+	/** New Claude tabs open as chat: the setting, and never inside the sandbox runtime. */
+	private get opensAsChat(): boolean {
+		return (
+			this.settingsStore.defaultClaudeView === 'chat' && !this.settingsStore.sandboxRuntimeEnabled
+		);
+	}
+
+	/**
+	 * `/resume` in a chat: stop the pane's current conversation and continue
+	 * another one in its place. The grid re-keys the chat on the new id.
+	 */
+	async resumeInChat(paneId: string, sessionId: string, label: string): Promise<void> {
+		const pane = this.workspaces
+			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
+			.find((p) => p.id === paneId);
+		if (!pane || pane.claudeSessionId === sessionId) return;
+		releaseChat(paneId);
+		if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
+		this.updateAISessionByPaneId(paneId, sessionId, 'claude');
+		this.updateAITabLabelByPaneId(paneId, label, 'claude');
+	}
+
 	/** The pane shows its Claude session as chat (see `setPaneView`). */
 	isChatPane(paneId: string): boolean {
 		return this.workspaces.some((w) =>
@@ -750,6 +768,7 @@ export class WorkspaceStore {
 				type,
 				tab.panes[0]?.claudeAccountId
 			);
+			if (tab.panes[0]?.view === 'chat' && sessionId) newTab.panes[0].view = 'chat';
 			return {
 				...w,
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tabId ? newTab : t)),
@@ -774,6 +793,7 @@ export class WorkspaceStore {
 				type,
 				accountId
 			);
+			if (type === 'claude' && this.opensAsChat) newTab.panes[0].view = 'chat';
 			return {
 				...w,
 				terminalTabs: [...w.terminalTabs, newTab],
