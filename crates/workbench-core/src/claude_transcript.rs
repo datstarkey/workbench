@@ -21,6 +21,9 @@ use serde_json::{json, Value};
 mod items;
 mod parse;
 mod protocol;
+mod summary;
+
+pub use summary::{RunningSummary, WaitingSummary};
 
 pub use items::{
     ApprovalDecision, ModelOption, RateLimitInfo, RetryInfo, SlashCommand, TaskInfo, ToolStatus,

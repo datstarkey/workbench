@@ -69,6 +69,8 @@ export class AgentChat {
 	private ws: WebSocket | null = null;
 	private retryTimer: ReturnType<typeof setTimeout> | null = null;
 	private disposed = false;
+	/** Bumped by every connect; an older one still awaiting the server gives up. */
+	private generation = 0;
 	/** Called when Claude starts or stops waiting on the person (approval, question). */
 	onNeedsYou: ((waiting: boolean) => void) | null = null;
 	private waitingOnYou = false;
@@ -98,17 +100,19 @@ export class AgentChat {
 	 * and this brings it back with the conversation resumed.
 	 */
 	private async connect(): Promise<void> {
+		const generation = ++this.generation;
+		const stale = () => this.disposed || generation !== this.generation;
 		let url: string;
 		try {
 			await this.api.start({ ...this.body, sessionId: this.sessionId });
 			url = await this.api.socketUrl(this.sessionId);
 		} catch (e) {
-			if (this.disposed) return;
+			if (stale()) return;
 			this.status = 'failed';
 			this.error = e instanceof Error ? e.message : String(e);
 			return;
 		}
-		if (this.disposed) return;
+		if (stale()) return;
 		const ws = new WebSocket(url);
 		this.ws = ws;
 		ws.onmessage = (event) => {
@@ -224,6 +228,14 @@ export class AgentChat {
 		if (Object.keys(previews).length > 0) {
 			this.imagePreviews = { ...this.imagePreviews, ...previews };
 		}
+	}
+
+	/**
+	 * The conversation has something on disk to resume. A snapshot that starts
+	 * past item 0 left older history out, prompts included.
+	 */
+	get hasHistory(): boolean {
+		return this.start > 0 || this.items.some((i) => i.kind === 'user');
 	}
 
 	private userTexts(): string[] {

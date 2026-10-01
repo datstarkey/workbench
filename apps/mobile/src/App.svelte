@@ -37,6 +37,7 @@
 			onClose={c.closeTerminal}
 			onShowChat={c.claudeTerminals[terminalId] ? () => c.showAsChat(terminalId) : undefined}
 			switching={c.switching}
+			notice={c.notice}
 		/>
 	{/key}
 {:else if c.store}

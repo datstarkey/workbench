@@ -663,6 +663,113 @@ async fn terminal_ws_closes_when_killed() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn terminal_kill_can_wait_for_its_processes() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    let (handle, base) = start().await;
+    let http = client();
+
+    // A foreground job that takes a while to exit, like Claude flushing its session.
+    let pid_file = tmp.path().join("pid");
+    let command = format!(
+        "sh -c 'echo $$ > {}; trap \"sleep 0.5; exit\" HUP TERM; while :; do sleep 0.1; done'",
+        pid_file.display()
+    );
+    let meta: Value = http
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({ "projectPath": tmp.path(), "command": command }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = meta["id"].as_str().expect("terminal id");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(&pid_file)
+            .ok()
+            .filter(|p| p.ends_with('\n'))
+        {
+            break pid.trim().to_string();
+        }
+        assert!(tokio::time::Instant::now() < deadline, "job never started");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    let res = http
+        .delete(format!("{base}/remote/terminals/{id}?wait=true"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "the job must be gone once a waiting kill returns");
+
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_claude_session_is_built_by_the_server() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = register_project(&env, tmp.path());
+    let (handle, base) = start().await;
+    let http = client();
+    let create = |body: Value| {
+        http.post(format!("{base}/remote/terminals"))
+            .json(&body)
+            .send()
+    };
+    let sid = "4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let project = tmp.path();
+
+    let res = create(json!({
+        "projectPath": project, "command": "claude",
+        "claudeSession": {"id": sid, "resume": true},
+    }))
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400, "command and claudeSession are exclusive");
+
+    let res = create(json!({
+        "projectPath": project, "claudeSession": {"id": "x; rm -rf ~", "resume": true},
+    }))
+    .await
+    .unwrap();
+    assert!(res.status().is_server_error(), "a non-UUID id is refused");
+
+    std::fs::write(
+        cfg.path().join("settings.json"),
+        json!({"sandboxRuntimeEnabled": true}).to_string(),
+    )
+    .unwrap();
+    let res = create(json!({
+        "projectPath": project, "claudeSession": {"id": sid, "resume": false},
+    }))
+    .await
+    .unwrap();
+    let body: Value = res.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("sandbox settings file is missing"),
+        "the sandbox fails closed: {body}"
+    );
+
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn terminal_ws_closes_on_shell_exit() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
@@ -1384,17 +1491,21 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
     assert_eq!(summary["projectPath"], json!(tmp.path()));
     assert_eq!(summary["worktreePath"], Value::Null);
     assert_eq!(summary["paneId"], "pane-list");
+    assert_eq!(summary["claudeAccountId"], Value::Null);
     assert_eq!(summary["busy"], false);
     assert_eq!(summary["busySince"], Value::Null);
     assert_eq!(summary["waiting"], Value::Null);
+    assert_eq!(summary["running"], Value::Null);
     assert!(summary["updatedAt"].as_u64().unwrap() > 0);
 
     let res = message(json!({"t":"prompt","text":"hello"})).await.unwrap();
     assert_eq!(res.status(), 204);
     let summary = wait_for(|s| !s["waiting"].is_null()).await;
-    assert_eq!(summary["waiting"]["kind"], "approval");
-    assert_eq!(summary["waiting"]["id"], "perm-1");
-    assert_eq!(summary["waiting"]["tool"], "Bash");
+    assert_eq!(
+        summary["waiting"],
+        json!({"id": "perm-1", "tool": "Bash", "preview": "ls"}),
+        "the list carries a preview, not the whole approval item"
+    );
     assert_eq!(summary["busy"], true);
     assert_eq!(summary["model"], "fake-model");
     let since = summary["busySince"].as_u64().expect("busySince while busy");

@@ -36,5 +36,5 @@ export function releaseChat(paneId: string): void {
  */
 export function chatHasHistory(paneId: string): boolean {
 	const chat = chats.get(paneId);
-	return !chat || chat.items.some((i) => i.kind === 'user');
+	return !chat || chat.hasHistory;
 }

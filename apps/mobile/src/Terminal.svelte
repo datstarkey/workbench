@@ -20,7 +20,8 @@
 		name,
 		onClose,
 		onShowChat,
-		switching = false
+		switching = false,
+		notice = null
 	}: {
 		serverUrl: string;
 		token?: string;
@@ -30,6 +31,8 @@
 		/** Set when this terminal runs a Claude conversation that can move to chat. */
 		onShowChat?: () => void;
 		switching?: boolean;
+		/** Why the last switch failed. */
+		notice?: string | null;
 	} = $props();
 
 	let status = $state<TerminalStatus>('connecting');
@@ -203,6 +206,14 @@
 				Back to chat
 			</button>
 		</div>
+	{/if}
+	{#if notice}
+		<p
+			class="shrink-0 border-b border-wb-err/30 bg-wb-err/10 px-3 py-2 text-xs text-wb-err"
+			role="alert"
+		>
+			{notice}
+		</p>
 	{/if}
 
 	<div

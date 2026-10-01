@@ -720,6 +720,8 @@ export interface AgentSummary {
 	projectPath: string;
 	worktreePath: string | null;
 	paneId: string | null;
+	/** The Claude account it runs under; null is the default login. */
+	claudeAccountId: string | null;
 	title: string | null;
 	model: string | null;
 	busy: boolean;
@@ -729,7 +731,7 @@ export interface AgentSummary {
 	/** Unix ms of the last change, for "12m ago". */
 	updatedAt: number;
 	/** The oldest unanswered approval or question, if Claude is waiting on you. */
-	waiting: Extract<TranscriptItem, { kind: 'approval' }> | null;
-	/** The newest tool call still running. */
-	running: Extract<TranscriptItem, { kind: 'tool' }> | null;
+	waiting: { id: string; tool: string; preview: string } | null;
+	/** The newest tool call still running in this turn. */
+	running: { name: string; detail: string } | null;
 }

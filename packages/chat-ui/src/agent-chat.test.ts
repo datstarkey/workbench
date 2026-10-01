@@ -190,6 +190,41 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('abandons a connect still waiting on the server when reconnect() starts another', async () => {
+		let release!: () => void;
+		const start = vi
+			.fn<AgentApi['start']>()
+			.mockResolvedValueOnce()
+			.mockImplementationOnce(() => new Promise((r) => (release = r)))
+			.mockResolvedValue();
+		const { chat, ws } = await connected(fakeApi(start));
+		ws.onclose?.(); // dropped: the retry timer fires and its start hangs
+		await vi.advanceTimersByTimeAsync(1500);
+		chat.reconnect();
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
+		const current = FakeSocket.last;
+		release();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(FakeSocket.last).toBe(current); // the stale connect opened no socket
+		chat.dispose();
+	});
+
+	it('knows when there is history to resume, even beyond the snapshot', async () => {
+		const { chat, ws } = await connected();
+		expect(chat.hasHistory).toBe(false);
+		ws.emit({
+			t: 'snapshot',
+			sessionId: 'sid',
+			start: 500,
+			items: [],
+			meta: meta(),
+			commands: [],
+			exited: false
+		});
+		expect(chat.hasHistory).toBe(true);
+		chat.dispose();
+	});
+
 	it('tells the pane when Claude starts and stops waiting on you', async () => {
 		const { chat, ws } = await connected();
 		const calls: boolean[] = [];

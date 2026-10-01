@@ -74,6 +74,7 @@ pub async fn agent_start(
             pane_id: body.pane_id,
             hook_socket: body.hook_socket,
             config_dir,
+            claude_account_id: body.claude_account_id,
         })?;
         Ok(json!({"sessionId": session.id()}))
     })

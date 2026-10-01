@@ -8,7 +8,7 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { approvalPreview, Elapsed, toolDetail } from '@workbench/chat-ui';
+	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { AgentSummary, ProjectConfig } from '@workbench/types';
 	import { baseName, type MobileClient } from './client.svelte.ts';
@@ -108,13 +108,23 @@
 	</header>
 
 	<main class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3.5 py-4">
-		{#if store.error || client.connectError}
-			<p
-				class="rounded-lg border border-wb-err/40 bg-wb-err/10 px-3 py-2 font-mono text-[11px] text-wb-err"
+		{#if store.error || client.notice}
+			<div
+				class="flex items-start gap-2 rounded-lg border border-wb-err/40 bg-wb-err/10 py-1 pr-1 pl-3 text-xs text-wb-err"
 				role="alert"
 			>
-				{store.error ?? client.connectError}
-			</p>
+				<span class="min-w-0 flex-1 py-1.5 break-words">{client.notice ?? store.error}</span>
+				{#if client.notice}
+					<button
+						type="button"
+						class="grid size-7 shrink-0 place-items-center rounded-md active:bg-wb-err/20"
+						aria-label="Dismiss"
+						onclick={() => (client.notice = null)}
+					>
+						<XIcon class="size-3.5" />
+					</button>
+				{/if}
+			</div>
 		{/if}
 
 		{#if needsYou.length > 0}
@@ -135,7 +145,7 @@
 						{#if answerableFromHome(waiting)}
 							<code
 								class="truncate rounded-md border border-wb-hair bg-wb-rail px-2.5 py-1.5 font-mono text-[11.5px]"
-								>{approvalPreview(waiting, chat.worktreePath ?? chat.projectPath)}</code
+								>{shortPath(waiting.preview, chat.worktreePath ?? chat.projectPath)}</code
 							>
 						{/if}
 						<div class="flex gap-1.5">
@@ -203,7 +213,7 @@
 							>
 							{#if chat.running}
 								<span class="truncate font-mono text-[11px] text-wb-ink"
-									>{toolDetail(chat.running, chat.worktreePath ?? chat.projectPath) ||
+									>{shortPath(chat.running.detail, chat.worktreePath ?? chat.projectPath) ||
 										chat.running.name}</span
 								>
 							{:else if chat.busy}

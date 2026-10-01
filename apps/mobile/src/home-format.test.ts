@@ -3,12 +3,9 @@ import type { AgentSummary } from '@workbench/types';
 import { age, answerableFromHome, waitingLabel } from './home-format.ts';
 
 const approval = (tool: string): NonNullable<AgentSummary['waiting']> => ({
-	kind: 'approval',
 	id: 'r1',
 	tool,
-	input: {},
-	canAlwaysAllow: false,
-	expired: false
+	preview: ''
 });
 
 describe('age', () => {

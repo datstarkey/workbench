@@ -19,17 +19,10 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript, TranscriptItem};
-
-/// The modes `--permission-mode` / `set_permission_mode` accept.
-pub const PERMISSION_MODES: &[&str] = &[
-    "default",
-    "acceptEdits",
-    "plan",
-    "auto",
-    "dontAsk",
-    "bypassPermissions",
-];
+use workbench_core::claude_launch::PERMISSION_MODES;
+use workbench_core::claude_transcript::{
+    self, ApprovalDecision, RunningSummary, Transcript, TranscriptItem, WaitingSummary,
+};
 
 /// Effort levels `effortLevel` accepts.
 const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -67,6 +60,8 @@ pub struct StartAgent {
     pub hook_socket: Option<String>,
     /// The Claude account's config dir (`CLAUDE_CONFIG_DIR`); `None` is the default login.
     pub config_dir: Option<PathBuf>,
+    /// The id `config_dir` was resolved from, for listing.
+    pub claude_account_id: Option<String>,
 }
 
 pub struct AgentSession {
@@ -75,6 +70,7 @@ pub struct AgentSession {
     pub pane_id: Option<String>,
     project_path: String,
     worktree_path: Option<String>,
+    claude_account_id: Option<String>,
     transcript: Mutex<Transcript>,
     /// Unix ms; both are written under the transcript lock.
     busy_since: Mutex<Option<u64>>,
@@ -96,14 +92,15 @@ pub struct AgentSummary {
     pub project_path: String,
     pub worktree_path: Option<String>,
     pub pane_id: Option<String>,
+    pub claude_account_id: Option<String>,
     pub title: Option<String>,
     pub model: Option<String>,
     pub busy: bool,
     pub exited: bool,
     pub busy_since: Option<u64>,
     pub updated_at: u64,
-    pub waiting: Option<TranscriptItem>,
-    pub running: Option<TranscriptItem>,
+    pub waiting: Option<WaitingSummary>,
+    pub running: Option<RunningSummary>,
 }
 
 #[derive(Clone, Default)]
@@ -210,6 +207,7 @@ impl AgentManager {
             pane_id: req.pane_id,
             project_path: req.project_path,
             worktree_path: req.worktree_path,
+            claude_account_id: req.claude_account_id,
             transcript: Mutex::new(transcript),
             busy_since: Mutex::new(None),
             updated_at: AtomicU64::new(now_ms()),
@@ -341,14 +339,15 @@ impl AgentSession {
             project_path: self.project_path.clone(),
             worktree_path: self.worktree_path.clone(),
             pane_id: self.pane_id.clone(),
+            claude_account_id: self.claude_account_id.clone(),
             title: meta.title.clone(),
             model: meta.model.clone(),
             busy: meta.busy,
             exited: self.has_exited(),
             busy_since: *lock(&self.busy_since),
             updated_at: self.updated_at.load(Ordering::SeqCst),
-            waiting: t.waiting_on().cloned(),
-            running: t.running_tool().cloned(),
+            waiting: t.waiting_on().and_then(TranscriptItem::waiting_summary),
+            running: t.running_tool().and_then(TranscriptItem::running_summary),
         }
     }
 

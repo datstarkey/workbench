@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	CAMERA_DENIED,
-	claudeCommand,
 	MobileClient,
 	NOT_A_PAIRING_CODE,
 	normalizeUrl,
@@ -208,6 +207,7 @@ describe('MobileClient', () => {
 			projectPath: '/repo',
 			worktreePath: '/repo-wt',
 			paneId: null,
+			claudeAccountId: 'work',
 			title: 'Fix the build',
 			model: null,
 			busy: false,
@@ -219,7 +219,7 @@ describe('MobileClient', () => {
 		};
 
 		/** A fake server recording each call; terminals it creates are listed until killed. */
-		function fakeServer() {
+		function fakeServer({ failKill = false } = {}) {
 			const calls: { method: string; path: string; body: unknown }[] = [];
 			const terminals: {
 				id: string;
@@ -232,7 +232,8 @@ describe('MobileClient', () => {
 				'fetch',
 				vi.fn((input: string, init?: RequestInit) => {
 					const method = init?.method ?? 'GET';
-					const path = new URL(input).pathname;
+					const url = new URL(input);
+					const path = url.pathname + (url.search || '');
 					const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 					calls.push({ method, path, body });
 					if (path === '/agent/claude' && method === 'GET')
@@ -250,6 +251,7 @@ describe('MobileClient', () => {
 					}
 					if (path === '/remote/terminals') return Promise.resolve(jsonResponse(terminals));
 					if (path.startsWith('/remote/terminals/') && method === 'DELETE') {
+						if (failKill) return Promise.resolve(new Response(null, { status: 500 }));
 						terminals.splice(
 							terminals.findIndex((t) => path.endsWith(t.id)),
 							1
@@ -287,9 +289,8 @@ describe('MobileClient', () => {
 			c.setDefaultView('terminal');
 			await c.startClaude('/repo', undefined, 'repo');
 			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
-			expect((create?.body as { command: string }).command).toMatch(
-				/^claude --session-id [0-9a-f-]{36}$/
-			);
+			expect(create?.body).toMatchObject({ claudeSession: { resume: false } });
+			expect((create?.body as { command?: string }).command).toBeUndefined();
 			expect(c.activeTerminalId).toBe('t1');
 			expect(c.claudeTerminals.t1.projectPath).toBe('/repo');
 			expect(new MobileClient().defaultView).toBe('terminal');
@@ -310,15 +311,16 @@ describe('MobileClient', () => {
 			expect(create?.body).toMatchObject({
 				projectPath: '/repo',
 				worktreePath: '/repo-wt',
-				command: `claude --resume ${SID}`
+				claudeSession: { id: SID, resume: true },
+				claudeAccountId: 'work'
 			});
 			expect(c.activeChat).toBeNull();
 			expect(c.activeTerminalId).toBe('t1');
 
 			await c.showAsChat('t1');
-			expect(calls.some((x) => x.method === 'DELETE' && x.path === '/remote/terminals/t1')).toBe(
-				true
-			);
+			expect(
+				calls.some((x) => x.method === 'DELETE' && x.path === '/remote/terminals/t1?wait=true')
+			).toBe(true);
 			expect(c.activeChat).toEqual(ref);
 			expect(c.claudeTerminals).toEqual({});
 		});
@@ -334,9 +336,23 @@ describe('MobileClient', () => {
 			});
 		});
 
-		it('refuses to put anything but a session id into a shell command', () => {
-			expect(claudeCommand(SID, false)).toBe(`claude --session-id ${SID}`);
-			expect(() => claudeCommand('x; rm -rf ~', true)).toThrow();
+		it('stays in the terminal and says why when it cannot be stopped', async () => {
+			const c = await connected();
+			fakeServer({ failKill: true });
+			const ref = c.chatRef(summary);
+			await c.showAsTerminal(ref, true);
+			await c.showAsChat('t1');
+			expect(c.activeChat).toBeNull();
+			expect(c.activeTerminalId).toBe('t1');
+			expect(c.notice).toMatch(/Couldn't stop the terminal/);
+		});
+
+		it('ending a chat leaves its screen even after /clear changed its id', async () => {
+			const c = await connected();
+			fakeServer();
+			c.openChat(c.chatRef(summary));
+			await c.endChat('a-newer-id-after-clear');
+			expect(c.activeChat).toBeNull();
 		});
 	});
 

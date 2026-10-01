@@ -39,7 +39,8 @@
 		{
 			projectPath: ref.projectPath,
 			...(ref.worktreePath ? { worktreePath: ref.worktreePath } : {}),
-			sessionId: ref.sessionId
+			sessionId: ref.sessionId,
+			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
 		},
 		client.agents
 	);
@@ -91,11 +92,9 @@
 		}
 	});
 
+	/** `/clear` may have moved the conversation to a new id since this screen opened. */
 	function showTerminal() {
-		void client.showAsTerminal(
-			ref,
-			chat.items.some((i) => i.kind === 'user')
-		);
+		void client.showAsTerminal({ ...ref, sessionId: chat.sessionId }, chat.hasHistory);
 	}
 
 	function send(text: string, images: ChatImage[]): boolean {
@@ -246,8 +245,8 @@
 		class="flex shrink-0 flex-col gap-2 border-t border-wb-hair bg-wb-rail px-2.5 pt-2"
 		style="padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));"
 	>
-		{#if chat.notice}
-			<p class="px-1 text-xs text-wb-err" role="alert">{chat.notice}</p>
+		{#if chat.notice || client.notice}
+			<p class="px-1 text-xs text-wb-err" role="alert">{client.notice ?? chat.notice}</p>
 		{/if}
 		{#if limit}
 			<p

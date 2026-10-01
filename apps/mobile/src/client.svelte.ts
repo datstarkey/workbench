@@ -35,6 +35,14 @@ export interface ChatRef {
 	projectPath: string;
 	worktreePath?: string;
 	name: string;
+	/** The Claude account it belongs to; absent is the default login. */
+	claudeAccountId?: string;
+}
+
+/** Extras for a terminal that runs `claude` on a conversation (the server builds the command). */
+interface ClaudeLaunch {
+	claudeSession: { id: string; resume: boolean };
+	claudeAccountId?: string;
 }
 
 const LS_URL = 'wb.serverUrl';
@@ -45,7 +53,6 @@ const LS_LINKS = 'wb.claudeTerminals';
 const DEFAULT_PORT = '4317';
 /** Home-screen refresh while the app is in front. */
 const POLL_MS = 4000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // localStorage can throw in some webview contexts — never let it crash mount.
 function lsGet(key: string): string | null {
@@ -72,10 +79,8 @@ function readLinks(): Record<string, ChatRef> {
 	}
 }
 
-/** The CLI command a terminal runs for a conversation; the id goes into a shell, so check it. */
-export function claudeCommand(sessionId: string, resume: boolean): string {
-	if (!UUID.test(sessionId)) throw new Error('invalid session id');
-	return `claude ${resume ? '--resume' : '--session-id'} ${sessionId}`;
+function errorText(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
 }
 
 export function baseName(path: string): string {
@@ -125,6 +130,8 @@ export class MobileClient {
 	claudeTerminals = $state<Record<string, ChatRef>>(readLinks());
 	/** A chat ↔ terminal switch is stopping one process and starting the other. */
 	switching = $state(false);
+	/** Why the last action failed (switch, approve, open); shown on whichever screen is up. */
+	notice = $state<string | null>(null);
 
 	readonly agents = agentClient(() => ({ baseUrl: this.url, token: this.token }));
 
@@ -266,6 +273,7 @@ export class MobileClient {
 		this.chats = [];
 		this.activeTerminalId = null;
 		this.activeChat = null;
+		this.notice = null;
 	}
 
 	setDefaultView(view: ClaudeView): void {
@@ -287,8 +295,7 @@ export class MobileClient {
 	 * soon as it comes back from the lock screen. Returns a stop function.
 	 */
 	watch(): () => void {
-		const onHome = () =>
-			!document.hidden && this.store && !this.activeChat && !this.activeTerminalId;
+		const onHome = () => !document.hidden && this.store && !this.activeChat && !this.activeTerminal;
 		const timer = setInterval(() => {
 			if (!onHome()) return;
 			void this.refreshTerminals();
@@ -316,11 +323,13 @@ export class MobileClient {
 			sessionId: chat.sessionId,
 			projectPath: chat.projectPath,
 			worktreePath: chat.worktreePath ?? undefined,
-			name: chat.title ?? baseName(chat.worktreePath ?? chat.projectPath)
+			name: chat.title ?? baseName(chat.worktreePath ?? chat.projectPath),
+			...(chat.claudeAccountId ? { claudeAccountId: chat.claudeAccountId } : {})
 		};
 	}
 
 	openChat(ref: ChatRef): void {
+		this.notice = null;
 		this.activeTerminalId = null;
 		this.activeChat = ref;
 	}
@@ -333,18 +342,19 @@ export class MobileClient {
 
 	/** Answer an approval from the home screen, without opening the chat. */
 	async answer(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+		this.notice = null;
 		try {
 			await this.agents.send(sessionId, { t: 'approve', requestId, decision });
 		} catch (e) {
-			this.connectError = e instanceof Error ? e.message : String(e);
+			this.notice = `Couldn't answer Claude: ${errorText(e)}`;
 		}
 		await this.refreshChats();
 	}
 
-	/** End a chat session's `claude` process; the conversation stays on disk. */
+	/** End a chat session's `claude` process and leave its screen; the conversation stays on disk. */
 	async endChat(sessionId: string): Promise<void> {
 		await this.agents.stop(sessionId).catch(() => {});
-		if (this.activeChat?.sessionId === sessionId) this.activeChat = null;
+		this.activeChat = null;
 		await this.refreshChats();
 	}
 
@@ -354,15 +364,17 @@ export class MobileClient {
 	 */
 	async showAsTerminal(ref: ChatRef, hasHistory: boolean): Promise<void> {
 		this.switching = true;
+		this.notice = null;
 		try {
 			await this.agents.stop(ref.sessionId);
-			this.activeChat = null;
-			await this.openClaudeTerminal(ref, hasHistory);
 		} catch (e) {
-			this.connectError = e instanceof Error ? e.message : String(e);
-		} finally {
+			this.notice = `Couldn't stop the chat: ${errorText(e)}`;
 			this.switching = false;
+			return;
 		}
+		this.activeChat = null;
+		await this.openClaudeTerminal(ref, hasHistory);
+		this.switching = false;
 	}
 
 	/** Terminal → chat: end the terminal's `claude`, then pick the conversation up in chat. */
@@ -370,21 +382,24 @@ export class MobileClient {
 		const ref = this.claudeTerminals[terminalId];
 		if (!ref) return;
 		this.switching = true;
-		try {
-			await this.killTerminal(terminalId);
+		this.notice = null;
+		// Wait until the terminal's process group is gone: two `claude`s on one
+		// session would both write its transcript.
+		const stopped = await this.deleteTerminal(terminalId, true);
+		if (stopped) {
 			this.openChat(ref);
-		} finally {
-			this.switching = false;
+			await this.refreshTerminals();
+		} else {
+			this.notice = "Couldn't stop the terminal, so the chat didn't start. Try again.";
 		}
+		this.switching = false;
 	}
 
 	private async openClaudeTerminal(ref: ChatRef, resume: boolean): Promise<void> {
-		const id = await this.createTerminal(
-			ref.projectPath,
-			ref.worktreePath,
-			ref.name,
-			claudeCommand(ref.sessionId, resume)
-		);
+		const id = await this.createTerminal(ref.projectPath, ref.worktreePath, ref.name, {
+			claudeSession: { id: ref.sessionId, resume },
+			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
+		});
 		if (id) this.setLinks({ ...this.claudeTerminals, [id]: ref });
 	}
 
@@ -416,16 +431,23 @@ export class MobileClient {
 		projectPath: string,
 		worktreePath: string | undefined,
 		name: string,
-		command?: string
+		claude?: ClaudeLaunch
 	): Promise<string | null> => {
 		if (!this.store) return null;
+		this.notice = null;
 		try {
 			const res = await fetch(`${this.url}/remote/terminals`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', ...this.authHeaders() },
-				body: JSON.stringify({ projectPath, worktreePath, name, command, cols: 80, rows: 24 })
+				body: JSON.stringify({ projectPath, worktreePath, name, ...claude, cols: 80, rows: 24 })
 			});
-			if (!res.ok) throw new Error(`create terminal failed (${res.status})`);
+			if (!res.ok) {
+				const reason = await res
+					.json()
+					.then((j: { error?: string }) => j.error)
+					.catch(() => undefined);
+				throw new Error(reason || `the server returned ${res.status}`);
+			}
 			const meta: TerminalMeta = await res.json();
 			// Show the new terminal immediately AND keep it after refreshTerminals()
 			// reconciles — otherwise the refresh overwrites `terminals` with a server
@@ -443,25 +465,34 @@ export class MobileClient {
 			ensureVisible();
 			return meta.id;
 		} catch (e) {
-			this.connectError = e instanceof Error ? e.message : String(e);
+			this.notice = `Couldn't open a terminal: ${errorText(e)}`;
 			return null;
 		}
 	};
 
-	async killTerminal(id: string): Promise<void> {
+	/** `wait` returns only once its processes are gone. */
+	private async deleteTerminal(id: string, wait = false): Promise<boolean> {
 		try {
-			await fetch(`${this.url}/remote/terminals/${id}`, {
-				method: 'DELETE',
-				headers: this.authHeaders()
-			});
+			const res = await fetch(
+				`${this.url}/remote/terminals/${encodeURIComponent(id)}${wait ? '?wait=true' : ''}`,
+				{ method: 'DELETE', headers: this.authHeaders() }
+			);
+			if (!res.ok) return false;
 		} catch {
-			/* ignore */
+			return false;
 		}
+		if (this.activeTerminalId === id) this.activeTerminalId = null;
+		return true;
+	}
+
+	async killTerminal(id: string): Promise<void> {
+		await this.deleteTerminal(id);
 		if (this.activeTerminalId === id) this.activeTerminalId = null;
 		await this.refreshTerminals();
 	}
 
 	selectTerminal(id: string): void {
+		this.notice = null;
 		this.activeChat = null;
 		this.activeTerminalId = id;
 	}
