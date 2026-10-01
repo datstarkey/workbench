@@ -20,7 +20,32 @@ vi.mock('@tauri-apps/plugin-process', () => ({
 	})
 }));
 
+import { check } from '@tauri-apps/plugin-updater';
 import { UpdaterStore } from './updater.svelte';
+
+describe('UpdaterStore.manualCheck', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.clearAllMocks();
+		clearListeners();
+	});
+
+	it('keeps the dialog open when a silent check finishes during a manual one', async () => {
+		vi.useFakeTimers();
+		let finish!: () => void;
+		vi.mocked(check).mockImplementationOnce(
+			() => new Promise((resolve) => (finish = () => resolve(null)))
+		);
+		const store = new UpdaterStore();
+		await vi.advanceTimersByTimeAsync(3000); // the startup check starts and hangs
+		await store.manualCheck(); // already checking: opens the dialog, no second check
+		expect(check).toHaveBeenCalledTimes(1);
+		finish();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(store.dialogOpen).toBe(true);
+		expect(store.status).toBe('up-to-date');
+	});
+});
 
 describe('UpdaterStore.downloadAndInstall', () => {
 	let store: UpdaterStore;
@@ -30,7 +55,7 @@ describe('UpdaterStore.downloadAndInstall', () => {
 		calls.length = 0;
 		mockInvoke('kill_all_sessions', () => calls.push('kill_all_sessions'));
 		store = new UpdaterStore();
-		await store.checkForUpdates(false);
+		await store.checkForUpdates();
 	});
 
 	afterEach(() => {
