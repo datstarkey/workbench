@@ -679,17 +679,31 @@ impl Transcript {
         {
             return;
         }
-        let Some(text) = str_at(att, "prompt")
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        else {
-            return;
+        // A prompt with images is queued as content blocks, not a string.
+        let (text, images) = match att.get("prompt") {
+            Some(Value::String(s)) => (s.trim().to_string(), 0),
+            Some(Value::Array(blocks)) => {
+                let texts: Vec<&str> = blocks
+                    .iter()
+                    .filter(|b| str_at(b, "type") == Some("text"))
+                    .filter_map(|b| str_at(b, "text"))
+                    .collect();
+                let images = blocks
+                    .iter()
+                    .filter(|b| str_at(b, "type") == Some("image"))
+                    .count() as u32;
+                (texts.join("\n").trim().to_string(), images)
+            }
+            _ => return,
         };
+        if text.is_empty() && images == 0 {
+            return;
+        }
         let item = TranscriptItem::User {
             id: str_at(obj, "uuid").unwrap_or_default().to_string(),
-            text: text.to_string(),
+            text,
             timestamp: str_at(att, "timestamp").unwrap_or_default().to_string(),
-            images: 0,
+            images,
         };
         self.upsert(item, changed);
     }

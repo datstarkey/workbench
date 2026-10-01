@@ -137,6 +137,12 @@ export class AgentChat {
 	receive(msg: AgentServerMsg): void {
 		switch (msg.t) {
 			case 'snapshot':
+				// `/clear` re-keys to a new, empty transcript. The CLI never echoes
+				// the `/clear` itself; prompts queued after it echo in the new one.
+				if (msg.sessionId !== this.sessionId) {
+					const clear = this.pending.findIndex((p) => /^\/clear(\s|$)/.test(p.text));
+					this.pending = this.pending.slice(clear + 1).map((p) => ({ ...p, after: 0 }));
+				}
 				this.sessionId = msg.sessionId;
 				this.start = msg.start;
 				this.items = msg.items;
