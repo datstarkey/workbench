@@ -79,15 +79,22 @@ pub struct ClaudeAuthStatus {
     pub subscription_type: Option<String>,
 }
 
-/// Who `account_id` is logged in as, from `claude auth status --json`.
-pub fn auth_status(account_id: Option<&str>) -> Result<ClaudeAuthStatus> {
+/// `claude` with `account_id`'s config dir exported.
+fn claude_command(account_id: Option<&str>) -> Result<std::process::Command> {
     let mut cmd = crate::shell::command("claude");
-    cmd.args(["auth", "status", "--json"])
-        .env("PATH", paths::enriched_path());
+    cmd.env("PATH", paths::enriched_path());
     if let Some(dir) = resolve_saved(account_id)? {
         cmd.env(CONFIG_DIR_ENV, dir);
     }
-    let output = cmd.output().context("Failed to run claude")?;
+    Ok(cmd)
+}
+
+/// Who `account_id` is logged in as, from `claude auth status --json`.
+pub fn auth_status(account_id: Option<&str>) -> Result<ClaudeAuthStatus> {
+    let output = claude_command(account_id)?
+        .args(["auth", "status", "--json"])
+        .output()
+        .context("Failed to run claude")?;
     // Exits non-zero when logged out but still prints the JSON.
     parse_auth_status(&String::from_utf8_lossy(&output.stdout)).with_context(|| {
         format!(
@@ -99,6 +106,52 @@ pub fn auth_status(account_id: Option<&str>) -> Result<ClaudeAuthStatus> {
 
 fn parse_auth_status(stdout: &str) -> Result<ClaudeAuthStatus> {
     Ok(serde_json::from_str(stdout.trim())?)
+}
+
+/// One plan limit from `/usage`, e.g. label "session", 3%, resets "Oct 1 at 5:10pm (Europe/London)".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimit {
+    pub label: String,
+    pub percent: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets: Option<String>,
+}
+
+/// Starting the CLI and asking Anthropic for the numbers takes a couple of seconds.
+const USAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `account_id`'s plan limits, from `claude -p /usage` — the same server-side
+/// figures as `/usage` in a session, so they include other devices and
+/// claude.ai. Empty when logged out, on an API key (no plan limits), or if the
+/// CLI's wording changes. `--no-session-persistence` keeps each check from
+/// writing a transcript; the temp-dir cwd keeps it out of any project.
+pub fn usage(account_id: Option<&str>) -> Result<Vec<UsageLimit>> {
+    let mut cmd = claude_command(account_id)?;
+    cmd.args(["-p", "/usage", "--no-session-persistence"])
+        .current_dir(std::env::temp_dir());
+    let stdout = crate::shell::output_with_timeout(&mut cmd, USAGE_TIMEOUT)
+        .context("`claude -p /usage` failed or timed out")?;
+    Ok(parse_usage(&stdout))
+}
+
+/// Picks `Current <label>: <n>% used[ · resets <when>]` lines out of the text.
+fn parse_usage(stdout: &str) -> Vec<UsageLimit> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (label, rest) = line.trim().strip_prefix("Current ")?.split_once(": ")?;
+            let (percent, rest) = rest.split_once("% used")?;
+            let resets = rest
+                .split_once("resets ")
+                .map(|(_, when)| when.trim().to_string());
+            Some(UsageLimit {
+                label: label.to_string(),
+                percent: percent.trim().parse().ok()?,
+                resets,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -159,5 +212,35 @@ mod tests {
         let out = parse_auth_status("{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\"\n}\n")
             .unwrap();
         assert_eq!(out, ClaudeAuthStatus::default());
+    }
+
+    /// Verbatim `claude -p /usage` output from Claude Code 2.1.286.
+    #[test]
+    fn parses_plan_limits_from_usage_output() {
+        let out = "You are currently using your subscription to power your Claude Code usage\n\n\
+Current session: 3% used · resets Oct 1 at 5:10pm (Europe/London)\n\
+Current week (all models): 89% used · resets Oct 2 at 9am (Europe/London)\n\
+Current week (Fable): 0% used · resets Oct 2 at 9am (Europe/London)\n\n\
+What's contributing to your limits usage?\n\
+Last 24h · 3270 requests · 24 sessions\n  91% of your usage came from subagent-heavy sessions\n";
+        let limits = parse_usage(out);
+        assert_eq!(limits.len(), 3);
+        assert_eq!(
+            limits[0],
+            UsageLimit {
+                label: "session".into(),
+                percent: 3,
+                resets: Some("Oct 1 at 5:10pm (Europe/London)".into()),
+            }
+        );
+        assert_eq!(limits[1].label, "week (all models)");
+        assert_eq!(limits[1].percent, 89);
+    }
+
+    /// Logged out (or on an API key) `/usage` prints only a cost summary.
+    #[test]
+    fn usage_without_plan_limits_is_empty() {
+        let out = "Total cost:            $0.0000\nUsage:                 0 input, 0 output\n";
+        assert!(parse_usage(out).is_empty());
     }
 }

@@ -161,6 +161,13 @@ pub fn claude_auth_status(
     claude_accounts::auth_status(account_id.as_deref()).map_err(|e| e.to_string())
 }
 
+#[tauri::command(async)]
+pub fn claude_usage(
+    account_id: Option<String>,
+) -> Result<Vec<claude_accounts::UsageLimit>, String> {
+    claude_accounts::usage(account_id.as_deref()).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn load_claude_settings(
     scope: String,

@@ -4,7 +4,8 @@
 
 use std::ffi::OsStr;
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// A `std::process::Command` that never flashes a console window.
 ///
@@ -24,6 +25,34 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+/// Run `cmd` and return its stdout if it exits successfully within `timeout`;
+/// `None` if it can't start, fails, or is killed at the deadline. Stdout is read
+/// after exit, so only for commands with small output.
+pub fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => return None,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
+    Some(out)
 }
 
 /// Spawn a fire-and-forget child (`open`, `xdg-open`, …) and reap it on a
