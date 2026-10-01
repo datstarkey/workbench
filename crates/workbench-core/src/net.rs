@@ -1,8 +1,7 @@
 //! Addresses a phone can use to reach this machine's LAN server when pairing.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -108,30 +107,12 @@ fn tailscale_cli_ipv4() -> Vec<Ipv4Addr> {
 }
 
 fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = crate::shell::command(program)
-        .args(args)
-        .env("PATH", crate::paths::enriched_path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-        }
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
-    Some(out)
+    crate::shell::output_with_timeout(
+        crate::shell::command(program)
+            .args(args)
+            .env("PATH", crate::paths::enriched_path()),
+        timeout,
+    )
 }
 
 fn parse_ipv4_lines(out: &str) -> Vec<Ipv4Addr> {

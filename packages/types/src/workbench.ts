@@ -480,6 +480,14 @@ export interface ClaudeAuthStatus {
 	subscriptionType?: string;
 }
 
+/** One plan limit from `claude -p /usage`, e.g. label "session" or "week (all models)". */
+export interface UsageLimit {
+	label: string;
+	percent: number;
+	/** e.g. "Oct 2 at 9am (Europe/London)" */
+	resets?: string;
+}
+
 /** Persisted position + size of the draggable settings window. */
 export interface SettingsWindowBounds {
 	x: number;
