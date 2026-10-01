@@ -5,7 +5,12 @@
 	import '@xterm/xterm/css/xterm.css';
 	import { terminalWsUrl } from './terminal-url.ts';
 	import { touchScroll } from './touch-scroll.ts';
-	import { statusForTextFrame, statusOnClose, type TerminalStatus } from './terminal-status.ts';
+	import {
+		reconnectDelay,
+		statusForTextFrame,
+		statusOnClose,
+		type TerminalStatus
+	} from './terminal-status.ts';
 
 	let {
 		serverUrl,
@@ -54,8 +59,12 @@
 		term.open(host);
 		fit.fit();
 
+		let retry: ReturnType<typeof setTimeout> | undefined;
+		let attempt = 0;
+
 		// Attach to the persistent session; the server replays scrollback first.
 		const attach = () => {
+			clearTimeout(retry);
 			status = 'connecting';
 			let replayed = false;
 			const socket = new WebSocket(terminalWsUrl(serverUrl, id, token));
@@ -64,6 +73,7 @@
 
 			socket.onopen = () => {
 				status = 'open';
+				attempt = 0;
 				term.focus();
 				socket.send(JSON.stringify({ t: 'r', c: term.cols, r: term.rows }));
 			};
@@ -79,14 +89,32 @@
 			};
 			socket.onclose = () => {
 				status = statusOnClose(status);
+				// Hidden (phone locked): wait for `resume` instead of retrying in the dark.
+				if (status === 'reconnecting' && !document.hidden)
+					retry = setTimeout(attach, reconnectDelay(attempt++));
 			};
 		};
-		takeControl = () => {
+		const reattach = () => {
 			if (ws) ws.onopen = ws.onmessage = ws.onclose = null;
 			ws?.close();
+			attempt = 0;
 			attach();
 		};
+		takeControl = reattach;
 		attach();
+
+		// After a long sleep the socket can still read OPEN while the server has
+		// dropped it, so re-attach rather than trust it.
+		let hiddenAt = 0;
+		const resume = () => {
+			if (document.hidden) {
+				hiddenAt = Date.now();
+				return;
+			}
+			const slept = Date.now() - hiddenAt > 10_000;
+			if (status === 'reconnecting' || (slept && status === 'open')) reattach();
+		};
+		document.addEventListener('visibilitychange', resume);
 
 		term.onData((d) => send(d));
 		term.onResize(({ cols, rows }) => {
@@ -105,6 +133,8 @@
 		return () => {
 			ro.disconnect();
 			vv?.removeEventListener('resize', onVv);
+			document.removeEventListener('visibilitychange', resume);
+			clearTimeout(retry);
 			// Detach the socket handlers before disposing the terminal so a frame that
 			// arrives during teardown can't call term.write() on a disposed terminal.
 			// Closing the socket only detaches — the server keeps the shell alive.
@@ -142,8 +172,8 @@
 			<span
 				class="text-[10px] uppercase"
 				class:text-wb-ok={status === 'open'}
-				class:text-wb-ink-soft={status === 'connecting'}
-				class:text-wb-err={status === 'closed' || status === 'exited'}
+				class:text-wb-ink-soft={status === 'connecting' || status === 'reconnecting'}
+				class:text-wb-err={status === 'revoked' || status === 'exited'}
 			>
 				{status}
 			</span>
