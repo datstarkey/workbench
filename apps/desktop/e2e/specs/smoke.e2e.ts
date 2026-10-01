@@ -18,9 +18,17 @@ describe('Workbench smoke', () => {
 		await expect($('[aria-label="Expand workbench"], [aria-label="Collapse workbench"]')).toExist();
 
 		await $('nav [aria-label="GitHub"]').click();
-		await $('button=Scripts').click();
-
-		await expect($('button[aria-label="Run build"]')).toBeDisplayed();
+		// The sidebar pane animates open, so a click can land before its tab bar
+		// settles and miss the Scripts tab; keep clicking until the scripts list.
+		const build = $('button[aria-label="Run build"]');
+		await browser.waitUntil(
+			async () => {
+				if (await build.isDisplayed()) return true;
+				await $('button=Scripts').click();
+				return build.isDisplayed();
+			},
+			{ interval: 1_000, timeoutMsg: 'the Scripts tab never listed the build script' }
+		);
 		await expect($('button=Install')).toBeDisplayed();
 	});
 
