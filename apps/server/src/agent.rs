@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,6 +34,9 @@ pub const PERMISSION_MODES: &[&str] = &[
 const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 const DEFAULT_MAX_AGENTS: usize = 16;
+
+mod image;
+pub use image::{PromptImage, MAX_IMAGES};
 /// Items in an attach snapshot; older history stays on disk.
 const SNAPSHOT_ITEMS: usize = 500;
 const STOP_GRACE: Duration = Duration::from_secs(3);
@@ -41,39 +45,6 @@ const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// An image pasted into the chat, base64-encoded.
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptImage {
-    pub media_type: String,
-    pub data: String,
-}
-
-/// Formats the Claude API accepts.
-const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
-pub const MAX_IMAGES: usize = 10;
-/// The API's per-image cap is 5 MB decoded; base64 is 4/3 of that.
-const MAX_IMAGE_BASE64: usize = 5 * 1024 * 1024 * 4 / 3 + 4;
-
-impl PromptImage {
-    pub fn validate(&self) -> Result<()> {
-        if !IMAGE_TYPES.contains(&self.media_type.as_str()) {
-            bail!("unsupported image type: {}", self.media_type);
-        }
-        if self.data.len() > MAX_IMAGE_BASE64 {
-            bail!("images must be under 5 MB");
-        }
-        if !self
-            .data
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
-        {
-            bail!("image data must be base64");
-        }
-        Ok(())
-    }
 }
 
 pub struct StartAgent {
@@ -96,12 +67,19 @@ pub struct AgentSession {
     tx: broadcast::Sender<String>,
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Child>,
+    /// Kept apart from `child` so a stop never waits on the reaping lock.
+    pid: u32,
+    exited: AtomicBool,
     task_files: Mutex<HashMap<String, PathBuf>>,
 }
 
 #[derive(Clone, Default)]
 pub struct AgentManager {
     inner: Arc<Mutex<HashMap<String, Arc<AgentSession>>>>,
+    /// Held across a start's check-spawn-insert and a stop's whole shutdown, so
+    /// two starts for one id can't both spawn, and a start can't slip in while
+    /// a stopped process is still exiting (two writers on one session file).
+    lifecycle: Arc<Mutex<()>>,
 }
 
 impl AgentManager {
@@ -119,6 +97,7 @@ impl AgentManager {
                 bail!("unknown permission mode: {mode}");
             }
         }
+        let _lifecycle = lock(&self.lifecycle);
         if let Some(existing) = self.get(&req.session_id) {
             return Ok(existing);
         }
@@ -169,7 +148,7 @@ impl AgentManager {
         for (key, val) in workbench_core::shell::inherited_env() {
             cmd.env(key, val);
         }
-        cmd.env("PATH", search_path());
+        cmd.env("PATH", workbench_core::paths::enriched_path());
         cmd.env_remove("WORKBENCH_TOKEN");
         if let Some(id) = &req.pane_id {
             cmd.env("WORKBENCH_PANE_ID", id);
@@ -190,6 +169,7 @@ impl AgentManager {
         let stdout = child.stdout.take().context("claude stdout")?;
         let stderr = child.stderr.take().context("claude stderr")?;
         let stdin = child.stdin.take().context("claude stdin")?;
+        let pid = child.id();
 
         let (tx, _) = broadcast::channel(256);
         let session = Arc::new(AgentSession {
@@ -199,6 +179,8 @@ impl AgentManager {
             tx,
             stdin: Mutex::new(Some(stdin)),
             child: Mutex::new(child),
+            pid,
+            exited: AtomicBool::new(false),
             task_files: Mutex::new(HashMap::new()),
         });
         // The SDK handshake: without it the CLI won't route permission prompts here.
@@ -236,9 +218,9 @@ impl AgentManager {
         Ok(session)
     }
 
-    /// Stop a session's process. Blocking (waits out the grace period).
     /// Stop a session's process (any of its ids). Blocking (waits out the grace period).
     pub fn stop(&self, session_id: &str) -> bool {
+        let _lifecycle = lock(&self.lifecycle);
         let Some(session) = self.get(session_id) else {
             return false;
         };
@@ -247,37 +229,58 @@ impl AgentManager {
         true
     }
 
-    /// Drop every id (aliases included) that points at this session.
-    fn forget(&self, session: &Arc<AgentSession>) {
-        lock(&self.inner).retain(|_, s| !Arc::ptr_eq(s, session));
-    }
-
-    /// Running sessions, counting a session with aliases once.
-    fn live_count(&self) -> usize {
-        let map = lock(&self.inner);
-        let mut seen: Vec<*const AgentSession> = map.values().map(Arc::as_ptr).collect();
-        seen.sort_unstable();
-        seen.dedup();
-        seen.len()
-    }
-
     /// Stop whatever chat session a closed pane owned. Blocking.
     pub fn stop_pane(&self, pane_id: &str) -> usize {
-        let mut owned: Vec<Arc<AgentSession>> = lock(&self.inner)
-            .values()
-            .filter(|s| s.pane_id.as_deref() == Some(pane_id))
-            .cloned()
-            .collect();
-        owned.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        let _lifecycle = lock(&self.lifecycle);
+        let owned = self.sessions(|s| s.pane_id.as_deref() == Some(pane_id));
         for session in &owned {
             self.forget(session);
             session.shutdown();
         }
         owned.len()
     }
+
+    /// Stop every session (the app is quitting or installing an update). Blocking.
+    pub fn kill_all(&self) {
+        let _lifecycle = lock(&self.lifecycle);
+        let all = self.sessions(|_| true);
+        lock(&self.inner).clear();
+        let handles: Vec<_> = all
+            .into_iter()
+            .map(|s| std::thread::spawn(move || s.shutdown()))
+            .collect();
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
+
+    /// Distinct sessions matching `keep` — a session with aliases appears once.
+    fn sessions(&self, keep: impl Fn(&AgentSession) -> bool) -> Vec<Arc<AgentSession>> {
+        let mut found: Vec<Arc<AgentSession>> = lock(&self.inner)
+            .values()
+            .filter(|s| keep(s))
+            .cloned()
+            .collect();
+        found.sort_by_key(|s| Arc::as_ptr(s) as usize);
+        found.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        found
+    }
+
+    /// Drop every id (aliases included) that points at this session.
+    fn forget(&self, session: &Arc<AgentSession>) {
+        lock(&self.inner).retain(|_, s| !Arc::ptr_eq(s, session));
+    }
+
+    fn live_count(&self) -> usize {
+        self.sessions(|_| true).len()
+    }
 }
 
 impl AgentSession {
+    pub fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::SeqCst)
+    }
+
     pub fn id(&self) -> String {
         lock(&self.session_id).clone()
     }
@@ -419,7 +422,7 @@ impl AgentSession {
     fn snapshot(&self, t: &Transcript) -> String {
         let items = t.items();
         let start = items.len().saturating_sub(SNAPSHOT_ITEMS);
-        let exited = lock(&self.stdin).is_none();
+        let exited = self.has_exited();
         json!({
             "t": "snapshot",
             "sessionId": self.id(),
@@ -474,42 +477,52 @@ impl AgentSession {
 
     fn finish(&self, stderr_tail: &str) {
         lock(&self.stdin).take();
+        // Until the leader is reaped below its pid still names its process
+        // group: end the background shells Claude started, which would
+        // otherwise outlive it holding ports and files.
+        #[cfg(unix)]
+        unsafe {
+            libc::killpg(self.pid as libc::pid_t, libc::SIGTERM);
+        }
         let code = lock(&self.child).wait().ok().and_then(|s| s.code());
+        self.exited.store(true, Ordering::SeqCst);
         let message = (code != Some(0) && !stderr_tail.is_empty()).then_some(stderr_tail);
         let _ = self
             .tx
             .send(json!({"t": "exit", "code": code, "message": message}).to_string());
     }
 
-    /// Interrupt, close stdin, then end the whole process group if it lingers.
+    /// Interrupt, close stdin, and kill the process (and its group) if it
+    /// lingers. The reader thread's `finish` reaps it and ends the group.
     fn shutdown(&self) {
         let _ = self.interrupt();
-        lock(&self.stdin).take();
-        let deadline = Instant::now() + STOP_GRACE;
-        while Instant::now() < deadline {
-            if matches!(lock(&self.child).try_wait(), Ok(Some(_))) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let pid = lock(&self.child).id();
-        #[cfg(unix)]
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
+        // Windows has no process groups: `taskkill /T` walks the tree, which it
+        // can only do while Claude is still alive to be its root.
         #[cfg(windows)]
         {
+            std::thread::sleep(Duration::from_millis(500));
             let _ = workbench_core::shell::command("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .args(["/T", "/F", "/PID", &self.pid.to_string()])
                 .output();
         }
-        let _ = lock(&self.child).wait();
+        lock(&self.stdin).take();
+        let deadline = Instant::now() + STOP_GRACE;
+        while !self.exited.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !self.exited.load(Ordering::SeqCst) {
+            #[cfg(unix)]
+            unsafe {
+                libc::killpg(self.pid as libc::pid_t, libc::SIGKILL);
+            }
+            #[cfg(windows)]
+            let _ = lock(&self.child).kill();
+        }
     }
 }
 
-/// `WORKBENCH_CLAUDE_BIN`, else `claude` found on the search path. GUI apps on
-/// macOS don't inherit the shell's PATH, and the native installer puts the CLI
-/// in `~/.local/bin`, so that is searched too.
+/// `WORKBENCH_CLAUDE_BIN`, else `claude` found on the enriched search path
+/// (GUI apps don't inherit the shell's PATH).
 fn claude_binary() -> PathBuf {
     if let Some(bin) = std::env::var_os("WORKBENCH_CLAUDE_BIN") {
         return bin.into();
@@ -519,37 +532,8 @@ fn claude_binary() -> PathBuf {
     } else {
         "claude"
     };
-    std::env::split_paths(&search_path())
+    std::env::split_paths(&workbench_core::paths::enriched_path())
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
         .unwrap_or_else(|| name.into())
-}
-
-fn search_path() -> std::ffi::OsString {
-    let local_bin = workbench_core::paths::home_dir().join(".local").join("bin");
-    let enriched = workbench_core::paths::enriched_path();
-    let dirs = std::iter::once(local_bin).chain(std::env::split_paths(&enriched));
-    std::env::join_paths(dirs).unwrap_or(enriched)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn image(media_type: &str, data: &str) -> PromptImage {
-        PromptImage {
-            media_type: media_type.into(),
-            data: data.into(),
-        }
-    }
-
-    #[test]
-    fn prompt_images_must_be_api_formats_in_base64() {
-        assert!(image("image/png", "iVBORw==").validate().is_ok());
-        assert!(image("image/svg+xml", "PHN2Zz4=").validate().is_err());
-        assert!(image("image/png", "not base64!").validate().is_err());
-        assert!(image("image/png", &"A".repeat(MAX_IMAGE_BASE64 + 1))
-            .validate()
-            .is_err());
-    }
 }

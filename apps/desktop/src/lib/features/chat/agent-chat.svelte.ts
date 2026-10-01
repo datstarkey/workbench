@@ -86,6 +86,8 @@ export class AgentChat {
 
 	/** Start (or resume) the process, then attach. Also the "Restart" action. */
 	open(): Promise<void> {
+		this.ws?.close(); // a Restart must not leave the old socket behind
+		this.ws = null;
 		this.status = 'starting';
 		this.error = null;
 		return this.connect();
@@ -158,6 +160,12 @@ export class AgentChat {
 				this.error = msg.message;
 				this.pending = [];
 				this.busySince = null;
+				// Nothing can be answered now: stop flagging the pane as waiting.
+				if (this.waitingOnYou) {
+					this.waitingOnYou = false;
+					this.onNeedsYou?.(false);
+				}
+				this.ws?.close();
 				break;
 			case 'error':
 				this.notice = msg.message;

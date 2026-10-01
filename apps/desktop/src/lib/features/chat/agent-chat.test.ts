@@ -198,6 +198,33 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('stops flagging the pane when the process ends mid-approval', async () => {
+		const { chat, ws } = await connected();
+		const calls: boolean[] = [];
+		chat.onNeedsYou = (waiting) => calls.push(waiting);
+		ws.emit({
+			t: 'update',
+			changes: [
+				[
+					0,
+					{
+						kind: 'approval',
+						id: 'r1',
+						tool: 'Bash',
+						input: {},
+						canAlwaysAllow: false,
+						expired: false
+					}
+				]
+			],
+			meta: meta(true)
+		});
+		ws.emit({ t: 'exit', code: 1, message: null });
+		expect(calls).toEqual([true, false]);
+		expect(ws.readyState).toBe(3);
+		chat.dispose();
+	});
+
 	it("fetches a tool's whole output on request", async () => {
 		const { chat, ws } = await connected();
 		const full = chat.fullOutput('toolu_1');

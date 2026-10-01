@@ -4,7 +4,7 @@
 	import { cn } from '@workbench/ui';
 	import SessionChat from '$features/chat/SessionChat.svelte';
 	import TerminalPane from '$features/terminal/TerminalPane.svelte';
-	import { getWorkspaceStore } from '$stores/context';
+	import { getWorkbenchSettingsStore, getWorkspaceStore } from '$stores/context';
 	import type {
 		PaneView,
 		ProjectConfig,
@@ -13,6 +13,7 @@
 	} from '$types/workbench';
 
 	const workspaceStore = getWorkspaceStore();
+	const settingsStore = getWorkbenchSettingsStore();
 
 	let {
 		workspaceId,
@@ -95,7 +96,8 @@
 					</div>
 				</div>
 			{/if}
-			{#if chatSessionId}
+			<!-- Chat can't run inside the sandbox runtime, so no way into it while that's on. -->
+			{#if chatSessionId && (inChat || !settingsStore.sandboxRuntimeEnabled)}
 				<div
 					class="absolute top-1.5 right-10 z-20 flex overflow-hidden rounded-md border border-wb-hair bg-wb-panel/90 text-[11px] backdrop-blur-sm"
 					role="group"

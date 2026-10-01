@@ -12,17 +12,33 @@ pub(super) const MAX_TEXT_BYTES: usize = 4000;
 /// Cap on diff lines kept per tool call.
 const MAX_PATCH_LINES: usize = 400;
 
-/// What a person typed, or `None` for CLI bookkeeping. The CLI wraps its own
-/// entries in hyphenated tags (`<local-command-stdout>`, `<system-reminder>`,
-/// `<command-name>`), so a prompt that merely starts with `<` (a pasted
-/// `<Button>` or `<template>`) is still shown. Slash commands are shown as
-/// `/x …`.
+/// Tags the CLI wraps its own entries in. Only these mark a user line as
+/// bookkeeping: a prompt that starts with any other tag (`<Button>`,
+/// `<my-element>`) is something a person typed.
+const CLI_TAGS: &[&str] = &[
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+    "system-reminder",
+    "bash-input",
+    "bash-stdout",
+    "bash-stderr",
+    "user-memory-input",
+    "user-prompt-submit-hook",
+    "task-notification",
+];
+
+/// What a person typed, or `None` for CLI bookkeeping. Slash commands are
+/// shown as `/x …`.
 pub(super) fn user_visible_text(text: &str) -> Option<UserText> {
     let Some(tag) = text
         .strip_prefix('<')
         .and_then(|rest| rest.split_once('>'))
         .map(|(tag, _)| tag)
-        .filter(|tag| tag.contains('-') && !tag.contains(char::is_whitespace))
+        .filter(|tag| CLI_TAGS.contains(tag))
     else {
         return Some(UserText::Prompt(text.to_string()));
     };

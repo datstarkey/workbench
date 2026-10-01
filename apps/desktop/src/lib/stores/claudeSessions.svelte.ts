@@ -231,13 +231,13 @@ export class ClaudeSessionStore {
 	/** Restart an AI session, gated through integration approval */
 	async restartSession(workspaceId: string, tabId: string, type: SessionType = 'claude') {
 		if (!(await this.integrationApproval.ensureIntegration(type))) return;
-		this.workspaces.restartAISession(workspaceId, tabId);
+		await this.workspaces.restartAISession(workspaceId, tabId);
 	}
 
 	/** Restart an AI session by project path, gated through integration approval */
 	async restartSessionByProject(projectPath: string, tabId: string, type: SessionType = 'claude') {
 		if (!(await this.integrationApproval.ensureIntegration(type))) return;
-		this.workspaces.restartClaudeByProject(projectPath, tabId);
+		await this.workspaces.restartClaudeByProject(projectPath, tabId);
 	}
 
 	/** Start an agent action in a specific workspace with an auto-submitted initial prompt. */
@@ -455,11 +455,13 @@ export class ClaudeSessionStore {
 		const paneId = event.paneId;
 		if (this.paneType(paneId) !== 'claude') return;
 
-		// A chat pane's session id comes only from its chat: the hook can report a
-		// `/clear`'s new id before the server has moved the process to it, and the
-		// pane would then start a second claude on an id already in use.
-		if (event.sessionId && !this.workspaces.isChatPane(paneId)) {
-			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
+		if (event.sessionId) {
+			// A chat pane's session id comes only from its chat: the hook can report
+			// `/clear`'s new id before the server has moved the process to it, and
+			// the pane would then start a second claude on an id already in use.
+			if (!this.workspaces.isChatPane(paneId)) {
+				this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
+			}
 			this.latestClaudeSessionByPane.set(paneId, event.sessionId);
 			// Only these two can have produced a first user message; retrying on every
 			// hook would rescan the session directory on each PostToolUse.

@@ -112,8 +112,15 @@ pub async fn agent_attach(
         message: format!("no chat session {id}"),
     })?;
     let revoked = state.revoked.clone();
-    Ok(ws.on_upgrade(move |socket| stream(socket, session, revoked)))
+    // A prompt can carry 10 images of up to ~6.7 MB base64 each; the default
+    // 16 MiB frame limit would drop the socket instead of the prompt.
+    Ok(ws
+        .max_frame_size(MAX_PROMPT_BYTES)
+        .max_message_size(MAX_PROMPT_BYTES)
+        .on_upgrade(move |socket| stream(socket, session, revoked)))
 }
+
+const MAX_PROMPT_BYTES: usize = 80 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
@@ -196,7 +203,11 @@ async fn stream(
     mut revoked: watch::Receiver<bool>,
 ) {
     let (snapshot, mut rx) = session.subscribe();
-    if socket.send(Message::Text(snapshot)).await.is_err() {
+    let already_exited = session.has_exited();
+    if socket.send(Message::Text(snapshot)).await.is_err() || already_exited {
+        // A finished session has nothing more to say; holding the socket open
+        // would pin it (and its transcript) in memory.
+        let _ = socket.close().await;
         return;
     }
     loop {
@@ -212,14 +223,24 @@ async fn stream(
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
+                let ended = frame.contains(r#""t":"exit""#);
                 if socket.send(Message::Text(frame)).await.is_err() {
+                    return;
+                }
+                if ended {
+                    let _ = socket.close().await;
                     return;
                 }
             }
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    let frame = match handle(&session, &text) {
-                        Ok(reply) => reply,
+                    // Pipe writes (a prompt full of images) and the task-output
+                    // directory walk block, so keep them off the async workers.
+                    let worker = session.clone();
+                    let result = tokio::task::spawn_blocking(move || handle(&worker, &text)).await;
+                    let frame = match result {
+                        Ok(Ok(reply)) => reply,
+                        Ok(Err(e)) => Some(json!({"t": "error", "message": e.to_string()})),
                         Err(e) => Some(json!({"t": "error", "message": e.to_string()})),
                     };
                     if let Some(frame) = frame {

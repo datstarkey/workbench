@@ -862,6 +862,34 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
+	describe('chat view guards', () => {
+		const id = '32345678-1234-1234-1234-123456789abc';
+
+		it('refuses to move a pane to chat while the sandbox runtime is on', async () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.resumeAISession('ws-a', id, 'S', 'claude');
+			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
+			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
+			await store.setPaneView(paneId, 'chat');
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+		});
+
+		it('keeps a restarted chat tab in chat, unless the sandbox runtime is on', async () => {
+			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.resumeAISession('ws-a', id, 'S', 'claude');
+			const tabId = store.workspaces[0].terminalTabs[0].id;
+
+			await store.restartAISession('ws-a', tabId);
+			const restarted = store.workspaces[0].terminalTabs[0];
+			expect(restarted.panes[0].view).toBe('chat');
+
+			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
+			await store.restartAISession('ws-a', restarted.id);
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+		});
+	});
+
 	describe('chat resume', () => {
 		const older = '12345678-1234-1234-1234-123456789abc';
 		const current = '22345678-1234-1234-1234-123456789abc';

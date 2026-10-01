@@ -1273,6 +1273,54 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
             break; // closing the pane stops claude
         }
     }
+    // An ended session closes its socket rather than pinning it in memory.
+    let closed = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .unwrap();
+    assert!(
+        matches!(closed, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
+        "socket closes after exit, got {closed:?}"
+    );
 
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn concurrent_chat_starts_share_one_process() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    let log = tmp.path().join("received.jsonl");
+    env.set("FAKE_CLAUDE_LOG", &log);
+
+    let (handle, base) = start().await;
+    let id = "3d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let start_chat = || {
+        client()
+            .post(format!("{base}/agent/claude"))
+            .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "paneId": "pane-race" }))
+            .send()
+    };
+    // Desktop and phone (or a remount and a reconnect) asking at once.
+    let (a, b) = tokio::join!(start_chat(), start_chat());
+    assert_eq!(a.unwrap().status(), 200);
+    assert_eq!(b.unwrap().status(), 200);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let received = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        received.matches(r#""subtype":"initialize""#).count(),
+        1,
+        "two starts must not spawn two claude processes"
+    );
+
+    let res = client()
+        .delete(format!("{base}/agent/claude/{id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
     handle.stop().await;
 }

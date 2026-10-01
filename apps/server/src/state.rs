@@ -15,10 +15,11 @@ pub struct Managers {
 }
 
 impl Managers {
-    /// Blocking: kills every terminal and spawned session and waits for them.
+    /// Blocking: kills every terminal, spawned session and chat process and waits for them.
     pub fn kill_all(&self) {
         self.terminals.kill_all();
         self.spawn.kill_all();
+        self.agents.kill_all();
     }
 }
 

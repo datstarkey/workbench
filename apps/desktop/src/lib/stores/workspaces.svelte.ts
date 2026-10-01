@@ -615,6 +615,8 @@ export class WorkspaceStore {
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
 		if (!pane || (pane.view ?? 'terminal') === view) return;
+		// Chat can't run inside the sandbox runtime: refuse before killing the terminal.
+		if (view === 'chat' && this.settingsStore.sandboxRuntimeEnabled) return;
 		if (view === 'chat') {
 			const serverId = this.serverTerminalIds[paneId];
 			if (serverId) {
@@ -743,12 +745,19 @@ export class WorkspaceStore {
 		}
 	}
 
-	restartAISession(workspaceId: string, tabId: string) {
+	async restartAISession(workspaceId: string, tabId: string): Promise<void> {
 		// Restart mints a fresh tab with new pane ids, so the old tab's server PTYs
 		// would leak (no close path runs for them). Kill them first.
 		const oldTab = this.workspaces
 			.find((w) => w.id === workspaceId)
 			?.terminalTabs.find((t) => t.id === tabId);
+		// A chat pane's claude must be gone before the new pane starts the same
+		// session, or two processes own it. Terminal tabs skip this and stay sync.
+		for (const pane of oldTab?.panes ?? []) {
+			if (pane.view !== 'chat' || !pane.claudeSessionId) continue;
+			releaseChat(pane.id);
+			await stopAgent(pane.claudeSessionId).catch(() => {});
+		}
 		if (oldTab && isAISessionType(oldTab.type)) {
 			this.disposeServerTerminals(oldTab.panes.map((p) => p.id));
 		}
@@ -768,7 +777,9 @@ export class WorkspaceStore {
 				type,
 				tab.panes[0]?.claudeAccountId
 			);
-			if (tab.panes[0]?.view === 'chat' && sessionId) newTab.panes[0].view = 'chat';
+			if (tab.panes[0]?.view === 'chat' && sessionId && !this.settingsStore.sandboxRuntimeEnabled) {
+				newTab.panes[0].view = 'chat';
+			}
 			return {
 				...w,
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tabId ? newTab : t)),
@@ -832,8 +843,8 @@ export class WorkspaceStore {
 		});
 	}
 
-	restartClaudeByProject(projectPath: string, tabId: string) {
-		this.withWorkspaceForProjectTab(projectPath, tabId, (ws) =>
+	async restartClaudeByProject(projectPath: string, tabId: string): Promise<void> {
+		await this.withWorkspaceForProjectTab(projectPath, tabId, (ws) =>
 			this.restartAISession(ws.id, tabId)
 		);
 	}

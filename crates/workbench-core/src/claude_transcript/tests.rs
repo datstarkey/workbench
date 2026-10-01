@@ -229,9 +229,15 @@ fn hides_bookkeeping_and_shows_slash_commands_and_html() {
     ));
     t.apply(&user("ok", json!("ok")));
     t.apply(&user("html", json!("<Button> renders twice, why?")));
+    t.apply(&user("custom", json!("<my-element> loses its slot")));
     assert_eq!(
         user_texts(&t),
-        vec!["/compact keep tests", "ok", "<Button> renders twice, why?"]
+        vec![
+            "/compact keep tests",
+            "ok",
+            "<Button> renders twice, why?",
+            "<my-element> loses its slot"
+        ]
     );
 }
 
