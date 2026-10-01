@@ -30,7 +30,7 @@
 		getWorktreeManager,
 		getWorkspaceStore
 	} from '$stores/context';
-	import { openInGitHub } from '$lib/utils/github';
+	import { openUrl } from '$lib/utils/open-url';
 	import type { ActiveClaudeSession, ProjectConfig, WorktreeInfo } from '$types/workbench';
 	import type { ProjectGroup } from '$stores/projects.svelte';
 	import CIStatusBadge from './CIStatusBadge.svelte';
@@ -431,7 +431,7 @@
 					{row.branch}
 				</button>
 				{#if status?.pr}
-					<PRStatusBadge pr={status.pr} onClickPr={() => openInGitHub(status.pr!.url)} />
+					<PRStatusBadge pr={status.pr} onClickPr={() => openUrl(status.pr!.url)} />
 				{:else if status?.branchRuns}
 					<CIStatusBadge
 						status={status.branchRuns.status}

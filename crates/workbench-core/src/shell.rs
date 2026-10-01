@@ -66,6 +66,36 @@ pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Only plain http(s) URLs reach the OS opener: it would just as happily run a
+/// local file path, and a raw space, quote or control char never appears in a
+/// valid URL.
+fn validate_open_url(url: &str) -> anyhow::Result<()> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        anyhow::bail!("Refusing to open non-http(s) URL: {url:?}");
+    }
+    if url
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '"')
+    {
+        anyhow::bail!("Refusing to open URL with whitespace, quote or control characters: {url:?}");
+    }
+    Ok(())
+}
+
+/// Open an http(s) URL in the default browser.
+///
+/// Uses the `open` crate rather than spawning an opener ourselves. On Windows
+/// that is `ShellExecuteExW` (feature `shellexecute-on-windows`): Unicode-safe,
+/// no `cmd` parsing (`cmd /c start "" <url>` opened `\\` because Rust escapes
+/// the `""` title as `"\"\""`, and cmd splits URLs on `&`), and failures come
+/// back as errors instead of vanishing in a detached child.
+pub fn open_url(url: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+    validate_open_url(url)?;
+    open::that_detached(url).context("Failed to open URL")
+}
+
 /// The shell to spawn for a terminal when the project configures none.
 ///
 /// The fallback only fires when `$SHELL`/`%COMSPEC%` is unset — routine for the
@@ -156,6 +186,19 @@ pub fn submit_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_url_accepts_only_http_urls() {
+        assert!(validate_open_url("https://github.com/o/r/compare/main...x?expand=1&a=b").is_ok());
+        assert!(validate_open_url("HTTP://example.com").is_ok());
+        assert!(validate_open_url("https://trello.com/c/x/1-café").is_ok());
+        assert!(validate_open_url("\\\\").is_err());
+        assert!(validate_open_url("C:\\Windows\\System32\\calc.exe").is_err());
+        assert!(validate_open_url("file:///etc/passwd").is_err());
+        assert!(validate_open_url("https://github.com/a b").is_err());
+        assert!(validate_open_url("https://github.com/a\"b").is_err());
+        assert!(validate_open_url("https://github.com/\u{1b}[31m").is_err());
+    }
 
     #[test]
     fn default_shell_is_nonempty() {
