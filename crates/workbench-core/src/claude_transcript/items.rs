@@ -95,6 +95,16 @@ impl TranscriptItem {
     }
 }
 
+/// A slash command the session accepts (built-ins, custom commands, skills).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
+}
+
 /// A model the session can switch to (from the CLI's `initialize` reply).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

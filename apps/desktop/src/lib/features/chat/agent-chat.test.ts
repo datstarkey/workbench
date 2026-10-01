@@ -48,7 +48,15 @@ async function connected(api = fakeApi()) {
 	const chat = new AgentChat(body, api);
 	await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
 	const ws = FakeSocket.last!;
-	ws.emit({ t: 'snapshot', sessionId: 'sid', start: 0, items: [], meta: meta(), exited: false });
+	ws.emit({
+		t: 'snapshot',
+		sessionId: 'sid',
+		start: 0,
+		items: [],
+		meta: meta(),
+		commands: [],
+		exited: false
+	});
 	return { chat, ws };
 }
 
@@ -205,6 +213,13 @@ describe('AgentChat', () => {
 		expect(ws.sent).toEqual([{ t: 'taskOutput', taskId: 'b1' }]);
 		ws.emit({ t: 'taskOutput', taskId: 'b1', text: 'compiling…', bytes: 40_000 });
 		await expect(out).resolves.toEqual({ text: 'compiling…', bytes: 40_000 });
+		chat.dispose();
+	});
+
+	it('keeps the slash command list up to date', async () => {
+		const { chat, ws } = await connected();
+		ws.emit({ t: 'commands', commands: [{ name: 'compact', description: 'Free up context' }] });
+		expect(chat.commands.map((c) => c.name)).toEqual(['compact']);
 		chat.dispose();
 	});
 

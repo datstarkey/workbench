@@ -419,6 +419,7 @@
 					{disabledReason}
 					onSend={send}
 					onStop={() => chat.interrupt()}
+					commands={chat.commands}
 					onMode={(mode) => chat.setMode(mode)}
 				>
 					{#snippet controls()}

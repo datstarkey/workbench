@@ -565,3 +565,19 @@ fn the_initialize_reply_lists_models_to_pick_from() {
     t.set_effort("high");
     assert_eq!(t.meta().effort.as_deref(), Some("high"));
 }
+
+#[test]
+fn slash_commands_come_from_initialize_and_updates() {
+    let mut t = Transcript::default();
+    let a = t.apply(&json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"commands":[{"name":"compact","description":"Free up context","argumentHint":"<focus>"},
+            {"name":"clear","description":"Start over","argumentHint":""}]}}}));
+    assert!(a.commands);
+    assert_eq!(t.commands()[0].argument_hint.as_deref(), Some("<focus>"));
+    assert_eq!(t.commands()[1].argument_hint, None);
+    let a = t.apply(&json!({"type":"system","subtype":"commands_changed","commands":[{"name":"review","description":"Review"}]}));
+    assert!(a.commands);
+    assert_eq!(t.commands().len(), 1);
+    t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
+    assert_eq!(t.commands().len(), 1, "/clear keeps the command list");
+}

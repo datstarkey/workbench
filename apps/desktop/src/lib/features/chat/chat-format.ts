@@ -4,6 +4,7 @@ import type {
 	PermissionMode,
 	RateLimitInfo,
 	RetryInfo,
+	SlashCommand,
 	TaskInfo,
 	TranscriptItem,
 	TranscriptMeta,
@@ -323,4 +324,26 @@ const EFFORT_LABELS: Record<EffortLevel, string> = {
 
 export function effortLabel(level: EffortLevel | null): string {
 	return level ? EFFORT_LABELS[level] : 'Default effort';
+}
+
+/** The `/` command being typed, if the draft is just `/` plus a name so far. */
+export function slashQuery(draft: string): string | null {
+	const match = /^\/(\S*)$/.exec(draft);
+	return match ? match[1].toLowerCase() : null;
+}
+
+/** Commands for the `/` menu: name prefix matches, then name, then description matches. */
+export function matchCommands(commands: SlashCommand[], query: string): SlashCommand[] {
+	if (!query) return commands;
+	const rank = (c: SlashCommand) => {
+		const name = c.name.toLowerCase();
+		if (name.startsWith(query)) return 0;
+		if (name.includes(query)) return 1;
+		return c.description.toLowerCase().includes(query) ? 2 : -1;
+	};
+	return commands
+		.map((c) => ({ c, r: rank(c) }))
+		.filter(({ r }) => r >= 0)
+		.sort((a, b) => a.r - b.r || a.c.name.localeCompare(b.c.name))
+		.map(({ c }) => c);
 }

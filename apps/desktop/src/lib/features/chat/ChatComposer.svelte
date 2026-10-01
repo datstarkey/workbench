@@ -11,8 +11,9 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import type { ChatImage, PermissionMode } from '$types/workbench';
-	import { MODE_OPTIONS, modeLabel } from './chat-format';
+	import type { ChatImage, PermissionMode, SlashCommand } from '$types/workbench';
+	import { matchCommands, MODE_OPTIONS, modeLabel, slashQuery } from './chat-format';
+	import ChatSlashMenu from './ChatSlashMenu.svelte';
 	import { fileToChatImage, IMAGE_TYPES, imageFiles, MAX_IMAGES, previewUrl } from './image-intake';
 
 	let {
@@ -24,7 +25,8 @@
 		onSend,
 		onStop,
 		onMode,
-		controls
+		controls,
+		commands = []
 	}: {
 		id: string;
 		draft?: string;
@@ -38,6 +40,8 @@
 		onMode: (mode: PermissionMode) => void;
 		/** More pickers for the toolbar (model, effort). */
 		controls?: Snippet;
+		/** For the `/` menu. */
+		commands?: SlashCommand[];
 	} = $props();
 
 	let images = $state<ChatImage[]>([]);
@@ -45,6 +49,23 @@
 	/** A file is being dragged over this composer. */
 	let dropping = $state(false);
 	let picker: HTMLInputElement | null = null;
+
+	/** The `/` menu: matches for the command being typed, unless dismissed with Esc. */
+	let menuIndex = $state(0);
+	let dismissedAt = $state<string | null>(null);
+	const query = $derived(slashQuery(draft));
+	const matches = $derived(query === null ? [] : matchCommands(commands, query));
+	const menuOpen = $derived(matches.length > 0 && dismissedAt !== draft && !disabledReason);
+
+	function pick(command: SlashCommand, sendNow: boolean) {
+		menuIndex = 0;
+		if (command.argumentHint || !sendNow) {
+			draft = `/${command.name} `;
+			return;
+		}
+		draft = `/${command.name}`;
+		send();
+	}
 
 	const canSend = $derived(!disabledReason && (draft.trim().length > 0 || images.length > 0));
 
@@ -135,6 +156,27 @@
 	}
 
 	function onKeydown(event: KeyboardEvent) {
+		if (menuOpen) {
+			const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+			if (step) {
+				event.preventDefault();
+				menuIndex =
+					(Math.min(menuIndex, matches.length - 1) + step + matches.length) % matches.length;
+				return;
+			}
+			const chosen = matches[Math.min(menuIndex, matches.length - 1)];
+			if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+				event.preventDefault();
+				pick(chosen, event.key === 'Enter');
+				return;
+			}
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				event.stopPropagation(); // Esc here closes the menu, not the turn
+				dismissedAt = draft;
+				return;
+			}
+		}
 		if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
 			event.preventDefault();
 			send();
@@ -149,6 +191,15 @@
 		dropping ? 'border-wb-accent' : 'border-wb-hair'
 	)}
 >
+	{#if menuOpen}
+		<ChatSlashMenu
+			id="{id}-commands"
+			commands={matches}
+			active={Math.min(menuIndex, matches.length - 1)}
+			onPick={(command) => pick(command, true)}
+			onHover={(i) => (menuIndex = i)}
+		/>
+	{/if}
 	{#if dropping}
 		<div
 			class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-wb-accent-soft text-xs font-medium text-wb-ink"
@@ -180,9 +231,17 @@
 		{@attach autosize}
 		onkeydown={onKeydown}
 		onpaste={onPaste}
+		oninput={() => (menuIndex = 0)}
+		role="combobox"
+		aria-expanded={menuOpen}
+		aria-controls={menuOpen ? `${id}-commands` : undefined}
+		aria-autocomplete="list"
+		aria-activedescendant={menuOpen
+			? `${id}-commands-${Math.min(menuIndex, matches.length - 1)}`
+			: undefined}
 		rows="1"
 		disabled={disabledReason !== null}
-		placeholder={disabledReason ?? 'Message Claude, or paste an image'}
+		placeholder={disabledReason ?? 'Message Claude, / for commands, or paste an image'}
 		class="scrollbar-thin block max-h-[180px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm leading-relaxed text-wb-ink placeholder:text-wb-ink-soft focus:outline-none disabled:cursor-not-allowed"
 	></textarea>
 	{#if imageError}

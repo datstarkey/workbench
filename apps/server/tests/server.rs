@@ -1086,6 +1086,9 @@ echo '{"type":"system","subtype":"init","model":"fake-model","permissionMode":"d
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_CLAUDE_LOG"
   case "$line" in
+    *'/clear'*)
+      echo '{"type":"conversation_reset","new_conversation_id":"2d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5","uuid":"r","session_id":"x"}'
+      ;;
     *'"type":"user"'*)
       echo '{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"parent_tool_use_id":null}'
       echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}},"parent_tool_use_id":null}'
@@ -1224,17 +1227,52 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         "approval relayed: {received}"
     );
 
+    // /clear moves the conversation to a new id. Starting either id afterwards
+    // must reach the same process — the race that once spawned a second claude.
+    ws.send(Message::Text(
+        json!({"t":"prompt","text":"/clear"}).to_string(),
+    ))
+    .await
+    .unwrap();
+    let new_id = "2d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    loop {
+        let frame = next_json(&mut ws).await;
+        if frame["t"] == "snapshot" {
+            assert_eq!(frame["sessionId"], new_id);
+            break;
+        }
+    }
+    for sid in [new_id, id] {
+        let res = client()
+            .post(format!("{base}/agent/claude"))
+            .json(&json!({ "projectPath": tmp.path(), "sessionId": sid, "paneId": "pane-1" }))
+            .send()
+            .await
+            .unwrap();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(
+            body["sessionId"], new_id,
+            "{sid} resolves to the running session"
+        );
+    }
+    let received = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        received.matches(r#""subtype":"initialize""#).count(),
+        1,
+        "no second claude process was started"
+    );
+
     let res = client()
         .delete(format!("{base}/agent/claude?paneId=pane-1"))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 204);
-    assert_eq!(
-        next_json(&mut ws).await["t"],
-        "exit",
-        "closing the pane stops claude"
-    );
+    loop {
+        if next_json(&mut ws).await["t"] == "exit" {
+            break; // closing the pane stops claude
+        }
+    }
 
     handle.stop().await;
 }

@@ -31,6 +31,7 @@ const HANDLED: &[&str] = &[
     "system:background_tasks_changed",
     "system:api_retry",
     "rate_limit_event",
+    "system:commands_changed",
     // JSONL only
     "attachment",
     "ai-title",
@@ -56,7 +57,6 @@ const IGNORED: &[&str] = &[
     "system:thinking_tokens",
     "system:session_state_changed",
     "system:worker_shutting_down",
-    "system:commands_changed",
     "system:notification",
     "system:files_persisted",
     "system:memory_recall",

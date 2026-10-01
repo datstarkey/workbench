@@ -23,7 +23,8 @@ function createMockWorkspaceStore(workspaces: unknown[] = []) {
 		addAIByProject: vi.fn(),
 		updateAISessionByPaneId: vi.fn(),
 		updateAITabLabelByPaneId: vi.fn(),
-		findAIPaneContext: vi.fn()
+		findAIPaneContext: vi.fn(),
+		isChatPane: vi.fn(() => false)
 	} as unknown as WorkspaceStore;
 }
 
@@ -255,6 +256,18 @@ describe('ClaudeSessionStore', () => {
 			expect(notified).toEqual(['pane-1']);
 			store.setAwaitingInput('pane-1', false);
 			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
+		});
+
+		it("leaves a chat pane's session id to its chat", () => {
+			setupClaudePane();
+			(mockWorkspaceStore.isChatPane as ReturnType<typeof vi.fn>).mockReturnValue(true);
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				hookEventName: 'SessionStart',
+				sessionId: 'new-session-after-clear',
+				hookPayload: {}
+			});
+			expect(mockWorkspaceStore.updateAISessionByPaneId).not.toHaveBeenCalled();
 		});
 
 		it('with sessionId updates workspace store', () => {

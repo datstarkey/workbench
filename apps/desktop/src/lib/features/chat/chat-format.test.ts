@@ -9,6 +9,8 @@ import {
 	formatBytes,
 	formatCount,
 	limitNotice,
+	matchCommands,
+	slashQuery,
 	sortTasks,
 	approvalPreview,
 	formatElapsed,
@@ -327,5 +329,30 @@ describe('model and effort', () => {
 	it('labels effort', () => {
 		expect(effortLabel('xhigh')).toBe('Extra high');
 		expect(effortLabel(null)).toBe('Default effort');
+	});
+});
+
+describe('slash menu', () => {
+	const commands = [
+		{ name: 'compact', description: 'Free up context' },
+		{ name: 'clear', description: 'Start a new conversation' },
+		{ name: 'review', description: 'Review a pull request' },
+		{ name: 'security-review', description: 'Find vulnerabilities' }
+	];
+
+	it('opens only while the draft is a bare command name', () => {
+		expect(slashQuery('/')).toBe('');
+		expect(slashQuery('/Com')).toBe('com');
+		expect(slashQuery('/compact focus on tests')).toBe(null);
+		expect(slashQuery('fix /this')).toBe(null);
+	});
+
+	it('ranks prefix matches before other matches', () => {
+		expect(matchCommands(commands, 'rev').map((c) => c.name)).toEqual([
+			'review',
+			'security-review'
+		]);
+		expect(matchCommands(commands, 'context').map((c) => c.name)).toEqual(['compact']);
+		expect(matchCommands(commands, '')).toHaveLength(4);
 	});
 });

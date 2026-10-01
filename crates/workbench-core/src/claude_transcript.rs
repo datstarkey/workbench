@@ -23,8 +23,8 @@ mod parse;
 mod protocol;
 
 pub use items::{
-    ApprovalDecision, ModelOption, RateLimitInfo, RetryInfo, TaskInfo, ToolStatus, TranscriptItem,
-    TranscriptMeta,
+    ApprovalDecision, ModelOption, RateLimitInfo, RetryInfo, SlashCommand, TaskInfo, ToolStatus,
+    TranscriptItem, TranscriptMeta,
 };
 
 use parse::{clip, clip_patch, clip_value, str_at, tool_output_text, user_visible_text, UserText};
@@ -43,6 +43,8 @@ pub struct Applied {
     pub new_session_id: Option<String>,
     /// First sighting of a message kind not in [`protocol`]'s inventory.
     pub unknown_kind: Option<String>,
+    /// The slash command list changed (kept out of meta: it's large).
+    pub commands: bool,
 }
 
 /// What an approval needs to be answered: the input to echo back and the
@@ -67,6 +69,7 @@ pub struct Transcript {
     unknown_seen: std::collections::HashSet<String>,
     /// Whole outputs of tools whose item only carries a preview.
     full_outputs: HashMap<String, String>,
+    commands: Vec<SlashCommand>,
 }
 
 /// Largest tool output kept whole for "show full output".
@@ -125,7 +128,10 @@ impl Transcript {
                 applied.reply = self.apply_control_request(obj, &mut changed)
             }
             Some("control_cancel_request") => self.expire_approval(obj, &mut changed),
-            Some("control_response") => self.apply_control_response(obj),
+            Some("control_response") => {
+                self.apply_control_response(obj);
+                applied.commands = self.read_commands(obj.pointer("/response/response/commands"));
+            }
             Some("conversation_reset") => {
                 let next = str_at(obj, "new_conversation_id").map(String::from);
                 self.reset();
@@ -173,6 +179,9 @@ impl Transcript {
                         error: str_at(obj, "error").map(String::from),
                     });
                 }
+                Some("commands_changed") => {
+                    applied.commands = self.read_commands(obj.get("commands"));
+                }
                 Some("compact_boundary") => {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
                     let text = "Conversation compacted".to_string();
@@ -200,6 +209,34 @@ impl Transcript {
             kind: str_at(info, "rateLimitType").map(String::from),
             utilization: info.get("utilization").and_then(Value::as_f64),
         });
+    }
+
+    pub fn commands(&self) -> &[SlashCommand] {
+        &self.commands
+    }
+
+    /// Replace the command list from a `commands` array; true if one was there.
+    fn read_commands(&mut self, list: Option<&Value>) -> bool {
+        let Some(list) = list.and_then(Value::as_array) else {
+            return false;
+        };
+        self.commands = list
+            .iter()
+            .filter_map(|c| {
+                Some(SlashCommand {
+                    name: str_at(c, "name")?.to_string(),
+                    description: crate::text::truncate_bytes(
+                        str_at(c, "description").unwrap_or_default(),
+                        240,
+                    )
+                    .to_string(),
+                    argument_hint: str_at(c, "argumentHint")
+                        .filter(|h| !h.is_empty())
+                        .map(String::from),
+                })
+            })
+            .collect();
+        true
     }
 
     /// The whole output of a tool whose item carries a preview.
@@ -323,6 +360,7 @@ impl Transcript {
         *self = Self {
             meta,
             unknown_seen: std::mem::take(&mut self.unknown_seen),
+            commands: std::mem::take(&mut self.commands),
             ..Self::default()
         };
     }

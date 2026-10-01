@@ -630,6 +630,13 @@ export class WorkspaceStore {
 		}));
 	}
 
+	/** The pane shows its Claude session as chat (see `setPaneView`). */
+	isChatPane(paneId: string): boolean {
+		return this.workspaces.some((w) =>
+			w.terminalTabs.some((t) => t.panes.some((p) => p.id === paneId && p.view === 'chat'))
+		);
+	}
+
 	/** Activate the workspace and tab containing the given pane. */
 	focusPane(paneId: string): boolean {
 		const location = this.findPaneLocation(paneId);

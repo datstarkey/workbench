@@ -455,7 +455,10 @@ export class ClaudeSessionStore {
 		const paneId = event.paneId;
 		if (this.paneType(paneId) !== 'claude') return;
 
-		if (event.sessionId) {
+		// A chat pane's session id comes only from its chat: the hook can report a
+		// `/clear`'s new id before the server has moved the process to it, and the
+		// pane would then start a second claude on an id already in use.
+		if (event.sessionId && !this.workspaces.isChatPane(paneId)) {
 			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
 			this.latestClaudeSessionByPane.set(paneId, event.sessionId);
 			// Only these two can have produced a first user message; retrying on every

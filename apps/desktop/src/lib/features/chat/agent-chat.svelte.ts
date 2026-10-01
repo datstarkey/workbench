@@ -5,6 +5,7 @@ import type {
 	ChatImage,
 	EffortLevel,
 	PermissionMode,
+	SlashCommand,
 	StartAgentBody,
 	TranscriptItem,
 	TranscriptMeta
@@ -57,6 +58,8 @@ export class AgentChat {
 	busySince = $state<number | null>(null);
 	/** The session continued under a new id (`/clear`); the pane follows it. */
 	sessionId = $state('');
+	/** Slash commands for the composer's `/` menu. */
+	commands = $state.raw<SlashCommand[]>([]);
 	/** Previews of images sent from here, by the user item that echoed them. */
 	imagePreviews = $state.raw<Record<string, string[]>>({});
 	/** When each task or running tool was first seen (client clock), for timers. */
@@ -132,6 +135,7 @@ export class AgentChat {
 				this.sessionId = msg.sessionId;
 				this.start = msg.start;
 				this.items = msg.items;
+				this.commands = msg.commands;
 				this.setMeta(msg.meta);
 				this.status = msg.exited ? 'exited' : 'live';
 				this.settlePending();
@@ -157,6 +161,9 @@ export class AgentChat {
 				break;
 			case 'error':
 				this.notice = msg.message;
+				break;
+			case 'commands':
+				this.commands = msg.commands;
 				break;
 			case 'output':
 				this.outputWaiters[msg.toolId]?.(msg.text);

@@ -588,6 +588,13 @@ export interface TaskInfo {
 	summary?: string;
 }
 
+/** A slash command the session accepts (built-ins, custom commands, skills). */
+export interface SlashCommand {
+	name: string;
+	description: string;
+	argumentHint?: string;
+}
+
 /** A model the session can switch to. */
 export interface ModelOption {
 	value: string;
@@ -642,12 +649,15 @@ export type AgentServerMsg =
 			start: number;
 			items: TranscriptItem[];
 			meta: TranscriptMeta;
+			commands: SlashCommand[];
 			exited: boolean;
 	  }
 	/** `[index, item]` pairs that were added or changed. */
 	| { t: 'update'; changes: [number, TranscriptItem][]; meta: TranscriptMeta }
 	| { t: 'exit'; code: number | null; message: string | null }
 	| { t: 'error'; message: string }
+	/** The slash command list changed (sent apart from meta: it's large). */
+	| { t: 'commands'; commands: SlashCommand[] }
 	/** Reply to `output`: the whole output of a tool shown as a preview. */
 	| { t: 'output'; toolId: string; text: string | null }
 	/** Reply to `taskOutput`: the end of a background task's output, null until it exists. */

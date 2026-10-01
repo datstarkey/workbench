@@ -126,7 +126,7 @@ impl AgentManager {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_AGENTS);
-        if lock(&self.inner).len() >= max {
+        if self.live_count() >= max {
             bail!("chat session limit reached ({max})");
         }
 
@@ -225,43 +225,55 @@ impl AgentManager {
         let reader_session = session.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some((old, new)) = reader_session.apply_line(&line) {
-                    let mut map = lock(&inner);
-                    if let Some(s) = map.remove(&old) {
-                        map.insert(new, s);
-                    }
-                }
+                // The old id stays an alias: a late request for it reaches this process too.
+                reader_session.apply_line(&line, |new_id| {
+                    lock(&inner).insert(new_id.to_string(), reader_session.clone());
+                });
             }
             reader_session.finish(&lock(&stderr_tail));
-            let mut map = lock(&inner);
-            let id = reader_session.id();
-            if map
-                .get(&id)
-                .is_some_and(|s| Arc::ptr_eq(s, &reader_session))
-            {
-                map.remove(&id);
-            }
+            lock(&inner).retain(|_, s| !Arc::ptr_eq(s, &reader_session));
         });
         Ok(session)
     }
 
     /// Stop a session's process. Blocking (waits out the grace period).
+    /// Stop a session's process (any of its ids). Blocking (waits out the grace period).
     pub fn stop(&self, session_id: &str) -> bool {
-        let Some(session) = lock(&self.inner).remove(session_id) else {
+        let Some(session) = self.get(session_id) else {
             return false;
         };
+        self.forget(&session);
         session.shutdown();
         true
     }
 
+    /// Drop every id (aliases included) that points at this session.
+    fn forget(&self, session: &Arc<AgentSession>) {
+        lock(&self.inner).retain(|_, s| !Arc::ptr_eq(s, session));
+    }
+
+    /// Running sessions, counting a session with aliases once.
+    fn live_count(&self) -> usize {
+        let map = lock(&self.inner);
+        let mut seen: Vec<*const AgentSession> = map.values().map(Arc::as_ptr).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen.len()
+    }
+
     /// Stop whatever chat session a closed pane owned. Blocking.
     pub fn stop_pane(&self, pane_id: &str) -> usize {
-        let ids: Vec<String> = lock(&self.inner)
+        let mut owned: Vec<Arc<AgentSession>> = lock(&self.inner)
             .values()
             .filter(|s| s.pane_id.as_deref() == Some(pane_id))
-            .map(|s| s.id())
+            .cloned()
             .collect();
-        ids.iter().filter(|id| self.stop(id)).count()
+        owned.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        for session in &owned {
+            self.forget(session);
+            session.shutdown();
+        }
+        owned.len()
     }
 }
 
@@ -414,14 +426,16 @@ impl AgentSession {
             "start": start,
             "items": &items[start..],
             "meta": t.meta(),
+            "commands": t.commands(),
             "exited": exited,
         })
         .to_string()
     }
 
-    /// Apply one stdout line. Returns `(old, new)` ids when `/clear` moved the
-    /// conversation to a new session id.
-    fn apply_line(&self, line: &str) -> Option<(String, String)> {
+    /// Apply one stdout line. `alias` registers the new id when `/clear` moves
+    /// the conversation — before any client hears of it, so a start or attach
+    /// with the new id can never spawn a second process.
+    fn apply_line(&self, line: &str, alias: impl FnOnce(&str)) {
         let mut t = lock(&self.transcript);
         let applied = t.apply_line(line);
         if let Some(kind) = &applied.unknown_kind {
@@ -432,15 +446,19 @@ impl AgentSession {
                 tracing::warn!("could not answer a claude control request: {e}");
             }
         }
+        if applied.commands {
+            let frame = json!({"t": "commands", "commands": t.commands()});
+            let _ = self.tx.send(frame.to_string());
+        }
         if let Some(new_id) = applied.new_session_id {
-            let old = std::mem::replace(&mut *lock(&self.session_id), new_id.clone());
+            *lock(&self.session_id) = new_id.clone();
+            alias(&new_id);
             let _ = self.tx.send(self.snapshot(&t));
-            return Some((old, new_id));
+            return;
         }
         if !applied.items.is_empty() || applied.meta {
             self.broadcast_update(&t, &applied.items);
         }
-        None
     }
 
     /// Frames go out while the transcript lock is held, so their order matches
