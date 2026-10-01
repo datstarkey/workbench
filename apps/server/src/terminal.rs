@@ -327,6 +327,23 @@ impl TerminalManager {
             None => false,
         }
     }
+
+    /// Kill every terminal and block until each process group is torn down. For
+    /// app shutdown/relaunch: descendants that outlive the app keep its old macOS
+    /// Dock tile alive and leave stray console windows on Windows.
+    pub fn kill_all(&self) {
+        let sessions: Vec<_> = lock(&self.inner).drain().map(|(_, s)| s).collect();
+        let handles: Vec<_> = sessions
+            .into_iter()
+            .map(|s| {
+                let _ = s.done_tx.send(true);
+                std::thread::spawn(move || terminate_process_group(&s))
+            })
+            .collect();
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

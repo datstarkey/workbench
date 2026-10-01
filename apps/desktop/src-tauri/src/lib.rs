@@ -130,6 +130,7 @@ macro_rules! build_invoke_handler {
             server_control::terminal_server_status,
             server_control::rotate_server_token,
             server_control::pairing_addresses,
+            server_control::kill_all_sessions,
             $( $extra ),*
         ]
     };
