@@ -110,6 +110,14 @@
 		openSettings();
 	});
 
+	// Ctrl+, without the macOS app menu (where Cmd+, is its accelerator).
+	function settingsShortcut(e: KeyboardEvent) {
+		if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === ',') {
+			e.preventDefault();
+			openSettings();
+		}
+	}
+
 	// The settings window persists changes to disk in its own webview; reload the
 	// live-bound stores here so accent, sidebar toggles, and integrations update.
 	listen('settings:changed', async () => {
@@ -216,7 +224,7 @@
 	}
 </script>
 
-<svelte:window ondragover={blockFileDrop} ondrop={blockFileDrop} />
+<svelte:window ondragover={blockFileDrop} ondrop={blockFileDrop} onkeydown={settingsShortcut} />
 
 <Tooltip.Provider>
 	<div class="flex h-screen flex-col overflow-hidden bg-background text-foreground">
