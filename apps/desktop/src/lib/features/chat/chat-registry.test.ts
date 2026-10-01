@@ -9,10 +9,12 @@ vi.mock('./agent-api', () => ({ loopbackAgentApi: {} }));
 vi.mock('@workbench/chat-ui', () => ({
 	AgentChat: class {
 		sessionId: string;
+		agent: string;
 		dispose = vi.fn();
 		open = vi.fn(async () => {});
-		constructor(body: { sessionId: string }) {
-			this.sessionId = body.sessionId;
+		constructor(body: { sessionId?: string; agent?: string }) {
+			this.sessionId = body.sessionId ?? '';
+			this.agent = body.agent ?? 'claude';
 			created.push(this);
 		}
 	}
@@ -40,6 +42,15 @@ describe('chat registry', () => {
 		const next = acquireChat('p1', body('s2')).chat;
 		expect(next).not.toBe(first);
 		expect(created[0].dispose).toHaveBeenCalled();
+	});
+
+	it('keeps a new Codex chat while it has no id, and once the pane stores the one it got', () => {
+		const codex = { agent: 'codex' as const, projectPath: '/repo', paneId: 'p1' };
+		const first = acquireChat('p1', codex).chat;
+		expect(acquireChat('p1', codex).chat).toBe(first);
+		first.sessionId = 'thread-1';
+		expect(acquireChat('p1', { ...codex, sessionId: 'thread-1' }).chat).toBe(first);
+		expect(created).toHaveLength(1);
 	});
 
 	it('disposes on release', () => {

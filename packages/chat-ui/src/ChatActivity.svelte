@@ -71,7 +71,7 @@
 
 <style>
 	/* Three bars breathing out of phase: the one moving thing on screen while
-	   Claude works. Amber and slower while it waits on you. */
+	   the agent works (its colour, see ChatTranscript). Amber and slower while it waits on you. */
 	.bars {
 		display: inline-flex;
 		align-items: center;
@@ -82,7 +82,7 @@
 		width: 3px;
 		height: 100%;
 		border-radius: 2px;
-		background: var(--wb-claude);
+		background: var(--wb-agent, var(--wb-claude));
 		transform-origin: center;
 		animation: breathe 1.1s ease-in-out infinite;
 	}

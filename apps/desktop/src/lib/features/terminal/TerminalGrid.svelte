@@ -3,13 +3,15 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { cn } from '@workbench/ui';
 	import SessionChat from '$features/chat/SessionChat.svelte';
+	import { paneAgent } from '$features/chat/pane-handoff';
 	import TerminalPane from '$features/terminal/TerminalPane.svelte';
 	import { getWorkbenchSettingsStore, getWorkspaceStore } from '$stores/context';
-	import type {
-		PaneView,
-		ProjectConfig,
-		SplitDirection,
-		TerminalPaneState
+	import {
+		isAISessionType,
+		type PaneView,
+		type ProjectConfig,
+		type SplitDirection,
+		type TerminalPaneState
 	} from '$types/workbench';
 
 	const workspaceStore = getWorkspaceStore();
@@ -47,8 +49,10 @@
 
 <div class={`flex min-h-0 flex-1 ${split === 'vertical' ? 'flex-col' : 'flex-row'}`}>
 	{#each panes as pane, i (pane.id)}
-		{@const chatSessionId = pane.type === 'claude' ? pane.claudeSessionId : undefined}
-		{@const inChat = Boolean(chatSessionId) && pane.view === 'chat'}
+		{@const agent = isAISessionType(pane.type) ? paneAgent(pane) : null}
+		{@const chatSessionId = agent ? pane.claudeSessionId || undefined : undefined}
+		{@const canChat = agent === 'codex' || Boolean(chatSessionId)}
+		{@const inChat = canChat && pane.view === 'chat'}
 		{@const target = switching.get(pane.id)}
 		{#if i > 0}
 			<div
@@ -56,19 +60,19 @@
 			></div>
 		{/if}
 		<div class="relative min-h-0 min-w-0 flex-1">
-			{#if inChat && chatSessionId}
+			{#if inChat && agent}
 				<!-- Only while visible: every grid stays mounted, and a hidden chat would keep streaming. -->
 				{#if active}
 					{#key chatSessionId}
 						<SessionChat
+							{agent}
 							paneId={pane.id}
 							sessionId={chatSessionId}
 							{project}
 							{cwd}
 							claudeAccountId={pane.claudeAccountId}
 							onShowTerminal={() => switchView(pane.id, 'terminal')}
-							onSessionIdChange={(id) =>
-								workspaceStore.updateAISessionByPaneId(pane.id, id, 'claude')}
+							onSessionIdChange={(id) => workspaceStore.updateAISessionByPaneId(pane.id, id, agent)}
 						/>
 					{/key}
 				{/if}
@@ -88,6 +92,7 @@
 			{#if target}
 				<div
 					class="absolute inset-0 z-30 flex items-center justify-center bg-wb-bg/85 backdrop-blur-[2px]"
+					style:--agent={agent === 'codex' ? 'var(--wb-codex)' : 'var(--wb-claude)'}
 					role="status"
 				>
 					<div class="flex items-center gap-2.5 text-xs text-wb-ink-mute">
@@ -96,8 +101,9 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Chat can't run inside the sandbox runtime, so no way into it while that's on. -->
-			{#if chatSessionId && (inChat || !settingsStore.sandboxRuntimeEnabled)}
+			<!-- Claude chat can't run inside the sandbox runtime (it never wraps Codex), so no way into it
+			     while that's on. A Codex pane can chat before it has a thread: chat starts one. -->
+			{#if canChat && (inChat || agent === 'codex' || !settingsStore.sandboxRuntimeEnabled)}
 				<div
 					class="absolute top-1.5 right-10 z-20 flex overflow-hidden rounded-md border border-wb-hair bg-wb-panel/90 text-[11px] backdrop-blur-sm"
 					role="group"
@@ -109,7 +115,11 @@
 							type="button"
 							class={cn(
 								'px-2 py-0.5 capitalize focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none focus-visible:ring-inset',
-								selected ? 'bg-wb-accent-soft text-wb-ink' : 'text-wb-ink-mute hover:text-wb-ink'
+								!selected && 'text-wb-ink-mute hover:text-wb-ink',
+								selected &&
+									(agent === 'codex'
+										? 'bg-wb-codex/20 text-wb-codex'
+										: 'bg-wb-accent-soft text-wb-ink')
 							)}
 							aria-pressed={selected}
 							disabled={Boolean(target)}
@@ -153,7 +163,7 @@
 	}
 	.handoff::before {
 		left: 0;
-		background: var(--wb-claude);
+		background: var(--agent);
 	}
 	.handoff::after {
 		right: 0;

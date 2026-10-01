@@ -10,6 +10,17 @@ const WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME: &str = "workbench-codex-notify-bridge.
 #[cfg(windows)]
 const WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME: &str = "workbench-codex-notify-bridge.ps1";
 
+/// `WORKBENCH_CODEX_BIN`, else `codex` found on the enriched search path
+/// (npm installs a `codex.cmd` shim on Windows).
+pub fn codex_binary() -> PathBuf {
+    let names: &[&str] = if cfg!(windows) {
+        &["codex.exe", "codex.cmd"]
+    } else {
+        &["codex"]
+    };
+    paths::find_binary("WORKBENCH_CODEX_BIN", names)
+}
+
 fn workbench_codex_notify_script_path() -> PathBuf {
     paths::codex_config_dir().join(WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME)
 }

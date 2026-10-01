@@ -3,15 +3,17 @@
 	import ShieldQuestionIcon from '@lucide/svelte/icons/shield-question-mark';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import type { ApprovalDecision } from '@workbench/types';
-	import { type ApprovalItem, approvalPreview, shortPath } from './chat-format';
+	import type { AgentKind, ApprovalDecision } from '@workbench/types';
+	import { agentName, type ApprovalItem, approvalPreview, shortPath } from './chat-format';
 
 	let {
 		approval,
+		agent = 'claude',
 		cwd,
 		onDecide
 	}: {
 		approval: ApprovalItem;
+		agent?: AgentKind;
 		cwd?: string;
 		onDecide: (decision: ApprovalDecision) => void;
 	} = $props();
@@ -41,12 +43,13 @@
 	const preview = $derived(isPlan ? plan : approvalPreview(approval, cwd));
 	const isCommand = $derived(approval.tool === 'Bash');
 	const outcome = $derived.by(() => {
-		if (approval.expired) return 'Withdrawn by Claude';
+		if (approval.expired) return `Withdrawn by ${agentName(agent)}`;
 		switch (approval.decision) {
 			case 'allow':
 				return isPlan ? 'Plan approved' : 'Allowed';
 			case 'alwaysAllow':
-				return isPlan ? 'Plan approved, accepting edits' : 'Always allowed';
+				if (isPlan) return 'Plan approved, accepting edits';
+				return agent === 'codex' ? 'Allowed for this session' : 'Always allowed';
 			case 'deny':
 				return isPlan ? 'Kept planning' : 'Denied';
 			default:
@@ -121,7 +124,11 @@
 					disabled={sent !== null}
 					onclick={() => decide('alwaysAllow')}
 				>
-					{isPlan ? 'Start, accept edits' : 'Always allow'}
+					{isPlan
+						? 'Start, accept edits'
+						: agent === 'codex'
+							? 'Allow for this session'
+							: 'Always allow'}
 				</button>
 			{/if}
 			<button

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 /// Cap on tool output and on long string fields of tool input (e.g. a `Write`
 /// body) — the chat shows a preview.
-pub(super) const MAX_TEXT_BYTES: usize = 4000;
+pub(crate) const MAX_TEXT_BYTES: usize = 4000;
 /// Cap on diff lines kept per tool call.
 const MAX_PATCH_LINES: usize = 400;
 
@@ -65,7 +65,7 @@ fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
     Some(s[start..start + len].trim())
 }
 
-pub(super) fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
@@ -80,14 +80,14 @@ pub(super) fn tool_output_text(content: Option<&Value>) -> Option<String> {
     }
 }
 
-pub(super) fn clip(s: &str) -> String {
+pub(crate) fn clip(s: &str) -> String {
     if s.len() <= MAX_TEXT_BYTES {
         return s.to_string();
     }
     format!("{}…", crate::text::truncate_bytes(s, MAX_TEXT_BYTES))
 }
 
-pub(super) fn clip_value(v: &Value) -> Value {
+pub(crate) fn clip_value(v: &Value) -> Value {
     match v {
         Value::String(s) => Value::String(clip(s)),
         Value::Array(a) => Value::Array(a.iter().map(clip_value).collect()),
@@ -98,7 +98,7 @@ pub(super) fn clip_value(v: &Value) -> Value {
     }
 }
 
-pub(super) fn clip_patch(patch: &Value) -> Option<Value> {
+pub(crate) fn clip_patch(patch: &Value) -> Option<Value> {
     let hunks = patch.as_array().filter(|h| !h.is_empty())?;
     let mut budget = MAX_PATCH_LINES;
     let kept: Vec<Value> = hunks

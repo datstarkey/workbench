@@ -119,7 +119,12 @@
 		position: absolute;
 		inset: auto 0 0 0;
 		height: 1px;
-		background: linear-gradient(90deg, transparent 0%, var(--wb-claude) 50%, transparent 100%);
+		background: linear-gradient(
+			90deg,
+			transparent 0%,
+			var(--wb-agent, var(--wb-claude)) 50%,
+			transparent 100%
+		);
 		background-size: 40% 100%;
 		background-repeat: no-repeat;
 		animation: sweep 1.4s ease-in-out infinite;
@@ -135,7 +140,7 @@
 	.spinner {
 		border-radius: 999px;
 		border: 1.5px solid var(--wb-hair);
-		border-top-color: var(--wb-claude);
+		border-top-color: var(--wb-agent, var(--wb-claude));
 		animation: spin 0.8s linear infinite;
 	}
 	@keyframes spin {
@@ -149,7 +154,7 @@
 			animation: none;
 		}
 		.sweep {
-			background: var(--wb-claude);
+			background: var(--wb-agent, var(--wb-claude));
 			opacity: 0.5;
 		}
 	}

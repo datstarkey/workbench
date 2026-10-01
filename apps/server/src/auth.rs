@@ -41,11 +41,13 @@ pub async fn require_bearer(
     }
 }
 
-/// `/remote/terminals/{id}/ws` and `/agent/claude/{id}/ws` — WebSocket
+/// `/remote/terminals/{id}/ws` and `/agent/{claude,codex}/{id}/ws` — WebSocket
 /// upgrades. Exempt from the header gate (browser WS can't send `Authorization`);
 /// their handlers call [`authorize_ws`] on the `?token=` query param instead.
 fn is_ws_path(path: &str) -> bool {
-    (path.starts_with("/remote/terminals/") || path.starts_with("/agent/claude/"))
+    ["/remote/terminals/", "/agent/claude/", "/agent/codex/"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
         && path.ends_with("/ws")
 }
 

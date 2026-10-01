@@ -30,8 +30,57 @@ pub use items::{
     TranscriptItem, TranscriptMeta,
 };
 
-use parse::{clip, clip_patch, clip_value, str_at, tool_output_text, user_visible_text, UserText};
+pub(crate) use parse::{clip, clip_patch, clip_value, str_at, MAX_TEXT_BYTES};
 pub use parse::{find_transcript, is_uuid};
+use parse::{tool_output_text, user_visible_text, UserText};
+
+/// What a server reads from a chat transcript, whichever CLI it folds.
+pub trait ChatView {
+    fn items(&self) -> &[TranscriptItem];
+    fn meta(&self) -> &TranscriptMeta;
+    /// Slash commands the session accepts.
+    fn commands(&self) -> &[SlashCommand];
+    /// The whole output of a tool whose item carries a preview.
+    fn full_output(&self, tool_id: &str) -> Option<&str>;
+    /// The oldest approval still waiting for an answer.
+    fn waiting_on(&self) -> Option<&TranscriptItem>;
+
+    /// The newest tool call still running. `None` while idle: an interrupted
+    /// turn leaves its calls marked running.
+    fn running_tool(&self) -> Option<&TranscriptItem> {
+        if !self.meta().busy {
+            return None;
+        }
+        self.items().iter().rev().find(|i| {
+            matches!(
+                i,
+                TranscriptItem::Tool {
+                    status: ToolStatus::Running,
+                    ..
+                }
+            )
+        })
+    }
+}
+
+impl ChatView for Transcript {
+    fn items(&self) -> &[TranscriptItem] {
+        &self.items
+    }
+    fn meta(&self) -> &TranscriptMeta {
+        &self.meta
+    }
+    fn commands(&self) -> &[SlashCommand] {
+        &self.commands
+    }
+    fn full_output(&self, tool_id: &str) -> Option<&str> {
+        self.full_outputs.get(tool_id).map(String::as_str)
+    }
+    fn waiting_on(&self) -> Option<&TranscriptItem> {
+        let first = self.approvals.values().map(|p| p.item).min()?;
+        self.items.get(first)
+    }
+}
 
 /// What one [`Transcript::apply`] changed.
 #[derive(Debug, Default, PartialEq)]
@@ -76,7 +125,7 @@ pub struct Transcript {
 }
 
 /// Largest tool output kept whole for "show full output".
-const MAX_FULL_OUTPUT_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_FULL_OUTPUT_BYTES: usize = 1024 * 1024;
 
 impl Transcript {
     /// History from a session JSONL. A missing or unreadable file is an empty
@@ -91,14 +140,6 @@ impl Transcript {
         // History never has a turn in flight: the process that wrote it is gone.
         t.meta.busy = false;
         t
-    }
-
-    pub fn items(&self) -> &[TranscriptItem] {
-        &self.items
-    }
-
-    pub fn meta(&self) -> &TranscriptMeta {
-        &self.meta
     }
 
     pub fn apply_line(&mut self, line: &str) -> Applied {
@@ -214,10 +255,6 @@ impl Transcript {
         });
     }
 
-    pub fn commands(&self) -> &[SlashCommand] {
-        &self.commands
-    }
-
     /// Replace the command list from a `commands` array; true if one was there.
     fn read_commands(&mut self, list: Option<&Value>) -> bool {
         let Some(list) = list.and_then(Value::as_array) else {
@@ -240,11 +277,6 @@ impl Transcript {
             })
             .collect();
         true
-    }
-
-    /// The whole output of a tool whose item carries a preview.
-    pub fn full_output(&self, tool_id: &str) -> Option<&str> {
-        self.full_outputs.get(tool_id).map(String::as_str)
     }
 
     fn task_mut(&mut self, id: &str) -> &mut TaskInfo {
@@ -503,29 +535,6 @@ impl Transcript {
     /// Request ids still waiting for an answer.
     pub fn pending_approval_ids(&self) -> Vec<String> {
         self.approvals.keys().cloned().collect()
-    }
-
-    /// The oldest approval still waiting for an answer.
-    pub fn waiting_on(&self) -> Option<&TranscriptItem> {
-        let first = self.approvals.values().map(|p| p.item).min()?;
-        self.items.get(first)
-    }
-
-    /// The newest tool call still running. `None` while idle: an interrupted
-    /// turn leaves its calls marked running.
-    pub fn running_tool(&self) -> Option<&TranscriptItem> {
-        if !self.meta.busy {
-            return None;
-        }
-        self.items.iter().rev().find(|i| {
-            matches!(
-                i,
-                TranscriptItem::Tool {
-                    status: ToolStatus::Running,
-                    ..
-                }
-            )
-        })
     }
 
     /// Permission prompts become approval items; anything else the CLI asks of

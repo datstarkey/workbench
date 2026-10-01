@@ -192,6 +192,13 @@ pub struct TranscriptMeta {
     pub model_choice: Option<String>,
     /// The effort level picked in Workbench; `None` means the model's default.
     pub effort: Option<String>,
+    /// Codex only: the model's context window, in tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Codex only: plan limits as its stream reports them (Claude's come from
+    /// `GET /agent/usage`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_limits: Option<Vec<crate::claude_accounts::UsageLimit>>,
 }
 
 fn is_zero(n: &u32) -> bool {

@@ -1,4 +1,4 @@
-import { agentClient } from '@workbench/chat-ui';
+import { agentClient, agentName } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
 import { createHttpTransport } from '@workbench/transport';
 import type { AgentSummary, ApprovalDecision } from '@workbench/types';
@@ -285,9 +285,15 @@ export class MobileClient {
 		else await this.openClaudeTerminal(ref, false);
 	};
 
+	/** A new Codex conversation; always a chat (Codex has no terminal handoff here). */
+	startCodex = (projectPath: string, worktreePath: string | undefined, name: string): void => {
+		this.openChat({ sessionId: '', agent: 'codex', projectPath, worktreePath, name });
+	};
+
 	chatRef(chat: AgentSummary): ChatRef {
 		return {
 			sessionId: chat.sessionId,
+			...(chat.agent === 'codex' ? { agent: 'codex' as const } : {}),
 			projectPath: chat.projectPath,
 			worktreePath: chat.worktreePath ?? undefined,
 			name: chat.title ?? baseName(chat.worktreePath ?? chat.projectPath),
@@ -310,19 +316,21 @@ export class MobileClient {
 	/** Answer an approval from the home screen, without opening the chat. */
 	async answer(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
 		const live = this.live();
+		const agent = this.chats.find((c) => c.sessionId === sessionId)?.agent;
 		this.notice = null;
 		try {
 			await this.agents.send(sessionId, { t: 'approve', requestId, decision });
 		} catch (e) {
-			if (live()) this.notice = `Couldn't answer Claude: ${errorText(e)}`;
+			if (live()) this.notice = `Couldn't answer ${agentName(agent)}: ${errorText(e)}`;
 		}
 		if (live()) await this.refreshChats();
 	}
 
-	/** End a chat session's `claude` process and leave its screen; the conversation stays on disk. */
+	/** End a chat session's process and leave its screen; the conversation stays on disk. */
 	async endChat(sessionId: string): Promise<void> {
 		const live = this.live();
-		await this.agents.stop(sessionId).catch(() => {});
+		// A Codex chat that never got a thread id has nothing running to stop.
+		if (sessionId) await this.agents.stop(sessionId).catch(() => {});
 		if (!live()) return;
 		this.activeChat = null;
 		await this.refreshChats();

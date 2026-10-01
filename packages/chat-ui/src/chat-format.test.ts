@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TaskInfo, TranscriptItem, TranscriptMeta } from '@workbench/types';
 import {
 	activity,
+	agentName,
 	answerFor,
 	applyChanges,
 	contextUsed,
@@ -20,6 +21,8 @@ import {
 	stepNames,
 	latestTodos,
 	modeLabel,
+	modeOptions,
+	isRiskyMode,
 	parseQuestions,
 	patchStats,
 	shortPath,
@@ -52,6 +55,11 @@ describe('contextUsed', () => {
 		expect(contextUsed({ ...used, model: 'claude-opus-5-5[1m]' })).toBeCloseTo(0.126);
 		expect(contextUsed({ ...used, model: 'claude-opus-5-5' })).toBeCloseTo(0.63);
 		expect(contextUsed(meta)).toBe(0);
+	});
+
+	it('uses the window the session reports (Codex)', () => {
+		const used = { ...meta, contextTokens: 129_200, contextWindow: 258_400 };
+		expect(contextUsed({ ...used, model: 'gpt-6.1-sol' })).toBeCloseTo(0.5);
 	});
 });
 
@@ -119,6 +127,18 @@ describe('modes and time', () => {
 		expect(modeLabel('acceptEdits')).toBe('Accept edits');
 		expect(modeLabel(null)).toBe('Ask first');
 		expect(modeLabel('dontAsk')).toBe("Don't ask");
+	});
+
+	it('offers Codex its own presets, and says when its config is in charge', () => {
+		expect(modeOptions('codex').map((m) => m.mode)).toEqual(['read-only', 'auto', 'full-access']);
+		expect(modeOptions().map((m) => m.mode)).toContain('acceptEdits');
+		expect(modeLabel('full-access', 'codex')).toBe('Full access');
+		expect(modeLabel(null, 'codex')).toBe('Codex config');
+		expect(isRiskyMode('full-access')).toBe(true);
+		expect(isRiskyMode('bypassPermissions')).toBe(true);
+		expect(isRiskyMode('auto')).toBe(false);
+		expect(agentName('codex')).toBe('Codex');
+		expect(agentName()).toBe('Claude');
 	});
 
 	it('formats the turn timer', () => {
@@ -372,6 +392,8 @@ describe('model and effort', () => {
 
 	it('labels effort', () => {
 		expect(effortLabel('xhigh')).toBe('Extra high');
+		expect(effortLabel('none')).toBe('No reasoning');
+		expect(effortLabel('minimal')).toBe('Minimal');
 		expect(effortLabel(null)).toBe('Default effort');
 	});
 });

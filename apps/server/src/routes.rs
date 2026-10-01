@@ -44,20 +44,36 @@ pub fn router(state: AppState) -> Router {
             "/remote/terminals/:id",
             delete(crate::terminal::terminal_kill),
         )
+        .route("/agent", get(crate::agent_routes::agent_list))
         .route(
             "/agent/claude",
-            get(crate::agent_routes::agent_list)
+            get(crate::agent_routes::claude_list)
                 .post(crate::agent_routes::agent_start)
                 .delete(crate::agent_routes::agent_stop_pane),
         )
+        .route(
+            "/agent/codex",
+            get(crate::agent_routes::codex_list)
+                .post(crate::agent_routes::codex_start)
+                .delete(crate::agent_routes::agent_stop_pane),
+        )
+        .route("/agent/usage", get(crate::agent_routes::agent_usage))
         .route(
             "/agent/claude/:id/message",
             post(crate::agent_routes::agent_message),
         )
         .route("/agent/claude/:id", delete(crate::agent_routes::agent_stop))
-        .route("/agent/usage", get(crate::agent_routes::agent_usage))
         .route(
             "/agent/claude/:id/ws",
+            get(crate::agent_routes::agent_attach),
+        )
+        .route(
+            "/agent/codex/:id/message",
+            post(crate::agent_routes::agent_message),
+        )
+        .route("/agent/codex/:id", delete(crate::agent_routes::agent_stop))
+        .route(
+            "/agent/codex/:id/ws",
             get(crate::agent_routes::agent_attach),
         )
         .with_state(state)

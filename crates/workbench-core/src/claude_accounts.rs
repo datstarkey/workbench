@@ -82,18 +82,12 @@ pub struct ClaudeAuthStatus {
 /// `WORKBENCH_CLAUDE_BIN`, else `claude` found on the enriched search path
 /// (GUI apps don't inherit the shell's PATH).
 pub fn claude_binary() -> PathBuf {
-    if let Some(bin) = std::env::var_os("WORKBENCH_CLAUDE_BIN") {
-        return bin.into();
-    }
     let name = if cfg!(windows) {
         "claude.exe"
     } else {
         "claude"
     };
-    std::env::split_paths(&paths::enriched_path())
-        .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
-        .unwrap_or_else(|| name.into())
+    paths::find_binary("WORKBENCH_CLAUDE_BIN", &[name])
 }
 
 /// `claude` with `account_id`'s config dir exported.
@@ -133,6 +127,9 @@ pub struct UsageLimit {
     pub percent: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resets: Option<String>,
+    /// Unix seconds; Codex reports the reset as a time rather than text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
 }
 
 /// Starting the CLI and asking Anthropic for the numbers takes a couple of seconds.
@@ -166,6 +163,7 @@ fn parse_usage(stdout: &str) -> Vec<UsageLimit> {
                 label: label.to_string(),
                 percent: percent.trim().parse().ok()?,
                 resets,
+                resets_at: None,
             })
         })
         .collect()
@@ -248,6 +246,7 @@ Last 24h · 3270 requests · 24 sessions\n  91% of your usage came from subagent
                 label: "session".into(),
                 percent: 3,
                 resets: Some("Oct 1 at 5:10pm (Europe/London)".into()),
+                resets_at: None,
             }
         );
         assert_eq!(limits[1].label, "week (all models)");

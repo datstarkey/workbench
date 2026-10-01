@@ -501,6 +501,8 @@ export interface UsageLimit {
 	percent: number;
 	/** e.g. "Oct 2 at 9am (Europe/London)" */
 	resets?: string;
+	/** Unix seconds; Codex reports the reset as a time rather than text. */
+	resetsAt?: number;
 }
 
 /** Persisted position + size of the draggable settings window. */
@@ -533,10 +535,20 @@ export interface ProjectFormState {
 	shell: string;
 }
 
+/** Which CLI a chat session runs. */
+export type AgentKind = 'claude' | 'codex';
+
 /**
- * Chat items for a Claude chat session (mirror of workbench-core
+ * Codex's approval + sandbox presets (its own `/approvals` picker):
+ * `read-only` = read-only sandbox, asks on request; `auto` = workspace-write,
+ * asks on request; `full-access` = no sandbox, never asks.
+ */
+export type CodexMode = 'read-only' | 'auto' | 'full-access';
+
+/**
+ * Chat items for a Claude or Codex chat session (mirror of workbench-core
  * `claude_transcript::TranscriptItem`), streamed by the server's
- * `/agent/claude/:id/ws`.
+ * `/agent/{claude,codex}/:id/ws`.
  */
 export type TranscriptToolStatus = 'running' | 'ok' | 'error';
 
@@ -630,7 +642,8 @@ export interface ModelOption {
 	effortLevels: EffortLevel[];
 }
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+/** `none`/`minimal` are Codex-only, `max` Claude-only. */
+export type EffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** The API call is being retried (overloaded, rate limited, …). */
 export interface RetryInfo {
@@ -653,7 +666,8 @@ export interface RateLimitInfo {
 export interface TranscriptMeta {
 	title: string | null;
 	model: string | null;
-	permissionMode: PermissionMode | null;
+	/** A `CodexMode` in a Codex chat; null there when Codex's own config is in charge. */
+	permissionMode: PermissionMode | CodexMode | null;
 	contextTokens: number | null;
 	busy: boolean;
 	tasks: TaskInfo[];
@@ -664,6 +678,10 @@ export interface TranscriptMeta {
 	modelChoice: string | null;
 	/** The effort picked in Workbench; null means the model's default. */
 	effort: EffortLevel | null;
+	/** Codex only: the model's context window, in tokens (Claude's is inferred from the model). */
+	contextWindow?: number;
+	/** Codex only: plan limits as the stream reports them (Claude's come from `GET /agent/usage`). */
+	usageLimits?: UsageLimit[];
 }
 
 export type AgentServerMsg =
@@ -705,17 +723,25 @@ export type AgentClientMsg =
 			answers?: Record<string, string>;
 	  }
 	| { t: 'interrupt' }
-	| { t: 'mode'; mode: PermissionMode }
+	| { t: 'mode'; mode: PermissionMode | CodexMode }
 	| { t: 'model'; model: string }
 	| { t: 'effort'; effort: EffortLevel }
 	| { t: 'output'; toolId: string }
 	| { t: 'taskOutput'; taskId: string };
 
 export interface StartAgentBody {
+	/** Picks the route (`/agent/claude` or `/agent/codex`); absent is Claude. */
+	agent?: AgentKind;
 	projectPath: string;
 	worktreePath?: string;
-	sessionId: string;
+	/**
+	 * Claude: required, a UUID the client picks. Codex: the thread to resume;
+	 * absent starts a new thread, whose id the start call returns.
+	 */
+	sessionId?: string;
 	permissionMode?: PermissionMode;
+	/** Codex: the preset to start in; absent leaves `~/.codex/config.toml` in charge. */
+	codexMode?: CodexMode;
 	paneId?: string;
 	hookSocket?: string;
 	/** The pane's Claude account; absent is the default login. */
@@ -724,8 +750,9 @@ export interface StartAgentBody {
 	attachOnly?: boolean;
 }
 
-/** A running chat session, as `GET /agent/claude` lists it (phone home screen). */
+/** A running chat session, as `GET /agent` lists it (phone home screen). */
 export interface AgentSummary {
+	agent: AgentKind;
 	sessionId: string;
 	projectPath: string;
 	worktreePath: string | null;

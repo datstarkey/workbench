@@ -1,4 +1,6 @@
 import type {
+	AgentKind,
+	CodexMode,
 	EffortLevel,
 	ModelOption,
 	PermissionMode,
@@ -238,7 +240,12 @@ export function answerFor(selected: string[], other: string): string {
 	return [...selected, other.trim()].filter(Boolean).join(', ');
 }
 
-/** What Claude is doing right now, for the activity line under the chat. */
+/** "Claude" / "Codex", for labels that name the agent. */
+export function agentName(agent: AgentKind = 'claude'): string {
+	return agent === 'codex' ? 'Codex' : 'Claude';
+}
+
+/** What the agent is doing right now, for the activity line under the chat. */
 export type Activity =
 	| { kind: 'idle' }
 	| { kind: 'retrying'; retry: RetryInfo }
@@ -276,9 +283,11 @@ export function approvalPreview(item: ApprovalItem, cwd?: string): string {
 }
 
 export interface ModeOption {
-	mode: PermissionMode;
+	mode: PermissionMode | CodexMode;
 	label: string;
 	hint: string;
+	/** Nothing asks first; shown in the error colour. */
+	risky?: boolean;
 }
 
 /** Modes offered in the picker, in Shift+Tab order. */
@@ -287,12 +296,43 @@ export const MODE_OPTIONS: ModeOption[] = [
 	{ mode: 'acceptEdits', label: 'Accept edits', hint: 'File edits run; commands still ask' },
 	{ mode: 'plan', label: 'Plan', hint: 'Claude reads and plans, changes nothing' },
 	{ mode: 'auto', label: 'Auto', hint: 'A safety check approves routine actions' },
-	{ mode: 'bypassPermissions', label: 'Bypass', hint: 'Nothing asks first' }
+	{ mode: 'bypassPermissions', label: 'Bypass', hint: 'Nothing asks first', risky: true }
 ];
 
-export function modeLabel(mode: PermissionMode | null | undefined): string {
+/** Codex's `/approvals` presets. */
+export const CODEX_MODE_OPTIONS: ModeOption[] = [
+	{ mode: 'read-only', label: 'Read only', hint: 'Codex reads; edits and commands ask' },
+	{
+		mode: 'auto',
+		label: 'Auto',
+		hint: 'Works freely in the workspace; asks before going outside it'
+	},
+	{
+		mode: 'full-access',
+		label: 'Full access',
+		hint: 'No sandbox, nothing asks first',
+		risky: true
+	}
+];
+
+export function modeOptions(agent: AgentKind = 'claude'): ModeOption[] {
+	return agent === 'codex' ? CODEX_MODE_OPTIONS : MODE_OPTIONS;
+}
+
+/** The picker's label; a Codex chat with no mode set follows Codex's own config. */
+export function modeLabel(
+	mode: PermissionMode | CodexMode | null | undefined,
+	agent: AgentKind = 'claude'
+): string {
+	if (agent === 'codex') {
+		return CODEX_MODE_OPTIONS.find((m) => m.mode === mode)?.label ?? 'Codex config';
+	}
 	if (mode === 'dontAsk') return "Don't ask";
 	return MODE_OPTIONS.find((m) => m.mode === mode)?.label ?? 'Ask first';
+}
+
+export function isRiskyMode(mode: PermissionMode | CodexMode | null | undefined): boolean {
+	return mode === 'bypassPermissions' || mode === 'full-access';
 }
 
 /** `m:ss` for the turn timer. */
@@ -362,10 +402,13 @@ export function formatBytes(n: number): string {
 	return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
 }
 
-/** How full the context window is, 0–1; `[1m]` on the model means a 1M window, else 200k. */
+/**
+ * How full the context window is, 0–1. Codex reports its window; for Claude,
+ * `[1m]` on the model means a 1M window, else 200k.
+ */
 export function contextUsed(meta: TranscriptMeta | null): number {
 	if (!meta?.contextTokens) return 0;
-	const limit = meta.model?.endsWith('[1m]') ? 1_000_000 : 200_000;
+	const limit = meta.contextWindow ?? (meta.model?.endsWith('[1m]') ? 1_000_000 : 200_000);
 	return Math.min(1, meta.contextTokens / limit);
 }
 
@@ -382,6 +425,8 @@ export function currentModel(meta: TranscriptMeta | null): ModelOption | null {
 }
 
 const EFFORT_LABELS: Record<EffortLevel, string> = {
+	none: 'No reasoning',
+	minimal: 'Minimal',
 	low: 'Low',
 	medium: 'Medium',
 	high: 'High',

@@ -100,6 +100,20 @@ pub fn enriched_path() -> OsString {
         .clone()
 }
 
+/// The program named by `env_var` if set, else the first of `names` found on
+/// the enriched search path (GUI apps don't inherit the shell's PATH), else the
+/// bare first name for the OS to resolve.
+pub fn find_binary(env_var: &str, names: &[&str]) -> PathBuf {
+    if let Some(bin) = std::env::var_os(env_var) {
+        return bin.into();
+    }
+    let dirs: Vec<PathBuf> = std::env::split_paths(&enriched_path()).collect();
+    names
+        .iter()
+        .find_map(|name| dirs.iter().map(|d| d.join(name)).find(|p| p.is_file()))
+        .unwrap_or_else(|| names[0].into())
+}
+
 /// Encode a project path for use as a filename-safe identifier.
 /// Replaces path separators and drive letter colons with `-`.
 ///

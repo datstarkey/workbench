@@ -17,7 +17,12 @@ export function acquireChat(
 ): { chat: AgentChat; created: boolean } {
 	const existing = chats.get(paneId);
 	// `/clear` re-keys the same chat; any other new id is a different conversation.
-	if (existing && existing.sessionId === body.sessionId) return { chat: existing, created: false };
+	// No id is a new Codex thread: the chat already starting it keeps it.
+	const same =
+		body.sessionId === undefined
+			? existing?.agent === (body.agent ?? 'claude')
+			: existing?.sessionId === body.sessionId;
+	if (existing && same) return { chat: existing, created: false };
 	existing?.dispose();
 	const chat = new AgentChat(body, loopbackAgentApi);
 	chats.set(paneId, chat);

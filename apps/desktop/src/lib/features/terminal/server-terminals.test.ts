@@ -39,6 +39,7 @@ describe('adoptableTerminals', () => {
 });
 
 const chat = (sessionId: string, overrides: Partial<AgentSummary> = {}): AgentSummary => ({
+	agent: 'claude',
 	sessionId,
 	projectPath: '/p',
 	worktreePath: null,

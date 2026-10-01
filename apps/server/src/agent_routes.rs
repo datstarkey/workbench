@@ -1,15 +1,21 @@
-//! HTTP + WebSocket surface for chat sessions:
-//! - `GET /agent/claude` lists live sessions ([`AgentSummary`]), newest change first.
-//! - `POST /agent/claude` starts (or returns) the session for a Claude session id;
-//!   with `attachOnly` it only returns a running one (404 otherwise).
-//! - `DELETE /agent/claude/:id` stops it; `DELETE /agent/claude?paneId=` stops
+//! HTTP + WebSocket surface for chat sessions (`:kind` is `claude` or `codex`):
+//! - `GET /agent` lists every live session ([`AgentSummary`], with `agent`),
+//!   newest change first; `GET /agent/:kind` only that kind's (older phone
+//!   builds read `/agent/claude`).
+//! - `POST /agent/claude` starts (or returns) the session for a Claude session
+//!   id; `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
+//!   resumes one, and answers once codex has its id. With `attachOnly` either
+//!   only returns a running session (404 otherwise).
+//! - `DELETE /agent/:kind/:id` stops it; `DELETE /agent/:kind?paneId=` stops
 //!   whatever a closed pane owned.
-//! - `WS /agent/claude/:id/ws` streams `snapshot` then `update`/`exit` frames and
+//! - `WS /agent/:kind/:id/ws` streams `snapshot` then `update`/`exit` frames and
 //!   takes `prompt` / `approve` / `interrupt` / `mode` messages. Any number of
 //!   clients may attach; the first answer to an approval wins.
-//! - `POST /agent/claude/:id/message` applies one of those messages without a
+//! - `POST /agent/:kind/:id/message` applies one of those messages without a
 //!   socket (an approval from the phone's home screen): 200 with the reply
 //!   frame when there is one, else 204.
+//!
+//! Ids are global, so the stop/message/WS routes of either kind reach any session.
 //! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
 //!   usage (`claude -p /usage`), cached by [`crate::usage::UsageCache`].
 
@@ -26,7 +32,9 @@ use tokio::sync::{broadcast, watch};
 use workbench_core::claude_accounts::{self, UsageLimit};
 use workbench_core::claude_transcript::ApprovalDecision;
 
-use crate::agent::{AgentSession, AgentSummary, PromptImage, StartAgent, MAX_IMAGES};
+use crate::agent::{
+    AgentKind, AgentSession, AgentSummary, Launch, PromptImage, StartAgent, MAX_IMAGES,
+};
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
 use crate::state::{wait_revoked, AppState};
@@ -54,11 +62,7 @@ pub async fn agent_start(
 ) -> ApiResult<Json<Value>> {
     if body.attach_only {
         // Spawns nothing, so neither the sandbox nor the cwd checks apply.
-        let session = state.agents.get(&body.session_id).ok_or_else(|| ApiError {
-            status: StatusCode::NOT_FOUND,
-            message: "This chat ended on the other device.".into(),
-        })?;
-        return Ok(Json(json!({"sessionId": session.id()})));
+        return attach_only(&state, &body.session_id);
     }
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
@@ -69,27 +73,21 @@ pub async fn agent_start(
                 "Chat mode doesn't run inside the sandbox runtime yet. Use the terminal, or turn the sandbox off in Settings."
             );
         }
-        let registered: Vec<String> = workbench_core::config::load_projects()?
-            .into_iter()
-            .map(|p| p.path)
-            .collect();
-        let cwd = RemoteControlManager::resolve_cwd(
-            &body.project_path,
-            body.worktree_path.as_deref(),
-            &registered,
-        )?;
+        let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
         let config_dir =
             workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
         let session = agents.start(StartAgent {
             cwd,
             project_path: body.project_path,
             worktree_path: body.worktree_path,
-            session_id: body.session_id,
-            permission_mode: body.permission_mode,
             pane_id: body.pane_id,
             hook_socket: body.hook_socket,
-            config_dir,
             claude_account_id: body.claude_account_id,
+            launch: Launch::Claude {
+                session_id: body.session_id,
+                permission_mode: body.permission_mode,
+                config_dir,
+            },
         })?;
         Ok(json!({"sessionId": session.id()}))
     })
@@ -97,8 +95,82 @@ pub async fn agent_start(
     .map(Json)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexStartBody {
+    pub project_path: String,
+    pub worktree_path: Option<String>,
+    /// The thread to resume; absent starts a new one.
+    pub session_id: Option<String>,
+    /// `read-only` | `auto` | `full-access`; absent leaves `~/.codex/config.toml` in charge.
+    pub codex_mode: Option<String>,
+    pub pane_id: Option<String>,
+    pub hook_socket: Option<String>,
+    #[serde(default)]
+    pub attach_only: bool,
+}
+
+/// Codex never runs under the sandbox runtime (srt only wraps Claude), so
+/// unlike Claude chat it isn't refused while that's on.
+pub async fn codex_start(
+    State(state): State<AppState>,
+    Json(body): Json<CodexStartBody>,
+) -> ApiResult<Json<Value>> {
+    if body.attach_only {
+        let id = body
+            .session_id
+            .ok_or_else(|| ApiError::bad_request("attachOnly needs a sessionId"))?;
+        return attach_only(&state, &id);
+    }
+    let agents = state.agents.clone();
+    crate::routes::blocking(move || {
+        let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
+        let session = agents.start(StartAgent {
+            cwd,
+            project_path: body.project_path,
+            worktree_path: body.worktree_path,
+            pane_id: body.pane_id,
+            hook_socket: body.hook_socket,
+            claude_account_id: None,
+            launch: Launch::Codex {
+                thread_id: body.session_id,
+                mode: body.codex_mode,
+            },
+        })?;
+        Ok(json!({"sessionId": session.id()}))
+    })
+    .await
+    .map(Json)
+}
+
+/// The running session for `id`, or 404: a chat another device owns.
+fn attach_only(state: &AppState, id: &str) -> ApiResult<Json<Value>> {
+    let session = state.agents.get(id).ok_or_else(|| ApiError {
+        status: StatusCode::NOT_FOUND,
+        message: "This chat ended on the other device.".into(),
+    })?;
+    Ok(Json(json!({"sessionId": session.id()})))
+}
+
+/// The cwd a chat may run in: a registered project or one of its worktrees.
+fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> anyhow::Result<String> {
+    let registered: Vec<String> = workbench_core::config::load_projects()?
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    RemoteControlManager::resolve_cwd(project_path, worktree_path, &registered)
+}
+
 pub async fn agent_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
-    Json(state.agents.summaries())
+    Json(state.agents.summaries(None))
+}
+
+pub async fn claude_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
+    Json(state.agents.summaries(Some(AgentKind::Claude)))
+}
+
+pub async fn codex_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
+    Json(state.agents.summaries(Some(AgentKind::Codex)))
 }
 
 pub async fn agent_message(
