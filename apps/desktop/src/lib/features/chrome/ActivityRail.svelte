@@ -2,7 +2,7 @@
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
-	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import * as Tooltip from '@workbench/ui/tooltip';
@@ -99,8 +99,8 @@
 		'Check for updates',
 		false,
 		undefined,
-		() => void updaterStore.manualCheck(),
-		RefreshCwIcon
+		() => updaterStore.manualCheck(),
+		DownloadIcon
 	)}
 	{@render railButton('Settings', false, undefined, onOpenSettings, SettingsIcon)}
 </nav>

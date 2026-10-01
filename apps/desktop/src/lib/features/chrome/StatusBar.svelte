@@ -4,7 +4,6 @@
 		getClaudeSessionStore,
 		getGitHubStore,
 		getGitStore,
-		getUpdaterStore,
 		getWorkspaceStore
 	} from '$stores/context';
 	import { getVersion } from '@tauri-apps/api/app';
@@ -14,7 +13,6 @@
 	const gitStore = getGitStore();
 	const githubStore = getGitHubStore();
 	const sessionStore = getClaudeSessionStore();
-	const updaterStore = getUpdaterStore();
 
 	let version = $state('');
 	getVersion()
@@ -86,13 +84,6 @@
 		<span class="text-wb-codex">● {sessionCounts.codex} Codex</span>
 	{/if}
 	{#if version}
-		<button
-			type="button"
-			class="text-wb-ink-soft hover:text-wb-ink"
-			title="Check for updates"
-			onclick={() => updaterStore.manualCheck()}
-		>
-			workbench v{version}
-		</button>
+		<span class="text-wb-ink-soft">workbench v{version}</span>
 	{/if}
 </footer>

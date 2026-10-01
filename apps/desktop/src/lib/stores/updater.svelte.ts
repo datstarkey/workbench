@@ -28,16 +28,17 @@ export class UpdaterStore {
 		});
 
 		// Auto-check after a short delay on startup
-		setTimeout(() => this.checkForUpdates(false), 3000);
+		setTimeout(() => this.checkForUpdates(), 3000);
 	}
 
-	/** Manual check from menu — always opens dialog */
+	/** Manual check from the menu or rail — always opens the dialog, which shows a check already running. */
 	async manualCheck() {
 		this.dialogOpen = true;
-		await this.checkForUpdates(true);
+		if (this.status === 'checking' || this.status === 'downloading') return;
+		await this.checkForUpdates();
 	}
 
-	async checkForUpdates(showUpToDate: boolean) {
+	async checkForUpdates() {
 		this.status = 'checking';
 		this.error = null;
 		this.progress = 0;
@@ -54,10 +55,6 @@ export class UpdaterStore {
 			} else {
 				this.update = null;
 				this.status = 'up-to-date';
-				if (!showUpToDate) {
-					// Silent check — don't bother the user
-					this.dialogOpen = false;
-				}
 			}
 		} catch (e) {
 			this.status = 'error';
