@@ -597,7 +597,8 @@ describe('ClaudeSessionStore', () => {
 			expect(mockProjectStore.openProject).toHaveBeenCalledWith('/projects/test');
 			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith('/projects/test', 'codex', {
 				label: 'Security Scan',
-				startupCommand: "codex 'Scan this codebase for security issues'"
+				startupCommand:
+					"codex -c tui.alternate_screen=never 'Scan this codebase for security issues'"
 			});
 		});
 	});

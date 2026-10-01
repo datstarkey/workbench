@@ -728,7 +728,7 @@ describe('WorkspaceStore', () => {
 			expect(tab.type).toBe('codex');
 			expect(tab.label).toBe('Codex 1');
 			expect(tab.panes[0].type).toBe('codex');
-			expect(tab.panes[0].startupCommand).toBe('codex');
+			expect(tab.panes[0].startupCommand).toBe('codex -c tui.alternate_screen=never');
 		});
 
 		it('defaults to claude type', () => {
@@ -802,7 +802,9 @@ describe('WorkspaceStore', () => {
 
 			const tab = store.workspaces[0].terminalTabs[0];
 			expect(tab.type).toBe('codex');
-			expect(tab.panes[0].startupCommand).toBe(`codex resume ${sessionId}`);
+			expect(tab.panes[0].startupCommand).toBe(
+				`codex -c tui.alternate_screen=never resume ${sessionId}`
+			);
 		});
 	});
 
@@ -938,7 +940,7 @@ describe('WorkspaceStore', () => {
 
 			const pane = store.workspaces[0].terminalTabs[0].panes[0];
 			expect(pane.claudeSessionId).toBe('any-session-id');
-			expect(pane.startupCommand).toBe('codex resume any-session-id');
+			expect(pane.startupCommand).toBe('codex -c tui.alternate_screen=never resume any-session-id');
 		});
 
 		it('does not persist when session ID is already the same', () => {
@@ -1305,7 +1307,7 @@ describe('WorkspaceStore', () => {
 			store.ensureShape();
 
 			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe(
-				`codex resume ${sessionId}`
+				`codex -c tui.alternate_screen=never resume ${sessionId}`
 			);
 		});
 
@@ -1535,7 +1537,7 @@ describe('WorkspaceStore', () => {
 
 			store.ensureShape();
 
-			expect(startupCommand()).toBe("codex 'Find DRY violations'");
+			expect(startupCommand()).toBe("codex -c tui.alternate_screen=never 'Find DRY violations'");
 		});
 	});
 
@@ -1656,7 +1658,7 @@ describe('WorkspaceStore', () => {
 
 			store.ensureShape();
 
-			expect(startupCommand()).toBe("codex 'Find DRY violations'");
+			expect(startupCommand()).toBe("codex -c tui.alternate_screen=never 'Find DRY violations'");
 		});
 
 		/** Commands persisted before the version was pinned must still normalise. */
