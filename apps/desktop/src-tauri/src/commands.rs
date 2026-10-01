@@ -420,7 +420,7 @@ pub fn delete_branch(repo_path: String, branch: String, force: bool) -> Result<b
 
 #[tauri::command]
 pub fn open_url(url: String) -> Result<bool, String> {
-    github::open_url(&url).map_err(|e| e.to_string())?;
+    crate::shell::open_url(&url).map_err(|e| e.to_string())?;
     Ok(true)
 }
 

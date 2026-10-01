@@ -9,7 +9,7 @@
 	import { Button } from '@workbench/ui/button';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import * as Tooltip from '@workbench/ui/tooltip';
-	import { invoke } from '@tauri-apps/api/core';
+	import { openUrl } from '$lib/utils/open-url';
 	import { trelloLabelColor } from './label-colors';
 
 	let {
@@ -27,7 +27,7 @@
 	);
 
 	function handleOpenInTrello() {
-		invoke('open_url', { url: card.url });
+		openUrl(card.url);
 	}
 
 	function handleCreateWorktree() {

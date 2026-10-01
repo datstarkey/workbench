@@ -10,7 +10,7 @@
 	import { cn } from '@workbench/ui';
 	import { iconButton } from '$features/sidebar/styles';
 	import type { GitHubPR } from '$types/workbench';
-	import { openInGitHub } from '$lib/utils/github';
+	import { openUrl } from '$lib/utils/open-url';
 	import { toast } from 'svelte-sonner';
 	import { prStateLabel } from './pr-view';
 
@@ -92,7 +92,7 @@
 			class={cn(iconButton, 'size-6')}
 			aria-label="Open on GitHub"
 			title="Open on GitHub"
-			onclick={() => openInGitHub(pr.url)}
+			onclick={() => openUrl(pr.url)}
 		>
 			<ExternalLinkIcon class="size-3.5" />
 		</button>

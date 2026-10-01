@@ -22,7 +22,7 @@
 		getWorkbenchSettingsStore,
 		getWorktreeManager
 	} from '$stores/context';
-	import { openInGitHub } from '$lib/utils/github';
+	import { openUrl } from '$lib/utils/open-url';
 	import { openInVSCode } from '$lib/utils/vscode';
 	import type { AgentAction, ProjectConfig } from '$types/workbench';
 
@@ -134,7 +134,7 @@
 	Open in VS Code
 </Item>
 {#if githubStore.getRemoteUrl(project.path)}
-	<Item onclick={() => openInGitHub(githubStore.getRemoteUrl(project.path)!)}>
+	<Item onclick={() => openUrl(githubStore.getRemoteUrl(project.path)!)}>
 		<GithubIcon class="size-3.5" />
 		Open in GitHub
 	</Item>

@@ -7,7 +7,8 @@
 	import { Button } from '@workbench/ui/button';
 	import * as Tooltip from '@workbench/ui/tooltip';
 	import { getClaudeSessionStore, getGitHubStore, getWorkspaceStore } from '$stores/context';
-	import { branchUrl, openInGitHub } from '$lib/utils/github';
+	import { branchUrl } from '$lib/utils/github';
+	import { openUrl } from '$lib/utils/open-url';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import { effectivePath } from '$lib/utils/path';
 	import { TabReorder } from '$lib/utils/tab-reorder.svelte';
@@ -152,7 +153,7 @@
 							size="icon-sm"
 							class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
 							type="button"
-							onclick={() => openInGitHub(activeGitHubUrl!)}
+							onclick={() => openUrl(activeGitHubUrl!)}
 						>
 							<GithubIcon class="size-3.5" />
 						</Button>

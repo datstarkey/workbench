@@ -7,6 +7,7 @@
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { onMount } from 'svelte';
+	import { openUrl } from '$lib/utils/open-url';
 
 	const trelloStore = getTrelloStore();
 
@@ -130,10 +131,7 @@
 			<button
 				type="button"
 				class="underline"
-				onclick={() =>
-					import('@tauri-apps/api/core').then((m) =>
-						m.invoke('open_url', { url: 'https://trello.com/power-ups/admin' })
-					)}
+				onclick={() => openUrl('https://trello.com/power-ups/admin')}
 			>
 				trello.com/power-ups/admin
 			</button>
