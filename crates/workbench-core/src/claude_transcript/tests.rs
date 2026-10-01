@@ -1,0 +1,384 @@
+use super::parse::MAX_TEXT_BYTES;
+use super::*;
+use serde_json::json;
+use std::fs;
+
+const SID: &str = "7b3c54f4-ba22-4654-9af9-037d1cd8e555";
+
+fn user(uuid: &str, content: Value) -> Value {
+    json!({"type":"user","uuid":uuid,"timestamp":"2026-09-30T21:07:10Z","message":{"role":"user","content":content}})
+}
+
+fn assistant(uuid: &str, msg_id: &str, block: Value) -> Value {
+    json!({"type":"assistant","uuid":uuid,"message":{"id":msg_id,"model":"claude-opus-5-5","content":[block],
+        "usage":{"input_tokens":2,"cache_read_input_tokens":100,"cache_creation_input_tokens":50}}})
+}
+
+fn stream(event: Value) -> Value {
+    json!({"type":"stream_event","event":event,"parent_tool_use_id":null})
+}
+
+fn user_texts(t: &Transcript) -> Vec<&str> {
+    t.items()
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::User { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn folds_a_jsonl_turn_into_chat_items() {
+    let mut t = Transcript::default();
+    t.apply(&user("u1", json!("Fix the keyboard inset")));
+    assert!(t.meta().busy);
+    t.apply(&assistant(
+        "a1",
+        "m1",
+        json!({"type":"text","text":"On it."}),
+    ));
+    t.apply(&assistant(
+        "a2",
+        "m1",
+        json!({"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"bun test"}}),
+    ));
+    let applied = t.apply(&json!({"type":"user","uuid":"u2","message":{"content":[
+        {"type":"tool_result","tool_use_id":"toolu_1","content":"41 passed","is_error":false}]}}));
+    assert_eq!(applied.items, vec![2]);
+    t.apply(&json!({"type":"system","subtype":"turn_duration","durationMs":10}));
+
+    assert_eq!(t.items().len(), 3);
+    assert!(matches!(&t.items()[1], TranscriptItem::Text { text, .. } if text == "On it."));
+    assert!(
+        matches!(&t.items()[2], TranscriptItem::Tool { status: ToolStatus::Ok, output: Some(o), .. } if o == "41 passed")
+    );
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5"));
+    assert_eq!(t.meta().context_tokens, Some(152));
+    assert!(!t.meta().busy);
+}
+
+#[test]
+fn edit_results_carry_the_patch_in_either_spelling() {
+    for key in ["toolUseResult", "tool_use_result"] {
+        let mut t = Transcript::default();
+        t.apply(&assistant(
+            "a1",
+            "m1",
+            json!({"type":"tool_use","id":"toolu_e","name":"Edit","input":{"file_path":"/x.ts"}}),
+        ));
+        let mut line = json!({"type":"user","uuid":"u","message":{"content":[
+            {"type":"tool_result","tool_use_id":"toolu_e","content":"ok"}]}});
+        line[key] = json!({"structuredPatch":[{"oldStart":1,"oldLines":1,"newStart":1,"newLines":1,"lines":["-a","+b"]}]});
+        t.apply(&line);
+        let TranscriptItem::Tool { patch: Some(p), .. } = &t.items()[0] else {
+            panic!("expected patch for {key}");
+        };
+        assert_eq!(p[0]["lines"], json!(["-a", "+b"]));
+    }
+}
+
+#[test]
+fn streamed_text_is_replaced_in_place_by_the_final_block() {
+    let mut t = Transcript::default();
+    t.apply(&stream(
+        json!({"type":"message_start","message":{"id":"m1","model":"claude-opus-5-5"}}),
+    ));
+    assert!(t.meta().busy);
+    t.apply(&stream(
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+    ));
+    t.apply(&stream(
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}),
+    ));
+    let a = t.apply(&stream(
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}),
+    ));
+    assert_eq!(a.items, vec![0]);
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::Text { id, text } if id == "m1:0" && text == "Hello")
+    );
+
+    t.apply(&assistant(
+        "a1",
+        "m1",
+        json!({"type":"text","text":"Hello there."}),
+    ));
+    assert_eq!(t.items().len(), 1, "final block must not add a second item");
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::Text { id, text } if id == "m1:0" && text == "Hello there.")
+    );
+
+    t.apply(&json!({"type":"result","subtype":"success","is_error":false}));
+    assert!(!t.meta().busy);
+}
+
+#[test]
+fn a_streamed_tool_call_shows_running_then_gets_its_input() {
+    let mut t = Transcript::default();
+    t.apply(&stream(
+        json!({"type":"message_start","message":{"id":"m1"}}),
+    ));
+    t.apply(&stream(json!({"type":"content_block_start","index":0,
+        "content_block":{"type":"tool_use","id":"toolu_9","name":"Bash","input":{}}})));
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::Tool { name, status: ToolStatus::Running, .. } if name == "Bash")
+    );
+    t.apply(&assistant(
+        "a1",
+        "m1",
+        json!({"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"echo hi"}}),
+    ));
+    assert_eq!(t.items().len(), 1);
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::Tool { input, .. } if input["command"] == "echo hi")
+    );
+}
+
+#[test]
+fn approvals_round_trip_to_control_responses() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"control_request","request_id":"req-1","request":{
+        "subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch x"},
+        "description":"Create x","blocked_path":"/repo/x",
+        "permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch x"}],"behavior":"allow","destination":"localSettings"}]}}));
+    assert!(matches!(
+        &t.items()[0],
+        TranscriptItem::Approval { tool, can_always_allow: true, decision: None, .. } if tool == "Bash"
+    ));
+    assert_eq!(t.pending_approval_ids(), vec!["req-1".to_string()]);
+
+    let (i, response) = t
+        .resolve_approval("req-1", ApprovalDecision::AlwaysAllow)
+        .expect("pending approval");
+    assert_eq!(i, 0);
+    assert_eq!(response["type"], "control_response");
+    assert_eq!(response["response"]["request_id"], "req-1");
+    let body = &response["response"]["response"];
+    assert_eq!(body["behavior"], "allow");
+    assert_eq!(body["updatedInput"]["command"], "touch x");
+    assert_eq!(body["updatedPermissions"][0]["type"], "addRules");
+    assert!(matches!(
+        &t.items()[0],
+        TranscriptItem::Approval {
+            decision: Some(ApprovalDecision::AlwaysAllow),
+            ..
+        }
+    ));
+    assert!(
+        t.resolve_approval("req-1", ApprovalDecision::Deny)
+            .is_none(),
+        "answered once"
+    );
+}
+
+#[test]
+fn deny_tells_claude_why() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Write","input":{}}}));
+    let (_, response) = t.resolve_approval("r", ApprovalDecision::Deny).unwrap();
+    assert_eq!(response["response"]["response"]["behavior"], "deny");
+    assert!(response["response"]["response"]["message"]
+        .as_str()
+        .is_some());
+}
+
+#[test]
+fn init_and_errors_update_the_chat() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]","permissionMode":"default"}));
+    assert_eq!(t.meta().permission_mode.as_deref(), Some("default"));
+    t.set_busy();
+    t.apply(
+        &json!({"type":"result","subtype":"error_during_execution","is_error":true,"uuid":"r1"}),
+    );
+    assert!(!t.meta().busy);
+    assert!(matches!(&t.items()[0], TranscriptItem::Notice { .. }));
+}
+
+#[test]
+fn subagent_events_are_left_to_their_task_card() {
+    let mut t = Transcript::default();
+    let mut line = assistant("a", "m", json!({"type":"text","text":"inside a subagent"}));
+    line["parent_tool_use_id"] = json!("toolu_task");
+    t.apply(&line);
+    t.apply(&json!({"type":"user","uuid":"side","isSidechain":true,"message":{"content":"subagent prompt"}}));
+    assert!(t.items().is_empty());
+}
+
+#[test]
+fn hides_bookkeeping_and_shows_slash_commands_and_html() {
+    let mut t = Transcript::default();
+    t.apply(
+        &json!({"type":"user","uuid":"m","isMeta":true,"message":{"content":"Base directory…"}}),
+    );
+    t.apply(&user(
+        "s",
+        json!("<local-command-stdout>done</local-command-stdout>"),
+    ));
+    t.apply(&user(
+        "sc",
+        json!("<command-name>/compact</command-name>\n<command-args>keep tests</command-args>"),
+    ));
+    t.apply(&assistant(
+        "th",
+        "m",
+        json!({"type":"thinking","thinking":""}),
+    ));
+    t.apply(&user("ok", json!("ok")));
+    t.apply(&user("html", json!("<Button> renders twice, why?")));
+    assert_eq!(
+        user_texts(&t),
+        vec!["/compact keep tests", "ok", "<Button> renders twice, why?"]
+    );
+}
+
+#[test]
+fn slash_commands_do_not_start_a_turn() {
+    let mut t = Transcript::default();
+    t.apply(&user("c", json!("<command-name>/cost</command-name>")));
+    assert!(!t.meta().busy);
+    t.apply(&user("p", json!("fix it")));
+    assert!(t.meta().busy);
+}
+
+#[test]
+fn mid_turn_prompts_are_shown() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"attachment","uuid":"q1","attachment":{
+        "type":"queued_command","prompt":"also check windows ","commandMode":"prompt","timestamp":"t"}}));
+    t.apply(&json!({"type":"attachment","uuid":"q2","attachment":{"type":"file","prompt":"x"}}));
+    assert_eq!(user_texts(&t), vec!["also check windows"]);
+}
+
+#[test]
+fn interrupt_ends_the_turn() {
+    let mut t = Transcript::default();
+    t.apply(&user("u1", json!("go")));
+    t.apply(&user(
+        "u2",
+        json!([{"type":"text","text":"[Request interrupted by user]"}]),
+    ));
+    assert!(!t.meta().busy);
+    assert!(matches!(&t.items()[1], TranscriptItem::Notice { .. }));
+}
+
+#[test]
+fn long_tool_input_is_clipped() {
+    let mut t = Transcript::default();
+    let body = "x".repeat(MAX_TEXT_BYTES * 2);
+    t.apply(&assistant(
+        "a",
+        "m",
+        json!({"type":"tool_use","id":"toolu_w","name":"Write","input":{"content":body}}),
+    ));
+    let TranscriptItem::Tool { input, .. } = &t.items()[0] else {
+        panic!();
+    };
+    assert!(input["content"].as_str().unwrap().len() <= MAX_TEXT_BYTES + 3);
+}
+
+#[test]
+fn load_reads_history_and_never_reports_a_turn_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("-repo");
+    fs::create_dir_all(&project).unwrap();
+    let path = project.join(format!("{SID}.jsonl"));
+    fs::write(
+        &path,
+        format!(
+            "{}\nnot json\n{}\n",
+            user("u1", json!("hello there")),
+            assistant("a1", "m1", json!({"type":"text","text":"hi"}))
+        ),
+    )
+    .unwrap();
+    assert_eq!(find_transcript(dir.path(), SID), Some(path.clone()));
+    let t = Transcript::load(&path);
+    assert_eq!(t.items().len(), 2);
+    assert!(!t.meta().busy);
+    assert!(Transcript::load(&dir.path().join("missing.jsonl"))
+        .items()
+        .is_empty());
+}
+
+#[test]
+fn uuid_check_rejects_paths() {
+    assert!(is_uuid(SID));
+    assert!(!is_uuid("../../etc/passwd"));
+    assert!(!is_uuid("7b3c54f4-ba22-4654-9af9-037d1cd8e55"));
+    assert!(!is_uuid("7b3c54f4/ba22-4654-9af9-037d1cd8e555"));
+}
+
+#[test]
+fn a_recorded_cli_turn_has_no_unknown_kinds() {
+    // A real `claude -p` stream-json turn (CLI 2.1.286) that asked for and got
+    // permission to run a Bash command.
+    let mut t = Transcript::default();
+    let mut unknown = Vec::new();
+    for line in include_str!("fixtures/stream-2.1.286.jsonl").lines() {
+        unknown.extend(t.apply_line(line).unknown_kind);
+    }
+    assert!(unknown.is_empty(), "add these to protocol.rs: {unknown:?}");
+    assert!(t.items().iter().any(|i| matches!(i,
+        TranscriptItem::Approval { tool, .. } if tool == "Bash")));
+    assert!(t.items().iter().any(|i| matches!(i,
+        TranscriptItem::Tool { name, status: ToolStatus::Ok, .. } if name == "Bash")));
+    assert!(!t.meta().busy, "the result line ends the turn");
+}
+
+#[test]
+fn unknown_kinds_are_reported_once() {
+    let mut t = Transcript::default();
+    let line = json!({"type":"system","subtype":"brand_new_thing"});
+    assert_eq!(
+        t.apply(&line).unknown_kind.as_deref(),
+        Some("system:brand_new_thing")
+    );
+    assert_eq!(t.apply(&line).unknown_kind, None);
+}
+
+#[test]
+fn a_withdrawn_approval_expires_and_cannot_be_answered() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}));
+    let a = t.apply(&json!({"type":"control_cancel_request","request_id":"r"}));
+    assert_eq!(a.items, vec![0]);
+    assert!(matches!(
+        &t.items()[0],
+        TranscriptItem::Approval { expired: true, .. }
+    ));
+    assert!(t.resolve_approval("r", ApprovalDecision::Allow).is_none());
+}
+
+#[test]
+fn unsupported_host_requests_get_an_error_reply() {
+    let mut t = Transcript::default();
+    let a = t.apply(&json!({"type":"control_request","request_id":"e1","request":{"subtype":"elicitation","message":"Sign in?"}}));
+    let reply = a.reply.expect("the CLI must not be left waiting");
+    assert_eq!(reply["response"]["subtype"], "error");
+    assert_eq!(reply["response"]["request_id"], "e1");
+    assert!(t.items().is_empty());
+}
+
+#[test]
+fn clear_starts_over_under_the_new_session_id() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"m","permissionMode":"plan"}));
+    t.apply(&user("u", json!("hello")));
+    let a = t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID,"uuid":"x","session_id":"old"}));
+    assert_eq!(a.new_session_id.as_deref(), Some(SID));
+    assert!(t.items().is_empty());
+    assert_eq!(
+        t.meta().permission_mode.as_deref(),
+        Some("plan"),
+        "mode survives /clear"
+    );
+}
+
+#[test]
+fn slash_command_output_is_shown() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"local_command_output","content":"Total cost: $0.42","uuid":"o1"}));
+    assert!(matches!(&t.items()[0], TranscriptItem::Notice { text, .. } if text.contains("$0.42")));
+}

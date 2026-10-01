@@ -24,6 +24,7 @@ import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
+import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
 import {
 	adoptionWorkspace,
 	paneDisplayName,
@@ -294,8 +295,8 @@ export class WorkspaceStore {
 	}
 
 	/**
-	 * Kill the server-side PTYs for panes being intentionally closed (vs a webview
-	 * reload, which only detaches). Without this the PTYs leak on the server and
+	 * Kill the server-side PTYs (and any chat-mode `claude` process) for panes
+	 * being intentionally closed (vs a webview reload, which only detaches). Without this the PTYs leak on the server and
 	 * count against the terminal cap. Best-effort / fire-and-forget; also drops the
 	 * persisted re-attach mappings so a stale id is never reused. Adopted panes
 	 * belong to another device, so closing one only detaches and releases it.
@@ -304,6 +305,7 @@ export class WorkspaceStore {
 		const next = { ...this.serverTerminalIds };
 		let changed = false;
 		for (const paneId of paneIds) {
+			void stopAgentForPane(paneId);
 			const serverId = next[paneId];
 			if (serverId) {
 				if (this.adoptedPaneIds.delete(paneId)) {
@@ -577,8 +579,28 @@ export class WorkspaceStore {
 		return null;
 	}
 
-	/** Switch a Claude pane between its terminal and the chat view of the same session. */
-	setPaneView(paneId: string, view: PaneView): void {
+	/**
+	 * Move a Claude pane's session between its terminal and chat. Only one
+	 * `claude` process may own a session, so the current one stops first: the
+	 * PTY (and the TUI in it) is killed before chat resumes the session, and the
+	 * chat process is stopped before the terminal reopens with `claude --resume`.
+	 */
+	async setPaneView(paneId: string, view: PaneView): Promise<void> {
+		const pane = this.workspaces
+			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
+			.find((p) => p.id === paneId);
+		if (!pane || (pane.view ?? 'terminal') === view) return;
+		if (view === 'chat') {
+			const serverId = this.serverTerminalIds[paneId];
+			if (serverId) {
+				const rest = { ...this.serverTerminalIds };
+				delete rest[paneId];
+				this.serverTerminalIds = rest;
+				await deleteServerTerminal(serverId);
+			}
+		} else if (pane.claudeSessionId) {
+			await stopAgent(pane.claudeSessionId).catch(() => {});
+		}
 		const location = this.findPaneLocation(paneId);
 		if (!location) return;
 		this.updateWorkspace(location.workspaceId, (w) => ({

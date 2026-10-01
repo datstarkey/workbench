@@ -486,8 +486,9 @@ export interface ProjectFormState {
 }
 
 /**
- * Chat items streamed from a Claude session's JSONL by the server's
- * `/claude/transcripts/:id/ws` (mirror of workbench-core `claude_transcript`).
+ * Chat items for a Claude chat session (mirror of workbench-core
+ * `claude_transcript::TranscriptItem`), streamed by the server's
+ * `/agent/claude/:id/ws`.
  */
 export type TranscriptToolStatus = 'running' | 'ok' | 'error';
 
@@ -496,6 +497,16 @@ export interface TranscriptPatchHunk {
 	newStart: number;
 	lines: string[];
 }
+
+export type ApprovalDecision = 'allow' | 'alwaysAllow' | 'deny';
+
+export type PermissionMode =
+	| 'default'
+	| 'acceptEdits'
+	| 'plan'
+	| 'auto'
+	| 'dontAsk'
+	| 'bypassPermissions';
 
 export type TranscriptItem =
 	| { kind: 'user'; id: string; text: string; timestamp: string }
@@ -510,17 +521,55 @@ export type TranscriptItem =
 			output?: string;
 			patch?: TranscriptPatchHunk[];
 	  }
+	| {
+			kind: 'approval';
+			id: string;
+			tool: string;
+			input: Record<string, unknown> | null;
+			description?: string;
+			blockedPath?: string;
+			canAlwaysAllow: boolean;
+			/** Claude withdrew the request (turn interrupted, answered elsewhere). */
+			expired: boolean;
+			decision?: ApprovalDecision;
+	  }
 	| { kind: 'notice'; id: string; text: string };
 
 export interface TranscriptMeta {
 	title: string | null;
 	model: string | null;
-	permissionMode: string | null;
+	permissionMode: PermissionMode | null;
 	contextTokens: number | null;
 	busy: boolean;
 }
 
-export type TranscriptServerMsg =
-	| { t: 'snapshot'; items: TranscriptItem[]; meta: TranscriptMeta; truncated: boolean }
-	| { t: 'update'; items: TranscriptItem[]; meta: TranscriptMeta }
+export type AgentServerMsg =
+	| {
+			t: 'snapshot';
+			sessionId: string;
+			/** Index of the first item sent; older history stays on disk. */
+			start: number;
+			items: TranscriptItem[];
+			meta: TranscriptMeta;
+			exited: boolean;
+	  }
+	/** `[index, item]` pairs that were added or changed. */
+	| { t: 'update'; changes: [number, TranscriptItem][]; meta: TranscriptMeta }
+	| { t: 'exit'; code: number | null; message: string | null }
+	| { t: 'error'; message: string }
 	| { t: 'revoked' };
+
+export type AgentClientMsg =
+	| { t: 'prompt'; text: string }
+	| { t: 'approve'; requestId: string; decision: ApprovalDecision }
+	| { t: 'interrupt' }
+	| { t: 'mode'; mode: PermissionMode };
+
+export interface StartAgentBody {
+	projectPath: string;
+	worktreePath?: string;
+	sessionId: string;
+	permissionMode?: PermissionMode;
+	paneId?: string;
+	hookSocket?: string;
+}

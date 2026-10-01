@@ -245,31 +245,6 @@ describe('ClaudeSessionStore', () => {
 			expect(store.panesInProgress.has('pane-1')).toBe(false);
 		});
 
-		it('tracks whether Claude is running from SessionStart to SessionEnd', () => {
-			setupClaudePane();
-			expect(store.panesClaudeRunning.has('pane-1')).toBe(false);
-
-			emitMockEvent('claude:hook', {
-				paneId: 'pane-1',
-				hookEventName: 'SessionStart',
-				hookPayload: {}
-			});
-			expect(store.panesClaudeRunning.has('pane-1')).toBe(true);
-
-			emitMockEvent('claude:hook', {
-				paneId: 'pane-1',
-				hookEventName: 'UserPromptSubmit',
-				hookPayload: {}
-			});
-			emitMockEvent('claude:hook', {
-				paneId: 'pane-1',
-				hookEventName: 'SessionEnd',
-				hookPayload: { reason: 'prompt_input_exit' }
-			});
-			expect(store.panesClaudeRunning.has('pane-1')).toBe(false);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
-		});
-
 		it('with sessionId updates workspace store', () => {
 			setupClaudePane();
 

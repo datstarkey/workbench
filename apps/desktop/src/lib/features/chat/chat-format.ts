@@ -1,6 +1,12 @@
-import type { TranscriptItem, TranscriptPatchHunk, TranscriptServerMsg } from '$types/workbench';
+import type {
+	PermissionMode,
+	TranscriptItem,
+	TranscriptMeta,
+	TranscriptPatchHunk
+} from '$types/workbench';
 
-type ToolItem = Extract<TranscriptItem, { kind: 'tool' }>;
+export type ToolItem = Extract<TranscriptItem, { kind: 'tool' }>;
+export type ApprovalItem = Extract<TranscriptItem, { kind: 'approval' }>;
 
 /** Tools that only look around. Runs of these collapse into one row of chips. */
 const QUIET_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'ToolSearch']);
@@ -9,15 +15,20 @@ export type ChatBlock =
 	| { kind: 'item'; item: TranscriptItem }
 	| { kind: 'quiet'; id: string; tools: ToolItem[] };
 
-/** Apply a server frame: a snapshot replaces the list, an update upserts by id. */
-export function mergeTranscript(
+/**
+ * Apply an update's `[index, item]` changes: replace by id, append new ones.
+ * Indices below `start` belong to history the snapshot left out; placing them
+ * would put an old item at the bottom of the chat.
+ */
+export function applyChanges(
 	items: TranscriptItem[],
-	msg: Exclude<TranscriptServerMsg, { t: 'revoked' }>
+	start: number,
+	changes: [number, TranscriptItem][]
 ): TranscriptItem[] {
-	if (msg.t === 'snapshot') return msg.items;
 	const next = items.slice();
 	const at = new Map(next.map((item, i) => [item.id, i]));
-	for (const item of msg.items) {
+	for (const [index, item] of changes) {
+		if (index < start) continue;
 		const i = at.get(item.id);
 		if (i === undefined) {
 			at.set(item.id, next.length);
@@ -140,4 +151,65 @@ export function splitFences(text: string): TextSegment[] {
 export function formatTokens(n: number | null): string {
 	if (n == null) return '';
 	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+/** What Claude is doing right now, for the activity line under the chat. */
+export type Activity =
+	| { kind: 'idle' }
+	| { kind: 'approval'; approval: ApprovalItem }
+	| { kind: 'tool'; tool: ToolItem }
+	| { kind: 'writing' }
+	| { kind: 'thinking' };
+
+export function activity(items: TranscriptItem[], meta: TranscriptMeta | null): Activity {
+	for (let i = items.length - 1; i >= 0; i--) {
+		const item = items[i];
+		if (item.kind === 'approval' && !item.decision && !item.expired) {
+			return { kind: 'approval', approval: item };
+		}
+	}
+	if (!meta?.busy) return { kind: 'idle' };
+	const last = items[items.length - 1];
+	if (last?.kind === 'tool' && last.status === 'running') return { kind: 'tool', tool: last };
+	if (last?.kind === 'text' && last.text) return { kind: 'writing' };
+	return { kind: 'thinking' };
+}
+
+/** The part of a tool call a person needs to judge it: the command, the file, or the input. */
+export function approvalPreview(item: ApprovalItem, cwd?: string): string {
+	const input = item.input ?? {};
+	const pick = (key: string) => (typeof input[key] === 'string' ? (input[key] as string) : '');
+	return (
+		pick('command') ||
+		shortPath(pick('file_path') || pick('notebook_path'), cwd) ||
+		pick('url') ||
+		pick('pattern') ||
+		JSON.stringify(input, null, 2)
+	);
+}
+
+export interface ModeOption {
+	mode: PermissionMode;
+	label: string;
+	hint: string;
+}
+
+/** Modes offered in the picker, in Shift+Tab order. */
+export const MODE_OPTIONS: ModeOption[] = [
+	{ mode: 'default', label: 'Ask first', hint: 'Claude asks before edits and commands' },
+	{ mode: 'acceptEdits', label: 'Accept edits', hint: 'File edits run; commands still ask' },
+	{ mode: 'plan', label: 'Plan', hint: 'Claude reads and plans, changes nothing' },
+	{ mode: 'auto', label: 'Auto', hint: 'A safety check approves routine actions' },
+	{ mode: 'bypassPermissions', label: 'Bypass', hint: 'Nothing asks first' }
+];
+
+export function modeLabel(mode: PermissionMode | null | undefined): string {
+	if (mode === 'dontAsk') return "Don't ask";
+	return MODE_OPTIONS.find((m) => m.mode === mode)?.label ?? 'Ask first';
+}
+
+/** `m:ss` for the turn timer. */
+export function formatElapsed(ms: number): string {
+	const total = Math.max(0, Math.floor(ms / 1000));
+	return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }

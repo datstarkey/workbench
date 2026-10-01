@@ -22,9 +22,9 @@ export function terminalWsUrl(serverUrl: string, id: string, token?: string): st
 	return wsUrl(serverUrl, `/remote/terminals/${id}/ws`, token);
 }
 
-/** WebSocket URL streaming a Claude session's transcript as chat items. */
-export function transcriptWsUrl(serverUrl: string, sessionId: string, token?: string): string {
-	return wsUrl(serverUrl, `/claude/transcripts/${encodeURIComponent(sessionId)}/ws`, token);
+/** WebSocket URL of a Claude chat session (`/agent/claude/:id/ws`). */
+export function agentWsUrl(serverUrl: string, sessionId: string, token?: string): string {
+	return wsUrl(serverUrl, `/agent/claude/${encodeURIComponent(sessionId)}/ws`, token);
 }
 
 function wsUrl(serverUrl: string, path: string, token?: string): string {

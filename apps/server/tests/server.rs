@@ -996,41 +996,159 @@ async fn terminal_create_forwards_env() {
     handle.stop().await;
 }
 
+/// A stand-in for `claude -p` speaking stream-json: on a prompt it streams a
+/// reply and asks permission for a Bash call, then finishes the turn once the
+/// host answers. Every line it receives is appended to `$FAKE_CLAUDE_LOG`.
+#[cfg(unix)]
+fn write_fake_stream_claude(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-claude-stream.sh");
+    std::fs::write(
+        &path,
+        r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","model":"fake-model","permissionMode":"default"}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$FAKE_CLAUDE_LOG"
+  case "$line" in
+    *'"type":"user"'*)
+      echo '{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"parent_tool_use_id":null}'
+      echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}},"parent_tool_use_id":null}'
+      echo '{"type":"assistant","uuid":"a1","message":{"id":"m1","content":[{"type":"text","text":"Hi from fake claude"}]},"parent_tool_use_id":null}'
+      echo '{"type":"control_request","request_id":"perm-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}'
+      ;;
+    *'"request_id":"perm-1"'*)
+      echo '{"type":"result","subtype":"success","is_error":false}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
 #[tokio::test]
-async fn transcript_ws_requires_token_and_uuid_then_streams_a_snapshot() {
-    use futures_util::StreamExt;
+async fn chat_session_streams_a_turn_and_relays_an_approval() {
+    use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::{Error, Message};
 
-    let (handle, _base) = start().await;
-    let addr = handle.addr().to_string();
-    // A random id: no transcript exists, so the snapshot is empty.
-    let id = "0d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
-    let url =
-        |id: &str, token: &str| format!("ws://{addr}/claude/transcripts/{id}/ws?token={token}");
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    let log = tmp.path().join("received.jsonl");
+    env.set("FAKE_CLAUDE_LOG", &log);
 
-    match tokio_tungstenite::connect_async(url(id, "wrong")).await {
+    let (handle, base) = start().await;
+    let addr = handle.addr().to_string();
+    let id = "0d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let ws_url = |token: &str| format!("ws://{addr}/agent/claude/{id}/ws?token={token}");
+
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "paneId": "pane-1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "{}",
+        res.text().await.unwrap_or_default()
+    );
+
+    match tokio_tungstenite::connect_async(ws_url("wrong")).await {
         Err(Error::Http(resp)) => assert_eq!(resp.status(), 401),
         other => panic!("wrong token must get 401, got {:?}", other.map(|_| ())),
     }
-    match tokio_tungstenite::connect_async(url("..%2F..%2Fsecrets", TOKEN)).await {
-        Err(Error::Http(resp)) => assert_eq!(resp.status(), 400),
-        other => panic!("non-UUID id must get 400, got {:?}", other.map(|_| ())),
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(TOKEN))
+        .await
+        .expect("attach");
+
+    async fn next_json(ws: &mut (impl StreamExt<Item = Result<Message, Error>> + Unpin)) -> Value {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("frame within 5s")
+                .expect("stream open")
+                .expect("frame ok");
+            if let Message::Text(text) = frame {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+    let changed_items = |frame: &Value| -> Vec<Value> {
+        match frame["t"].as_str() {
+            Some("update") => frame["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c[1].clone())
+                .collect(),
+            Some("snapshot") => frame["items"].as_array().unwrap().clone(),
+            _ => vec![],
+        }
+    };
+
+    assert_eq!(next_json(&mut ws).await["t"], "snapshot");
+    ws.send(Message::Text(
+        json!({"t":"prompt","text":"hello"}).to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let mut saw_reply = false;
+    loop {
+        let frame = next_json(&mut ws).await;
+        let items = changed_items(&frame);
+        saw_reply |= items
+            .iter()
+            .any(|i| i["kind"] == "text" && i["text"] == "Hi from fake claude");
+        if let Some(approval) = items.iter().find(|i| i["kind"] == "approval") {
+            assert_eq!(approval["tool"], "Bash");
+            break;
+        }
+    }
+    assert!(
+        saw_reply,
+        "the assistant text must stream before the approval"
+    );
+    ws.send(Message::Text(
+        json!({"t":"approve","requestId":"perm-1","decision":"allow"}).to_string(),
+    ))
+    .await
+    .unwrap();
+    loop {
+        let frame = next_json(&mut ws).await;
+        if frame["t"] == "update" && frame["meta"]["busy"] == false {
+            break;
+        }
     }
 
-    let (mut ws, _) = tokio_tungstenite::connect_async(url(id, TOKEN))
+    let received = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        received.contains(r#""subtype":"initialize""#),
+        "handshake first"
+    );
+    assert!(received.contains(r#""origin":{"kind":"human"}"#));
+    assert!(
+        received.contains(r#""behavior":"allow""#),
+        "approval relayed: {received}"
+    );
+
+    let res = client()
+        .delete(format!("{base}/agent/claude?paneId=pane-1"))
+        .send()
         .await
-        .expect("valid token and id must upgrade");
-    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-        .await
-        .expect("snapshot within 5s")
-        .expect("stream open")
-        .expect("frame ok");
-    let Message::Text(text) = frame else {
-        panic!("expected a text frame, got {frame:?}");
-    };
-    let msg: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(msg["t"], "snapshot");
-    assert_eq!(msg["items"], json!([]));
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert_eq!(
+        next_json(&mut ws).await["t"],
+        "exit",
+        "closing the pane stops claude"
+    );
 
     handle.stop().await;
 }

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { TranscriptItem, TranscriptMeta } from '$types/workbench';
 import {
+	activity,
+	applyChanges,
+	approvalPreview,
+	formatElapsed,
 	formatTokens,
 	groupBlocks,
 	latestTodos,
-	mergeTranscript,
+	modeLabel,
 	patchStats,
 	shortPath,
 	splitFences,
@@ -25,28 +29,75 @@ function tool(id: string, name: string, input: Record<string, unknown> = {}) {
 
 const text = (id: string, t: string): TranscriptItem => ({ kind: 'text', id, text: t });
 
-describe('mergeTranscript', () => {
-	it('replaces the list on a snapshot', () => {
-		const next = mergeTranscript([text('a', 'old')], {
-			t: 'snapshot',
-			items: [text('b', 'new')],
-			meta,
-			truncated: false
-		});
-		expect(next.map((i) => i.id)).toEqual(['b']);
-	});
-
+describe('applyChanges', () => {
 	it('updates items in place by id and appends new ones', () => {
 		const running = { ...tool('t1', 'Bash'), status: 'running' as const };
 		const items = [text('a', 'hi'), running];
-		const next = mergeTranscript(items, {
-			t: 'update',
-			items: [{ ...running, status: 'ok' }, text('c', 'done')],
-			meta
-		});
+		const next = applyChanges(items, 0, [
+			[1, { ...running, status: 'ok' }],
+			[2, text('c', 'done')]
+		]);
 		expect(next.map((i) => i.id)).toEqual(['a', 't1', 'c']);
 		expect(next[1]).toMatchObject({ status: 'ok' });
 		expect(items[1]).toMatchObject({ status: 'running' });
+	});
+
+	it('ignores changes to history the snapshot left out', () => {
+		const next = applyChanges([text('b', 'kept')], 10, [[3, text('old', 'from history')]]);
+		expect(next.map((i) => i.id)).toEqual(['b']);
+	});
+});
+
+describe('activity', () => {
+	const busy = { ...meta, busy: true };
+	const approval = (id: string, extra = {}): TranscriptItem => ({
+		kind: 'approval',
+		id,
+		tool: 'Bash',
+		input: { command: 'ls' },
+		canAlwaysAllow: false,
+		expired: false,
+		...extra
+	});
+
+	it('puts an open approval first, even mid-turn', () => {
+		expect(activity([approval('r1')], busy)).toMatchObject({ kind: 'approval' });
+		expect(activity([approval('r1', { decision: 'allow' })], meta)).toEqual({ kind: 'idle' });
+		expect(activity([approval('r1', { expired: true })], meta)).toEqual({ kind: 'idle' });
+	});
+
+	it('names what a busy turn is doing', () => {
+		const running = { ...tool('t', 'Bash'), status: 'running' as const };
+		expect(activity([running], busy)).toMatchObject({ kind: 'tool' });
+		expect(activity([text('a', 'Writing now')], busy)).toEqual({ kind: 'writing' });
+		expect(activity([text('a', '')], busy)).toEqual({ kind: 'thinking' });
+		expect(activity([], busy)).toEqual({ kind: 'thinking' });
+	});
+});
+
+describe('approvalPreview', () => {
+	it('shows the command, else the file, else the input', () => {
+		const base = { kind: 'approval', id: 'r', canAlwaysAllow: false, expired: false } as const;
+		expect(approvalPreview({ ...base, tool: 'Bash', input: { command: 'git push' } })).toBe(
+			'git push'
+		);
+		expect(
+			approvalPreview({ ...base, tool: 'Edit', input: { file_path: '/repo/a.ts' } }, '/repo')
+		).toBe('a.ts');
+		expect(approvalPreview({ ...base, tool: 'mcp__x', input: { n: 1 } })).toContain('"n": 1');
+	});
+});
+
+describe('modes and time', () => {
+	it('labels permission modes', () => {
+		expect(modeLabel('acceptEdits')).toBe('Accept edits');
+		expect(modeLabel(null)).toBe('Ask first');
+		expect(modeLabel('dontAsk')).toBe("Don't ask");
+	});
+
+	it('formats the turn timer', () => {
+		expect(formatElapsed(0)).toBe('0:00');
+		expect(formatElapsed(65_400)).toBe('1:05');
 	});
 });
 

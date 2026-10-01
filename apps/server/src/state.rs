@@ -1,5 +1,6 @@
 use tokio::sync::watch;
 
+use crate::agent::AgentManager;
 use crate::spawn::RemoteControlManager;
 use crate::terminal::TerminalManager;
 
@@ -10,12 +11,14 @@ use crate::terminal::TerminalManager;
 pub struct Managers {
     pub spawn: RemoteControlManager,
     pub terminals: TerminalManager,
+    pub agents: AgentManager,
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub spawn: RemoteControlManager,
     pub terminals: TerminalManager,
+    pub agents: AgentManager,
     /// When `Some`, requests must present this as a bearer token. Only the
     /// standalone binary on a loopback bind (or with `--insecure-no-token`) runs
     /// with `None`; embedded listeners always carry one.
@@ -31,6 +34,7 @@ impl AppState {
         Self {
             spawn: managers.spawn,
             terminals: managers.terminals,
+            agents: managers.agents,
             token,
             revoked,
         }

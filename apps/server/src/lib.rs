@@ -1,6 +1,8 @@
 //! Workbench control-plane server, usable both as a standalone binary and
 //! embedded inside the desktop app ("server mode").
 
+pub mod agent;
+pub mod agent_routes;
 pub mod auth;
 pub mod cli;
 pub mod error;
@@ -8,7 +10,6 @@ pub mod routes;
 pub mod spawn;
 pub mod state;
 pub mod terminal;
-pub mod transcript;
 
 use anyhow::Context;
 use std::net::SocketAddr;
