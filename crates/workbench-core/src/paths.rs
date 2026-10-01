@@ -44,6 +44,9 @@ pub fn enriched_path() -> OsString {
         .get_or_init(|| {
             let mut dirs: Vec<PathBuf> = Vec::new();
 
+            // The native Claude Code installer puts the CLI here on every platform.
+            dirs.push(home_dir().join(".local").join("bin"));
+
             #[cfg(target_os = "macos")]
             {
                 let home = home_dir();

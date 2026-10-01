@@ -1,8 +1,9 @@
 use axum::extract::State;
-use axum::http::{Request, StatusCode};
+use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
+use crate::error::ApiError;
 use crate::state::AppState;
 
 /// Bearer-token gate. No-op only when no token is configured (the standalone
@@ -18,11 +19,11 @@ pub async fn require_bearer(
     };
 
     // The web client page and liveness check load without a token; the page's
-    // own API calls still carry the bearer token. The terminal WebSocket upgrade
-    // is also exempt here because a browser WebSocket can't send an Authorization
-    // header — `terminal_attach` authenticates its `?token=` query param itself.
+    // own API calls still carry the bearer token. WebSocket upgrades are also
+    // exempt here because a browser WebSocket can't send an Authorization header —
+    // each upgrade handler calls `authorize_ws` on its `?token=` query param.
     let path = request.uri().path();
-    if path == "/" || path == "/health" || is_terminal_ws_path(path) {
+    if path == "/" || path == "/health" || is_ws_path(path) {
         return Ok(next.run(request).await);
     }
 
@@ -40,11 +41,43 @@ pub async fn require_bearer(
     }
 }
 
-/// `/remote/terminals/{id}/ws` — the terminal WebSocket upgrade. Exempt from the
-/// header gate (browser WS can't send `Authorization`); `terminal_attach` checks
-/// the `?token=` query param instead.
-fn is_terminal_ws_path(path: &str) -> bool {
-    path.starts_with("/remote/terminals/") && path.ends_with("/ws")
+/// `/remote/terminals/{id}/ws` and `/agent/claude/{id}/ws` — WebSocket
+/// upgrades. Exempt from the header gate (browser WS can't send `Authorization`);
+/// their handlers call [`authorize_ws`] on the `?token=` query param instead.
+fn is_ws_path(path: &str) -> bool {
+    (path.starts_with("/remote/terminals/") || path.starts_with("/agent/claude/"))
+        && path.ends_with("/ws")
+}
+
+/// Gate for a WebSocket upgrade exempted by [`is_ws_path`]: the `Origin` must be
+/// allowed and `?token=` must match — same token, same constant-time compare as
+/// every other route.
+pub(crate) fn authorize_ws(
+    headers: &HeaderMap,
+    token: Option<&str>,
+    state: &AppState,
+) -> Result<(), ApiError> {
+    let header_str = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    if !ws_origin_allowed(
+        header_str(header::ORIGIN),
+        header_str(header::HOST),
+        cfg!(debug_assertions),
+    ) {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "origin not allowed".to_string(),
+        });
+    }
+    if let Some(expected) = state.token.as_deref() {
+        let ok = token.is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()));
+        if !ok {
+            return Err(ApiError {
+                status: StatusCode::UNAUTHORIZED,
+                message: "unauthorized".to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Origins that may open a terminal WebSocket: the Tauri app webviews (macOS

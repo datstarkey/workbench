@@ -1,6 +1,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import {
 	isAISessionType,
+	type PaneView,
 	type ProjectConfig,
 	type ProjectTask,
 	type ProjectWorkspace,
@@ -14,6 +15,7 @@ import {
 	newSessionCommand,
 	resumeCommand,
 	tryResumeCommand,
+	claudeNewSessionWithIdCommand,
 	applyClaudeLaunchOptions,
 	warnMissingSandboxSettingsPath,
 	type ClaudeLaunchOptions
@@ -23,6 +25,8 @@ import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
+import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
+import { chatHasHistory, releaseChat } from '$features/chat/chat-registry';
 import {
 	adoptionWorkspace,
 	paneDisplayName,
@@ -297,8 +301,8 @@ export class WorkspaceStore {
 	}
 
 	/**
-	 * Kill the server-side PTYs for panes being intentionally closed (vs a webview
-	 * reload, which only detaches). Without this the PTYs leak on the server and
+	 * Kill the server-side PTYs (and any chat-mode `claude` process) for panes
+	 * being intentionally closed (vs a webview reload, which only detaches). Without this the PTYs leak on the server and
 	 * count against the terminal cap. Best-effort / fire-and-forget; also drops the
 	 * persisted re-attach mappings so a stale id is never reused. Adopted panes
 	 * belong to another device, so closing one only detaches and releases it.
@@ -307,6 +311,8 @@ export class WorkspaceStore {
 		const next = { ...this.serverTerminalIds };
 		let changed = false;
 		for (const paneId of paneIds) {
+			releaseChat(paneId);
+			void stopAgentForPane(paneId);
 			const serverId = next[paneId];
 			if (serverId) {
 				if (this.adoptedPaneIds.delete(paneId)) {
@@ -515,13 +521,21 @@ export class WorkspaceStore {
 					? explicit
 					: applyClaudeLaunchOptions(explicit, this.claudeLaunchOptions)
 				: newSessionCommand(type, this.claudeLaunchOptions);
+			// A plain new Claude tab can open straight into chat: chat picks the
+			// session id up front (`--session-id`), so it needs no terminal first.
+			// Not while the sandbox runtime is on — chat can't run inside it yet.
+			const asChat = type === 'claude' && !explicit && this.opensAsChat;
+			const sessionId = asChat ? crypto.randomUUID() : ''; // Claude requires a real UUID
 			const newTab = this.createAITab(
 				label,
-				'',
-				startupCommand,
+				sessionId,
+				asChat
+					? claudeNewSessionWithIdCommand(sessionId, this.claudeLaunchOptions)
+					: startupCommand,
 				type,
 				this.settingsStore.activeClaudeAccountId
 			);
+			if (asChat) newTab.panes[0].view = 'chat';
 			tabId = newTab.id;
 			return {
 				...w,
@@ -590,6 +604,96 @@ export class WorkspaceStore {
 		return null;
 	}
 
+	/**
+	 * Move a Claude pane's session between its terminal and chat. Only one
+	 * `claude` process may own a session, so the current one stops first: the
+	 * PTY (and the TUI in it) is killed before chat resumes the session, and the
+	 * chat process is stopped before the terminal reopens with `claude --resume`.
+	 */
+	async setPaneView(paneId: string, view: PaneView): Promise<void> {
+		const pane = this.workspaces
+			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
+			.find((p) => p.id === paneId);
+		if (!pane || (pane.view ?? 'terminal') === view) return;
+		// Chat can't run inside the sandbox runtime: refuse before killing the terminal.
+		if (view === 'chat' && this.settingsStore.sandboxRuntimeEnabled) return;
+		if (view === 'chat') {
+			const serverId = this.serverTerminalIds[paneId];
+			if (serverId) {
+				const rest = { ...this.serverTerminalIds };
+				delete rest[paneId];
+				this.serverTerminalIds = rest;
+				await deleteServerTerminal(serverId);
+			}
+		} else {
+			// A chat that never got a message has no session file to resume yet.
+			const started = chatHasHistory(paneId);
+			releaseChat(paneId);
+			if (pane.claudeSessionId) {
+				await stopAgent(pane.claudeSessionId).catch(() => {});
+				const startupCommand = started
+					? tryResumeCommand('claude', pane.claudeSessionId, this.claudeLaunchOptions)
+					: claudeNewSessionWithIdCommand(pane.claudeSessionId, this.claudeLaunchOptions);
+				if (startupCommand) this.setPaneStartupCommand(paneId, startupCommand);
+			}
+		}
+		const location = this.findPaneLocation(paneId);
+		if (!location) return;
+		this.updateWorkspace(location.workspaceId, (w) => ({
+			...w,
+			terminalTabs: w.terminalTabs.map((t) =>
+				t.id !== location.tabId
+					? t
+					: { ...t, panes: t.panes.map((p) => (p.id === paneId ? { ...p, view } : p)) }
+			)
+		}));
+	}
+
+	private setPaneStartupCommand(paneId: string, startupCommand: string): void {
+		const location = this.findPaneLocation(paneId);
+		if (!location) return;
+		this.updateWorkspace(location.workspaceId, (w) => ({
+			...w,
+			terminalTabs: w.terminalTabs.map((t) =>
+				t.id !== location.tabId
+					? t
+					: {
+							...t,
+							panes: t.panes.map((p) => (p.id === paneId ? { ...p, startupCommand } : p))
+						}
+			)
+		}));
+	}
+
+	/** New Claude tabs open as chat: the setting, and never inside the sandbox runtime. */
+	private get opensAsChat(): boolean {
+		return (
+			this.settingsStore.defaultClaudeView === 'chat' && !this.settingsStore.sandboxRuntimeEnabled
+		);
+	}
+
+	/**
+	 * `/resume` in a chat: stop the pane's current conversation and continue
+	 * another one in its place. The grid re-keys the chat on the new id.
+	 */
+	async resumeInChat(paneId: string, sessionId: string, label: string): Promise<void> {
+		const pane = this.workspaces
+			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
+			.find((p) => p.id === paneId);
+		if (!pane || pane.claudeSessionId === sessionId) return;
+		releaseChat(paneId);
+		if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
+		this.updateAISessionByPaneId(paneId, sessionId, 'claude');
+		this.updateAITabLabelByPaneId(paneId, label, 'claude');
+	}
+
+	/** The pane shows its Claude session as chat (see `setPaneView`). */
+	isChatPane(paneId: string): boolean {
+		return this.workspaces.some((w) =>
+			w.terminalTabs.some((t) => t.panes.some((p) => p.id === paneId && p.view === 'chat'))
+		);
+	}
+
 	/** Activate the workspace and tab containing the given pane. */
 	focusPane(paneId: string): boolean {
 		const location = this.findPaneLocation(paneId);
@@ -641,12 +745,19 @@ export class WorkspaceStore {
 		}
 	}
 
-	restartAISession(workspaceId: string, tabId: string) {
+	async restartAISession(workspaceId: string, tabId: string): Promise<void> {
 		// Restart mints a fresh tab with new pane ids, so the old tab's server PTYs
 		// would leak (no close path runs for them). Kill them first.
 		const oldTab = this.workspaces
 			.find((w) => w.id === workspaceId)
 			?.terminalTabs.find((t) => t.id === tabId);
+		// A chat pane's claude must be gone before the new pane starts the same
+		// session, or two processes own it. Terminal tabs skip this and stay sync.
+		for (const pane of oldTab?.panes ?? []) {
+			if (pane.view !== 'chat' || !pane.claudeSessionId) continue;
+			releaseChat(pane.id);
+			await stopAgent(pane.claudeSessionId).catch(() => {});
+		}
 		if (oldTab && isAISessionType(oldTab.type)) {
 			this.disposeServerTerminals(oldTab.panes.map((p) => p.id));
 		}
@@ -666,6 +777,9 @@ export class WorkspaceStore {
 				type,
 				tab.panes[0]?.claudeAccountId
 			);
+			if (tab.panes[0]?.view === 'chat' && sessionId && !this.settingsStore.sandboxRuntimeEnabled) {
+				newTab.panes[0].view = 'chat';
+			}
 			return {
 				...w,
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tabId ? newTab : t)),
@@ -690,6 +804,7 @@ export class WorkspaceStore {
 				type,
 				accountId
 			);
+			if (type === 'claude' && this.opensAsChat) newTab.panes[0].view = 'chat';
 			return {
 				...w,
 				terminalTabs: [...w.terminalTabs, newTab],
@@ -728,8 +843,8 @@ export class WorkspaceStore {
 		});
 	}
 
-	restartClaudeByProject(projectPath: string, tabId: string) {
-		this.withWorkspaceForProjectTab(projectPath, tabId, (ws) =>
+	async restartClaudeByProject(projectPath: string, tabId: string): Promise<void> {
+		await this.withWorkspaceForProjectTab(projectPath, tabId, (ws) =>
 			this.restartAISession(ws.id, tabId)
 		);
 	}

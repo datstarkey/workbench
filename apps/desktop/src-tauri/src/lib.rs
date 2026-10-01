@@ -46,6 +46,7 @@ macro_rules! build_invoke_handler {
     ( $( $extra:path ),* $(,)? ) => {
         tauri::generate_handler![
             commands::list_projects,
+            commands::read_chat_image,
             commands::save_projects,
             commands::create_terminal,
             commands::write_terminal,

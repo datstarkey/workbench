@@ -43,6 +43,15 @@ pub fn router(state: AppState) -> Router {
             "/remote/terminals/:id",
             delete(crate::terminal::terminal_kill),
         )
+        .route(
+            "/agent/claude",
+            post(crate::agent_routes::agent_start).delete(crate::agent_routes::agent_stop_pane),
+        )
+        .route("/agent/claude/:id", delete(crate::agent_routes::agent_stop))
+        .route(
+            "/agent/claude/:id/ws",
+            get(crate::agent_routes::agent_attach),
+        )
         .with_state(state)
 }
 

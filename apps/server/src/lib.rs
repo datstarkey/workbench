@@ -1,6 +1,8 @@
 //! Workbench control-plane server, usable both as a standalone binary and
 //! embedded inside the desktop app ("server mode").
 
+pub mod agent;
+pub mod agent_routes;
 pub mod auth;
 pub mod cli;
 pub mod error;

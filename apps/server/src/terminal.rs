@@ -42,7 +42,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::Response,
     Json,
 };
@@ -437,7 +437,7 @@ enum ClientMsg {
 pub struct WsAuthQuery {
     /// Browser WebSocket can't send an Authorization header, so the bearer token
     /// (when the server is started with one) is carried here instead.
-    token: Option<String>,
+    pub(crate) token: Option<String>,
 }
 
 pub async fn terminal_attach(
@@ -447,33 +447,7 @@ pub async fn terminal_attach(
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
-    let header_str = |name| headers.get(name).and_then(|v| v.to_str().ok());
-    if !crate::auth::ws_origin_allowed(
-        header_str(header::ORIGIN),
-        header_str(header::HOST),
-        cfg!(debug_assertions),
-    ) {
-        return Err(ApiError {
-            status: StatusCode::FORBIDDEN,
-            message: "origin not allowed".to_string(),
-        });
-    }
-
-    // This route is exempt from the global bearer middleware (a browser WebSocket
-    // can't set an Authorization header), so authenticate the ?token= query param
-    // here — same token, same constant-time compare as every other route.
-    if let Some(expected) = state.token.as_deref() {
-        let ok = auth
-            .token
-            .as_deref()
-            .is_some_and(|t| crate::auth::constant_time_eq(t.as_bytes(), expected.as_bytes()));
-        if !ok {
-            return Err(ApiError {
-                status: StatusCode::UNAUTHORIZED,
-                message: "unauthorized".to_string(),
-            });
-        }
-    }
+    crate::auth::authorize_ws(&headers, auth.token.as_deref(), &state)?;
 
     let session = state
         .terminals

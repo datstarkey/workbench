@@ -114,6 +114,20 @@ export function claudeResumeCommand(sessionId: string, opts?: ClaudeLaunchOption
 	return `${claudeBinary(opts)} --resume ${sessionId}`;
 }
 
+/**
+ * Start Claude on a session id chosen up front — a chat tab picks its id before
+ * any message exists, and the terminal must use that id, not a new one.
+ */
+export function claudeNewSessionWithIdCommand(
+	sessionId: string,
+	opts?: ClaudeLaunchOptions
+): string {
+	if (!UUID_RE.test(sessionId)) {
+		throw new Error(`Invalid session ID: ${sessionId}`);
+	}
+	return `${claudeBinary(opts)} --session-id ${sessionId}`;
+}
+
 /** Build the CLI command to resume an existing Codex session */
 export function codexResumeCommand(sessionId: string): string {
 	return `${codexBinary()} resume ${sessionId}`;

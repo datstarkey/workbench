@@ -4,8 +4,10 @@
 //! shared serde types that define the wire contract for both the Tauri IPC layer
 //! and the server's JSON API.
 
+pub mod chat_image;
 pub mod claude_accounts;
 pub mod claude_sessions;
+pub mod claude_transcript;
 pub mod codex_config;
 pub mod codex_sessions;
 pub mod config;
@@ -19,6 +21,7 @@ pub mod session_utils;
 pub mod settings;
 pub mod shell;
 pub mod shell_integration;
+pub mod task_output;
 pub mod text;
 pub mod token;
 pub mod trello;

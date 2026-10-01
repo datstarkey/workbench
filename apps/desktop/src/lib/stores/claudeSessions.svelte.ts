@@ -231,13 +231,13 @@ export class ClaudeSessionStore {
 	/** Restart an AI session, gated through integration approval */
 	async restartSession(workspaceId: string, tabId: string, type: SessionType = 'claude') {
 		if (!(await this.integrationApproval.ensureIntegration(type))) return;
-		this.workspaces.restartAISession(workspaceId, tabId);
+		await this.workspaces.restartAISession(workspaceId, tabId);
 	}
 
 	/** Restart an AI session by project path, gated through integration approval */
 	async restartSessionByProject(projectPath: string, tabId: string, type: SessionType = 'claude') {
 		if (!(await this.integrationApproval.ensureIntegration(type))) return;
-		this.workspaces.restartClaudeByProject(projectPath, tabId);
+		await this.workspaces.restartClaudeByProject(projectPath, tabId);
 	}
 
 	/** Start an agent action in a specific workspace with an auto-submitted initial prompt. */
@@ -405,6 +405,20 @@ export class ClaudeSessionStore {
 		}
 	}
 
+	/**
+	 * Chat panes report pending approvals and questions here: they arrive as
+	 * control requests, so no Notification hook announces them.
+	 */
+	setAwaitingInput(paneId: string, awaiting: boolean): void {
+		if (!awaiting) {
+			this.panesAwaitingInput.delete(paneId);
+			return;
+		}
+		if (this.panesAwaitingInput.has(paneId)) return;
+		this.panesAwaitingInput.add(paneId);
+		this.emitAwaitingInput(paneId);
+	}
+
 	/** Register a callback that fires when a pane transitions into awaiting-input. */
 	onAwaitingInput(callback: (paneId: string) => void): void {
 		this.awaitingInputCallbacks.push(callback);
@@ -442,7 +456,12 @@ export class ClaudeSessionStore {
 		if (this.paneType(paneId) !== 'claude') return;
 
 		if (event.sessionId) {
-			this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
+			// A chat pane's session id comes only from its chat: the hook can report
+			// `/clear`'s new id before the server has moved the process to it, and
+			// the pane would then start a second claude on an id already in use.
+			if (!this.workspaces.isChatPane(paneId)) {
+				this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
+			}
 			this.latestClaudeSessionByPane.set(paneId, event.sessionId);
 			// Only these two can have produced a first user message; retrying on every
 			// hook would rescan the session directory on each PostToolUse.
@@ -528,10 +547,8 @@ export class ClaudeSessionStore {
 	}
 
 	/** Discover sessions without touching the shared `discovered*Sessions` state. */
-	private async peekSessions(
-		cwd: string,
-		type: 'claude' | 'codex'
-	): Promise<DiscoveredClaudeSession[]> {
+	/** Sessions in `cwd` without touching the store-wide resume list. */
+	async peekSessions(cwd: string, type: 'claude' | 'codex'): Promise<DiscoveredClaudeSession[]> {
 		const command = type === 'codex' ? 'discover_codex_sessions' : 'discover_claude_sessions';
 		try {
 			return await invoke<DiscoveredClaudeSession[]>(command, { projectPath: cwd });

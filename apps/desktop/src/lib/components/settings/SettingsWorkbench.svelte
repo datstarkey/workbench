@@ -21,6 +21,7 @@
 	import type {
 		AccentColor,
 		ClaudePermissionMode,
+		PaneView,
 		TerminalPerformanceMode,
 		TerminalRenderer,
 		WorktreeStartPoint,
@@ -72,6 +73,10 @@
 	const perfModeOptions = [
 		{ value: 'auto', label: 'Auto (offscreen only)' },
 		{ value: 'always', label: 'Always prioritize throughput' }
+	];
+	const claudeViewOptions = [
+		{ value: 'terminal', label: 'Terminal' },
+		{ value: 'chat', label: 'Chat' }
 	];
 	const claudePermissionModeOptions = [
 		{ value: 'default', label: 'Default' },
@@ -159,6 +164,22 @@
 			checked={store.trelloEnabled}
 			onCheckedChange={(v) => store.set('trelloEnabled', v)}
 		/>
+
+		<SettingsSelect
+			label="Open new Claude tabs as"
+			description="Chat shows the session as messages with approval buttons; you can switch any tab between the two."
+			options={claudeViewOptions}
+			value={store.defaultClaudeView}
+			onValueChange={(v) => store.set('defaultClaudeView', v as PaneView)}
+			triggerClass="w-48"
+		/>
+
+		{#if store.defaultClaudeView === 'chat' && sandboxRuntimeActive}
+			<p class="text-xs text-muted-foreground">
+				Chat doesn't run inside the sandbox runtime yet, so new Claude tabs open as terminals while
+				it's on.
+			</p>
+		{/if}
 
 		<SettingsSelect
 			label="Claude permission mode"

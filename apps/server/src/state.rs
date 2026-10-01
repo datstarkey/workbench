@@ -1,5 +1,6 @@
 use tokio::sync::watch;
 
+use crate::agent::AgentManager;
 use crate::spawn::RemoteControlManager;
 use crate::terminal::TerminalManager;
 
@@ -10,13 +11,15 @@ use crate::terminal::TerminalManager;
 pub struct Managers {
     pub spawn: RemoteControlManager,
     pub terminals: TerminalManager,
+    pub agents: AgentManager,
 }
 
 impl Managers {
-    /// Blocking: kills every terminal and spawned session and waits for them.
+    /// Blocking: kills every terminal, spawned session and chat process and waits for them.
     pub fn kill_all(&self) {
         self.terminals.kill_all();
         self.spawn.kill_all();
+        self.agents.kill_all();
     }
 }
 
@@ -24,6 +27,7 @@ impl Managers {
 pub struct AppState {
     pub spawn: RemoteControlManager,
     pub terminals: TerminalManager,
+    pub agents: AgentManager,
     /// When `Some`, requests must present this as a bearer token. Only the
     /// standalone binary on a loopback bind (or with `--insecure-no-token`) runs
     /// with `None`; embedded listeners always carry one.
@@ -39,6 +43,7 @@ impl AppState {
         Self {
             spawn: managers.spawn,
             terminals: managers.terminals,
+            agents: managers.agents,
             token,
             revoked,
         }

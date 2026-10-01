@@ -1071,3 +1071,256 @@ async fn terminal_create_sets_claude_config_dir_for_a_saved_account() {
     assert_eq!(found.ok(), Some(true), "shell must see CLAUDE_CONFIG_DIR");
     handle.stop().await;
 }
+
+/// A stand-in for `claude -p` speaking stream-json: on a prompt it streams a
+/// reply and asks permission for a Bash call, then finishes the turn once the
+/// host answers. Every line it receives is appended to `$FAKE_CLAUDE_LOG`.
+#[cfg(unix)]
+fn write_fake_stream_claude(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-claude-stream.sh");
+    std::fs::write(
+        &path,
+        r#"#!/bin/sh
+echo '{"type":"system","subtype":"init","model":"fake-model","permissionMode":"default"}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$FAKE_CLAUDE_LOG"
+  case "$line" in
+    *'/clear'*)
+      echo '{"type":"conversation_reset","new_conversation_id":"2d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5","uuid":"r","session_id":"x"}'
+      ;;
+    *'"type":"user"'*)
+      echo '{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"},"parent_tool_use_id":null}'
+      echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}},"parent_tool_use_id":null}'
+      echo '{"type":"assistant","uuid":"a1","message":{"id":"m1","content":[{"type":"text","text":"Hi from fake claude"}]},"parent_tool_use_id":null}'
+      echo '{"type":"control_request","request_id":"perm-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}'
+      ;;
+    *'"request_id":"perm-1"'*)
+      echo '{"type":"result","subtype":"success","is_error":false}'
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn chat_session_streams_a_turn_and_relays_an_approval() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Error, Message};
+
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    let log = tmp.path().join("received.jsonl");
+    env.set("FAKE_CLAUDE_LOG", &log);
+
+    let (handle, base) = start().await;
+    let addr = handle.addr().to_string();
+    let id = "0d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let ws_url = |token: &str| format!("ws://{addr}/agent/claude/{id}/ws?token={token}");
+
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "paneId": "pane-1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "{}",
+        res.text().await.unwrap_or_default()
+    );
+
+    // An unknown Claude account is an error, never a silent fall-back to the default login.
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(),
+            "sessionId": "1d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5", "claudeAccountId": "nope" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_server_error() || res.status().is_client_error());
+
+    match tokio_tungstenite::connect_async(ws_url("wrong")).await {
+        Err(Error::Http(resp)) => assert_eq!(resp.status(), 401),
+        other => panic!("wrong token must get 401, got {:?}", other.map(|_| ())),
+    }
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(TOKEN))
+        .await
+        .expect("attach");
+
+    async fn next_json(ws: &mut (impl StreamExt<Item = Result<Message, Error>> + Unpin)) -> Value {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("frame within 5s")
+                .expect("stream open")
+                .expect("frame ok");
+            if let Message::Text(text) = frame {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+    let changed_items = |frame: &Value| -> Vec<Value> {
+        match frame["t"].as_str() {
+            Some("update") => frame["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c[1].clone())
+                .collect(),
+            Some("snapshot") => frame["items"].as_array().unwrap().clone(),
+            _ => vec![],
+        }
+    };
+
+    assert_eq!(next_json(&mut ws).await["t"], "snapshot");
+    ws.send(Message::Text(
+        json!({"t":"prompt","text":"hello"}).to_string(),
+    ))
+    .await
+    .unwrap();
+
+    let mut saw_reply = false;
+    loop {
+        let frame = next_json(&mut ws).await;
+        let items = changed_items(&frame);
+        saw_reply |= items
+            .iter()
+            .any(|i| i["kind"] == "text" && i["text"] == "Hi from fake claude");
+        if let Some(approval) = items.iter().find(|i| i["kind"] == "approval") {
+            assert_eq!(approval["tool"], "Bash");
+            break;
+        }
+    }
+    assert!(
+        saw_reply,
+        "the assistant text must stream before the approval"
+    );
+    ws.send(Message::Text(
+        json!({"t":"approve","requestId":"perm-1","decision":"allow"}).to_string(),
+    ))
+    .await
+    .unwrap();
+    loop {
+        let frame = next_json(&mut ws).await;
+        if frame["t"] == "update" && frame["meta"]["busy"] == false {
+            break;
+        }
+    }
+
+    let received = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        received.contains(r#""subtype":"initialize""#),
+        "handshake first"
+    );
+    assert!(received.contains(r#""origin":{"kind":"human"}"#));
+    assert!(
+        received.contains(r#""behavior":"allow""#),
+        "approval relayed: {received}"
+    );
+
+    // /clear moves the conversation to a new id. Starting either id afterwards
+    // must reach the same process — the race that once spawned a second claude.
+    ws.send(Message::Text(
+        json!({"t":"prompt","text":"/clear"}).to_string(),
+    ))
+    .await
+    .unwrap();
+    let new_id = "2d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    loop {
+        let frame = next_json(&mut ws).await;
+        if frame["t"] == "snapshot" {
+            assert_eq!(frame["sessionId"], new_id);
+            break;
+        }
+    }
+    for sid in [new_id, id] {
+        let res = client()
+            .post(format!("{base}/agent/claude"))
+            .json(&json!({ "projectPath": tmp.path(), "sessionId": sid, "paneId": "pane-1" }))
+            .send()
+            .await
+            .unwrap();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(
+            body["sessionId"], new_id,
+            "{sid} resolves to the running session"
+        );
+    }
+    let received = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        received.matches(r#""subtype":"initialize""#).count(),
+        1,
+        "no second claude process was started"
+    );
+
+    let res = client()
+        .delete(format!("{base}/agent/claude?paneId=pane-1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    loop {
+        if next_json(&mut ws).await["t"] == "exit" {
+            break; // closing the pane stops claude
+        }
+    }
+    // An ended session closes its socket rather than pinning it in memory.
+    let closed = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .unwrap();
+    assert!(
+        matches!(closed, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
+        "socket closes after exit, got {closed:?}"
+    );
+
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn concurrent_chat_starts_share_one_process() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    let log = tmp.path().join("received.jsonl");
+    env.set("FAKE_CLAUDE_LOG", &log);
+
+    let (handle, base) = start().await;
+    let id = "3d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let start_chat = || {
+        client()
+            .post(format!("{base}/agent/claude"))
+            .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "paneId": "pane-race" }))
+            .send()
+    };
+    // Desktop and phone (or a remount and a reconnect) asking at once.
+    let (a, b) = tokio::join!(start_chat(), start_chat());
+    assert_eq!(a.unwrap().status(), 200);
+    assert_eq!(b.unwrap().status(), 200);
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let received = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        received.matches(r#""subtype":"initialize""#).count(),
+        1,
+        "two starts must not spawn two claude processes"
+    );
+
+    let res = client()
+        .delete(format!("{base}/agent/claude/{id}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    handle.stop().await;
+}

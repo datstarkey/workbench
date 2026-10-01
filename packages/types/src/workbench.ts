@@ -159,9 +159,13 @@ export interface TerminalPaneState {
 	 * use the native SwiftTerm path.
 	 */
 	serverTerminalId?: string;
+	/** Claude panes can show their session as chat; the terminal keeps running underneath. */
+	view?: PaneView;
 	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
 	claudeAccountId?: string;
 }
+
+export type PaneView = 'terminal' | 'chat';
 
 export interface TerminalTabState {
 	id: string;
@@ -429,6 +433,8 @@ export interface AgentAction {
 }
 
 export interface WorkbenchSettings {
+	/** How new Claude tabs open. */
+	defaultClaudeView: PaneView;
 	worktreeStrategy: WorktreeStrategy;
 	worktreeFetchBeforeCreate: boolean;
 	worktreeStartPoint: WorktreeStartPoint;
@@ -510,4 +516,193 @@ export interface ProjectFormState {
 	path: string;
 	group: string;
 	shell: string;
+}
+
+/**
+ * Chat items for a Claude chat session (mirror of workbench-core
+ * `claude_transcript::TranscriptItem`), streamed by the server's
+ * `/agent/claude/:id/ws`.
+ */
+export type TranscriptToolStatus = 'running' | 'ok' | 'error';
+
+export interface TranscriptPatchHunk {
+	oldStart: number;
+	newStart: number;
+	lines: string[];
+}
+
+export type ApprovalDecision = 'allow' | 'alwaysAllow' | 'deny';
+
+export type PermissionMode =
+	| 'default'
+	| 'acceptEdits'
+	| 'plan'
+	| 'auto'
+	| 'dontAsk'
+	| 'bypassPermissions';
+
+export type TranscriptItem =
+	| {
+			kind: 'user';
+			id: string;
+			text: string;
+			timestamp: string;
+			/** Images attached to the message (content isn't sent back). */
+			images?: number;
+	  }
+	| { kind: 'text'; id: string; text: string }
+	| { kind: 'thinking'; id: string; text: string }
+	| {
+			kind: 'tool';
+			id: string;
+			name: string;
+			input: Record<string, unknown> | null;
+			status: TranscriptToolStatus;
+			output?: string;
+			/** Size of the whole output when `output` is a preview (ask the server for it). */
+			fullOutputBytes?: number;
+			patch?: TranscriptPatchHunk[];
+	  }
+	| {
+			kind: 'approval';
+			id: string;
+			tool: string;
+			input: Record<string, unknown> | null;
+			description?: string;
+			blockedPath?: string;
+			canAlwaysAllow: boolean;
+			/** Claude withdrew the request (turn interrupted, answered elsewhere). */
+			expired: boolean;
+			decision?: ApprovalDecision;
+			/** `AskUserQuestion` answers: question text → chosen label(s) or own words. */
+			answers?: Record<string, string>;
+	  }
+	| { kind: 'notice'; id: string; text: string };
+
+/** A subagent or background job Claude started (mirror of core `TaskInfo`). */
+export interface TaskInfo {
+	id: string;
+	toolUseId?: string;
+	/** `agent` for subagents; otherwise the CLI's task type, e.g. `local_bash`. */
+	kind: string;
+	subagentType?: string;
+	description: string;
+	status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'killed' | 'paused';
+	background: boolean;
+	toolUses: number;
+	tokens: number;
+	durationMs: number;
+	/** What it's doing right now. */
+	activity?: string;
+	lastTool?: string;
+	summary?: string;
+}
+
+/** A slash command the session accepts (built-ins, custom commands, skills). */
+export interface SlashCommand {
+	name: string;
+	description: string;
+	argumentHint?: string;
+}
+
+/** A model the session can switch to. */
+export interface ModelOption {
+	value: string;
+	displayName: string;
+	description: string;
+	resolvedModel: string | null;
+	/** Effort levels it accepts; empty when it has no effort setting. */
+	effortLevels: EffortLevel[];
+}
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** The API call is being retried (overloaded, rate limited, …). */
+export interface RetryInfo {
+	attempt: number;
+	maxRetries: number;
+	retryDelayMs: number;
+	error: string | null;
+}
+
+/** Latest usage-limit status. */
+export interface RateLimitInfo {
+	status: 'allowed' | 'allowed_warning' | 'rejected';
+	/** Unix seconds. */
+	resetsAt: number | null;
+	kind: string | null;
+	/** 0–1 share used. */
+	utilization: number | null;
+}
+
+export interface TranscriptMeta {
+	title: string | null;
+	model: string | null;
+	permissionMode: PermissionMode | null;
+	contextTokens: number | null;
+	busy: boolean;
+	tasks: TaskInfo[];
+	retry: RetryInfo | null;
+	rateLimit: RateLimitInfo | null;
+	models: ModelOption[];
+	/** The model picked in Workbench; null until one is. */
+	modelChoice: string | null;
+	/** The effort picked in Workbench; null means the model's default. */
+	effort: EffortLevel | null;
+}
+
+export type AgentServerMsg =
+	| {
+			t: 'snapshot';
+			sessionId: string;
+			/** Index of the first item sent; older history stays on disk. */
+			start: number;
+			items: TranscriptItem[];
+			meta: TranscriptMeta;
+			commands: SlashCommand[];
+			exited: boolean;
+	  }
+	/** `[index, item]` pairs that were added or changed. */
+	| { t: 'update'; changes: [number, TranscriptItem][]; meta: TranscriptMeta }
+	| { t: 'exit'; code: number | null; message: string | null }
+	| { t: 'error'; message: string }
+	/** The slash command list changed (sent apart from meta: it's large). */
+	| { t: 'commands'; commands: SlashCommand[] }
+	/** Reply to `output`: the whole output of a tool shown as a preview. */
+	| { t: 'output'; toolId: string; text: string | null }
+	/** Reply to `taskOutput`: the end of a background task's output, null until it exists. */
+	| { t: 'taskOutput'; taskId: string; text: string | null; bytes: number | null }
+	| { t: 'revoked' };
+
+/** An image attached to a chat message: base64 data the Claude API accepts. */
+export interface ChatImage {
+	mediaType: string;
+	data: string;
+	name: string;
+}
+
+export type AgentClientMsg =
+	| { t: 'prompt'; text: string; images?: Omit<ChatImage, 'name'>[] }
+	| {
+			t: 'approve';
+			requestId: string;
+			decision: ApprovalDecision;
+			answers?: Record<string, string>;
+	  }
+	| { t: 'interrupt' }
+	| { t: 'mode'; mode: PermissionMode }
+	| { t: 'model'; model: string }
+	| { t: 'effort'; effort: EffortLevel }
+	| { t: 'output'; toolId: string }
+	| { t: 'taskOutput'; taskId: string };
+
+export interface StartAgentBody {
+	projectPath: string;
+	worktreePath?: string;
+	sessionId: string;
+	permissionMode?: PermissionMode;
+	paneId?: string;
+	hookSocket?: string;
+	/** The pane's Claude account; absent is the default login. */
+	claudeAccountId?: string;
 }
