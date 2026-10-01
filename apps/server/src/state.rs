@@ -12,6 +12,14 @@ pub struct Managers {
     pub terminals: TerminalManager,
 }
 
+impl Managers {
+    /// Blocking: kills every terminal and spawned session and waits for them.
+    pub fn kill_all(&self) {
+        self.terminals.kill_all();
+        self.spawn.kill_all();
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub spawn: RemoteControlManager,

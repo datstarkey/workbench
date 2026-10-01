@@ -265,6 +265,18 @@ impl RemoteControlManager {
             None => false,
         }
     }
+
+    /// Kill every session and wait for each to exit.
+    pub fn kill_all(&self) {
+        let drained: Vec<_> = match self.inner.lock() {
+            Ok(mut m) => m.drain().map(|(_, t)| t).collect(),
+            Err(p) => p.into_inner().drain().map(|(_, t)| t).collect(),
+        };
+        for mut tracked in drained {
+            let _ = tracked.child.kill();
+            let _ = tracked.child.wait();
+        }
+    }
 }
 
 /// True if `path` is — or canonicalizes to — one of the registered project paths.
