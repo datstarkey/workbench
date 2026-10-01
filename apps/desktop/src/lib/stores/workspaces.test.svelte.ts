@@ -5,6 +5,7 @@ import { SANDBOX_RUNTIME_PACKAGE } from '$lib/utils/claude';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { adoptableTerminals } from '$features/terminal/server-terminals';
 import type {
+	ClaudePermissionMode,
 	ProjectConfig,
 	ProjectWorkspace,
 	SessionType,
@@ -33,7 +34,13 @@ const mockWorkbenchSettingsStore = {
 	sandboxRuntimeEnabled: false,
 	defaultClaudeView: 'terminal' as 'terminal' | 'chat',
 	sandboxSettingsPath: undefined as string | undefined,
-	activeClaudeAccountId: undefined as string | undefined
+	activeClaudeAccountId: undefined as string | undefined,
+	get launchOptions() {
+		return {
+			permissionMode: this.claudePermissionMode as ClaudePermissionMode,
+			sandboxSettingsPath: this.sandboxSettingsPath
+		};
+	}
 };
 vi.mock('./context', () => ({
 	getGitStore: () => mockGitStore,

@@ -22,23 +22,24 @@
 	let newValue = $state('');
 </script>
 
-<div class="mt-2 space-y-1.5">
-	{#each items as item, i (item + i)}
-		<div class="flex items-center gap-1.5">
-			<Badge variant={badgeVariant} class="flex-1 justify-start font-mono text-xs">
-				{item}
-			</Badge>
-			<Button
-				type="button"
-				variant="ghost"
-				size="icon-sm"
-				class="size-6 shrink-0 text-muted-foreground hover:text-destructive"
-				onclick={() => onRemove(item)}
-			>
-				<XIcon class="size-3" />
-			</Button>
+<div class="space-y-2">
+	{#if items.length > 0}
+		<div class="flex flex-wrap gap-1.5">
+			{#each items as item, i (item + i)}
+				<Badge variant={badgeVariant} class="h-6 gap-1 pr-0.5 font-mono text-[11.5px]">
+					{item}
+					<button
+						type="button"
+						class="inline-flex size-4.5 items-center justify-center rounded-sm opacity-70 hover:opacity-100"
+						aria-label="Remove {item}"
+						onclick={() => onRemove(item)}
+					>
+						<XIcon class="size-3" />
+					</button>
+				</Badge>
+			{/each}
 		</div>
-	{/each}
+	{/if}
 	<form
 		class="flex items-center gap-1.5"
 		onsubmit={(e) => {
@@ -49,9 +50,15 @@
 			}
 		}}
 	>
-		<Input class="h-7 flex-1 font-mono text-xs" {placeholder} bind:value={newValue} />
-		<Button variant="outline" size="icon-sm" class="size-7 shrink-0" type="submit">
+		<Input
+			class="h-7 flex-1 font-mono text-xs"
+			{placeholder}
+			aria-label={placeholder}
+			bind:value={newValue}
+		/>
+		<Button variant="outline" size="sm" class="h-7 shrink-0 gap-1 text-xs" type="submit">
 			<PlusIcon class="size-3" />
+			Add
 		</Button>
 	</form>
 </div>

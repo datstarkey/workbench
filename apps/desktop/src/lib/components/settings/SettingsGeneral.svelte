@@ -1,142 +1,78 @@
 <script lang="ts">
-	import { Input } from '@workbench/ui/input';
-	import { getClaudeSettingsStore } from '$stores/context';
-	import SettingsSelect from './SettingsSelect.svelte';
+	import { Button } from '@workbench/ui/button';
+	import { getWorkbenchSettingsStore } from '$stores/context';
+	import { selectFolder } from '$lib/utils/dialog';
+	import type { AccentColor } from '$types/workbench';
+	import SettingsRow from './SettingsRow.svelte';
+	import SettingsSection from './SettingsSection.svelte';
 	import SettingsToggle from './SettingsToggle.svelte';
 
-	const claudeSettingsStore = getClaudeSettingsStore();
+	const store = getWorkbenchSettingsStore();
 
-	const effortOptions = [
-		{ value: 'low', label: 'Low' },
-		{ value: 'medium', label: 'Medium' },
-		{ value: 'high', label: 'High' },
-		{ value: 'max', label: 'Max' }
+	// Swatch values mirror the --wb-accent token for each [data-accent] preset in theme.css.
+	const accentOptions: { value: AccentColor; label: string; swatch: string }[] = [
+		{ value: 'violet', label: 'Violet', swatch: 'oklch(0.68 0.16 280)' },
+		{ value: 'tideline', label: 'Tideline', swatch: '#7aa5ff' },
+		{ value: 'ember', label: 'Ember', swatch: '#d18a6a' },
+		{ value: 'moss', label: 'Moss', swatch: '#5fc78b' },
+		{ value: 'iris', label: 'Iris', swatch: '#b783e8' }
 	];
 
-	const updateChannelOptions = [
-		{ value: 'stable', label: 'Stable' },
-		{ value: 'latest', label: 'Latest' }
-	];
-
-	const notifChannelOptions = [
-		{ value: 'terminal', label: 'Terminal' },
-		{ value: 'iterm2', label: 'iTerm2' },
-		{ value: 'terminal_bell', label: 'Terminal Bell' }
-	];
-
-	let settings = $derived(claudeSettingsStore.currentSettings);
+	async function pickCloneDir() {
+		const dir = await selectFolder(
+			store.cloneBaseDir ?? undefined,
+			'Select Default Clone Directory'
+		);
+		if (dir !== null) store.set('cloneBaseDir', dir);
+	}
 </script>
 
-<div class="space-y-6">
-	<SettingsSelect
-		label="Effort Level"
-		description="Controls how much effort Claude puts into responses."
-		options={effortOptions}
-		value={settings.effortLevel ?? 'high'}
-		onValueChange={(v) =>
-			claudeSettingsStore.update({ effortLevel: v as typeof settings.effortLevel })}
-	/>
+<SettingsSection title="Appearance">
+	<SettingsRow
+		label="Accent color"
+		description="Buttons, the active worktree and tab highlights. Claude and Codex keep their own session colors."
+		stack
+	>
+		{#snippet control()}
+			<div class="flex flex-wrap gap-1.5">
+				{#each accentOptions as option (option.value)}
+					{@const active = store.accentColor === option.value}
+					<button
+						type="button"
+						aria-pressed={active}
+						class={[
+							'flex h-7.5 items-center gap-2 rounded-md border pr-3 pl-2 text-xs transition-colors',
+							active
+								? 'border-wb-accent bg-wb-panel2 text-wb-ink'
+								: 'border-wb-hair text-wb-ink-mute hover:text-wb-ink'
+						]}
+						onclick={() => store.set('accentColor', option.value)}
+					>
+						<span class="size-3.5 rounded-full" style:background={option.swatch}></span>
+						{option.label}
+					</button>
+				{/each}
+			</div>
+		{/snippet}
+	</SettingsRow>
+</SettingsSection>
 
+<SettingsSection title="Sidebar">
 	<SettingsToggle
-		label="Always Enable Thinking"
-		description="Use extended thinking by default."
-		checked={settings.alwaysThinkingEnabled ?? false}
-		onCheckedChange={(v) => claudeSettingsStore.update({ alwaysThinkingEnabled: v })}
+		label="Git tab"
+		description="Staging, commits, branches and stashes in the right sidebar."
+		checked={store.gitSidebarEnabled}
+		onCheckedChange={(v) => store.set('gitSidebarEnabled', v)}
 	/>
+</SettingsSection>
 
-	<SettingsSelect
-		label="Updates Channel"
-		description="Release channel for auto-updates."
-		options={updateChannelOptions}
-		value={settings.autoUpdatesChannel ?? 'latest'}
-		onValueChange={(v) =>
-			claudeSettingsStore.update({ autoUpdatesChannel: v as typeof settings.autoUpdatesChannel })}
-	/>
-
-	<SettingsSelect
-		label="Notification Channel"
-		description="Where to send completion notifications."
-		options={notifChannelOptions}
-		value={settings.preferredNotifChannel ?? 'terminal'}
-		onValueChange={(v) =>
-			claudeSettingsStore.update({
-				preferredNotifChannel: v as typeof settings.preferredNotifChannel
-			})}
-	/>
-
-	<div>
-		<h3 class="text-sm font-medium">Cleanup Period</h3>
-		<p class="mt-1 text-xs text-muted-foreground">Days to keep old conversations before cleanup.</p>
-		<div class="mt-2">
-			<Input
-				type="number"
-				class="w-24"
-				value={String(settings.cleanupPeriodDays ?? 30)}
-				oninput={(e) => {
-					const val = parseInt((e.target as HTMLInputElement).value);
-					if (!isNaN(val) && val > 0) {
-						claudeSettingsStore.update({ cleanupPeriodDays: val });
-					}
-				}}
-			/>
-		</div>
-	</div>
-
-	<div>
-		<h3 class="text-sm font-medium">Language</h3>
-		<p class="mt-1 text-xs text-muted-foreground">Preferred response language.</p>
-		<div class="mt-2">
-			<Input
-				class="w-48"
-				placeholder="e.g. english, japanese"
-				value={settings.language ?? ''}
-				oninput={(e) => {
-					const val = (e.target as HTMLInputElement).value;
-					claudeSettingsStore.update({ language: val || undefined });
-				}}
-			/>
-		</div>
-	</div>
-
-	<SettingsToggle
-		label="Show Turn Duration"
-		description="Display how long each turn takes."
-		checked={settings.showTurnDuration ?? true}
-		onCheckedChange={(v) => claudeSettingsStore.update({ showTurnDuration: v })}
-	/>
-
-	<SettingsToggle
-		label="Spinner Tips"
-		description="Show tips while Claude is working."
-		checked={settings.spinnerTipsEnabled ?? true}
-		onCheckedChange={(v) => claudeSettingsStore.update({ spinnerTipsEnabled: v })}
-	/>
-
-	<SettingsToggle
-		label="Terminal Progress Bar"
-		description="Show progress bar in terminal."
-		checked={settings.terminalProgressBarEnabled ?? true}
-		onCheckedChange={(v) => claudeSettingsStore.update({ terminalProgressBarEnabled: v })}
-	/>
-
-	<SettingsToggle
-		label="Reduced Motion"
-		description="Minimize UI animations for accessibility."
-		checked={settings.prefersReducedMotion ?? false}
-		onCheckedChange={(v) => claudeSettingsStore.update({ prefersReducedMotion: v })}
-	/>
-
-	<SettingsToggle
-		label="Respect .gitignore"
-		description="File picker respects .gitignore when suggesting files."
-		checked={settings.respectGitignore ?? true}
-		onCheckedChange={(v) => claudeSettingsStore.update({ respectGitignore: v })}
-	/>
-
-	<SettingsToggle
-		label="Disable All Hooks"
-		description="Turn off all hooks and custom status lines."
-		checked={settings.disableAllHooks ?? false}
-		onCheckedChange={(v) => claudeSettingsStore.update({ disableAllHooks: v })}
-	/>
-</div>
+<SettingsSection title="Projects">
+	<SettingsRow
+		label="Default clone directory"
+		description={store.cloneBaseDir ?? "Not set, so you're asked each time."}
+	>
+		{#snippet control()}
+			<Button variant="outline" size="sm" onclick={pickCloneDir}>Browse…</Button>
+		{/snippet}
+	</SettingsRow>
+</SettingsSection>

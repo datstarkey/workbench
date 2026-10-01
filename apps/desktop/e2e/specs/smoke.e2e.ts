@@ -34,10 +34,11 @@ describe('Workbench smoke', () => {
 		const settings = (await browser.getWindowHandles()).find((h) => h !== main)!;
 		await browser.switchToWindow(settings);
 
-		const sections = $('[role="tablist"][aria-label="Settings sections"]');
+		const sections = $('nav[aria-label="Settings sections"]');
 		await expect(sections).toBeDisplayed();
-		await sections.$('button*=Claude Code').click();
-		await expect($('[role="tablist"][aria-label="Claude Code sections"]')).toBeDisplayed();
+		await sections.$('button=Permissions').click();
+		await expect($('h1=Permissions')).toBeDisplayed();
+		await expect($('[role="group"][aria-label="Settings scope"]')).toBeDisplayed();
 
 		await browser.switchToWindow(main);
 	});

@@ -17,8 +17,7 @@ import {
 	tryResumeCommand,
 	claudeNewSessionWithIdCommand,
 	applyClaudeLaunchOptions,
-	warnMissingSandboxSettingsPath,
-	type ClaudeLaunchOptions
+	type LaunchOptions
 } from '$lib/utils/claude';
 import { effectivePath } from '$lib/utils/path';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
@@ -80,17 +79,8 @@ export class WorkspaceStore {
 
 	private switchCallbacks: Array<(projectPath: string) => void> = [];
 
-	private get claudeLaunchOptions(): ClaudeLaunchOptions {
-		const sandboxSettingsPath = this.settingsStore.sandboxSettingsPath;
-		// Enabled but unresolved means the backend could not write the settings
-		// file; launching unwrapped is the safe-to-run fallback, but say so.
-		if (this.settingsStore.sandboxRuntimeEnabled && !sandboxSettingsPath) {
-			warnMissingSandboxSettingsPath();
-		}
-		return {
-			permissionMode: this.settingsStore.claudePermissionMode,
-			sandboxSettingsPath
-		};
+	private get launchOptions(): LaunchOptions {
+		return this.settingsStore.launchOptions;
 	}
 
 	get selectedId(): string | null {
@@ -546,8 +536,8 @@ export class WorkspaceStore {
 			const startupCommand = explicit
 				? type === 'codex'
 					? explicit
-					: applyClaudeLaunchOptions(explicit, this.claudeLaunchOptions)
-				: newSessionCommand(type, this.claudeLaunchOptions);
+					: applyClaudeLaunchOptions(explicit, this.launchOptions)
+				: newSessionCommand(type, this.launchOptions);
 			// A plain new Claude tab can open straight into chat: chat picks the
 			// session id up front (`--session-id`), so it needs no terminal first.
 			// Not while the sandbox runtime is on — chat can't run inside it yet.
@@ -556,9 +546,7 @@ export class WorkspaceStore {
 			const newTab = this.createAITab(
 				label,
 				sessionId,
-				asChat
-					? claudeNewSessionWithIdCommand(sessionId, this.claudeLaunchOptions)
-					: startupCommand,
+				asChat ? claudeNewSessionWithIdCommand(sessionId, this.launchOptions) : startupCommand,
 				type,
 				this.settingsStore.activeClaudeAccountId
 			);
@@ -606,7 +594,7 @@ export class WorkspaceStore {
 					if (p.id !== paneId || p.claudeSessionId === sessionId) return p;
 					tabChanged = true;
 					changed = true;
-					const cmd = tryResumeCommand(type, sessionId, this.claudeLaunchOptions);
+					const cmd = tryResumeCommand(type, sessionId, this.launchOptions);
 					return {
 						...p,
 						claudeSessionId: sessionId,
@@ -659,8 +647,8 @@ export class WorkspaceStore {
 			if (pane.claudeSessionId) {
 				await stopAgent(pane.claudeSessionId).catch(() => {});
 				const startupCommand = started
-					? tryResumeCommand('claude', pane.claudeSessionId, this.claudeLaunchOptions)
-					: claudeNewSessionWithIdCommand(pane.claudeSessionId, this.claudeLaunchOptions);
+					? tryResumeCommand('claude', pane.claudeSessionId, this.launchOptions)
+					: claudeNewSessionWithIdCommand(pane.claudeSessionId, this.launchOptions);
 				if (startupCommand) this.setPaneStartupCommand(paneId, startupCommand);
 			}
 		}
@@ -794,8 +782,8 @@ export class WorkspaceStore {
 			const type = tab.type;
 			const sessionId = tab.panes[0]?.claudeSessionId;
 			const command = sessionId
-				? resumeCommand(type, sessionId, this.claudeLaunchOptions)
-				: newSessionCommand(type, this.claudeLaunchOptions);
+				? resumeCommand(type, sessionId, this.launchOptions)
+				: newSessionCommand(type, this.launchOptions);
 			// A restart stays on the pane's account: its transcript lives there.
 			const newTab = this.createAITab(
 				tab.label,
@@ -832,7 +820,7 @@ export class WorkspaceStore {
 			const newTab = this.createAITab(
 				label,
 				sessionId,
-				resumeCommand(type, sessionId, this.claudeLaunchOptions),
+				resumeCommand(type, sessionId, this.launchOptions),
 				type,
 				accountId
 			);
@@ -943,7 +931,7 @@ export class WorkspaceStore {
 			const fixedPanes = tab.panes.map((pane) => {
 				const isAI = isAISessionType(pane.type);
 				if (isAI && pane.claudeSessionId) {
-					const cmd = resumeCommand(pane.type!, pane.claudeSessionId, this.claudeLaunchOptions);
+					const cmd = resumeCommand(pane.type!, pane.claudeSessionId, this.launchOptions);
 					if (pane.startupCommand !== cmd) {
 						changed = true;
 						return { ...pane, startupCommand: cmd };
@@ -952,7 +940,7 @@ export class WorkspaceStore {
 					// Rebuild from the binary alone, so a changed permission mode adds or drops
 					// the flag while any initial prompt argument (e.g. `claude 'review ...'`)
 					// survives. Unrecognised commands normalise back to the bare base.
-					const base = newSessionCommand(pane.type!, this.claudeLaunchOptions);
+					const base = newSessionCommand(pane.type!, this.launchOptions);
 					const promptArg = extractPromptArg(pane.type!, pane.startupCommand);
 					const cmd = promptArg ? `${base} ${promptArg}` : base;
 					if (pane.startupCommand !== cmd) {
