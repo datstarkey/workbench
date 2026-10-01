@@ -8,6 +8,19 @@ export const CLAUDE_NEW_SESSION_COMMAND = 'claude';
 /** CLI command for a new Codex session */
 export const CODEX_NEW_SESSION_COMMAND = 'codex';
 
+/**
+ * Run Codex inline rather than on the alternate screen, which has no scrollback:
+ * xterm turns wheel (and mobile touch-scroll) input there into arrow keys, which
+ * Codex reads as composer history. A `-c` key, not `--no-alt-screen`, because
+ * older Codex builds ignore unknown config keys but refuse unknown flags.
+ */
+const CODEX_INLINE_FLAG = '-c tui.alternate_screen=never';
+const CODEX_INLINE_FLAG_RE = /^-c[ \t]+tui\.alternate_screen=\S+[ \t]*/;
+
+function codexBinary(): string {
+	return `${CODEX_NEW_SESSION_COMMAND} ${CODEX_INLINE_FLAG}`;
+}
+
 /** How a Claude session should be launched. */
 export interface ClaudeLaunchOptions {
 	permissionMode?: ClaudePermissionMode;
@@ -103,12 +116,12 @@ export function claudeResumeCommand(sessionId: string, opts?: ClaudeLaunchOption
 
 /** Build the CLI command to resume an existing Codex session */
 export function codexResumeCommand(sessionId: string): string {
-	return `codex resume ${sessionId}`;
+	return `${codexBinary()} resume ${sessionId}`;
 }
 
 /** Generic helper: get the new-session command for a given session type */
 export function newSessionCommand(type: SessionType, opts?: ClaudeLaunchOptions): string {
-	return type === 'codex' ? CODEX_NEW_SESSION_COMMAND : claudeBinary(opts);
+	return type === 'codex' ? codexBinary() : claudeBinary(opts);
 }
 
 /** Generic helper: get the resume command for a given session type */
@@ -186,9 +199,9 @@ function stripSandboxPrefix(command: string): string {
 /**
  * Recover the initial-prompt argument from a persisted launch command, ignoring
  * the binary, any sandbox-runtime wrapper, and any `--permission-mode` flag
- * written by an earlier build. Returns undefined when the command is not a
- * recognisable launch of `type`'s binary, so callers normalise it back to a
- * freshly built command.
+ * written by an earlier build (or Codex's inline flag). Returns undefined when
+ * the command is not a recognisable launch of `type`'s binary, so callers
+ * normalise it back to a freshly built command.
  */
 export function extractPromptArg(
 	type: SessionType,
@@ -201,7 +214,9 @@ export function extractPromptArg(
 	if (!trimmed || !trimmed.startsWith(`${binary} `)) return undefined;
 
 	let rest = trimmed.slice(binary.length + 1).trimStart();
-	if (type !== 'codex') {
+	if (type === 'codex') {
+		rest = rest.replace(CODEX_INLINE_FLAG_RE, '');
+	} else {
 		const flag = /^--permission-mode[ \t]+(\S+)[ \t]*/.exec(rest);
 		// An unknown mode means we did not write this command; normalise it away.
 		if (flag && !isClaudePermissionMode(flag[1])) return undefined;
