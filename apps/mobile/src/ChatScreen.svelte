@@ -16,6 +16,7 @@
 		ChatQuestion,
 		ChatTasks,
 		ChatTranscript,
+		contextUsed,
 		isRunning,
 		latestTodos,
 		limitNotice,
@@ -31,7 +32,8 @@
 	let { client, ref }: { client: MobileClient; ref: ChatRef } = $props();
 
 	setChatPlatform({
-		openLink: (href) => void openUrl(href).catch((e) => console.warn('[chat] open link', e))
+		openLink: (href) => void openUrl(href).catch((e) => console.warn('[chat] open link', e)),
+		enterSends: false
 	});
 
 	// svelte-ignore state_referenced_locally
@@ -61,10 +63,7 @@
 			new Date(secs * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 		)
 	);
-	const contextLimit = $derived(chat.meta?.model?.includes('[1m]') ? 1_000_000 : 200_000);
-	const contextShare = $derived(
-		chat.meta?.contextTokens ? Math.min(1, chat.meta.contextTokens / contextLimit) : 0
-	);
+	const contextShare = $derived(contextUsed(chat.meta));
 	const waiting = $derived(
 		chat.items.find(
 			(i): i is Extract<TranscriptItem, { kind: 'approval' }> =>

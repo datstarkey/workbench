@@ -302,6 +302,13 @@ export function formatBytes(n: number): string {
 	return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
 }
 
+/** How full the context window is, 0–1; `[1m]` on the model means a 1M window, else 200k. */
+export function contextUsed(meta: TranscriptMeta | null): number {
+	if (!meta?.contextTokens) return 0;
+	const limit = meta.model?.endsWith('[1m]') ? 1_000_000 : 200_000;
+	return Math.min(1, meta.contextTokens / limit);
+}
+
 /** The model the session is on: the one picked here, else matched by id, else the default. */
 export function currentModel(meta: TranscriptMeta | null): ModelOption | null {
 	if (!meta || meta.models.length === 0) return null;

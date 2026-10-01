@@ -4,6 +4,7 @@ import {
 	activity,
 	answerFor,
 	applyChanges,
+	contextUsed,
 	currentModel,
 	effortLabel,
 	formatBytes,
@@ -43,6 +44,15 @@ function tool(id: string, name: string, input: Record<string, unknown> = {}) {
 }
 
 const text = (id: string, t: string): TranscriptItem => ({ kind: 'text', id, text: t });
+
+describe('contextUsed', () => {
+	it('measures against a 1M window only when the model says [1m]', () => {
+		const used = { ...meta, contextTokens: 126_000 };
+		expect(contextUsed({ ...used, model: 'claude-opus-5-5[1m]' })).toBeCloseTo(0.126);
+		expect(contextUsed({ ...used, model: 'claude-opus-5-5' })).toBeCloseTo(0.63);
+		expect(contextUsed(meta)).toBe(0);
+	});
+});
 
 describe('applyChanges', () => {
 	it('updates items in place by id and appends new ones', () => {

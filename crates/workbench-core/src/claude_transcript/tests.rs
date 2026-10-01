@@ -249,6 +249,19 @@ fn init_and_errors_update_the_chat() {
 }
 
 #[test]
+fn messages_keep_the_1m_window_init_reported() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
+    t.apply(&stream(
+        json!({"type":"message_start","message":{"id":"m1","model":"claude-opus-5-5"}}),
+    ));
+    t.apply(&assistant("a1", "m1", json!({"type":"text","text":"hi"})));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5[1m]"));
+    t.apply(&json!({"type":"assistant","uuid":"a2","message":{"id":"m2","model":"claude-sonnet-5-5","content":[]}}));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
+}
+
+#[test]
 fn subagent_events_are_left_to_their_task_card() {
     let mut t = Transcript::default();
     let mut line = assistant("a", "m", json!({"type":"text","text":"inside a subagent"}));

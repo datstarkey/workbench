@@ -761,7 +761,7 @@ impl Transcript {
                 let message = event.get("message");
                 self.streaming_message = message.and_then(|m| str_at(m, "id")).map(String::from);
                 if let Some(model) = message.and_then(|m| str_at(m, "model")) {
-                    self.meta.model = Some(model.to_string());
+                    self.note_model(model);
                 }
             }
             Some("content_block_start") => {
@@ -832,12 +832,25 @@ impl Transcript {
         }
     }
 
+    /// Messages carry the bare API id; keep init's `[1m]`, the only sign of the 1M context window.
+    fn note_model(&mut self, model: &str) {
+        if self
+            .meta
+            .model
+            .as_deref()
+            .and_then(|m| m.strip_suffix("[1m]"))
+            != Some(model)
+        {
+            self.meta.model = Some(model.to_string());
+        }
+    }
+
     fn apply_assistant(&mut self, obj: &Value, changed: &mut Vec<usize>) {
         let Some(message) = obj.get("message") else {
             return;
         };
         if let Some(model) = str_at(message, "model").filter(|m| !m.starts_with('<')) {
-            self.meta.model = Some(model.to_string());
+            self.note_model(model);
         }
         if let Some(usage) = message.get("usage") {
             let n = |k| usage.get(k).and_then(Value::as_u64).unwrap_or(0);

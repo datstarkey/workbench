@@ -6,7 +6,6 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import type { TaskInfo } from '@workbench/types';
-	import { SvelteSet } from 'svelte/reactivity';
 	import type { TaskOutput } from './agent-chat.svelte';
 	import { formatCount, formatElapsed, isRunning, sortTasks } from './chat-format';
 	import ChatTaskOutput from './ChatTaskOutput.svelte';
@@ -34,9 +33,22 @@
 	});
 
 	const groups = $derived(sortTasks(tasks));
-	/** Tasks whose output is open. */
-	const showing = new SvelteSet<string>();
 	const running = $derived(tasks.filter(isRunning).length);
+
+	/** Agents and background jobs are separate tabs; until one is picked, agents if any. */
+	let pickedTab = $state<'agents' | 'jobs' | null>(null);
+	const tab = $derived(
+		pickedTab && groups[pickedTab].length > 0
+			? pickedTab
+			: groups.agents.length > 0
+				? 'agents'
+				: 'jobs'
+	);
+	const list = $derived(groups[tab]);
+
+	/** The task whose detail and output are shown; the first (running first) until one is picked. */
+	let pickedId = $state<string | null>(null);
+	const selected = $derived(list.find((t) => t.id === pickedId) ?? list[0] ?? null);
 
 	function elapsed(task: TaskInfo): string {
 		if (isRunning(task) && seenAt[task.id]) return formatElapsed(now - seenAt[task.id]);
@@ -49,81 +61,33 @@
 	}
 </script>
 
-{#snippet card(task: TaskInfo)}
-	{@const live = isRunning(task)}
-	<li
-		class={cn(
-			'relative overflow-hidden rounded-lg border px-3 py-2.5',
-			live ? 'border-wb-hair bg-wb-panel2' : 'border-transparent'
-		)}
-	>
-		<div class="flex items-center gap-2 text-xs">
-			{#if live}
-				<span class="spinner size-3 shrink-0" aria-label="Running"></span>
-			{:else if task.status === 'completed'}
-				<CheckIcon class="size-3.5 shrink-0 text-wb-ok" aria-label="Done" />
-			{:else}
-				<XIcon class="size-3.5 shrink-0 text-wb-err" aria-label={task.status} />
-			{/if}
-			<span class={cn('min-w-0 truncate font-medium', live ? 'text-wb-ink' : 'text-wb-ink-mute')}>
-				{title(task)}
-			</span>
-			{#if task.background}
-				<span class="shrink-0 text-[10px] text-wb-ink-soft">background</span>
-			{/if}
-			<span class="ml-auto shrink-0 text-[11px] text-wb-ink-soft tabular-nums">{elapsed(task)}</span
-			>
-		</div>
-		<p class={cn('mt-1 text-xs leading-snug', live ? 'text-wb-ink' : 'text-wb-ink-mute')}>
-			{task.description}
-		</p>
-		{#if live && (task.activity || task.lastTool)}
-			<p class="mt-1 truncate text-[11px] text-wb-ink-mute">
-				{task.activity ?? `Using ${task.lastTool}`}
-			</p>
-		{:else if !live && task.summary}
-			<p class="mt-1 line-clamp-3 text-[11px] leading-snug text-wb-ink-soft">{task.summary}</p>
-		{/if}
-		{#if task.toolUses > 0 || task.tokens > 0}
-			<p class="mt-1.5 text-[10px] text-wb-ink-soft tabular-nums">
-				{formatCount(task.toolUses, task.toolUses === 1 ? 'tool call' : 'tool calls')}
-				{#if task.tokens > 0}<span class="px-1">/</span>{formatCount(task.tokens, 'tokens')}{/if}
-			</p>
-		{/if}
-		<button
-			type="button"
-			class="mt-1.5 text-[11px] text-wb-accent hover:underline focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
-			aria-expanded={showing.has(task.id)}
-			onclick={() => (showing.has(task.id) ? showing.delete(task.id) : showing.add(task.id))}
-		>
-			{showing.has(task.id) ? 'Hide output' : live ? 'Watch output' : 'Show output'}
-		</button>
-		{#if showing.has(task.id)}
-			<ChatTaskOutput taskId={task.id} {live} {fetchOutput} />
-		{/if}
-		{#if live}
-			<span class="sweep" aria-hidden="true"></span>
-		{/if}
-	</li>
+{#snippet status(task: TaskInfo)}
+	{#if isRunning(task)}
+		<span class="spinner size-3 shrink-0" aria-label="Running"></span>
+	{:else if task.status === 'completed'}
+		<CheckIcon class="size-3.5 shrink-0 text-wb-ok" aria-label="Done" />
+	{:else}
+		<XIcon class="size-3.5 shrink-0 text-wb-err" aria-label={task.status} />
+	{/if}
 {/snippet}
 
-{#snippet group(label: string, list: TaskInfo[])}
-	{#if list.length > 0}
-		<section class="flex flex-col gap-1.5">
-			<h3 class="flex items-center gap-1.5 px-1 text-[11px] text-wb-ink-soft">
-				{#if label === 'Agents'}<BotIcon class="size-3" />{:else}<TerminalSquareIcon
-						class="size-3"
-					/>{/if}
-				{label}
-				<span class="tabular-nums">{list.length}</span>
-			</h3>
-			<ul class="flex flex-col gap-1">
-				{#each list as task (task.id)}
-					{@render card(task)}
-				{/each}
-			</ul>
-		</section>
-	{/if}
+{#snippet tabButton(key: 'agents' | 'jobs', label: string, count: number)}
+	<button
+		type="button"
+		aria-pressed={tab === key}
+		disabled={count === 0}
+		class={cn(
+			'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1 text-[11px] focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-40',
+			tab === key ? 'bg-wb-panel2 text-wb-ink' : 'text-wb-ink-mute hover:text-wb-ink'
+		)}
+		onclick={() => (pickedTab = key)}
+	>
+		{#if key === 'agents'}<BotIcon class="size-3" />{:else}<TerminalSquareIcon
+				class="size-3"
+			/>{/if}
+		{label}
+		<span class="text-wb-ink-soft tabular-nums">{count}</span>
+	</button>
 {/snippet}
 
 <aside
@@ -147,15 +111,79 @@
 			</button>
 		{/if}
 	</header>
-	<div class="scrollbar-thin flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-2.5">
-		{#if tasks.length === 0}
-			<p class="px-1 pt-2 text-xs leading-relaxed text-wb-ink-soft">
-				Subagents and background commands Claude starts appear here while they run.
-			</p>
+	{#if tasks.length === 0}
+		<p class="px-3.5 pt-3 text-xs leading-relaxed text-wb-ink-soft">
+			Subagents and background commands Claude starts appear here while they run.
+		</p>
+	{:else}
+		<div class="flex shrink-0 gap-1 border-b border-wb-hair p-1.5" role="group" aria-label="Show">
+			{@render tabButton('agents', 'Agents', groups.agents.length)}
+			{@render tabButton('jobs', 'Background', groups.jobs.length)}
+		</div>
+		<ul
+			class="scrollbar-thin flex max-h-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-b border-wb-hair p-1.5"
+			aria-label={tab === 'agents' ? 'Agents' : 'Background tasks'}
+		>
+			{#each list as task (task.id)}
+				<li>
+					<button
+						type="button"
+						aria-current={selected?.id === task.id}
+						class={cn(
+							'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
+							selected?.id === task.id
+								? 'bg-wb-panel2 text-wb-ink'
+								: 'text-wb-ink-mute hover:bg-wb-panel2/60'
+						)}
+						onclick={() => (pickedId = task.id)}
+					>
+						{@render status(task)}
+						<span class="min-w-0 flex-1 truncate">{task.description || title(task)}</span>
+						<span class="shrink-0 text-[10.5px] text-wb-ink-soft tabular-nums">{elapsed(task)}</span
+						>
+					</button>
+				</li>
+			{/each}
+		</ul>
+		{#if selected}
+			{@const live = isRunning(selected)}
+			<section
+				class="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-2.5"
+				aria-label="{title(selected)} details"
+			>
+				<div class="flex items-center gap-2 text-xs">
+					{@render status(selected)}
+					<span class="min-w-0 truncate font-medium text-wb-ink">{title(selected)}</span>
+					{#if selected.background}
+						<span class="shrink-0 text-[10px] text-wb-ink-soft">background</span>
+					{/if}
+					<span class="ml-auto shrink-0 text-[11px] text-wb-ink-soft tabular-nums">
+						{elapsed(selected)}
+					</span>
+				</div>
+				<p class="mt-1 text-xs leading-snug text-wb-ink">{selected.description}</p>
+				{#if live && (selected.activity || selected.lastTool)}
+					<p class="mt-1 truncate text-[11px] text-wb-ink-mute">
+						{selected.activity ?? `Using ${selected.lastTool}`}
+					</p>
+				{:else if !live && selected.summary}
+					<p class="mt-1 text-[11px] leading-snug text-wb-ink-soft">{selected.summary}</p>
+				{/if}
+				{#if selected.toolUses > 0 || selected.tokens > 0}
+					<p class="mt-1.5 text-[10px] text-wb-ink-soft tabular-nums">
+						{formatCount(selected.toolUses, selected.toolUses === 1 ? 'tool call' : 'tool calls')}
+						{#if selected.tokens > 0}<span class="px-1">/</span>{formatCount(
+								selected.tokens,
+								'tokens'
+							)}{/if}
+					</p>
+				{/if}
+				{#key selected.id}
+					<ChatTaskOutput taskId={selected.id} {live} {fetchOutput} />
+				{/key}
+			</section>
 		{/if}
-		{@render group('Agents', groups.agents)}
-		{@render group('Background', groups.jobs)}
-	</div>
+	{/if}
 </aside>
 
 <style>
@@ -170,25 +198,8 @@
 			transform: rotate(360deg);
 		}
 	}
-	.sweep {
-		position: absolute;
-		inset: auto 0 0 0;
-		height: 1px;
-		background: linear-gradient(90deg, transparent 0%, var(--wb-claude) 50%, transparent 100%) 0 0 /
-			40% 100% no-repeat;
-		animation: sweep 1.6s ease-in-out infinite;
-	}
-	@keyframes sweep {
-		from {
-			background-position: -40% 0;
-		}
-		to {
-			background-position: 140% 0;
-		}
-	}
 	@media (prefers-reduced-motion: reduce) {
-		.spinner,
-		.sweep {
+		.spinner {
 			animation: none;
 		}
 	}

@@ -50,6 +50,7 @@
 	} = $props();
 
 	const platform = getChatPlatform();
+	const enterSends = platform.enterSends ?? true;
 
 	let images = $state<ChatImage[]>([]);
 	let imageError = $state('');
@@ -159,7 +160,7 @@
 				return;
 			}
 		}
-		if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+		if (event.key === 'Enter' && enterSends && !event.shiftKey && !event.isComposing) {
 			event.preventDefault();
 			send();
 		}
@@ -223,6 +224,7 @@
 			? `${id}-commands-${Math.min(menuIndex, matches.length - 1)}`
 			: undefined}
 		rows="1"
+		enterkeyhint={enterSends ? 'send' : 'enter'}
 		disabled={disabledReason !== null}
 		placeholder={disabledReason ?? 'Message Claude, / for commands, or paste an image'}
 		class="scrollbar-thin block max-h-[180px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm leading-relaxed text-wb-ink placeholder:text-wb-ink-soft focus:outline-none disabled:cursor-not-allowed"
@@ -239,13 +241,13 @@
 						type="button"
 						disabled={disabledReason !== null}
 						class={cn(
-							'flex items-center gap-1 rounded-md px-2 py-1 text-xs hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50',
+							'flex min-w-0 items-center gap-1 rounded-md px-2 py-1 text-xs whitespace-nowrap hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50',
 							mode === 'bypassPermissions' ? 'text-wb-err' : 'text-wb-ink-mute'
 						)}
 						title="Permission mode"
 					>
-						{modeLabel(mode)}
-						<ChevronDownIcon class="size-3" />
+						<span class="truncate">{modeLabel(mode)}</span>
+						<ChevronDownIcon class="size-3 shrink-0" />
 					</button>
 				{/snippet}
 			</DropdownMenu.Trigger>
@@ -268,7 +270,7 @@
 		{@render controls?.()}
 		<button
 			type="button"
-			class="flex size-7 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
+			class="flex size-7 shrink-0 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
 			title="Attach images"
 			aria-label="Attach images"
 			disabled={disabledReason !== null}
@@ -293,7 +295,7 @@
 		{#if busy}
 			<button
 				type="button"
-				class="flex size-7 items-center justify-center rounded-lg border border-wb-hair bg-wb-panel2 text-wb-ink-mute hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+				class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-wb-hair bg-wb-panel2 text-wb-ink-mute hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
 				title="Stop (Esc)"
 				aria-label="Stop"
 				onclick={onStop}
@@ -303,9 +305,13 @@
 		{/if}
 		<button
 			type="button"
-			class="flex size-7 items-center justify-center rounded-lg bg-wb-accent text-wb-accent-ink transition-opacity hover:brightness-110 focus-visible:ring-2 focus-visible:ring-wb-accent/50 focus-visible:outline-none disabled:opacity-30"
+			class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-wb-accent text-wb-accent-ink transition-opacity hover:brightness-110 focus-visible:ring-2 focus-visible:ring-wb-accent/50 focus-visible:outline-none disabled:opacity-30"
 			aria-label={busy ? 'Queue message' : 'Send'}
-			title={busy ? 'Claude will read this after the current step' : 'Send (Enter)'}
+			title={busy
+				? 'Claude will read this after the current step'
+				: enterSends
+					? 'Send (Enter)'
+					: 'Send'}
 			disabled={!canSend}
 			onclick={send}
 		>

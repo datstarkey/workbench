@@ -11,6 +11,7 @@
 		ChatPlan,
 		ChatTasks,
 		ChatTranscript,
+		contextUsed,
 		formatTokens,
 		isRunning,
 		latestTodos,
@@ -125,10 +126,7 @@
 	const todos = $derived(latestTodos(chat.items));
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
-	const contextLimit = $derived(chat.meta?.model?.includes('[1m]') ? 1_000_000 : 200_000);
-	const contextShare = $derived(
-		chat.meta?.contextTokens ? Math.min(1, chat.meta.contextTokens / contextLimit) : 0
-	);
+	const contextShare = $derived(contextUsed(chat.meta));
 	const disabledReason = $derived.by(() => {
 		switch (chat.status) {
 			case 'starting':
