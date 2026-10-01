@@ -9,7 +9,7 @@ import type {
 	TranscriptItem,
 	TranscriptMeta,
 	TranscriptPatchHunk
-} from '$types/workbench';
+} from '@workbench/types';
 
 export type ToolItem = Extract<TranscriptItem, { kind: 'tool' }>;
 export type ApprovalItem = Extract<TranscriptItem, { kind: 'approval' }>;

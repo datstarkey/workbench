@@ -1,7 +1,7 @@
 <script lang="ts">
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import type { EffortLevel, TranscriptMeta } from '$types/workbench';
+	import type { EffortLevel, TranscriptMeta } from '@workbench/types';
 	import { currentModel, effortLabel } from './chat-format';
 
 	let {

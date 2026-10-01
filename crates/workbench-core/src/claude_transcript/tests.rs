@@ -173,6 +173,56 @@ fn approvals_round_trip_to_control_responses() {
 }
 
 #[test]
+fn waiting_on_is_the_oldest_unanswered_approval() {
+    let ask = |id: &str| {
+        json!({"type":"control_request","request_id":id,"request":{
+            "subtype":"can_use_tool","tool_name":"Bash","input":{}}})
+    };
+    let mut t = Transcript::default();
+    assert!(t.waiting_on().is_none());
+    for id in ["a", "b", "c"] {
+        t.apply(&ask(id));
+    }
+    assert_eq!(t.waiting_on().map(TranscriptItem::id), Some("a"));
+    t.resolve_approval("a", ApprovalDecision::Allow, None);
+    assert_eq!(t.waiting_on().map(TranscriptItem::id), Some("b"));
+    t.apply(&json!({"type":"control_cancel_request","request_id":"b"}));
+    assert_eq!(t.waiting_on().map(TranscriptItem::id), Some("c"));
+    t.resolve_approval("c", ApprovalDecision::Deny, None);
+    assert!(t.waiting_on().is_none());
+}
+
+#[test]
+fn running_tool_is_the_newest_unfinished_call_of_a_live_turn() {
+    let tool_use = |id: &str| {
+        assistant(
+            &format!("a-{id}"),
+            &format!("m-{id}"),
+            json!({"type":"tool_use","id":id,"name":"Bash","input":{"command":"ls"}}),
+        )
+    };
+    let tool_result = |id: &str| {
+        user(
+            &format!("u-{id}"),
+            json!([{"type":"tool_result","tool_use_id":id,"content":"ok"}]),
+        )
+    };
+    let mut t = Transcript::default();
+    t.apply(&user("u0", json!("go")));
+    t.apply(&tool_use("t1"));
+    t.apply(&tool_use("t2"));
+    assert_eq!(t.running_tool().map(TranscriptItem::id), Some("t2"));
+    t.apply(&tool_result("t2"));
+    assert_eq!(t.running_tool().map(TranscriptItem::id), Some("t1"));
+
+    t.apply(&json!({"type":"result","subtype":"success","is_error":false}));
+    assert!(
+        t.running_tool().is_none(),
+        "an idle session runs nothing, even with a call left unfinished"
+    );
+}
+
+#[test]
 fn deny_tells_claude_why() {
     let mut t = Transcript::default();
     t.apply(&json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Write","input":{}}}));

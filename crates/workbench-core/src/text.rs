@@ -18,6 +18,14 @@ pub fn truncate_bytes(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// `s` cut to at most `max_chars` characters, with `…` appended when cut.
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((end, _)) => format!("{}…", &s[..end]),
+        None => s.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +73,12 @@ mod tests {
     #[test]
     fn limit_inside_the_only_char_yields_empty() {
         assert_eq!(truncate_bytes("🎉", 2), "");
+    }
+
+    #[test]
+    fn truncate_chars_counts_characters_and_marks_the_cut() {
+        assert_eq!(truncate_chars("ls", 240), "ls");
+        assert_eq!(truncate_chars("abc", 3), "abc");
+        assert_eq!(truncate_chars("é🎉漢字", 2), "é🎉…");
     }
 }

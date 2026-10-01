@@ -9,7 +9,8 @@
 //!   - `GET  /remote/terminals`        → list sessions
 //!   - `POST /remote/terminals`        → create a session, returns its metadata
 //!   - `GET  /remote/terminals/:id/ws` → attach (replays buffer, then streams)
-//!   - `DELETE /remote/terminals/:id`  → kill a session
+//!   - `DELETE /remote/terminals/:id`  → kill a session (`?wait=true`: respond
+//!     only once its processes are gone)
 //!
 //! WS wire protocol (same as before): client→server JSON text
 //! (`{"t":"i","d":..}` input, `{"t":"r","c":..,"r":..}` resize); server→client
@@ -314,15 +315,8 @@ impl TerminalManager {
     }
 
     pub fn kill(&self, id: &str) -> bool {
-        // Remove under the map lock, then DROP the guard before the kill syscall +
-        // wake — the outer map lock must never be held during I/O (it would serialize
-        // create/list/attach against every kill).
-        let session = lock(&self.inner).remove(id);
-        match session {
+        match self.remove(id) {
             Some(s) => {
-                // Wake attached sockets immediately (the reader thread's EOF signal can
-                // race or be missed if the child is killed before producing EOF).
-                let _ = s.done_tx.send(true);
                 // Tear down the whole process GROUP (shell + descendants) on a detached
                 // thread so this async route returns at once — the SIGTERM→grace→SIGKILL
                 // escalation must not block a tokio worker.
@@ -331,6 +325,45 @@ impl TerminalManager {
             }
             None => false,
         }
+    }
+
+    /// [`Self::kill`], returning only once the process group is gone — so a
+    /// client can start another `claude` on the same session without two
+    /// writers overlapping. Blocking.
+    pub fn kill_and_wait(&self, id: &str) -> bool {
+        let Some(s) = self.remove(id) else {
+            return false;
+        };
+        #[cfg(unix)]
+        let groups = {
+            // Under job control the foreground command (`claude`) runs in its own
+            // group, which the shell's group signal reaches only indirectly.
+            let shell = lock(&s.child).process_id().map(|p| p as libc::pid_t);
+            let foreground = lock(&s.master).process_group_leader();
+            if let Some(fg) = foreground.filter(|&fg| Some(fg) != shell) {
+                unsafe {
+                    libc::killpg(fg, libc::SIGHUP);
+                    libc::killpg(fg, libc::SIGTERM);
+                }
+            }
+            [shell, foreground]
+        };
+        terminate_process_group(&s);
+        // The shell can be reaped while the rest (Claude itself) is still exiting.
+        #[cfg(unix)]
+        wait_for_groups_exit(&groups.into_iter().flatten().collect::<Vec<_>>());
+        true
+    }
+
+    /// Remove under the map lock, then DROP the guard before the wake — the outer
+    /// map lock must never be held during I/O (it would serialize
+    /// create/list/attach against every kill).
+    fn remove(&self, id: &str) -> Option<Arc<TerminalSession>> {
+        let session = lock(&self.inner).remove(id)?;
+        // Wake attached sockets immediately (the reader thread's EOF signal can
+        // race or be missed if the child is killed before producing EOF).
+        let _ = session.done_tx.send(true);
+        Some(session)
     }
 
     /// Kill every terminal and block until each process group is torn down. For
@@ -359,6 +392,9 @@ pub struct CreateTerminalBody {
     pub name: Option<String>,
     /// Optional command to run once the shell starts (e.g. `claude`).
     pub command: Option<String>,
+    /// Run Claude on this session instead of `command`; the server builds the
+    /// command so the sandbox wrapper and permission mode can't be skipped.
+    pub claude_session: Option<ClaudeSessionLaunch>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -377,6 +413,19 @@ pub struct CreateTerminalBody {
     pub claude_account_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ClaudeSessionLaunch {
+    pub id: String,
+    /// `--resume` an existing conversation, else `--session-id` starts one.
+    pub resume: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KillQuery {
+    #[serde(default)]
+    wait: bool,
+}
+
 pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TerminalMeta>>> {
     Ok(Json(state.terminals.list()))
 }
@@ -385,6 +434,11 @@ pub async fn terminal_create(
     State(state): State<AppState>,
     Json(body): Json<CreateTerminalBody>,
 ) -> ApiResult<Json<TerminalMeta>> {
+    if body.command.is_some() && body.claude_session.is_some() {
+        return Err(ApiError::bad_request(
+            "send either command or claudeSession, not both",
+        ));
+    }
     let terminals = state.terminals.clone();
     // openpty + fork/exec and the project-allowlist load are blocking — run them off
     // the async executor so a slow spawn doesn't stall a tokio worker thread.
@@ -400,10 +454,19 @@ pub async fn terminal_create(
         )?;
         let claude_config_dir =
             workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+        let command = match &body.claude_session {
+            Some(session) => Some(workbench_core::claude_launch::terminal_command(
+                &session.id,
+                session.resume,
+                &workbench_core::config::load_workbench_settings()?,
+                &workbench_core::sandbox_runtime::settings_path(),
+            )?),
+            None => body.command,
+        };
         terminals.create(
             cwd,
             body.name,
-            body.command,
+            command,
             body.cols,
             body.rows,
             body.pane_id,
@@ -419,8 +482,14 @@ pub async fn terminal_create(
 pub async fn terminal_kill(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<KillQuery>,
 ) -> ApiResult<StatusCode> {
-    state.terminals.kill(&id);
+    if q.wait {
+        let terminals = state.terminals.clone();
+        crate::routes::blocking(move || Ok(terminals.kill_and_wait(&id))).await?;
+    } else {
+        state.terminals.kill(&id);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -560,6 +629,33 @@ fn terminate_process_group(session: &TerminalSession) {
     }
     unsafe {
         libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
+/// Poll until no process is left in `groups`, SIGKILLing stragglers after a
+/// grace period. Safe after a leader is reaped: a pid is never reused while a
+/// process group with that id still exists.
+#[cfg(unix)]
+fn wait_for_groups_exit(groups: &[libc::pid_t]) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let alive: Vec<_> = groups
+            .iter()
+            .copied()
+            .filter(|&g| unsafe { libc::killpg(g, 0) } == 0)
+            .collect();
+        if alive.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            for g in alive {
+                unsafe {
+                    libc::killpg(g, libc::SIGKILL);
+                }
+            }
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 

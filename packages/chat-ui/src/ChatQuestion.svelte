@@ -3,7 +3,7 @@
 	import MessageCircleQuestionIcon from '@lucide/svelte/icons/message-circle-question-mark';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import type { ApprovalDecision } from '$types/workbench';
+	import type { ApprovalDecision } from '@workbench/types';
 	import { answerFor, type ApprovalItem, parseQuestions } from './chat-format';
 
 	let {

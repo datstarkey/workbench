@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { StartAgentBody, TranscriptMeta } from '$types/workbench';
+import type { StartAgentBody, TranscriptMeta } from '@workbench/types';
 import type { AgentApi } from './agent-api';
 import { AgentChat } from './agent-chat.svelte';
 
@@ -176,6 +176,52 @@ describe('AgentChat', () => {
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(start).toHaveBeenCalledTimes(2);
 		expect(FakeSocket.last).not.toBe(ws);
+		chat.dispose();
+	});
+
+	it('re-attaches at once on reconnect(), dropping the old socket quietly', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue();
+		const { chat, ws } = await connected(fakeApi(start));
+		chat.reconnect();
+		expect(chat.status).toBe('reconnecting');
+		expect(ws.readyState).toBe(3);
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
+		expect(start).toHaveBeenCalledTimes(2);
+		chat.dispose();
+	});
+
+	it('abandons a connect still waiting on the server when reconnect() starts another', async () => {
+		let release!: () => void;
+		const start = vi
+			.fn<AgentApi['start']>()
+			.mockResolvedValueOnce()
+			.mockImplementationOnce(() => new Promise((r) => (release = r)))
+			.mockResolvedValue();
+		const { chat, ws } = await connected(fakeApi(start));
+		ws.onclose?.(); // dropped: the retry timer fires and its start hangs
+		await vi.advanceTimersByTimeAsync(1500);
+		chat.reconnect();
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
+		const current = FakeSocket.last;
+		release();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(FakeSocket.last).toBe(current); // the stale connect opened no socket
+		chat.dispose();
+	});
+
+	it('knows when there is history to resume, even beyond the snapshot', async () => {
+		const { chat, ws } = await connected();
+		expect(chat.hasHistory).toBe(false);
+		ws.emit({
+			t: 'snapshot',
+			sessionId: 'sid',
+			start: 500,
+			items: [],
+			meta: meta(),
+			commands: [],
+			exited: false
+		});
+		expect(chat.hasHistory).toBe(true);
 		chat.dispose();
 	});
 
