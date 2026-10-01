@@ -13,7 +13,7 @@ vi.mock('@workbench/chat-ui', () => ({
 	}
 }));
 
-const { acquireChat, releaseChat } = await import('./chat-registry');
+const { acquireChat, isChatClaimed, releaseChat } = await import('./chat-registry');
 const body = (sessionId: string) => ({ projectPath: '/repo', sessionId, paneId: 'p1' });
 
 describe('chat registry', () => {
@@ -41,5 +41,14 @@ describe('chat registry', () => {
 		acquireChat('p1', body('s1'));
 		releaseChat('p1');
 		expect(created[0].dispose).toHaveBeenCalled();
+	});
+
+	it('claims every session it started, a /clear re-key and released ones included', () => {
+		const { chat } = acquireChat('p1', body('claim-1'));
+		chat.sessionId = 'claim-1b';
+		expect(isChatClaimed('claim-1b')).toBe(true);
+		releaseChat('p1');
+		expect(isChatClaimed('claim-1')).toBe(true);
+		expect(isChatClaimed('phone')).toBe(false);
 	});
 });

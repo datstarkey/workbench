@@ -1,12 +1,14 @@
 import { SvelteSet } from 'svelte/reactivity';
 import {
 	isAISessionType,
+	type AgentSummary,
 	type PaneView,
 	type ProjectConfig,
 	type ProjectTask,
 	type ProjectWorkspace,
 	type SessionType,
 	type SplitDirection,
+	type TerminalPaneState,
 	type TerminalTabState
 } from '$types/workbench';
 import { invoke } from '$lib/transport';
@@ -73,6 +75,14 @@ export class WorkspaceStore {
 	private adoptedPaneIds = new SvelteSet<string>();
 	/** Server terminals whose adopted tab was closed: never re-adopt them. */
 	private releasedServerTerminalIds = new SvelteSet<string>();
+	/**
+	 * Panes showing a chat started on another device. Like adopted terminals
+	 * they're not persisted and closing one only detaches; switching one to the
+	 * terminal or another session takes it over, so it stops being adopted.
+	 */
+	private adoptedChatPaneIds = new SvelteSet<string>();
+	/** Chat sessions whose pane was closed here: never adopt them. */
+	private closedChatSessionIds = new SvelteSet<string>();
 
 	private settingsStore = getWorkbenchSettingsStore();
 	private gitStore = getGitStore();
@@ -206,7 +216,7 @@ export class WorkspaceStore {
 	private persist() {
 		const adopted = this.adoptedPaneIds;
 		const snapshot: WorkspaceSnapshot = {
-			workspaces: withoutPanes(this.workspaces, adopted),
+			workspaces: withoutPanes(withoutPanes(this.workspaces, adopted), this.adoptedChatPaneIds),
 			selectedId: this.selectedId,
 			serverTerminalIds: Object.fromEntries(
 				Object.entries(this.serverTerminalIds).filter(([paneId]) => !adopted.has(paneId))
@@ -295,9 +305,51 @@ export class WorkspaceStore {
 		return true;
 	}
 
-	/** Collect every pane id contained in a workspace. */
-	private paneIdsOf(ws: ProjectWorkspace): string[] {
-		return ws.terminalTabs.flatMap((t) => t.panes.map((p) => p.id));
+	/** Pane and Claude session ids the chat adoption poller must skip, closed sessions included. */
+	knownChatIds(): string[] {
+		const panes = this.workspaces.flatMap((w) => this.panesOf(w));
+		return [
+			...panes.map((p) => p.id),
+			...panes.flatMap((p) => (p.claudeSessionId ? [p.claudeSessionId] : [])),
+			...this.closedChatSessionIds
+		];
+	}
+
+	/**
+	 * Add a background chat tab for a session started on another device. The
+	 * chat attaches to the running process: starting an id the server already
+	 * runs returns that session. Returns false when no open workspace runs in its cwd.
+	 */
+	adoptServerChat(chat: AgentSummary): boolean {
+		const ws = adoptionWorkspace(this.workspaces, chat.worktreePath ?? chat.projectPath);
+		if (!ws) return false;
+		const paneId = uid();
+		const tab: TerminalTabState = {
+			id: uid(),
+			label: chat.title?.trim() || 'Remote chat',
+			split: 'horizontal',
+			type: 'claude',
+			panes: [
+				{
+					id: paneId,
+					type: 'claude',
+					claudeSessionId: chat.sessionId,
+					view: 'chat',
+					...(chat.claudeAccountId && { claudeAccountId: chat.claudeAccountId })
+				}
+			]
+		};
+		this.adoptedChatPaneIds.add(paneId);
+		this.updateWorkspace(ws.id, (w) => ({
+			...w,
+			terminalTabs: [...w.terminalTabs, tab],
+			activeTerminalTabId: w.activeTerminalTabId || tab.id
+		}));
+		return true;
+	}
+
+	private panesOf(ws: ProjectWorkspace): TerminalPaneState[] {
+		return ws.terminalTabs.flatMap((t) => t.panes);
 	}
 
 	/**
@@ -307,12 +359,14 @@ export class WorkspaceStore {
 	 * persisted re-attach mappings so a stale id is never reused. Adopted panes
 	 * belong to another device, so closing one only detaches and releases it.
 	 */
-	private disposeServerTerminals(paneIds: Iterable<string>): void {
+	private disposeServerTerminals(panes: Iterable<TerminalPaneState>): void {
 		const next = { ...this.serverTerminalIds };
 		let changed = false;
-		for (const paneId of paneIds) {
+		for (const { id: paneId, claudeSessionId } of panes) {
 			releaseChat(paneId);
-			void stopAgentForPane(paneId);
+			// A chat still listed while it stops must not be adopted back.
+			if (claudeSessionId) this.closedChatSessionIds.add(claudeSessionId);
+			if (!this.adoptedChatPaneIds.delete(paneId)) void stopAgentForPane(paneId);
 			const serverId = next[paneId];
 			if (serverId) {
 				if (this.adoptedPaneIds.delete(paneId)) {
@@ -368,7 +422,7 @@ export class WorkspaceStore {
 		const ids = closing.map((w) => w.id);
 		if (ids.length === 0) return;
 
-		this.disposeServerTerminals(closing.flatMap((w) => this.paneIdsOf(w)));
+		this.disposeServerTerminals(closing.flatMap((w) => this.panesOf(w)));
 		this.workspaces = this.workspaces.filter((w) => !ids.includes(w.id));
 
 		if (this.selectedId && ids.includes(this.selectedId)) {
@@ -381,7 +435,7 @@ export class WorkspaceStore {
 		const ws = this.workspaces.find((w) => w.id === workspaceId);
 		if (!ws) return;
 
-		this.disposeServerTerminals(this.paneIdsOf(ws));
+		this.disposeServerTerminals(this.panesOf(ws));
 		const idx = this.workspaces.indexOf(ws);
 		this.workspaces = this.workspaces.filter((w) => w.id !== workspaceId);
 
@@ -444,7 +498,7 @@ export class WorkspaceStore {
 		const tab = this.workspaces
 			.find((w) => w.id === workspaceId)
 			?.terminalTabs.find((t) => t.id === tabId);
-		if (tab) this.disposeServerTerminals(tab.panes.map((p) => p.id));
+		if (tab) this.disposeServerTerminals(tab.panes);
 		this.updateWorkspace(workspaceId, (w) => {
 			const tabIndex = w.terminalTabs.findIndex((t) => t.id === tabId);
 			const updatedTabs = w.terminalTabs.filter((t) => t.id !== tabId);
@@ -497,14 +551,14 @@ export class WorkspaceStore {
 	}
 
 	removePane(workspaceId: string, paneId: string) {
-		let removed = false;
+		let removed: TerminalPaneState | undefined;
 		suppressLayout(() => {
 			this.updateWorkspace(workspaceId, (w) => {
 				// A split shows two tabs, so the pane's tab may not be the active one.
 				const tab = w.terminalTabs.find((t) => t.panes.some((p) => p.id === paneId));
 				// Guard keeps the last pane.
 				if (!tab || tab.panes.length <= 1) return w;
-				removed = true;
+				removed = tab.panes.find((p) => p.id === paneId);
 				const updatedTab: TerminalTabState = {
 					...tab,
 					panes: tab.panes.filter((p) => p.id !== paneId)
@@ -516,7 +570,7 @@ export class WorkspaceStore {
 			});
 		});
 		// Kill the removed pane's server PTY so it doesn't leak.
-		if (removed) this.disposeServerTerminals([paneId]);
+		if (removed) this.disposeServerTerminals([removed]);
 	}
 
 	/** Add a new AI session tab (Claude or Codex) */
@@ -632,6 +686,7 @@ export class WorkspaceStore {
 		if (!pane || (pane.view ?? 'terminal') === view) return;
 		// Chat can't run inside the sandbox runtime: refuse before killing the terminal.
 		if (view === 'chat' && this.settingsStore.sandboxRuntimeEnabled) return;
+		this.adoptedChatPaneIds.delete(paneId);
 		if (view === 'chat') {
 			const serverId = this.serverTerminalIds[paneId];
 			if (serverId) {
@@ -696,6 +751,7 @@ export class WorkspaceStore {
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
 		if (!pane || pane.claudeSessionId === sessionId) return;
+		this.adoptedChatPaneIds.delete(paneId);
 		releaseChat(paneId);
 		if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
 		this.updateAISessionByPaneId(paneId, sessionId, 'claude');
@@ -774,7 +830,7 @@ export class WorkspaceStore {
 			await stopAgent(pane.claudeSessionId).catch(() => {});
 		}
 		if (oldTab && isAISessionType(oldTab.type)) {
-			this.disposeServerTerminals(oldTab.panes.map((p) => p.id));
+			this.disposeServerTerminals(oldTab.panes);
 		}
 		this.updateWorkspace(workspaceId, (w) => {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);

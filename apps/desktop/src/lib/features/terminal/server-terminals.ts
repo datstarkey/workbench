@@ -1,20 +1,40 @@
 /**
  * Terminals opened on another device (e.g. the phone, via server mode) share the
- * loopback server's TerminalManager, so the desktop can pick them up: this polls
- * the list and adopts unknown ids into the matching workspace as new tabs.
+ * loopback server's TerminalManager (and chat sessions its AgentManager), so the
+ * desktop can pick them up: this polls the lists and adopts unknown ids into the
+ * matching workspace as new tabs.
  */
-import type { ProjectWorkspace } from '$types/workbench';
+import type { AgentSummary, ProjectWorkspace } from '$types/workbench';
 import type { TerminalMeta } from './terminal-connection';
 
 export type AdoptableTerminal = Pick<TerminalMeta, 'id' | 'name' | 'cwd' | 'alive'>;
 
 /** Live terminals the desktop neither tracks in a pane nor created/killed itself. */
-export function adoptableTerminals(
-	list: AdoptableTerminal[],
+export function adoptableTerminals<T extends AdoptableTerminal>(
+	list: T[],
 	knownIds: ReadonlySet<string>,
 	isClaimed: (id: string) => boolean
-): AdoptableTerminal[] {
+): T[] {
 	return list.filter((t) => t.alive && !knownIds.has(t.id) && !isClaimed(t.id));
+}
+
+/**
+ * Live chat sessions the desktop didn't start: `knownIds` holds the session and
+ * pane ids of this window's panes (a `/clear` re-key reaches the pane a moment
+ * after the server lists it, but the pane id already matches).
+ */
+export function adoptableChats(
+	list: AgentSummary[],
+	knownIds: ReadonlySet<string>,
+	isClaimed: (sessionId: string) => boolean
+): AgentSummary[] {
+	return list.filter(
+		(c) =>
+			!c.exited &&
+			!knownIds.has(c.sessionId) &&
+			!(c.paneId && knownIds.has(c.paneId)) &&
+			!isClaimed(c.sessionId)
+	);
 }
 
 /**
@@ -73,31 +93,45 @@ export function paneDisplayName(
 	return undefined;
 }
 
-export interface AdoptionPollerDeps {
-	/** Current server terminals, or null to skip this round. */
-	listTerminals: () => Promise<AdoptableTerminal[] | null>;
-	isClaimed: (id: string) => boolean;
-	/** Server terminal ids already mapped to desktop panes. */
-	knownIds: () => Iterable<string>;
-	/** Add a tab for the terminal; false when no workspace matches. */
-	adopt: (terminal: AdoptableTerminal) => boolean;
-	onAdopted?: (terminal: AdoptableTerminal) => void;
-	intervalMs?: number;
+/** One kind of server session the desktop adopts into tabs. */
+export interface AdoptionSource<T> {
+	/** Current server items, or null to skip this round. */
+	list: () => Promise<T[] | null>;
+	/** The listed items not mapped to a pane, released or claimed locally. */
+	adoptable: (items: T[]) => T[];
+	/** Add a tab for the item; false when no workspace matches. */
+	adopt: (item: T) => boolean;
+	onAdopted?: (item: T) => void;
+}
+
+export type AdoptionRound = () => Promise<void>;
+
+export function adoptionRound<T>(source: AdoptionSource<T>): AdoptionRound {
+	return async () => {
+		const items = await source.list();
+		if (!items) return;
+		for (const item of source.adoptable(items)) {
+			if (source.adopt(item)) source.onAdopted?.(item);
+		}
+	};
 }
 
 export const ADOPTION_POLL_MS = 5000;
 
-/** Polls every few seconds while the window is visible, and on window focus. */
-export class TerminalAdoptionPoller {
+/** Runs every source's round every few seconds while the window is visible, and on focus. */
+export class AdoptionPoller {
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private running = false;
 	private readonly onFocus = () => void this.tick();
 
-	constructor(private readonly deps: AdoptionPollerDeps) {}
+	constructor(
+		private readonly rounds: AdoptionRound[],
+		private readonly intervalMs = ADOPTION_POLL_MS
+	) {}
 
 	start(): void {
 		if (this.timer) return;
-		this.timer = setInterval(() => void this.tick(), this.deps.intervalMs ?? ADOPTION_POLL_MS);
+		this.timer = setInterval(() => void this.tick(), this.intervalMs);
 		window.addEventListener('focus', this.onFocus);
 		void this.tick();
 	}
@@ -106,12 +140,7 @@ export class TerminalAdoptionPoller {
 		if (this.running || document.visibilityState !== 'visible') return;
 		this.running = true;
 		try {
-			const list = await this.deps.listTerminals();
-			if (!list) return;
-			const known = new Set(this.deps.knownIds());
-			for (const terminal of adoptableTerminals(list, known, this.deps.isClaimed)) {
-				if (this.deps.adopt(terminal)) this.deps.onAdopted?.(terminal);
-			}
+			for (const round of this.rounds) await round();
 		} finally {
 			this.running = false;
 		}
