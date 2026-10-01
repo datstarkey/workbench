@@ -1,5 +1,6 @@
 import type {
 	PermissionMode,
+	TaskInfo,
 	TranscriptItem,
 	TranscriptMeta,
 	TranscriptPatchHunk
@@ -259,4 +260,26 @@ export function modeLabel(mode: PermissionMode | null | undefined): string {
 export function formatElapsed(ms: number): string {
 	const total = Math.max(0, Math.floor(ms / 1000));
 	return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+const RUNNING: TaskInfo['status'][] = ['pending', 'running', 'paused'];
+
+export function isRunning(task: TaskInfo): boolean {
+	return RUNNING.includes(task.status);
+}
+
+/** Tasks for the side panel: agents and other jobs, running ones first. */
+export function sortTasks(tasks: TaskInfo[]): { agents: TaskInfo[]; jobs: TaskInfo[] } {
+	const byRunning = (a: TaskInfo, b: TaskInfo) => Number(isRunning(b)) - Number(isRunning(a));
+	return {
+		agents: tasks.filter((t) => t.kind === 'agent').sort(byRunning),
+		jobs: tasks.filter((t) => t.kind !== 'agent').sort(byRunning)
+	};
+}
+
+/** `1.8k tokens`, `24k tokens`. */
+export function formatCount(n: number, unit: string): string {
+	const value =
+		n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+	return `${value} ${unit}`;
 }

@@ -4,6 +4,7 @@
 	import { watch } from 'runed';
 	import { OverlayScrollbars } from 'overlayscrollbars';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
+	import BotIcon from '@lucide/svelte/icons/bot';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
 	import type { ProjectConfig } from '$types/workbench';
@@ -13,11 +14,13 @@
 	import ChatComposer from './ChatComposer.svelte';
 	import ChatPlan from './ChatPlan.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
+	import ChatTasks from './ChatTasks.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
 	import {
 		activity,
 		formatTokens,
 		groupBlocks,
+		isRunning,
 		latestTodos,
 		splitFences,
 		toolDetail
@@ -66,8 +69,12 @@
 
 	let draft = $state('');
 	let stickToBottom = true;
+	/** The tasks panel as an overlay, for panes too narrow to dock it. */
+	let tasksOpen = $state(false);
 
 	const blocks = $derived(groupBlocks(chat.items));
+	const tasks = $derived(chat.meta?.tasks ?? []);
+	const runningTasks = $derived(tasks.filter(isRunning).length);
 	const todos = $derived(latestTodos(chat.items));
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
@@ -124,7 +131,10 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="flex h-full min-h-0 flex-col bg-wb-bg text-sm text-wb-ink" onkeydown={onKeydown}>
+<div
+	class="@container relative flex h-full min-h-0 flex-col bg-wb-bg text-sm text-wb-ink"
+	onkeydown={onKeydown}
+>
 	<header class="flex h-9 shrink-0 items-center gap-3 border-b border-wb-hair pr-40 pl-4 text-xs">
 		<span
 			class={cn(
@@ -156,182 +166,217 @@
 				{Math.round(contextShare * 100)}%
 			</span>
 		{/if}
+		{#if tasks.length > 0}
+			<button
+				type="button"
+				class={cn(
+					'flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none @5xl:hidden',
+					contextShare > 0 ? '' : 'ml-auto',
+					runningTasks > 0 ? 'text-wb-claude' : 'text-wb-ink-mute'
+				)}
+				aria-expanded={tasksOpen}
+				onclick={() => (tasksOpen = !tasksOpen)}
+			>
+				<BotIcon class="size-3.5" />
+				{runningTasks > 0 ? `${runningTasks} running` : 'Tasks'}
+			</button>
+		{/if}
 	</header>
 
-	{#if chat.status === 'reconnecting'}
-		<div class="reconnect relative h-0.5 shrink-0 overflow-hidden bg-wb-panel2" role="status">
-			<span class="sr-only">Reconnecting to Claude</span>
-		</div>
-	{/if}
-
-	<div
-		{@attach overlayScrollbars()}
-		{@attach followLatest}
-		class="min-h-0 flex-1"
-		role="log"
-		aria-live="polite"
-	>
-		<div class="mx-auto flex max-w-3xl flex-col gap-3.5 px-5 py-5">
-			{#if chat.status === 'failed'}
-				<div class="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 text-center">
-					<p class="font-medium">Claude couldn't start</p>
-					<p class="text-xs text-wb-ink-mute">{chat.error}</p>
-					<div class="flex gap-2">
-						<button type="button" class="chat-btn primary" onclick={() => chat.open()}>
-							Try again
-						</button>
-						<button type="button" class="chat-btn" onclick={onShowTerminal}>Use the terminal</button
-						>
-					</div>
-				</div>
-			{:else if chat.status === 'starting' && chat.items.length === 0}
-				<div class="flex flex-col gap-3 pt-2" aria-label="Starting Claude">
-					<span class="skeleton h-9 w-2/5 self-end rounded-lg"></span>
-					<span class="skeleton h-3 w-4/5 rounded"></span>
-					<span class="skeleton h-3 w-3/5 rounded"></span>
-					<span class="skeleton h-8 w-full rounded-md"></span>
-					<p class="pt-1 text-xs text-wb-ink-soft">Starting Claude in {project.name}…</p>
-				</div>
-			{:else if chat.items.length === 0 && chat.pending.length === 0}
-				<div class="mt-[12vh] flex flex-col gap-4">
-					<h2 class="text-lg font-medium text-balance">What should Claude work on?</h2>
-					<p class="text-xs text-wb-ink-mute">
-						Working in <span class="font-mono text-wb-ink">{workdir}</span>
-					</p>
-					<div class="flex flex-wrap gap-2">
-						{#each STARTERS as starter (starter)}
-							<button
-								type="button"
-								class="rounded-full border border-wb-hair px-3 py-1.5 text-xs text-wb-ink-mute hover:border-wb-ink-soft hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
-								onclick={() => (draft = starter)}
-							>
-								{starter}
-							</button>
-						{/each}
-					</div>
+	<div class="flex min-h-0 flex-1">
+		<div class="flex min-h-0 min-w-0 flex-1 flex-col">
+			{#if chat.status === 'reconnecting'}
+				<div class="reconnect relative h-0.5 shrink-0 overflow-hidden bg-wb-panel2" role="status">
+					<span class="sr-only">Reconnecting to Claude</span>
 				</div>
 			{/if}
 
-			{#if chat.start > 0}
-				<p class="text-center text-xs text-wb-ink-soft">
-					Earlier messages are in the
-					<button type="button" class="underline hover:text-wb-ink" onclick={onShowTerminal}
-						>terminal</button
-					>.
-				</p>
-			{/if}
+			<div
+				{@attach overlayScrollbars()}
+				{@attach followLatest}
+				class="min-h-0 flex-1"
+				role="log"
+				aria-live="polite"
+			>
+				<div class="mx-auto flex max-w-3xl flex-col gap-3.5 px-5 py-5">
+					{#if chat.status === 'failed'}
+						<div class="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 text-center">
+							<p class="font-medium">Claude couldn't start</p>
+							<p class="text-xs text-wb-ink-mute">{chat.error}</p>
+							<div class="flex gap-2">
+								<button type="button" class="chat-btn primary" onclick={() => chat.open()}>
+									Try again
+								</button>
+								<button type="button" class="chat-btn" onclick={onShowTerminal}
+									>Use the terminal</button
+								>
+							</div>
+						</div>
+					{:else if chat.status === 'starting' && chat.items.length === 0}
+						<div class="flex flex-col gap-3 pt-2" aria-label="Starting Claude">
+							<span class="skeleton h-9 w-2/5 self-end rounded-lg"></span>
+							<span class="skeleton h-3 w-4/5 rounded"></span>
+							<span class="skeleton h-3 w-3/5 rounded"></span>
+							<span class="skeleton h-8 w-full rounded-md"></span>
+							<p class="pt-1 text-xs text-wb-ink-soft">Starting Claude in {project.name}…</p>
+						</div>
+					{:else if chat.items.length === 0 && chat.pending.length === 0}
+						<div class="mt-[12vh] flex flex-col gap-4">
+							<h2 class="text-lg font-medium text-balance">What should Claude work on?</h2>
+							<p class="text-xs text-wb-ink-mute">
+								Working in <span class="font-mono text-wb-ink">{workdir}</span>
+							</p>
+							<div class="flex flex-wrap gap-2">
+								{#each STARTERS as starter (starter)}
+									<button
+										type="button"
+										class="rounded-full border border-wb-hair px-3 py-1.5 text-xs text-wb-ink-mute hover:border-wb-ink-soft hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+										onclick={() => (draft = starter)}
+									>
+										{starter}
+									</button>
+								{/each}
+							</div>
+						</div>
+					{/if}
 
-			{#each blocks as block (block.kind === 'item' ? block.item.id : block.id)}
-				{#if block.kind === 'quiet'}
-					<div class="flex flex-wrap gap-1.5">
-						{#each block.tools as tool (tool.id)}
-							<span
-								class="max-w-full truncate rounded-md border border-wb-hair px-1.5 py-0.5 font-mono text-[11px] text-wb-ink-mute"
-								title={toolDetail(tool, workdir)}
+					{#if chat.start > 0}
+						<p class="text-center text-xs text-wb-ink-soft">
+							Earlier messages are in the
+							<button type="button" class="underline hover:text-wb-ink" onclick={onShowTerminal}
+								>terminal</button
+							>.
+						</p>
+					{/if}
+
+					{#each blocks as block (block.kind === 'item' ? block.item.id : block.id)}
+						{#if block.kind === 'quiet'}
+							<div class="flex flex-wrap gap-1.5">
+								{#each block.tools as tool (tool.id)}
+									<span
+										class="max-w-full truncate rounded-md border border-wb-hair px-1.5 py-0.5 font-mono text-[11px] text-wb-ink-mute"
+										title={toolDetail(tool, workdir)}
+									>
+										{tool.name} <span class="text-wb-ink">{toolDetail(tool, workdir)}</span>
+									</span>
+								{/each}
+							</div>
+						{:else if block.item.kind === 'user'}
+							<div
+								class="max-w-[85%] self-end rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap"
 							>
-								{tool.name} <span class="text-wb-ink">{toolDetail(tool, workdir)}</span>
-							</span>
-						{/each}
-					</div>
-				{:else if block.item.kind === 'user'}
-					<div
-						class="max-w-[85%] self-end rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap"
-					>
-						{block.item.text}
-					</div>
-				{:else if block.item.kind === 'text'}
-					<div class="flex min-w-0 flex-col gap-2 leading-relaxed">
-						{#each splitFences(block.item.text) as segment, i (i)}
-							{#if segment.kind === 'code'}
-								<pre
-									class="scrollbar-thin overflow-x-auto rounded-md border border-wb-hair bg-wb-panel px-3 py-2 font-mono text-xs">{segment.text}</pre>
-							{:else}
-								<p class="whitespace-pre-wrap">{segment.text}</p>
+								{block.item.text}
+							</div>
+						{:else if block.item.kind === 'text'}
+							<div class="flex min-w-0 flex-col gap-2 leading-relaxed">
+								{#each splitFences(block.item.text) as segment, i (i)}
+									{#if segment.kind === 'code'}
+										<pre
+											class="scrollbar-thin overflow-x-auto rounded-md border border-wb-hair bg-wb-panel px-3 py-2 font-mono text-xs">{segment.text}</pre>
+									{:else}
+										<p class="whitespace-pre-wrap">{segment.text}</p>
+									{/if}
+								{/each}
+								{#if now.kind === 'writing' && block.item.id === lastId}
+									<span class="caret" aria-hidden="true"></span>
+								{/if}
+							</div>
+						{:else if block.item.kind === 'thinking'}
+							{#if block.item.text}
+								<details class="text-xs text-wb-ink-soft">
+									<summary class="w-fit cursor-pointer select-none hover:text-wb-ink-mute">
+										Thinking
+									</summary>
+									<p class="mt-1.5 border-l border-wb-hair pl-3 whitespace-pre-wrap">
+										{block.item.text}
+									</p>
+								</details>
 							{/if}
-						{/each}
-						{#if now.kind === 'writing' && block.item.id === lastId}
-							<span class="caret" aria-hidden="true"></span>
-						{/if}
-					</div>
-				{:else if block.item.kind === 'thinking'}
-					{#if block.item.text}
-						<details class="text-xs text-wb-ink-soft">
-							<summary class="w-fit cursor-pointer select-none hover:text-wb-ink-mute">
-								Thinking
-							</summary>
-							<p class="mt-1.5 border-l border-wb-hair pl-3 whitespace-pre-wrap">
+						{:else if block.item.kind === 'tool'}
+							<ChatToolCard tool={block.item} cwd={workdir} />
+						{:else if block.item.kind === 'approval' && block.item.tool === 'AskUserQuestion'}
+							{@const approval = block.item}
+							<ChatQuestion
+								{approval}
+								onAnswer={(decision, answers) => chat.approve(approval.id, decision, answers)}
+							/>
+						{:else if block.item.kind === 'approval'}
+							{@const approval = block.item}
+							<ChatApproval
+								{approval}
+								cwd={workdir}
+								onDecide={(decision) => chat.approve(approval.id, decision)}
+							/>
+						{:else}
+							<p class="text-center text-xs whitespace-pre-wrap text-wb-ink-soft">
 								{block.item.text}
 							</p>
-						</details>
+						{/if}
+					{/each}
+
+					{#each chat.pending as prompt (prompt.id)}
+						<div
+							class="pending max-w-[85%] self-end rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap"
+						>
+							{prompt.text}
+						</div>
+					{/each}
+
+					{#if now.kind !== 'idle' && live}
+						<ChatActivity
+							activity={now}
+							since={chat.busySince}
+							cwd={workdir}
+							onStop={() => chat.interrupt()}
+						/>
 					{/if}
-				{:else if block.item.kind === 'tool'}
-					<ChatToolCard tool={block.item} cwd={workdir} />
-				{:else if block.item.kind === 'approval' && block.item.tool === 'AskUserQuestion'}
-					{@const approval = block.item}
-					<ChatQuestion
-						{approval}
-						onAnswer={(decision, answers) => chat.approve(approval.id, decision, answers)}
-					/>
-				{:else if block.item.kind === 'approval'}
-					{@const approval = block.item}
-					<ChatApproval
-						{approval}
-						cwd={workdir}
-						onDecide={(decision) => chat.approve(approval.id, decision)}
-					/>
-				{:else}
-					<p class="text-center text-xs whitespace-pre-wrap text-wb-ink-soft">{block.item.text}</p>
+
+					{#if chat.status === 'exited'}
+						<div
+							class="flex items-center gap-3 rounded-lg border border-wb-hair px-3.5 py-2.5 text-xs"
+						>
+							<span class="flex-1 text-wb-ink-mute">
+								{chat.error ?? 'Claude stopped. The conversation is saved.'}
+							</span>
+							<button type="button" class="chat-btn" onclick={() => chat.open()}>
+								<RotateCwIcon class="size-3" /> Restart
+							</button>
+						</div>
+					{/if}
+				</div>
+			</div>
+
+			<div class="mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-2 px-5 pb-4">
+				{#if chat.notice}
+					<p class="text-xs text-wb-err" role="alert">{chat.notice}</p>
 				{/if}
-			{/each}
-
-			{#each chat.pending as prompt (prompt.id)}
-				<div
-					class="pending max-w-[85%] self-end rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap"
-				>
-					{prompt.text}
-				</div>
-			{/each}
-
-			{#if now.kind !== 'idle' && live}
-				<ChatActivity
-					activity={now}
-					since={chat.busySince}
-					cwd={workdir}
+				{#if todos.length > 0}
+					<ChatPlan steps={todos} />
+				{/if}
+				<ChatComposer
+					id="chat-draft-{paneId}"
+					bind:draft
+					mode={chat.meta?.permissionMode ?? null}
+					busy={Boolean(chat.meta?.busy) && live}
+					{disabledReason}
+					onSend={send}
 					onStop={() => chat.interrupt()}
+					onMode={(mode) => chat.setMode(mode)}
 				/>
-			{/if}
-
-			{#if chat.status === 'exited'}
-				<div class="flex items-center gap-3 rounded-lg border border-wb-hair px-3.5 py-2.5 text-xs">
-					<span class="flex-1 text-wb-ink-mute">
-						{chat.error ?? 'Claude stopped. The conversation is saved.'}
-					</span>
-					<button type="button" class="chat-btn" onclick={() => chat.open()}>
-						<RotateCwIcon class="size-3" /> Restart
-					</button>
-				</div>
-			{/if}
+			</div>
 		</div>
+		{#if tasks.length > 0}
+			<div class="hidden @5xl:flex">
+				<ChatTasks {tasks} seenAt={chat.taskSeenAt} />
+			</div>
+		{/if}
 	</div>
 
-	<div class="mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-2 px-5 pb-4">
-		{#if chat.notice}
-			<p class="text-xs text-wb-err" role="alert">{chat.notice}</p>
-		{/if}
-		{#if todos.length > 0}
-			<ChatPlan steps={todos} />
-		{/if}
-		<ChatComposer
-			id="chat-draft-{paneId}"
-			bind:draft
-			mode={chat.meta?.permissionMode ?? null}
-			busy={Boolean(chat.meta?.busy) && live}
-			{disabledReason}
-			onSend={send}
-			onStop={() => chat.interrupt()}
-			onMode={(mode) => chat.setMode(mode)}
-		/>
-	</div>
+	{#if tasksOpen && tasks.length > 0}
+		<div class="absolute inset-y-0 right-0 z-20 flex shadow-2xl @5xl:hidden">
+			<ChatTasks {tasks} seenAt={chat.taskSeenAt} onClose={() => (tasksOpen = false)} />
+		</div>
+	{/if}
 </div>
 
 <style>

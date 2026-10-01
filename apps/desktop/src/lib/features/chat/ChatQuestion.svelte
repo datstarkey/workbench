@@ -1,6 +1,6 @@
 <script lang="ts">
 	import CheckIcon from '@lucide/svelte/icons/check';
-	import MessageCircleQuestionIcon from '@lucide/svelte/icons/message-circle-question';
+	import MessageCircleQuestionIcon from '@lucide/svelte/icons/message-circle-question-mark';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import type { ApprovalDecision } from '$types/workbench';

@@ -29,7 +29,8 @@ const meta = (busy = false): TranscriptMeta => ({
 	model: 'claude-opus-5-5[1m]',
 	permissionMode: 'default',
 	contextTokens: 1200,
-	busy
+	busy,
+	tasks: []
 });
 
 const body: StartAgentBody = { projectPath: '/repo', sessionId: 'sid', paneId: 'p1' };

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { TranscriptItem, TranscriptMeta } from '$types/workbench';
+import type { TaskInfo, TranscriptItem, TranscriptMeta } from '$types/workbench';
 import {
 	activity,
 	answerFor,
 	applyChanges,
+	formatCount,
+	sortTasks,
 	approvalPreview,
 	formatElapsed,
 	formatTokens,
@@ -22,7 +24,8 @@ const meta: TranscriptMeta = {
 	model: null,
 	permissionMode: null,
 	contextTokens: null,
-	busy: false
+	busy: false,
+	tasks: []
 };
 
 function tool(id: string, name: string, input: Record<string, unknown> = {}) {
@@ -232,5 +235,34 @@ describe('questions', () => {
 		expect(answerFor(['A'], '')).toBe('A');
 		expect(answerFor(['A', 'B'], ' also C ')).toBe('A, B, also C');
 		expect(answerFor([], '')).toBe('');
+	});
+});
+
+describe('tasks panel', () => {
+	const task = (id: string, kind: string, status: TaskInfo['status']): TaskInfo => ({
+		id,
+		kind,
+		status,
+		description: id,
+		background: false,
+		toolUses: 0,
+		tokens: 0,
+		durationMs: 0
+	});
+
+	it('splits agents from other jobs, running first', () => {
+		const { agents, jobs } = sortTasks([
+			task('a-done', 'agent', 'completed'),
+			task('shell', 'local_bash', 'running'),
+			task('a-live', 'agent', 'running')
+		]);
+		expect(agents.map((t) => t.id)).toEqual(['a-live', 'a-done']);
+		expect(jobs.map((t) => t.id)).toEqual(['shell']);
+	});
+
+	it('abbreviates counts', () => {
+		expect(formatCount(7, 'tool calls')).toBe('7 tool calls');
+		expect(formatCount(1800, 'tokens')).toBe('1.8k tokens');
+		expect(formatCount(24057, 'tokens')).toBe('24k tokens');
 	});
 });

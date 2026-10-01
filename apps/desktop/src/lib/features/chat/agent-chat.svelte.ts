@@ -46,6 +46,8 @@ export class AgentChat {
 	busySince = $state<number | null>(null);
 	/** The session continued under a new id (`/clear`); the pane follows it. */
 	sessionId = $state('');
+	/** When each task was first seen (client clock), for its running timer. */
+	taskSeenAt = $state.raw<Record<string, number>>({});
 
 	private readonly body: StartAgentBody;
 	private readonly api: AgentApi;
@@ -141,6 +143,14 @@ export class AgentChat {
 	private setMeta(meta: TranscriptMeta): void {
 		if (meta.busy && !this.meta?.busy) this.busySince = Date.now();
 		if (!meta.busy) this.busySince = null;
+		const unseen = meta.tasks.filter((t) => !(t.id in this.taskSeenAt));
+		if (unseen.length > 0) {
+			const now = Date.now();
+			this.taskSeenAt = {
+				...this.taskSeenAt,
+				...Object.fromEntries(unseen.map((t) => [t.id, now]))
+			};
+		}
 		this.meta = meta;
 	}
 

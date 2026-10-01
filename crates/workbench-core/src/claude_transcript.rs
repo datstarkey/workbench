@@ -22,7 +22,7 @@ mod items;
 mod parse;
 mod protocol;
 
-pub use items::{ApprovalDecision, ToolStatus, TranscriptItem, TranscriptMeta};
+pub use items::{ApprovalDecision, TaskInfo, ToolStatus, TranscriptItem, TranscriptMeta};
 
 use parse::{clip, clip_patch, clip_value, str_at, tool_output_text, user_visible_text, UserText};
 pub use parse::{find_transcript, is_uuid};
@@ -150,6 +150,10 @@ impl Transcript {
                         );
                     }
                 }
+                Some("task_started" | "task_progress" | "task_updated" | "task_notification") => {
+                    self.apply_task(obj)
+                }
+                Some("background_tasks_changed") => self.apply_background_tasks(obj),
                 Some("compact_boundary") => {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
                     let text = "Conversation compacted".to_string();
@@ -164,12 +168,117 @@ impl Transcript {
         applied
     }
 
+    fn task_mut(&mut self, id: &str) -> &mut TaskInfo {
+        let tasks = &mut self.meta.tasks;
+        let i = match tasks.iter().position(|t| t.id == id) {
+            Some(i) => i,
+            None => {
+                tasks.push(TaskInfo {
+                    id: id.to_string(),
+                    kind: "agent".into(),
+                    status: "running".into(),
+                    ..TaskInfo::default()
+                });
+                tasks.len() - 1
+            }
+        };
+        &mut tasks[i]
+    }
+
+    fn apply_task(&mut self, obj: &Value) {
+        let Some(id) = str_at(obj, "task_id") else {
+            return;
+        };
+        let progress = str_at(obj, "subtype") == Some("task_progress");
+        let task = self.task_mut(id);
+        let text = |k| str_at(obj, k).filter(|s| !s.is_empty()).map(String::from);
+        // A progress event's description is the current step, not the task's name.
+        match text("description") {
+            Some(d) if progress => task.activity = Some(d),
+            Some(d) => task.description = d,
+            None => {}
+        }
+        if let Some(t) = text("tool_use_id") {
+            task.tool_use_id = Some(t);
+        }
+        if let Some(t) = text("subagent_type") {
+            task.subagent_type = Some(t);
+        }
+        if let Some(t) = text("task_type") {
+            task.kind = if t.contains("agent") {
+                "agent".into()
+            } else {
+                t
+            };
+        }
+        if let Some(b) = obj.get("is_backgrounded").and_then(Value::as_bool) {
+            task.background = b;
+        }
+        if let Some(usage) = obj.get("usage") {
+            let n = |k| usage.get(k).and_then(Value::as_u64);
+            task.tool_uses = n("tool_uses").unwrap_or(task.tool_uses);
+            task.tokens = n("total_tokens").unwrap_or(task.tokens);
+            task.duration_ms = n("duration_ms").unwrap_or(task.duration_ms);
+        }
+        if let Some(t) = text("last_tool_name") {
+            task.last_tool = Some(t);
+        }
+        if let Some(t) = text("summary") {
+            task.summary = Some(clip(&t));
+        }
+        if let Some(status) = text("status") {
+            task.status = status; // task_notification: completed | failed | stopped
+            task.activity = None;
+        }
+        if let Some(patch) = obj.get("patch") {
+            if let Some(status) = str_at(patch, "status") {
+                task.status = status.to_string();
+            }
+            if let Some(d) = str_at(patch, "description") {
+                task.description = d.to_string();
+            }
+            if let Some(e) = str_at(patch, "error") {
+                task.summary = Some(clip(e));
+            }
+            if let Some(b) = patch.get("is_backgrounded").and_then(Value::as_bool) {
+                task.background = b;
+            }
+        }
+    }
+
+    /// The CLI's list of live background jobs: add any not seen starting.
+    fn apply_background_tasks(&mut self, obj: &Value) {
+        let Some(list) = obj.get("tasks").and_then(Value::as_array) else {
+            return;
+        };
+        for entry in list {
+            let Some(id) = str_at(entry, "task_id") else {
+                continue;
+            };
+            let task_type = str_at(entry, "task_type")
+                .unwrap_or("background")
+                .to_string();
+            let description = str_at(entry, "description").unwrap_or_default().to_string();
+            let task = self.task_mut(id);
+            task.background = true;
+            task.kind = if task_type.contains("agent") {
+                "agent".into()
+            } else {
+                task_type
+            };
+            if task.description.is_empty() {
+                task.description = description;
+            }
+        }
+    }
+
     /// `/clear` and friends: the conversation starts over under a new id.
     fn reset(&mut self) {
         let meta = TranscriptMeta {
             busy: false,
             title: None,
             context_tokens: None,
+            tasks: Vec::new(),
             ..self.meta.clone()
         };
         *self = Self {

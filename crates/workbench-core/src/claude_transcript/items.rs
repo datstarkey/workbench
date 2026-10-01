@@ -88,6 +88,34 @@ impl TranscriptItem {
     }
 }
 
+/// A subagent or background job Claude started (the CLI's `task_*` events).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskInfo {
+    pub id: String,
+    /// The Task/Agent tool call that started it, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// `agent` for subagents; otherwise the CLI's task type (e.g. a shell).
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
+    pub description: String,
+    /// `pending` | `running` | `completed` | `failed` | `stopped` | `killed` | `paused`.
+    pub status: String,
+    pub background: bool,
+    pub tool_uses: u64,
+    pub tokens: u64,
+    pub duration_ms: u64,
+    /// What it's doing now (`task_progress`), e.g. "Running the test suite".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptMeta {
@@ -99,4 +127,6 @@ pub struct TranscriptMeta {
     /// A turn is in progress: set by a prompt or the first model event,
     /// cleared by `result`, the JSONL `turn_duration` line or an interrupt.
     pub busy: bool,
+    /// Subagents and background jobs, in start order.
+    pub tasks: Vec<TaskInfo>,
 }

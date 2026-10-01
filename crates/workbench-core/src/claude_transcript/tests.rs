@@ -414,3 +414,64 @@ fn questions_are_answered_through_updated_input() {
     assert!(matches!(&t.items()[0],
         TranscriptItem::Approval { answers: Some(a), .. } if a[question] == "dayjs"));
 }
+
+#[test]
+fn subagents_and_background_jobs_are_tracked() {
+    let mut t = Transcript::default();
+    let sys = |sub: &str, extra: Value| {
+        let mut v = json!({"type":"system","subtype":sub,"uuid":"x","session_id":"s"});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        v
+    };
+    t.apply(&sys(
+        "task_started",
+        json!({"task_id":"a1","tool_use_id":"toolu_task",
+        "description":"Find flaky tests","subagent_type":"Explore","task_type":"local_agent"}),
+    ));
+    let a = t.apply(&sys(
+        "task_progress",
+        json!({"task_id":"a1","description":"Find flaky tests",
+        "usage":{"total_tokens":1800,"tool_uses":7,"duration_ms":12000},"last_tool_name":"Grep"}),
+    ));
+    assert!(a.meta, "progress reaches clients through meta");
+    t.apply(&sys(
+        "background_tasks_changed",
+        json!({"tasks":[
+        {"task_id":"b1","task_type":"local_bash","description":"bun run dev"}]}),
+    ));
+    t.apply(&sys(
+        "task_notification",
+        json!({"task_id":"a1","status":"completed",
+        "output_file":"/tmp/o","summary":"Two tests depend on wall-clock time."}),
+    ));
+    t.apply(&sys(
+        "task_updated",
+        json!({"task_id":"b1","patch":{"status":"failed","error":"exit 1"}}),
+    ));
+
+    let tasks = &t.meta().tasks;
+    assert_eq!(tasks.len(), 2);
+    let agent = &tasks[0];
+    assert_eq!(
+        (agent.kind.as_str(), agent.status.as_str()),
+        ("agent", "completed")
+    );
+    assert_eq!(agent.subagent_type.as_deref(), Some("Explore"));
+    assert_eq!((agent.tool_uses, agent.tokens), (7, 1800));
+    assert_eq!(agent.last_tool.as_deref(), Some("Grep"));
+    assert_eq!(
+        agent.description, "Find flaky tests",
+        "progress keeps the task's name"
+    );
+    assert_eq!(agent.activity, None, "a finished task has no current step");
+    assert!(agent.summary.as_deref().unwrap().contains("wall-clock"));
+    let shell = &tasks[1];
+    assert_eq!(
+        (shell.kind.as_str(), shell.status.as_str()),
+        ("local_bash", "failed")
+    );
+    assert!(shell.background);
+    assert_eq!(shell.description, "bun run dev");
+}

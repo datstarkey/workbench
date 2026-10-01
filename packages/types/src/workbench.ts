@@ -537,12 +537,32 @@ export type TranscriptItem =
 	  }
 	| { kind: 'notice'; id: string; text: string };
 
+/** A subagent or background job Claude started (mirror of core `TaskInfo`). */
+export interface TaskInfo {
+	id: string;
+	toolUseId?: string;
+	/** `agent` for subagents; otherwise the CLI's task type, e.g. `local_bash`. */
+	kind: string;
+	subagentType?: string;
+	description: string;
+	status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'killed' | 'paused';
+	background: boolean;
+	toolUses: number;
+	tokens: number;
+	durationMs: number;
+	/** What it's doing right now. */
+	activity?: string;
+	lastTool?: string;
+	summary?: string;
+}
+
 export interface TranscriptMeta {
 	title: string | null;
 	model: string | null;
 	permissionMode: PermissionMode | null;
 	contextTokens: number | null;
 	busy: boolean;
+	tasks: TaskInfo[];
 }
 
 export type AgentServerMsg =
