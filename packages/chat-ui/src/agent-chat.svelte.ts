@@ -64,7 +64,7 @@ export class AgentChat {
 	/** When each task or running tool was first seen (client clock), for timers. */
 	seenAt = $state.raw<Record<string, number>>({});
 
-	private readonly body: StartAgentBody;
+	private body: StartAgentBody;
 	private readonly api: AgentApi;
 	private ws: WebSocket | null = null;
 	private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -73,6 +73,8 @@ export class AgentChat {
 	private generation = 0;
 	/** Called when Claude starts or stops waiting on the person (approval, question). */
 	onNeedsYou: ((waiting: boolean) => void) | null = null;
+	/** An `attachOnly` chat that ended was restarted here: this device now owns it. */
+	onTakeOver: (() => void) | null = null;
 	private waitingOnYou = false;
 	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
@@ -85,8 +87,15 @@ export class AgentChat {
 		void this.open();
 	}
 
-	/** Start (or resume) the process, then attach. Also the "Restart" action. */
+	/**
+	 * Start (or resume) the process, then attach. Also the "Restart" action: an
+	 * `attachOnly` chat re-attaches while it runs, and once ended it starts here.
+	 */
 	open(): Promise<void> {
+		if (this.body.attachOnly && (this.status === 'exited' || this.status === 'failed')) {
+			this.body = { ...this.body, attachOnly: false };
+			this.onTakeOver?.();
+		}
 		this.ws?.close(); // a Restart must not leave the old socket behind
 		this.ws = null;
 		this.status = 'starting';

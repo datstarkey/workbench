@@ -1402,6 +1402,29 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         "no second claude process was started"
     );
 
+    // Another device holding the old id follows the re-key from the list.
+    let list: Vec<Value> = client()
+        .get(format!("{base}/agent/claude"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["sessionId"], new_id);
+    assert_eq!(list[0]["previousIds"], json!([id]));
+
+    let attach = || {
+        client()
+            .post(format!("{base}/agent/claude"))
+            .json(&json!({ "projectPath": "/not/registered", "sessionId": id, "attachOnly": true }))
+            .send()
+    };
+    let res = attach().await.unwrap();
+    assert_eq!(res.status(), 200, "attaching skips the cwd checks");
+    assert_eq!(res.json::<Value>().await.unwrap()["sessionId"], new_id);
+
     let res = client()
         .delete(format!("{base}/agent/claude?paneId=pane-1"))
         .send()
@@ -1421,6 +1444,12 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         matches!(closed, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
         "socket closes after exit, got {closed:?}"
     );
+
+    // Attaching to an ended session must not bring it back.
+    let res = attach().await.unwrap();
+    assert_eq!(res.status(), 404);
+    let received = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(received.matches(r#""subtype":"initialize""#).count(), 1);
 
     handle.stop().await;
 }

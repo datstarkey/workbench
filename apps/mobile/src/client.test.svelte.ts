@@ -230,7 +230,8 @@ describe('MobileClient', () => {
 			busySince: null,
 			updatedAt: 0,
 			waiting: null,
-			running: null
+			running: null,
+			previousIds: []
 		};
 
 		/** A fake server recording each call; terminals it creates are listed until killed. */

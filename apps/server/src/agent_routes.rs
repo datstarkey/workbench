@@ -1,6 +1,7 @@
 //! HTTP + WebSocket surface for chat sessions:
 //! - `GET /agent/claude` lists live sessions ([`AgentSummary`]), newest change first.
-//! - `POST /agent/claude` starts (or returns) the session for a Claude session id.
+//! - `POST /agent/claude` starts (or returns) the session for a Claude session id;
+//!   with `attachOnly` it only returns a running one (404 otherwise).
 //! - `DELETE /agent/claude/:id` stops it; `DELETE /agent/claude?paneId=` stops
 //!   whatever a closed pane owned.
 //! - `WS /agent/claude/:id/ws` streams `snapshot` then `update`/`exit` frames and
@@ -39,12 +40,23 @@ pub struct StartBody {
     pub hook_socket: Option<String>,
     /// Claude account to run under; an id, never a path (see `claude_accounts`).
     pub claude_account_id: Option<String>,
+    /// Join the running session only, never spawn one (a chat another device owns).
+    #[serde(default)]
+    pub attach_only: bool,
 }
 
 pub async fn agent_start(
     State(state): State<AppState>,
     Json(body): Json<StartBody>,
 ) -> ApiResult<Json<Value>> {
+    if body.attach_only {
+        // Spawns nothing, so neither the sandbox nor the cwd checks apply.
+        let session = state.agents.get(&body.session_id).ok_or_else(|| ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: "This chat ended on the other device.".into(),
+        })?;
+        return Ok(Json(json!({"sessionId": session.id()})));
+    }
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
         // Sandboxed Claude runs through srt's launcher; chat mode spawns the CLI

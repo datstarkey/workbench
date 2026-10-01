@@ -54,8 +54,13 @@
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { startServer } from '$lib/server-mode';
 	import { onDestroy, onMount } from 'svelte';
-	import { TerminalAdoptionPoller } from '$features/terminal/server-terminals';
+	import {
+		AdoptionPoller,
+		adoptableTerminals,
+		adoptionRound
+	} from '$features/terminal/server-terminals';
 	import { isClaimedLocally, listServerTerminals } from '$features/terminal/terminal-connection';
+	import { listAgents } from '$features/chat/agent-api';
 	import { watch } from 'runed';
 	import { Toaster, toast } from 'svelte-sonner';
 
@@ -180,23 +185,35 @@
 		}
 	});
 
-	// Terminals opened from another device appear as background tabs. Started only
-	// once workspaces are loaded, or every persisted pane's PTY would look foreign.
-	const terminalAdoption = new TerminalAdoptionPoller({
-		listTerminals: listServerTerminals,
-		isClaimed: isClaimedLocally,
-		knownIds: () => workspaceStore.knownServerTerminalIds(),
-		adopt: (t) => workspaceStore.adoptServerTerminal(t),
-		onAdopted: (t) => toast.info(`Terminal opened on another device: ${t.name ?? 'terminal'}`)
-	});
-	onDestroy(() => terminalAdoption.dispose());
+	// Terminals and chats opened from another device appear as background tabs. Started
+	// only once workspaces are loaded, or every persisted pane's session would look foreign.
+	const adoption = new AdoptionPoller([
+		adoptionRound({
+			list: listServerTerminals,
+			adoptable: (list) =>
+				adoptableTerminals(
+					list,
+					new Set(workspaceStore.knownServerTerminalIds()),
+					isClaimedLocally
+				),
+			adopt: (t) => workspaceStore.adoptServerTerminal(t),
+			onAdopted: (t) => toast.info(`Terminal opened on another device: ${t.name ?? 'terminal'}`)
+		}),
+		adoptionRound({
+			list: listAgents,
+			adoptable: (list) => workspaceStore.adoptableServerChats(list),
+			adopt: (c) => workspaceStore.adoptServerChat(c),
+			onAdopted: (c) => toast.info(`Chat opened on another device: ${c.title ?? 'chat'}`)
+		})
+	]);
+	onDestroy(() => adoption.dispose());
 
 	onMount(async () => {
 		instancesStore.load();
 		await Promise.all([workbenchSettingsStore.load(), projectStore.load()]);
 		await workspaceStore.load();
 		workspaceStore.ensureShape();
-		terminalAdoption.start();
+		adoption.start();
 		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
 			projectStore.openProject(projectStore.projects[0].path);
 		}

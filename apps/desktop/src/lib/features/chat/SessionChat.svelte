@@ -60,6 +60,7 @@
 	const workdir = $derived(cwd ?? project.path);
 	const claudeSessionStore = getClaudeSessionStore();
 	const settingsStore = getWorkbenchSettingsStore();
+	const workspaceStore = getWorkspaceStore();
 	// svelte-ignore state_referenced_locally
 	const { chat } = acquireChat(paneId, {
 		projectPath: project.path,
@@ -70,9 +71,12 @@
 		// The same --permission-mode terminal launches get from Settings.
 		...(settingsStore.claudePermissionMode !== 'default'
 			? { permissionMode: settingsStore.claudePermissionMode }
-			: {})
+			: {}),
+		// Another device's chat: join its process, never start one behind its back.
+		...(workspaceStore.isAdoptedPane(paneId) ? { attachOnly: true } : {})
 	});
 	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
+	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
 
 	watch(
 		() => chat.sessionId,
@@ -80,8 +84,6 @@
 			if (id && id !== sessionId) onSessionIdChange(id);
 		}
 	);
-
-	const workspaceStore = getWorkspaceStore();
 
 	/** `/resume` is a terminal picker the CLI doesn't offer in chat, so the app provides it. */
 	const RESUME: SlashCommand = {

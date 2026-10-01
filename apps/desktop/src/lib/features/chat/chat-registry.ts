@@ -24,6 +24,19 @@ export function acquireChat(
 	return { chat, created: true };
 }
 
+/**
+ * A chat in this window holds the session, e.g. it re-keyed (`/clear`) before
+ * its pane did. Chat adoption skips it.
+ */
+export function isChatClaimed(sessionId: string): boolean {
+	return [...chats.values()].some((c) => c.sessionId === sessionId);
+}
+
+/** Re-attach the pane's chat (a Restart of a chat another device owns). */
+export function reopenChat(paneId: string): void {
+	void chats.get(paneId)?.open();
+}
+
 export function releaseChat(paneId: string): void {
 	chats.get(paneId)?.dispose();
 	chats.delete(paneId);

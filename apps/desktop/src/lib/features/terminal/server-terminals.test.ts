@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import type { ProjectWorkspace } from '$types/workbench';
+import type { AgentSummary, ProjectWorkspace } from '$types/workbench';
 import {
+	adoptableChats,
 	adoptableTerminals,
+	adoptionRound,
 	adoptionWorkspace,
 	paneDisplayName,
 	withoutPanes,
-	TerminalAdoptionPoller,
+	AdoptionPoller,
 	type AdoptableTerminal,
-	type AdoptionPollerDeps
+	type AdoptionSource
 } from './server-terminals';
 
 const term = (id: string, overrides: Partial<AdoptableTerminal> = {}): AdoptableTerminal => ({
@@ -33,6 +35,39 @@ describe('adoptableTerminals', () => {
 		const list = [term('mapped'), term('claimed'), term('dead', { alive: false }), term('new')];
 		const result = adoptableTerminals(list, new Set(['mapped']), (id) => id === 'claimed');
 		expect(result.map((t) => t.id)).toEqual(['new']);
+	});
+});
+
+const chat = (sessionId: string, overrides: Partial<AgentSummary> = {}): AgentSummary => ({
+	sessionId,
+	projectPath: '/p',
+	worktreePath: null,
+	paneId: null,
+	claudeAccountId: null,
+	title: null,
+	model: null,
+	busy: false,
+	exited: false,
+	busySince: null,
+	updatedAt: 0,
+	waiting: null,
+	running: null,
+	previousIds: [],
+	...overrides
+});
+
+describe('adoptableChats', () => {
+	it('keeps live chats that no pane shows and this window never claimed', () => {
+		const list = [
+			chat('in-pane'),
+			chat('rekeyed', { paneId: 'pane-1' }),
+			chat('claimed'),
+			chat('ended', { exited: true }),
+			chat('phone')
+		];
+		const known = new Set(['in-pane', 'pane-1']);
+		const result = adoptableChats(list, known, (id) => id === 'claimed');
+		expect(result.map((c) => c.sessionId)).toEqual(['phone']);
 	});
 });
 
@@ -96,27 +131,25 @@ describe('paneDisplayName', () => {
 	});
 });
 
-describe('TerminalAdoptionPoller', () => {
-	let listTerminals: Mock<AdoptionPollerDeps['listTerminals']>;
-	let adopt: Mock<AdoptionPollerDeps['adopt']>;
+describe('AdoptionPoller', () => {
+	type Source = AdoptionSource<AdoptableTerminal>;
+	let listTerminals: Mock<Source['list']>;
+	let adopt: Mock<Source['adopt']>;
 	let onAdopted: Mock<(terminal: AdoptableTerminal) => void>;
-	let deps: AdoptionPollerDeps;
-	let poller: TerminalAdoptionPoller;
+	let poller: AdoptionPoller;
 
 	beforeEach(() => {
 		vi.useFakeTimers();
 		listTerminals = vi.fn(async () => [term('known'), term('foreign')]);
 		adopt = vi.fn(() => true);
 		onAdopted = vi.fn();
-		deps = {
-			listTerminals,
-			isClaimed: () => false,
-			knownIds: () => ['known'],
+		const round = adoptionRound<AdoptableTerminal>({
+			list: listTerminals,
+			adoptable: (list) => adoptableTerminals(list, new Set(['known']), () => false),
 			adopt,
-			onAdopted,
-			intervalMs: 1000
-		};
-		poller = new TerminalAdoptionPoller(deps);
+			onAdopted
+		});
+		poller = new AdoptionPoller([round], 1000);
 	});
 
 	afterEach(() => {
@@ -166,5 +199,37 @@ describe('TerminalAdoptionPoller', () => {
 		window.dispatchEvent(new Event('focus'));
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(listTerminals).toHaveBeenCalledTimes(3);
+	});
+
+	it('runs every source in one tick', async () => {
+		const listChats = vi.fn(async () => [chat('s1')]);
+		const adoptChat = vi.fn(() => true);
+		const both = new AdoptionPoller([
+			adoptionRound<AdoptableTerminal>({ list: listTerminals, adoptable: (l) => l, adopt }),
+			adoptionRound<AgentSummary>({ list: listChats, adoptable: (l) => l, adopt: adoptChat })
+		]);
+		await both.tick();
+		expect(adopt).toHaveBeenCalledTimes(2);
+		expect(adoptChat).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
+	});
+
+	it('still runs the other sources when one throws', async () => {
+		const adoptChat = vi.fn(() => true);
+		const both = new AdoptionPoller([
+			adoptionRound<AdoptableTerminal>({
+				list: async () => {
+					throw new Error('boom');
+				},
+				adoptable: (l) => l,
+				adopt
+			}),
+			adoptionRound<AgentSummary>({
+				list: async () => [chat('s1')],
+				adoptable: (l) => l,
+				adopt: adoptChat
+			})
+		]);
+		await expect(both.tick()).resolves.toBeUndefined();
+		expect(adoptChat).toHaveBeenCalledOnce();
 	});
 });

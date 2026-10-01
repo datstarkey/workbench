@@ -720,6 +720,8 @@ export interface StartAgentBody {
 	hookSocket?: string;
 	/** The pane's Claude account; absent is the default login. */
 	claudeAccountId?: string;
+	/** Join the running session only (another device's chat); 404 instead of spawning. */
+	attachOnly?: boolean;
 }
 
 /** A running chat session, as `GET /agent/claude` lists it (phone home screen). */
@@ -742,4 +744,6 @@ export interface AgentSummary {
 	waiting: { id: string; tool: string; preview: string } | null;
 	/** The newest tool call still running in this turn. */
 	running: { name: string; detail: string } | null;
+	/** Ids it ran under before a `/clear`, so a client holding one follows the re-key. */
+	previousIds: string[];
 }
