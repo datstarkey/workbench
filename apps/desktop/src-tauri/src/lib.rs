@@ -2,9 +2,9 @@
 // crate root so existing `crate::config`, `crate::git`, `crate::types`, … paths
 // throughout the desktop crate keep resolving without per-file edits.
 pub use workbench_core::{
-    claude_sessions, codex_config, codex_sessions, config, git, github, net, package_scripts,
-    paths, sandbox_runtime, session_utils, settings, shell, shell_integration, text, trello,
-    trello_automation, types,
+    claude_accounts, claude_sessions, codex_config, codex_sessions, config, git, github, net,
+    package_scripts, paths, sandbox_runtime, session_utils, settings, shell, shell_integration,
+    text, trello, trello_automation, types,
 };
 
 // The e2e WebDriver server is unauthenticated control of the webview (and so of
@@ -55,6 +55,7 @@ macro_rules! build_invoke_handler {
             commands::load_workspaces,
             commands::save_workspaces,
             commands::discover_claude_sessions,
+            commands::claude_auth_status,
             commands::load_claude_settings,
             commands::save_claude_settings,
             commands::list_claude_plugins,

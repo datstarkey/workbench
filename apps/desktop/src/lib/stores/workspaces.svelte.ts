@@ -164,12 +164,14 @@ export class WorkspaceStore {
 		};
 	}
 
-	private createTaskTerminalTab(task: ProjectTask): TerminalTabState {
+	private createTaskTerminalTab(task: ProjectTask, claudeAccountId?: string): TerminalTabState {
 		return {
 			id: uid(),
 			label: task.name,
 			split: 'horizontal',
-			panes: [{ id: uid(), startupCommand: task.command }]
+			panes: [
+				{ id: uid(), startupCommand: task.command, ...(claudeAccountId && { claudeAccountId }) }
+			]
 		};
 	}
 
@@ -177,7 +179,8 @@ export class WorkspaceStore {
 		label: string,
 		sessionId: string,
 		command: string,
-		type: SessionType
+		type: SessionType,
+		claudeAccountId?: string
 	): TerminalTabState {
 		return {
 			id: uid(),
@@ -189,7 +192,8 @@ export class WorkspaceStore {
 					id: uid(),
 					type,
 					claudeSessionId: sessionId,
-					startupCommand: command
+					startupCommand: command,
+					...(type === 'claude' && claudeAccountId && { claudeAccountId })
 				}
 			]
 		};
@@ -413,8 +417,12 @@ export class WorkspaceStore {
 		});
 	}
 
-	addProjectTaskTab(workspaceId: string, task: ProjectTask): { tabId: string } {
-		const tab = this.createTaskTerminalTab(task);
+	addProjectTaskTab(
+		workspaceId: string,
+		task: ProjectTask,
+		claudeAccountId?: string
+	): { tabId: string } {
+		const tab = this.createTaskTerminalTab(task, claudeAccountId);
 		this.updateWorkspace(workspaceId, (w) => {
 			return {
 				...w,
@@ -507,7 +515,13 @@ export class WorkspaceStore {
 					? explicit
 					: applyClaudeLaunchOptions(explicit, this.claudeLaunchOptions)
 				: newSessionCommand(type, this.claudeLaunchOptions);
-			const newTab = this.createAITab(label, '', startupCommand, type);
+			const newTab = this.createAITab(
+				label,
+				'',
+				startupCommand,
+				type,
+				this.settingsStore.activeClaudeAccountId
+			);
 			tabId = newTab.id;
 			return {
 				...w,
@@ -644,7 +658,14 @@ export class WorkspaceStore {
 			const command = sessionId
 				? resumeCommand(type, sessionId, this.claudeLaunchOptions)
 				: newSessionCommand(type, this.claudeLaunchOptions);
-			const newTab = this.createAITab(tab.label, sessionId ?? '', command, type);
+			// A restart stays on the pane's account: its transcript lives there.
+			const newTab = this.createAITab(
+				tab.label,
+				sessionId ?? '',
+				command,
+				type,
+				tab.panes[0]?.claudeAccountId
+			);
 			return {
 				...w,
 				terminalTabs: w.terminalTabs.map((t) => (t.id === tabId ? newTab : t)),
@@ -653,18 +674,21 @@ export class WorkspaceStore {
 		});
 	}
 
+	/** `accountId` is the account owning the transcript; a session only resumes there. */
 	resumeAISession(
 		workspaceId: string,
 		sessionId: string,
 		label: string,
-		type: SessionType = 'claude'
+		type: SessionType = 'claude',
+		accountId?: string
 	) {
 		this.updateWorkspace(workspaceId, (w) => {
 			const newTab = this.createAITab(
 				label,
 				sessionId,
 				resumeCommand(type, sessionId, this.claudeLaunchOptions),
-				type
+				type,
+				accountId
 			);
 			return {
 				...w,
@@ -733,12 +757,14 @@ export class WorkspaceStore {
 		);
 	}
 
+	/** `claudeAccountId` runs the task's shell under that Claude login (e.g. `claude auth login`). */
 	runTaskInWorkspace(
 		workspaceId: string,
-		task: ProjectTask
+		task: ProjectTask,
+		claudeAccountId?: string
 	): { workspaceId: string; tabId: string } {
 		this.selectedId = workspaceId;
-		const { tabId } = this.addProjectTaskTab(workspaceId, task);
+		const { tabId } = this.addProjectTaskTab(workspaceId, task, claudeAccountId);
 		return { workspaceId, tabId };
 	}
 

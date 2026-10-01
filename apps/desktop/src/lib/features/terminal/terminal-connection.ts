@@ -67,6 +67,8 @@ export interface ConnectOptions {
 	shell?: string;
 	/** Hook-bridge socket address — forwarded as WORKBENCH_HOOK_SOCKET. */
 	hookSocket?: string;
+	/** Saved Claude account — the server sets its dir as CLAUDE_CONFIG_DIR. */
+	claudeAccountId?: string;
 }
 
 /** Server-side terminal metadata returned by GET/POST /remote/terminals. */
@@ -305,7 +307,8 @@ export class TerminalConnection {
 				rows: opts.rows,
 				paneId: opts.paneId ?? null,
 				shell: opts.shell || null,
-				hookSocket: opts.hookSocket ?? null
+				hookSocket: opts.hookSocket ?? null,
+				claudeAccountId: opts.claudeAccountId ?? null
 			})
 		});
 		if (!resp.ok) {

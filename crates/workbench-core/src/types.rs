@@ -144,6 +144,9 @@ pub struct DiscoveredClaudeSession {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_role: Option<String>,
+    /// Claude account whose config dir holds the transcript; `None` is the default `~/.claude`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
 }
 
 // Git types
@@ -371,6 +374,21 @@ pub struct WorkbenchSettings {
     pub server_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_window_bounds: Option<SettingsWindowBounds>,
+    /// Extra Claude logins, each its own `CLAUDE_CONFIG_DIR`. The default `~/.claude` is implicit.
+    #[serde(default)]
+    pub claude_accounts: Vec<ClaudeAccount>,
+    /// Account new Claude sessions launch with; `None` is the default `~/.claude`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_claude_account: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeAccount {
+    pub id: String,
+    pub name: String,
+    /// Absolute path, exported to the session as `CLAUDE_CONFIG_DIR`.
+    pub config_dir: String,
 }
 
 fn default_server_port() -> u16 {
@@ -442,6 +460,8 @@ impl Default for WorkbenchSettings {
             server_port: default_server_port(),
             server_token: None,
             settings_window_bounds: None,
+            claude_accounts: Vec::new(),
+            active_claude_account: None,
         }
     }
 }
@@ -778,6 +798,7 @@ mod tests {
             label: "Fix the bug".to_string(),
             timestamp: "2025-01-15T10:30:00Z".to_string(),
             last_message_role: Some("assistant".to_string()),
+            account_id: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("\"sessionId\""));

@@ -221,7 +221,11 @@ export class ClaudeSessionStore {
 		type: SessionType = 'claude'
 	) {
 		if (!(await this.integrationApproval.ensureIntegration(type))) return;
-		this.workspaces.resumeAISession(workspaceId, sessionId, label, type);
+		const accountId =
+			type === 'claude'
+				? this.discoveredSessions.find((s) => s.sessionId === sessionId)?.accountId
+				: undefined;
+		this.workspaces.resumeAISession(workspaceId, sessionId, label, type, accountId);
 	}
 
 	/** Restart an AI session, gated through integration approval */

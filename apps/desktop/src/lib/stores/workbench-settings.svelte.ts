@@ -3,6 +3,7 @@ import type {
 	AccentColor,
 	AgentAction,
 	AgentActionTarget,
+	ClaudeAccount,
 	ClaudePermissionMode,
 	SessionType,
 	SettingsWindowBounds,
@@ -22,8 +23,17 @@ import { rotateServerToken } from '$lib/server-mode';
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<
 	WorkbenchSettings,
-	'agentActions' | 'claudeHooksApproved' | 'codexConfigApproved'
+	| 'agentActions'
+	| 'claudeHooksApproved'
+	| 'codexConfigApproved'
+	| 'claudeAccounts'
+	| 'activeClaudeAccount'
 >;
+
+/** `CLAUDE_CONFIG_DIR` must be absolute; Claude Code rejects a relative one. */
+function isAbsolutePath(path: string): boolean {
+	return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path);
+}
 
 export class WorkbenchSettingsStore {
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
@@ -53,6 +63,8 @@ export class WorkbenchSettingsStore {
 	serverPort = $state(4317);
 	serverToken: string | null = $state(null);
 	settingsWindowBounds: SettingsWindowBounds | null = $state(null);
+	claudeAccounts: ClaudeAccount[] = $state([]);
+	activeClaudeAccount: string | null = $state(null);
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -66,6 +78,11 @@ export class WorkbenchSettingsStore {
 		if (!this.sandboxRuntimeEnabled || IS_WINDOWS) return undefined;
 		return this.sandboxRuntimeSettingsPath || undefined;
 	}
+
+	/** Account id new Claude sessions launch with; undefined is the default `~/.claude`. */
+	readonly activeClaudeAccountId = $derived(
+		this.claudeAccounts.find((a) => a.id === this.activeClaudeAccount)?.id
+	);
 
 	readonly runnableActions = $derived.by(() =>
 		this.agentActions
@@ -100,6 +117,8 @@ export class WorkbenchSettingsStore {
 		this.serverPort = settings.serverPort ?? 4317;
 		this.serverToken = settings.serverToken ?? null;
 		this.settingsWindowBounds = settings.settingsWindowBounds ?? null;
+		this.claudeAccounts = Array.isArray(settings.claudeAccounts) ? settings.claudeAccounts : [];
+		this.activeClaudeAccount = settings.activeClaudeAccount ?? null;
 		this.loaded = true;
 		this.dirty = false;
 
@@ -202,6 +221,37 @@ export class WorkbenchSettingsStore {
 		await invoke('save_workbench_settings', { settings: this.toSettings() });
 	}
 
+	/**
+	 * Account switches and edits save at once, outside the settings form's
+	 * save/discard flow (like `setApproval`), so they never ride along with
+	 * unsaved form edits or wait on them.
+	 */
+	async setActiveClaudeAccount(id: string | null) {
+		this.activeClaudeAccount = id;
+		await invoke('save_workbench_settings', { settings: this.toSettings() });
+	}
+
+	async addClaudeAccount(name: string, configDir: string): Promise<ClaudeAccount> {
+		const account = { id: uid(), name: name.trim(), configDir: configDir.trim() };
+		if (!account.name) throw new Error('Account name is required');
+		if (!isAbsolutePath(account.configDir)) {
+			throw new Error('Config folder must be an absolute path');
+		}
+		if (this.claudeAccounts.some((a) => a.configDir === account.configDir)) {
+			throw new Error('Another account already uses that folder');
+		}
+		this.claudeAccounts = [...this.claudeAccounts, account];
+		await invoke('save_workbench_settings', { settings: this.toSettings() });
+		return account;
+	}
+
+	/** Forget an account. Its config folder (login, transcripts) is left on disk. */
+	async removeClaudeAccount(id: string) {
+		this.claudeAccounts = this.claudeAccounts.filter((a) => a.id !== id);
+		if (this.activeClaudeAccount === id) this.activeClaudeAccount = null;
+		await invoke('save_workbench_settings', { settings: this.toSettings() });
+	}
+
 	private toSettings(): WorkbenchSettings {
 		return {
 			worktreeStrategy: this.worktreeStrategy,
@@ -224,7 +274,9 @@ export class WorkbenchSettingsStore {
 			serverMode: this.serverMode,
 			serverPort: this.serverPort,
 			serverToken: this.serverToken,
-			settingsWindowBounds: this.settingsWindowBounds
+			settingsWindowBounds: this.settingsWindowBounds,
+			claudeAccounts: this.claudeAccounts,
+			activeClaudeAccount: this.activeClaudeAccount
 		};
 	}
 

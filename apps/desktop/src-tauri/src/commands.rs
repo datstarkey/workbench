@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use tauri::{AppHandle, Emitter, State};
 
+use crate::claude_accounts;
 use crate::claude_sessions;
 use crate::codex_config;
 use crate::codex_sessions;
@@ -151,6 +152,13 @@ pub fn discover_claude_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
     claude_sessions::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn claude_auth_status(
+    account_id: Option<String>,
+) -> Result<claude_accounts::ClaudeAuthStatus, String> {
+    claude_accounts::auth_status(account_id.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

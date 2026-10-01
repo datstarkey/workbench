@@ -27,6 +27,7 @@
 				{active}
 				{cwd}
 				startupCommand={primaryPane.startupCommand}
+				claudeAccountId={primaryPane.claudeAccountId}
 			/>
 		</div>
 	</div>

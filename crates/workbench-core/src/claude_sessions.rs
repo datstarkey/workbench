@@ -1,8 +1,10 @@
-/// Claude CLI session discovery — reads ~/.claude/projects/<encoded-path>/*.jsonl
+/// Claude CLI session discovery — reads <config dir>/projects/<encoded-path>/*.jsonl
 use anyhow::Result;
 use std::fs;
 use std::io::BufRead;
+use std::path::Path;
 
+use crate::claude_accounts;
 use crate::paths;
 use crate::session_utils;
 use crate::types::DiscoveredClaudeSession;
@@ -66,13 +68,32 @@ pub(crate) fn parse_session_jsonl(
         label,
         timestamp,
         last_message_role: None,
+        account_id: None,
     })
 }
 
-/// Discover Claude CLI sessions by reading ~/.claude/projects/<encoded-path>/*.jsonl
+/// Discover Claude CLI sessions in `<config dir>/projects/<encoded-path>/*.jsonl`
+/// across every Claude account, each tagged with the account that owns it (a
+/// session only resumes under its own config dir).
 pub fn discover_claude_sessions(project_path: &str) -> Result<Vec<DiscoveredClaudeSession>> {
+    let mut sessions = Vec::new();
+    for (account_id, dir) in claude_accounts::saved_config_dirs() {
+        sessions.extend(discover_in(&dir, project_path, account_id)?);
+    }
+
+    // Sort by timestamp descending (newest first)
+    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    Ok(sessions)
+}
+
+fn discover_in(
+    config_dir: &Path,
+    project_path: &str,
+    account_id: Option<String>,
+) -> Result<Vec<DiscoveredClaudeSession>> {
     let encoded = paths::encode_project_path(project_path);
-    let sessions_dir = paths::claude_user_dir().join("projects").join(&encoded);
+    let sessions_dir = config_dir.join("projects").join(&encoded);
 
     if !sessions_dir.is_dir() {
         return Ok(Vec::new());
@@ -97,12 +118,12 @@ pub fn discover_claude_sessions(project_path: &str) -> Result<Vec<DiscoveredClau
         }
 
         if let Some(session) = parse_session_jsonl(&path, session_id) {
-            sessions.push(session);
+            sessions.push(DiscoveredClaudeSession {
+                account_id: account_id.clone(),
+                ..session
+            });
         }
     }
-
-    // Sort by timestamp descending (newest first)
-    sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     Ok(sessions)
 }
@@ -272,5 +293,29 @@ mod tests {
         let session = result.unwrap();
         assert_eq!(session.label, "Valid message after garbage");
         assert_eq!(session.timestamp, "2024-01-15T10:00:00Z");
+    }
+
+    #[test]
+    fn discover_in_tags_sessions_with_their_account() {
+        let config_dir = tempdir().unwrap();
+        let project = "/repos/app";
+        let sessions_dir = config_dir
+            .path()
+            .join("projects")
+            .join(paths::encode_project_path(project));
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let mut file = fs::File::create(sessions_dir.join("s1.jsonl")).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user","timestamp":"2024-01-15T10:00:00Z","message":{{"content":"hi"}}}}"#
+        )
+        .unwrap();
+
+        let found = discover_in(config_dir.path(), project, Some("work".into())).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].account_id.as_deref(), Some("work"));
+        assert!(discover_in(config_dir.path(), "/repos/other", None)
+            .unwrap()
+            .is_empty());
     }
 }

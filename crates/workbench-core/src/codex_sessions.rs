@@ -175,6 +175,7 @@ fn parse_codex_session_jsonl(path: &Path, project_path: &Path) -> Option<Discove
         label,
         timestamp,
         last_message_role: None,
+        account_id: None,
     })
 }
 

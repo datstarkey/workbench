@@ -220,7 +220,8 @@ describe('TerminalConnection', () => {
 						rows: 25,
 						paneId: null,
 						shell: null,
-						hookSocket: null
+						hookSocket: null,
+						claudeAccountId: null
 					})
 				})
 			);
