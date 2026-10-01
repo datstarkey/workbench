@@ -110,6 +110,36 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('drops a /clear and re-bases prompts queued after it when the session re-keys', async () => {
+		const { chat, ws } = await connected();
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'u1', text: 'hello', timestamp: '' }]],
+			meta: meta(true)
+		});
+		chat.prompt('/clear');
+		chat.prompt('next thing');
+		expect(chat.pending.map((p) => p.text)).toEqual(['/clear', 'next thing']);
+
+		ws.emit({
+			t: 'snapshot',
+			sessionId: 'new-session',
+			start: 0,
+			items: [],
+			meta: meta(),
+			commands: [],
+			exited: false
+		});
+		expect(chat.pending.map((p) => p.text)).toEqual(['next thing']);
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'u2', text: 'next thing', timestamp: '' }]],
+			meta: meta(true)
+		});
+		expect(chat.pending).toEqual([]);
+		chat.dispose();
+	});
+
 	it('sends pasted images with the prompt and keeps their previews', async () => {
 		const { chat, ws } = await connected();
 		const png = { mediaType: 'image/png', data: 'iVBORw==', name: 'shot.png' };
