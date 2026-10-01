@@ -19,6 +19,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
+use workbench_core::claude_accounts;
 use workbench_core::claude_launch::PERMISSION_MODES;
 use workbench_core::claude_transcript::{
     self, ApprovalDecision, RunningSummary, Transcript, TranscriptItem, WaitingSummary,
@@ -149,7 +150,7 @@ impl AgentManager {
         let history = claude_transcript::find_transcript(&projects, &req.session_id);
         let transcript = history.as_deref().map(Transcript::load).unwrap_or_default();
 
-        let mut cmd = workbench_core::shell::command(claude_binary());
+        let mut cmd = workbench_core::shell::command(claude_accounts::claude_binary());
         cmd.args([
             "-p",
             "--input-format",
@@ -609,21 +610,4 @@ impl AgentSession {
             let _ = lock(&self.child).kill();
         }
     }
-}
-
-/// `WORKBENCH_CLAUDE_BIN`, else `claude` found on the enriched search path
-/// (GUI apps don't inherit the shell's PATH).
-fn claude_binary() -> PathBuf {
-    if let Some(bin) = std::env::var_os("WORKBENCH_CLAUDE_BIN") {
-        return bin.into();
-    }
-    let name = if cfg!(windows) {
-        "claude.exe"
-    } else {
-        "claude"
-    };
-    std::env::split_paths(&workbench_core::paths::enriched_path())
-        .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
-        .unwrap_or_else(|| name.into())
 }

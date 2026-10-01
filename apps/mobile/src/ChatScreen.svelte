@@ -15,11 +15,13 @@
 		ChatQuestion,
 		ChatTasks,
 		ChatTranscript,
+		ChatUsage,
 		contextUsed,
 		isRunning,
 		latestTodos,
 		limitNotice,
-		setChatPlatform
+		setChatPlatform,
+		usePlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
@@ -61,6 +63,12 @@
 		)
 	);
 	const contextShare = $derived(contextUsed(chat.meta));
+	// svelte-ignore state_referenced_locally
+	const usage = usePlanUsage(
+		`${client.connection?.url ?? ''}|${ref.claudeAccountId ?? ''}`,
+		(fresh) => client.agents.usage(ref.claudeAccountId, fresh),
+		() => chat.meta
+	);
 	const waiting = $derived(
 		chat.items.find(
 			(i): i is Extract<TranscriptItem, { kind: 'approval' }> =>
@@ -209,7 +217,7 @@
 		</button>
 	{/if}
 
-	{#if tasks.length > 0 || contextShare > 0}
+	{#if tasks.length > 0 || contextShare > 0 || usage.chips.length > 0}
 		<div class="flex shrink-0 gap-1.5 overflow-x-auto border-t border-wb-hair-soft px-3 py-1.5">
 			{#if tasks.length > 0}
 				<button
@@ -234,6 +242,10 @@
 					Context {Math.round(contextShare * 100)}%
 				</span>
 			{/if}
+			<ChatUsage
+				chips={usage.chips}
+				chipClass="h-7 rounded-full border border-wb-hair px-2.5 text-[11.5px]"
+			/>
 		</div>
 	{/if}
 

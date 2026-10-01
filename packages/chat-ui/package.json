@@ -29,6 +29,7 @@
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "catalog:",
 		"@tsconfig/svelte": "catalog:",
+		"jsdom": "^29.1.1",
 		"svelte": "catalog:",
 		"svelte-check": "catalog:",
 		"typescript": "catalog:",

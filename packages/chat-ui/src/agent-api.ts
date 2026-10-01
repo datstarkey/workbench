@@ -1,5 +1,5 @@
 import { agentWsUrl } from '@workbench/transport';
-import type { AgentClientMsg, AgentSummary, StartAgentBody } from '@workbench/types';
+import type { AgentClientMsg, AgentSummary, StartAgentBody, UsageLimit } from '@workbench/types';
 
 /** What an {@link AgentChat} needs from the server; injectable for tests. */
 export interface AgentApi {
@@ -56,6 +56,17 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		},
 		async list(): Promise<AgentSummary[]> {
 			return (await call<AgentSummary[]>('GET', '/agent/claude')) ?? [];
+		},
+		/**
+		 * The account's plan limits; empty without a plan. Cached a minute
+		 * server-side, or only a few seconds when `fresh` (a turn just ended).
+		 */
+		async usage(claudeAccountId?: string, fresh = false): Promise<UsageLimit[]> {
+			const query = new URLSearchParams({
+				...(claudeAccountId ? { claudeAccountId } : {}),
+				...(fresh ? { fresh: 'true' } : {})
+			}).toString();
+			return (await call<UsageLimit[]>('GET', `/agent/usage${query ? `?${query}` : ''}`)) ?? [];
 		},
 		/** One message without a socket, e.g. answering an approval from a list. */
 		async send(sessionId: string, msg: AgentClientMsg): Promise<void> {

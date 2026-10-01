@@ -1,5 +1,7 @@
 // Desktop-local: logins live in this machine's keychain / config dirs.
 import { invoke } from '@tauri-apps/api/core';
+import { usageChips } from '@workbench/chat-ui';
+import { planUsage } from '$features/chat/agent-api';
 import type { ClaudeAccount, ClaudeAuthStatus, UsageLimit } from '$types/workbench';
 
 /** Status-map key for the implicit default `~/.claude` account. */
@@ -28,43 +30,38 @@ export function describeAuth(status: ClaudeAuthStatus | null | undefined): strin
 	return [status.email, status.subscriptionType].filter(Boolean).join(' · ') || 'Logged in';
 }
 
-/** Usage at or above this is flagged, so a near-limit account stands out. */
-export const HIGH_USAGE_PERCENT = 80;
-
-const WEEK_ALL_MODELS = 'week (all models)';
-
-/** Compact plan usage, e.g. "Session 3% · Week 89%"; '' when there is none. */
+/** Compact plan usage named like the chat chips, e.g. "5h 3% · Week 89%"; '' without any. */
 export function describeUsage(limits: UsageLimit[] | null | undefined): string {
-	if (!limits?.length) return '';
-	const session = limits.find((l) => l.label === 'session');
-	const week =
-		limits.find((l) => l.label === WEEK_ALL_MODELS) ??
-		limits.find((l) => l.label.startsWith('week'));
-	return [session && `Session ${session.percent}%`, week && `Week ${week.percent}%`]
-		.filter(Boolean)
+	return usageChips(limits ?? [])
+		.map((c) => `${c.label} ${c.percent}%`)
 		.join(' · ');
 }
 
-/** Every limit with its reset time, for a tooltip. */
+/** Every shown limit with its reset time, for a tooltip. */
 export function usageDetail(limits: UsageLimit[] | null | undefined): string {
-	return (limits ?? [])
-		.map((l) => `${l.label}: ${l.percent}%${l.resets ? ` · resets ${l.resets}` : ''}`)
+	return usageChips(limits ?? [])
+		.map((c) => c.title)
 		.join('\n');
 }
 
 export function isHighUsage(limits: UsageLimit[] | null | undefined): boolean {
-	return (limits ?? []).some((l) => l.percent >= HIGH_USAGE_PERCENT);
+	return usageChips(limits ?? []).some((c) => c.high);
 }
 
 /**
  * Who each account is logged in as (`claude auth status`) and how much of its
- * plan limits it has used (`claude -p /usage`). Checked on demand (opening the
- * switcher) rather than polled: each check starts the CLI. `null` means the
- * check failed; usage is only checked for logged-in accounts.
+ * plan limits it has used (the loopback server's cached `/agent/usage`, so the
+ * same figures as the chat chips). Checked on demand (opening the switcher).
+ * `null` means the check failed; usage is only checked for logged-in accounts.
  */
 export class ClaudeAccountStatuses {
+	private readonly loadUsage: (accountId?: string) => Promise<UsageLimit[]>;
 	authByKey = $state<Record<string, ClaudeAuthStatus | null>>({});
 	usageByKey = $state<Record<string, UsageLimit[] | null>>({});
+
+	constructor(loadUsage: (accountId?: string) => Promise<UsageLimit[]> = planUsage) {
+		this.loadUsage = loadUsage;
+	}
 
 	async refresh(accounts: ClaudeAccount[]): Promise<void> {
 		const ids = [undefined, ...accounts.map((a) => a.id)];
@@ -84,7 +81,7 @@ export class ClaudeAccountStatuses {
 			return;
 		}
 		try {
-			this.usageByKey[key] = await invoke<UsageLimit[]>('claude_usage', { accountId });
+			this.usageByKey[key] = await this.loadUsage(id);
 		} catch {
 			this.usageByKey[key] = null;
 		}

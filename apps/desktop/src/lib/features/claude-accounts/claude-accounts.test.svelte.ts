@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { invokeSpy, mockInvoke, clearInvokeMocks } from '../../../test/tauri-mocks';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mockInvoke, clearInvokeMocks } from '../../../test/tauri-mocks';
 import type { UsageLimit } from '$types/workbench';
 import {
 	ClaudeAccountStatuses,
@@ -42,16 +42,16 @@ describe('usage formatting', () => {
 		{ label: 'week (Fable)', percent: 0 }
 	];
 
-	it('summarises the session and all-models week', () => {
-		expect(describeUsage(limits)).toBe('Session 3% · Week 89%');
-		expect(describeUsage([{ label: 'week (Opus)', percent: 12 }])).toBe('Week 12%');
+	it('names limits like the chat chips', () => {
+		expect(describeUsage(limits)).toBe('5h 3% · Week 89%');
+		expect(describeUsage([{ label: 'week (Opus)', percent: 12 }])).toBe('Opus wk 12%');
 		expect(describeUsage([])).toBe('');
 		expect(describeUsage(null)).toBe('');
 	});
 
-	it('lists every limit with its reset for the tooltip', () => {
+	it('lists the shown limits with their resets for the tooltip', () => {
 		expect(usageDetail(limits)).toBe(
-			'session: 3% · resets Oct 1 at 5:10pm\nweek (all models): 89% · resets Oct 2 at 9am\nweek (Fable): 0%'
+			'5-hour session: 3% used · resets Oct 1 at 5:10pm\nWeekly limit: 89% used · resets Oct 2 at 9am'
 		);
 	});
 
@@ -71,12 +71,11 @@ describe('ClaudeAccountStatuses', () => {
 			if (accountId === 'broken') throw new Error('no claude');
 			return { loggedIn: accountId !== 'out' };
 		});
-		mockInvoke('claude_usage', (args) => {
-			const { accountId } = args as { accountId: string | null };
+		const loadUsage = vi.fn(async (accountId?: string) => {
 			if (accountId === 'work') throw new Error('timed out');
 			return [{ label: 'session', percent: 3 }];
 		});
-		const statuses = new ClaudeAccountStatuses();
+		const statuses = new ClaudeAccountStatuses(loadUsage);
 
 		await statuses.refresh([
 			{ id: 'work', name: 'Work', configDir: '/w' },
@@ -89,7 +88,6 @@ describe('ClaudeAccountStatuses', () => {
 		expect(statuses.usageByKey.work).toBeNull();
 		expect(statuses.authByKey.out).toEqual({ loggedIn: false });
 		expect(statuses.authByKey.broken).toBeNull();
-		expect(invokeSpy).not.toHaveBeenCalledWith('claude_usage', { accountId: 'out' });
-		expect(invokeSpy).not.toHaveBeenCalledWith('claude_usage', { accountId: 'broken' });
+		expect(loadUsage.mock.calls.map(([id]) => id)).toEqual([undefined, 'work']);
 	});
 });

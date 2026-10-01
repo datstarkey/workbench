@@ -79,9 +79,26 @@ pub struct ClaudeAuthStatus {
     pub subscription_type: Option<String>,
 }
 
+/// `WORKBENCH_CLAUDE_BIN`, else `claude` found on the enriched search path
+/// (GUI apps don't inherit the shell's PATH).
+pub fn claude_binary() -> PathBuf {
+    if let Some(bin) = std::env::var_os("WORKBENCH_CLAUDE_BIN") {
+        return bin.into();
+    }
+    let name = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    std::env::split_paths(&paths::enriched_path())
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| name.into())
+}
+
 /// `claude` with `account_id`'s config dir exported.
 fn claude_command(account_id: Option<&str>) -> Result<std::process::Command> {
-    let mut cmd = crate::shell::command("claude");
+    let mut cmd = crate::shell::command(claude_binary());
     cmd.env("PATH", paths::enriched_path());
     if let Some(dir) = resolve_saved(account_id)? {
         cmd.env(CONFIG_DIR_ENV, dir);

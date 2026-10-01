@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::agent_routes::agent_message),
         )
         .route("/agent/claude/:id", delete(crate::agent_routes::agent_stop))
+        .route("/agent/usage", get(crate::agent_routes::agent_usage))
         .route(
             "/agent/claude/:id/ws",
             get(crate::agent_routes::agent_attach),

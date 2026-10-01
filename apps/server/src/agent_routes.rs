@@ -10,6 +10,8 @@
 //! - `POST /agent/claude/:id/message` applies one of those messages without a
 //!   socket (an approval from the phone's home screen): 200 with the reply
 //!   frame when there is one, else 204.
+//! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
+//!   usage (`claude -p /usage`), cached by [`crate::usage::UsageCache`].
 
 use std::sync::Arc;
 
@@ -21,6 +23,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
+use workbench_core::claude_accounts::{self, UsageLimit};
 use workbench_core::claude_transcript::ApprovalDecision;
 
 use crate::agent::{AgentSession, AgentSummary, PromptImage, StartAgent, MAX_IMAGES};
@@ -142,6 +145,26 @@ pub async fn agent_stop_pane(
     let agents = state.agents.clone();
     crate::routes::blocking(move || Ok(agents.stop_pane(&q.pane_id))).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageQuery {
+    claude_account_id: Option<String>,
+    /// Skip all but a very recent cached result, e.g. right after a turn.
+    #[serde(default)]
+    fresh: bool,
+}
+
+pub async fn agent_usage(
+    State(state): State<AppState>,
+    Query(q): Query<UsageQuery>,
+) -> ApiResult<Json<Vec<UsageLimit>>> {
+    let settings = crate::routes::blocking(workbench_core::config::load_workbench_settings).await?;
+    // An unknown id is refused, never answered with the default login's usage.
+    claude_accounts::resolve(&settings, q.claude_account_id.as_deref())
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(Json(state.usage.get(q.claude_account_id, q.fresh).await?))
 }
 
 pub async fn agent_attach(
