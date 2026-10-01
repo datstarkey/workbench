@@ -128,10 +128,22 @@ enum ClientMsg {
     Mode {
         mode: String,
     },
+    /// Fetch the whole output of a tool shown as a preview.
+    #[serde(rename_all = "camelCase")]
+    Output {
+        tool_id: String,
+    },
 }
 
-fn handle(session: &AgentSession, text: &str) -> anyhow::Result<()> {
-    match serde_json::from_str::<ClientMsg>(text)? {
+/// Apply a client message; `Some` is a reply for that client alone.
+fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
+    let reply = match serde_json::from_str::<ClientMsg>(text)? {
+        ClientMsg::Output { tool_id } => {
+            let text = session.full_output(&tool_id);
+            return Ok(Some(
+                json!({"t": "output", "toolId": tool_id, "text": text}),
+            ));
+        }
         ClientMsg::Prompt { text } if text.trim().is_empty() => Ok(()),
         ClientMsg::Prompt { text } => session.prompt(&text),
         ClientMsg::Approve {
@@ -141,7 +153,8 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<()> {
         } => session.approve(&request_id, decision, answers.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
         ClientMsg::Mode { mode } => session.set_mode(&mode),
-    }
+    };
+    reply.map(|()| None)
 }
 
 async fn stream(
@@ -172,8 +185,11 @@ async fn stream(
             }
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    if let Err(e) = handle(&session, &text) {
-                        let frame = json!({"t": "error", "message": e.to_string()});
+                    let frame = match handle(&session, &text) {
+                        Ok(reply) => reply,
+                        Err(e) => Some(json!({"t": "error", "message": e.to_string()})),
+                    };
+                    if let Some(frame) = frame {
                         if socket.send(Message::Text(frame.to_string())).await.is_err() {
                             return;
                         }

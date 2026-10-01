@@ -22,7 +22,10 @@ mod items;
 mod parse;
 mod protocol;
 
-pub use items::{ApprovalDecision, TaskInfo, ToolStatus, TranscriptItem, TranscriptMeta};
+pub use items::{
+    ApprovalDecision, RateLimitInfo, RetryInfo, TaskInfo, ToolStatus, TranscriptItem,
+    TranscriptMeta,
+};
 
 use parse::{clip, clip_patch, clip_value, str_at, tool_output_text, user_visible_text, UserText};
 pub use parse::{find_transcript, is_uuid};
@@ -62,7 +65,12 @@ pub struct Transcript {
     stream_slots: HashMap<String, VecDeque<usize>>,
     approvals: HashMap<String, PendingApproval>,
     unknown_seen: std::collections::HashSet<String>,
+    /// Whole outputs of tools whose item only carries a preview.
+    full_outputs: HashMap<String, String>,
 }
+
+/// Largest tool output kept whole for "show full output".
+const MAX_FULL_OUTPUT_BYTES: usize = 1024 * 1024;
 
 impl Transcript {
     /// History from a session JSONL. A missing or unreadable file is an empty
@@ -124,6 +132,7 @@ impl Transcript {
             }
             Some("attachment") => self.apply_queued_prompt(obj, &mut changed),
             Some("result") => self.apply_result(obj, &mut changed),
+            Some("rate_limit_event") => self.apply_rate_limit(obj),
             Some("ai-title") => self.meta.title = str_at(obj, "aiTitle").map(String::from),
             Some("permission-mode") => {
                 self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from)
@@ -154,6 +163,15 @@ impl Transcript {
                     self.apply_task(obj)
                 }
                 Some("background_tasks_changed") => self.apply_background_tasks(obj),
+                Some("api_retry") => {
+                    let n = |k| obj.get(k).and_then(Value::as_u64).unwrap_or(0);
+                    self.meta.retry = Some(RetryInfo {
+                        attempt: n("attempt"),
+                        max_retries: n("max_retries"),
+                        retry_delay_ms: n("retry_delay_ms"),
+                        error: str_at(obj, "error").map(String::from),
+                    });
+                }
                 Some("compact_boundary") => {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
                     let text = "Conversation compacted".to_string();
@@ -166,6 +184,26 @@ impl Transcript {
         applied.items = changed;
         applied.meta = self.meta != before;
         applied
+    }
+
+    fn apply_rate_limit(&mut self, obj: &Value) {
+        let Some(info) = obj.get("rate_limit_info") else {
+            return;
+        };
+        let Some(status) = str_at(info, "status") else {
+            return;
+        };
+        self.meta.rate_limit = Some(RateLimitInfo {
+            status: status.to_string(),
+            resets_at: info.get("resetsAt").and_then(Value::as_u64),
+            kind: str_at(info, "rateLimitType").map(String::from),
+            utilization: info.get("utilization").and_then(Value::as_f64),
+        });
+    }
+
+    /// The whole output of a tool whose item carries a preview.
+    pub fn full_output(&self, tool_id: &str) -> Option<&str> {
+        self.full_outputs.get(tool_id).map(String::as_str)
     }
 
     fn task_mut(&mut self, id: &str) -> &mut TaskInfo {
@@ -423,6 +461,7 @@ impl Transcript {
 
     fn apply_result(&mut self, obj: &Value, changed: &mut Vec<usize>) {
         self.meta.busy = false;
+        self.meta.retry = None;
         self.streaming_message = None;
         if obj.get("is_error").and_then(Value::as_bool) == Some(true) {
             let text = str_at(obj, "result")
@@ -541,6 +580,7 @@ impl Transcript {
         let TranscriptItem::Tool {
             status,
             output,
+            full_output_bytes,
             patch,
             ..
         } = &mut self.items[i]
@@ -553,7 +593,14 @@ impl Transcript {
         } else {
             ToolStatus::Ok
         };
-        *output = tool_output_text(block.get("content")).map(|t| clip(&t));
+        let text = tool_output_text(block.get("content"));
+        *output = text.as_deref().map(clip);
+        *full_output_bytes = None;
+        if let Some(text) = text.filter(|t| t.len() > parse::MAX_TEXT_BYTES) {
+            *full_output_bytes = Some(text.len());
+            let kept = crate::text::truncate_bytes(&text, MAX_FULL_OUTPUT_BYTES).to_string();
+            self.full_outputs.insert(tool_id.to_string(), kept);
+        }
         *patch = result
             .and_then(|r| r.get("structuredPatch"))
             .and_then(clip_patch);
@@ -567,6 +614,7 @@ impl Transcript {
         match str_at(event, "type") {
             Some("message_start") => {
                 self.meta.busy = true;
+                self.meta.retry = None;
                 let message = event.get("message");
                 self.streaming_message = message.and_then(|m| str_at(m, "id")).map(String::from);
                 if let Some(model) = message.and_then(|m| str_at(m, "model")) {
@@ -599,6 +647,7 @@ impl Transcript {
                         input: Value::Null,
                         status: ToolStatus::Running,
                         output: None,
+                        full_output_bytes: None,
                         patch: None,
                     },
                     _ => return,
@@ -712,6 +761,7 @@ impl Transcript {
                                 input,
                                 status: ToolStatus::Running,
                                 output: None,
+                                full_output_bytes: None,
                                 patch: None,
                             },
                             changed,

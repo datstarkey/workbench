@@ -268,6 +268,13 @@ impl AgentSession {
         Ok(())
     }
 
+    /// The whole output of a tool whose chat item carries a preview.
+    pub fn full_output(&self, tool_id: &str) -> Option<String> {
+        lock(&self.transcript)
+            .full_output(tool_id)
+            .map(String::from)
+    }
+
     pub fn interrupt(&self) -> Result<()> {
         self.control(json!({"subtype": "interrupt"}))
     }

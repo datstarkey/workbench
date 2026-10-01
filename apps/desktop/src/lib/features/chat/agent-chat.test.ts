@@ -30,7 +30,9 @@ const meta = (busy = false): TranscriptMeta => ({
 	permissionMode: 'default',
 	contextTokens: 1200,
 	busy,
-	tasks: []
+	tasks: [],
+	retry: null,
+	rateLimit: null
 });
 
 const body: StartAgentBody = { projectPath: '/repo', sessionId: 'sid', paneId: 'p1' };
@@ -146,6 +148,34 @@ describe('AgentChat', () => {
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(start).toHaveBeenCalledTimes(2);
 		expect(FakeSocket.last).not.toBe(ws);
+		chat.dispose();
+	});
+
+	it('tells the pane when Claude starts and stops waiting on you', async () => {
+		const { chat, ws } = await connected();
+		const calls: boolean[] = [];
+		chat.onNeedsYou = (waiting) => calls.push(waiting);
+		const approval = {
+			kind: 'approval',
+			id: 'r1',
+			tool: 'Bash',
+			input: { command: 'ls' },
+			canAlwaysAllow: false,
+			expired: false
+		} as const;
+		ws.emit({ t: 'update', changes: [[0, approval]], meta: meta(true) });
+		ws.emit({ t: 'update', changes: [[0, approval]], meta: meta(true) });
+		ws.emit({ t: 'update', changes: [[0, { ...approval, decision: 'allow' }]], meta: meta(true) });
+		expect(calls).toEqual([true, false]);
+		chat.dispose();
+	});
+
+	it("fetches a tool's whole output on request", async () => {
+		const { chat, ws } = await connected();
+		const full = chat.fullOutput('toolu_1');
+		expect(ws.sent).toEqual([{ t: 'output', toolId: 'toolu_1' }]);
+		ws.emit({ t: 'output', toolId: 'toolu_1', text: 'all of it' });
+		await expect(full).resolves.toBe('all of it');
 		chat.dispose();
 	});
 

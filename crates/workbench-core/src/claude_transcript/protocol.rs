@@ -28,6 +28,8 @@ const HANDLED: &[&str] = &[
     "system:task_updated",
     "system:task_notification",
     "system:background_tasks_changed",
+    "system:api_retry",
+    "rate_limit_event",
     // JSONL only
     "attachment",
     "ai-title",
@@ -40,12 +42,10 @@ const HANDLED: &[&str] = &[
 const IGNORED: &[&str] = &[
     "control_response",
     "keep_alive",
-    "rate_limit_event",
     "tool_progress",
     "tool_use_summary",
     "auth_status",
     "prompt_suggestion",
-    "system:api_retry",
     "system:control_request_progress",
     "system:model_refusal_fallback",
     "system:model_refusal_no_fallback",

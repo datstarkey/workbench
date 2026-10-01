@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { cn } from '@workbench/ui';
-	import { type Activity, formatElapsed, toolDetail } from './chat-format';
+	import { type Activity, toolDetail } from './chat-format';
+	import Elapsed from './Elapsed.svelte';
 
 	let {
 		activity,
@@ -16,18 +16,14 @@
 		onStop: () => void;
 	} = $props();
 
-	let now = $state(Date.now());
-	onMount(() => {
-		const timer = setInterval(() => (now = Date.now()), 1000);
-		return () => clearInterval(timer);
-	});
-
 	const label = $derived.by(() => {
 		switch (activity.kind) {
 			case 'approval':
 				if (activity.approval.tool === 'AskUserQuestion') return 'Waiting for your answer';
 				if (activity.approval.tool === 'ExitPlanMode') return 'Waiting for you to review the plan';
 				return 'Waiting for your approval';
+			case 'retrying':
+				return 'Retrying';
 			case 'tool':
 				return `Running ${activity.tool.name}`;
 			case 'writing':
@@ -36,8 +32,14 @@
 				return 'Thinking';
 		}
 	});
-	const detail = $derived(activity.kind === 'tool' ? toolDetail(activity.tool, cwd) : '');
-	const waiting = $derived(activity.kind === 'approval');
+	const detail = $derived.by(() => {
+		if (activity.kind === 'tool') return toolDetail(activity.tool, cwd);
+		if (activity.kind !== 'retrying') return '';
+		const { attempt, maxRetries, error } = activity.retry;
+		const why = error ? ` · ${error.replace(/_/g, ' ')}` : '';
+		return `attempt ${attempt} of ${maxRetries}${why}`;
+	});
+	const waiting = $derived(activity.kind === 'approval' || activity.kind === 'retrying');
 </script>
 
 <div
@@ -52,13 +54,11 @@
 	{#if detail}
 		<span class="min-w-0 truncate font-mono text-[11px] text-wb-ink-mute">{detail}</span>
 	{/if}
-	{#if since !== null && !waiting}
-		<span class="shrink-0 text-[11px] text-wb-ink-soft tabular-nums">
-			{formatElapsed(now - since)}
-		</span>
+	{#if since !== null && activity.kind !== 'approval'}
+		<span class="shrink-0 text-[11px] text-wb-ink-soft"><Elapsed {since} /></span>
 	{/if}
 	<span class="flex-1"></span>
-	{#if !waiting}
+	{#if activity.kind !== 'approval'}
 		<button
 			type="button"
 			class="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"

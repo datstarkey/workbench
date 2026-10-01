@@ -4,7 +4,9 @@ import {
 	activity,
 	answerFor,
 	applyChanges,
+	formatBytes,
 	formatCount,
+	limitNotice,
 	sortTasks,
 	approvalPreview,
 	formatElapsed,
@@ -25,7 +27,9 @@ const meta: TranscriptMeta = {
 	permissionMode: null,
 	contextTokens: null,
 	busy: false,
-	tasks: []
+	tasks: [],
+	retry: null,
+	rateLimit: null
 };
 
 function tool(id: string, name: string, input: Record<string, unknown> = {}) {
@@ -264,5 +268,36 @@ describe('tasks panel', () => {
 		expect(formatCount(7, 'tool calls')).toBe('7 tool calls');
 		expect(formatCount(1800, 'tokens')).toBe('1.8k tokens');
 		expect(formatCount(24057, 'tokens')).toBe('24k tokens');
+	});
+});
+
+describe('limits and retries', () => {
+	const at = () => '15:00';
+	it('says when the limit blocks and when it resets', () => {
+		expect(
+			limitNotice({ status: 'rejected', resetsAt: 1, kind: 'five_hour', utilization: 1 }, at)
+		).toEqual({
+			tone: 'blocked',
+			text: "You've reached your 5-hour usage limit. It resets at 15:00."
+		});
+		expect(
+			limitNotice(
+				{ status: 'allowed_warning', resetsAt: null, kind: 'seven_day', utilization: 0.85 },
+				at
+			)
+		).toEqual({ tone: 'warn', text: "You've used 85% of your weekly usage limit." });
+		expect(
+			limitNotice({ status: 'allowed', resetsAt: null, kind: null, utilization: 0.1 }, at)
+		).toBe(null);
+	});
+
+	it('shows a retry ahead of other activity', () => {
+		const retry = { attempt: 2, maxRetries: 10, retryDelayMs: 4000, error: 'overloaded' };
+		expect(activity([], { ...meta, busy: true, retry })).toEqual({ kind: 'retrying', retry });
+	});
+
+	it('formats sizes', () => {
+		expect(formatBytes(38_000)).toBe('38 KB');
+		expect(formatBytes(1_300_000)).toBe('1.2 MB');
 	});
 });

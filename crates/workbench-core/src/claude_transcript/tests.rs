@@ -475,3 +475,54 @@ fn subagents_and_background_jobs_are_tracked() {
     assert!(shell.background);
     assert_eq!(shell.description, "bun run dev");
 }
+
+#[test]
+fn retries_and_usage_limits_reach_the_chat() {
+    let mut t = Transcript::default();
+    t.apply(
+        &json!({"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,
+        "retry_delay_ms":4000,"error_status":529,"error":"overloaded","uuid":"r","session_id":"s"}),
+    );
+    let retry = t.meta().retry.clone().expect("retry shown");
+    assert_eq!(
+        (retry.attempt, retry.max_retries, retry.error.as_deref()),
+        (2, 10, Some("overloaded"))
+    );
+    t.apply(&stream(
+        json!({"type":"message_start","message":{"id":"m"}}),
+    ));
+    assert!(t.meta().retry.is_none(), "cleared once the model answers");
+
+    t.apply(
+        &json!({"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
+        "resetsAt":1790857800,"rateLimitType":"five_hour","utilization":1.0}}),
+    );
+    let limit = t.meta().rate_limit.clone().unwrap();
+    assert_eq!(limit.status, "rejected");
+    assert_eq!(limit.resets_at, Some(1790857800));
+    assert_eq!(limit.kind.as_deref(), Some("five_hour"));
+}
+
+#[test]
+fn long_tool_output_keeps_a_preview_and_the_whole_text() {
+    let mut t = Transcript::default();
+    t.apply(&assistant(
+        "a",
+        "m",
+        json!({"type":"tool_use","id":"toolu_l","name":"Bash","input":{}}),
+    ));
+    let long = "line\n".repeat(3000);
+    t.apply(&json!({"type":"user","uuid":"u","message":{"content":[
+        {"type":"tool_result","tool_use_id":"toolu_l","content":long}]}}));
+    let TranscriptItem::Tool {
+        output: Some(preview),
+        full_output_bytes: Some(bytes),
+        ..
+    } = &t.items()[0]
+    else {
+        panic!("expected a preview");
+    };
+    assert!(preview.len() <= MAX_TEXT_BYTES + 3);
+    assert_eq!(*bytes, long.len());
+    assert_eq!(t.full_output("toolu_l"), Some(long.as_str()));
+}

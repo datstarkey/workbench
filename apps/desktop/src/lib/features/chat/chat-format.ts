@@ -1,5 +1,7 @@
 import type {
 	PermissionMode,
+	RateLimitInfo,
+	RetryInfo,
 	TaskInfo,
 	TranscriptItem,
 	TranscriptMeta,
@@ -204,6 +206,7 @@ export function answerFor(selected: string[], other: string): string {
 /** What Claude is doing right now, for the activity line under the chat. */
 export type Activity =
 	| { kind: 'idle' }
+	| { kind: 'retrying'; retry: RetryInfo }
 	| { kind: 'approval'; approval: ApprovalItem }
 	| { kind: 'tool'; tool: ToolItem }
 	| { kind: 'writing' }
@@ -217,6 +220,7 @@ export function activity(items: TranscriptItem[], meta: TranscriptMeta | null): 
 		}
 	}
 	if (!meta?.busy) return { kind: 'idle' };
+	if (meta.retry) return { kind: 'retrying', retry: meta.retry };
 	const last = items[items.length - 1];
 	if (last?.kind === 'tool' && last.status === 'running') return { kind: 'tool', tool: last };
 	if (last?.kind === 'text' && last.text) return { kind: 'writing' };
@@ -282,4 +286,31 @@ export function formatCount(n: number, unit: string): string {
 	const value =
 		n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
 	return `${value} ${unit}`;
+}
+
+const LIMIT_NAMES: Record<string, string> = {
+	five_hour: '5-hour',
+	seven_day: 'weekly',
+	seven_day_opus: 'weekly Opus',
+	seven_day_sonnet: 'weekly Sonnet'
+};
+
+/** What to tell the person about their usage limit, if anything. */
+export function limitNotice(
+	info: RateLimitInfo | null,
+	formatTime: (unixSeconds: number) => string
+): { tone: 'warn' | 'blocked'; text: string } | null {
+	if (!info || info.status === 'allowed') return null;
+	const name = info.kind ? `${LIMIT_NAMES[info.kind] ?? info.kind.replace(/_/g, ' ')} ` : '';
+	const resets = info.resetsAt ? ` It resets at ${formatTime(info.resetsAt)}.` : '';
+	if (info.status === 'rejected') {
+		return { tone: 'blocked', text: `You've reached your ${name}usage limit.${resets}` };
+	}
+	const used = info.utilization != null ? `${Math.round(info.utilization * 100)}% of ` : 'most of ';
+	return { tone: 'warn', text: `You've used ${used}your ${name}usage limit.${resets}` };
+}
+
+/** `38 KB`, `1.2 MB`. */
+export function formatBytes(n: number): string {
+	return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
 }

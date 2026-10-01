@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import { OverlayScrollbars } from 'overlayscrollbars';
@@ -8,7 +7,8 @@
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
 	import type { ProjectConfig } from '$types/workbench';
-	import { AgentChat } from './agent-chat.svelte';
+	import { getClaudeSessionStore } from '$stores/context';
+	import { acquireChat } from './chat-registry';
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
 	import ChatComposer from './ChatComposer.svelte';
@@ -22,6 +22,7 @@
 		groupBlocks,
 		isRunning,
 		latestTodos,
+		limitNotice,
 		splitFences,
 		toolDetail
 	} from './chat-format';
@@ -51,14 +52,15 @@
 	];
 
 	const workdir = $derived(cwd ?? project.path);
+	const claudeSessionStore = getClaudeSessionStore();
 	// svelte-ignore state_referenced_locally
-	const chat = new AgentChat({
+	const { chat } = acquireChat(paneId, {
 		projectPath: project.path,
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 		sessionId,
 		paneId
 	});
-	onDestroy(() => chat.dispose());
+	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 
 	watch(
 		() => chat.sessionId,
@@ -73,6 +75,11 @@
 	let tasksOpen = $state(false);
 
 	const blocks = $derived(groupBlocks(chat.items));
+	const limit = $derived(
+		limitNotice(chat.meta?.rateLimit ?? null, (secs) =>
+			new Date(secs * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+		)
+	);
 	const tasks = $derived(chat.meta?.tasks ?? []);
 	const runningTasks = $derived(tasks.filter(isRunning).length);
 	const todos = $derived(latestTodos(chat.items));
@@ -293,7 +300,12 @@
 								</details>
 							{/if}
 						{:else if block.item.kind === 'tool'}
-							<ChatToolCard tool={block.item} cwd={workdir} />
+							<ChatToolCard
+								tool={block.item}
+								cwd={workdir}
+								startedAt={chat.seenAt[block.item.id]}
+								fetchFullOutput={(id) => chat.fullOutput(id)}
+							/>
 						{:else if block.item.kind === 'approval' && block.item.tool === 'AskUserQuestion'}
 							{@const approval = block.item}
 							<ChatQuestion
@@ -367,14 +379,14 @@
 		</div>
 		{#if tasks.length > 0}
 			<div class="hidden @5xl:flex">
-				<ChatTasks {tasks} seenAt={chat.taskSeenAt} />
+				<ChatTasks {tasks} seenAt={chat.seenAt} />
 			</div>
 		{/if}
 	</div>
 
 	{#if tasksOpen && tasks.length > 0}
 		<div class="absolute inset-y-0 right-0 z-20 flex shadow-2xl @5xl:hidden">
-			<ChatTasks {tasks} seenAt={chat.taskSeenAt} onClose={() => (tasksOpen = false)} />
+			<ChatTasks {tasks} seenAt={chat.seenAt} onClose={() => (tasksOpen = false)} />
 		</div>
 	{/if}
 </div>

@@ -22,6 +22,8 @@
 	let others = $state<Record<number, string>>({});
 	let looking = $state<Record<number, string>>({});
 	let sent = $state(false);
+	/** The question on screen; with several, the headers act as tabs. */
+	let active = $state(0);
 
 	const answers = $derived(
 		Object.fromEntries(
@@ -39,6 +41,9 @@
 		} else {
 			picks[index] = [label];
 			others[index] = '';
+			// A single choice is complete: move on to the next unanswered question.
+			const next = questions.findIndex((q, i) => i > index && !answers[q.question]);
+			if (next !== -1) active = next;
 		}
 		looking[index] = label;
 	}
@@ -80,78 +85,106 @@
 			<MessageCircleQuestionIcon class="size-4 text-wb-accent" />
 			Claude needs your input
 		</header>
+		{#if questions.length > 1}
+			<div class="flex flex-wrap gap-1 px-3.5 pt-3" role="tablist" aria-label="Questions">
+				{#each questions as q, qi (q.question)}
+					{@const done = Boolean(answers[q.question])}
+					<button
+						type="button"
+						role="tab"
+						aria-selected={qi === active}
+						class={cn(
+							'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
+							qi === active
+								? 'bg-wb-accent-soft text-wb-ink'
+								: 'text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink'
+						)}
+						onclick={() => (active = qi)}
+					>
+						{#if done}
+							<CheckIcon class="size-3 text-wb-ok" />
+						{:else}
+							<span class="size-1.5 rounded-full bg-wb-ink-soft"></span>
+						{/if}
+						{q.header || `Question ${qi + 1}`}
+					</button>
+				{/each}
+			</div>
+		{/if}
 		<div class="flex flex-col gap-5 px-3.5 pt-3">
 			{#each questions as q, qi (q.question)}
-				{@const chosen = picks[qi] ?? []}
-				{@const preview = q.options.find((o) => o.label === looking[qi])?.preview}
-				<fieldset class="flex flex-col gap-2.5">
-					<legend class="flex flex-wrap items-baseline gap-2">
-						{#if q.header}
-							<span class="rounded bg-wb-accent-soft px-1.5 py-0.5 text-[11px] text-wb-ink"
-								>{q.header}</span
-							>
-						{/if}
-						<span class="text-sm font-medium text-wb-ink">{q.question}</span>
-						{#if q.multiSelect}
-							<span class="text-[11px] text-wb-ink-soft">Choose any</span>
-						{/if}
-					</legend>
-					<div
-						class="grid gap-2 sm:grid-cols-2"
-						role={q.multiSelect ? 'group' : 'radiogroup'}
-						aria-label={q.question}
-					>
-						{#each q.options as option (option.label)}
-							{@const on = chosen.includes(option.label)}
-							<button
-								type="button"
-								role={q.multiSelect ? 'checkbox' : 'radio'}
-								aria-checked={on}
-								class={cn(
-									'option flex items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:ring-wb-accent/50 focus-visible:outline-none',
-									on
-										? 'border-wb-accent bg-wb-accent-soft'
-										: 'border-wb-hair hover:border-wb-ink-soft'
-								)}
-								onclick={() => pick(qi, option.label, q.multiSelect)}
-								onmouseenter={() => (looking[qi] = option.label)}
-								onfocus={() => (looking[qi] = option.label)}
-							>
-								<span
-									class={cn(
-										'mt-0.5 flex size-3.5 shrink-0 items-center justify-center border',
-										q.multiSelect ? 'rounded-[3px]' : 'rounded-full',
-										on ? 'border-wb-accent bg-wb-accent text-wb-accent-ink' : 'border-wb-ink-soft'
-									)}
+				{#if qi === active}
+					{@const chosen = picks[qi] ?? []}
+					{@const preview = q.options.find((o) => o.label === looking[qi])?.preview}
+					<fieldset class="flex flex-col gap-2.5">
+						<legend class="flex flex-wrap items-baseline gap-2">
+							{#if q.header && questions.length === 1}
+								<span class="rounded bg-wb-accent-soft px-1.5 py-0.5 text-[11px] text-wb-ink"
+									>{q.header}</span
 								>
-									{#if on}<CheckIcon class="size-2.5" />{/if}
-								</span>
-								<span class="flex min-w-0 flex-col gap-0.5">
-									<span class="text-xs font-medium text-wb-ink">{option.label}</span>
-									{#if option.description}
-										<span class="text-[11px] leading-snug text-wb-ink-mute"
-											>{option.description}</span
-										>
-									{/if}
-								</span>
-							</button>
-						{/each}
-					</div>
-					{#if preview}
-						<pre
-							class="scrollbar-thin max-h-48 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre text-wb-ink-mute">{preview}</pre>
-					{/if}
-					<label class="flex items-center gap-2 text-xs text-wb-ink-mute">
-						<span class="shrink-0">Other</span>
-						<input
-							type="text"
-							value={others[qi] ?? ''}
-							oninput={(e) => typeOther(qi, q.multiSelect, e.currentTarget.value)}
-							placeholder="Type your own answer"
-							class="min-w-0 flex-1 rounded-md border border-wb-hair bg-wb-bg px-2.5 py-1.5 text-xs text-wb-ink placeholder:text-wb-ink-soft focus:border-wb-ink-soft focus:outline-none"
-						/>
-					</label>
-				</fieldset>
+							{/if}
+							<span class="text-sm font-medium text-wb-ink">{q.question}</span>
+							{#if q.multiSelect}
+								<span class="text-[11px] text-wb-ink-soft">Choose any</span>
+							{/if}
+						</legend>
+						<div
+							class="grid gap-2 sm:grid-cols-2"
+							role={q.multiSelect ? 'group' : 'radiogroup'}
+							aria-label={q.question}
+						>
+							{#each q.options as option (option.label)}
+								{@const on = chosen.includes(option.label)}
+								<button
+									type="button"
+									role={q.multiSelect ? 'checkbox' : 'radio'}
+									aria-checked={on}
+									class={cn(
+										'option flex items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:ring-wb-accent/50 focus-visible:outline-none',
+										on
+											? 'border-wb-accent bg-wb-accent-soft'
+											: 'border-wb-hair hover:border-wb-ink-soft'
+									)}
+									onclick={() => pick(qi, option.label, q.multiSelect)}
+									onmouseenter={() => (looking[qi] = option.label)}
+									onfocus={() => (looking[qi] = option.label)}
+								>
+									<span
+										class={cn(
+											'mt-0.5 flex size-3.5 shrink-0 items-center justify-center border',
+											q.multiSelect ? 'rounded-[3px]' : 'rounded-full',
+											on ? 'border-wb-accent bg-wb-accent text-wb-accent-ink' : 'border-wb-ink-soft'
+										)}
+									>
+										{#if on}<CheckIcon class="size-2.5" />{/if}
+									</span>
+									<span class="flex min-w-0 flex-col gap-0.5">
+										<span class="text-xs font-medium text-wb-ink">{option.label}</span>
+										{#if option.description}
+											<span class="text-[11px] leading-snug text-wb-ink-mute"
+												>{option.description}</span
+											>
+										{/if}
+									</span>
+								</button>
+							{/each}
+						</div>
+						{#if preview}
+							<pre
+								class="scrollbar-thin max-h-48 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre text-wb-ink-mute">{preview}</pre>
+						{/if}
+						<label class="flex items-center gap-2 text-xs text-wb-ink-mute">
+							<span class="shrink-0">Other</span>
+							<input
+								type="text"
+								value={others[qi] ?? ''}
+								oninput={(e) => typeOther(qi, q.multiSelect, e.currentTarget.value)}
+								placeholder="Type your own answer"
+								class="min-w-0 flex-1 rounded-md border border-wb-hair bg-wb-bg px-2.5 py-1.5 text-xs text-wb-ink placeholder:text-wb-ink-soft focus:border-wb-ink-soft focus:outline-none"
+							/>
+						</label>
+					</fieldset>
+				{/if}
 			{/each}
 		</div>
 		<div class="flex items-center gap-2 px-3.5 py-3">
@@ -164,7 +197,11 @@
 				{sent ? 'Sending…' : questions.length > 1 ? 'Send answers' : 'Send answer'}
 			</button>
 			{#if !complete && !sent}
-				<span class="text-[11px] text-wb-ink-soft">Answer each question to continue</span>
+				<span class="text-[11px] text-wb-ink-soft">
+					{questions.length > 1
+						? `${questions.filter((q) => answers[q.question]).length} of ${questions.length} answered`
+						: 'Choose an answer to continue'}
+				</span>
 			{/if}
 			<button
 				type="button"

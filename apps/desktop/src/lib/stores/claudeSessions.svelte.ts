@@ -401,6 +401,20 @@ export class ClaudeSessionStore {
 		}
 	}
 
+	/**
+	 * Chat panes report pending approvals and questions here: they arrive as
+	 * control requests, so no Notification hook announces them.
+	 */
+	setAwaitingInput(paneId: string, awaiting: boolean): void {
+		if (!awaiting) {
+			this.panesAwaitingInput.delete(paneId);
+			return;
+		}
+		if (this.panesAwaitingInput.has(paneId)) return;
+		this.panesAwaitingInput.add(paneId);
+		this.emitAwaitingInput(paneId);
+	}
+
 	/** Register a callback that fires when a pane transitions into awaiting-input. */
 	onAwaitingInput(callback: (paneId: string) => void): void {
 		this.awaitingInputCallbacks.push(callback);

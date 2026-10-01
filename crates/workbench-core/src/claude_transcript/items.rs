@@ -45,6 +45,10 @@ pub enum TranscriptItem {
         status: ToolStatus,
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
+        /// Size of the whole output when `output` is a preview; fetch the rest
+        /// with [`super::Transcript::full_output`].
+        #[serde(skip_serializing_if = "Option::is_none")]
+        full_output_bytes: Option<usize>,
         /// `structuredPatch` hunks for edit tools: `{oldStart, newStart, lines}`.
         #[serde(skip_serializing_if = "Option::is_none")]
         patch: Option<Value>,
@@ -88,6 +92,31 @@ impl TranscriptItem {
     }
 }
 
+/// The API call is being retried (`api_retry`): overloaded, rate limited, …
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryInfo {
+    pub attempt: u64,
+    pub max_retries: u64,
+    pub retry_delay_ms: u64,
+    /// The CLI's error kind, e.g. `overloaded`, `rate_limit`, `server_error`.
+    pub error: Option<String>,
+}
+
+/// The latest usage-limit status (`rate_limit_event`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitInfo {
+    /// `allowed` | `allowed_warning` | `rejected`.
+    pub status: String,
+    /// Unix seconds.
+    pub resets_at: Option<u64>,
+    /// `five_hour`, `seven_day`, …
+    pub kind: Option<String>,
+    /// 0–1 share of the limit used.
+    pub utilization: Option<f64>,
+}
+
 /// A subagent or background job Claude started (the CLI's `task_*` events).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,4 +158,7 @@ pub struct TranscriptMeta {
     pub busy: bool,
     /// Subagents and background jobs, in start order.
     pub tasks: Vec<TaskInfo>,
+    /// Set while the CLI waits to retry a failed API call.
+    pub retry: Option<RetryInfo>,
+    pub rate_limit: Option<RateLimitInfo>,
 }

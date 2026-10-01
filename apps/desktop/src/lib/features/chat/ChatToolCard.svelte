@@ -3,11 +3,32 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import { patchStats, toolDetail, type ToolItem } from './chat-format';
+	import { formatBytes, patchStats, toolDetail, type ToolItem } from './chat-format';
+	import Elapsed from './Elapsed.svelte';
 
-	let { tool, cwd }: { tool: ToolItem; cwd?: string } = $props();
+	let {
+		tool,
+		cwd,
+		startedAt,
+		fetchFullOutput
+	}: {
+		tool: ToolItem;
+		cwd?: string;
+		/** When the call was first seen running, for its timer. */
+		startedAt?: number;
+		fetchFullOutput: (toolId: string) => Promise<string | null>;
+	} = $props();
 
 	let open = $state(false);
+	/** The whole output, once fetched. */
+	let fullOutput = $state<string | null>(null);
+	let loadingFull = $state(false);
+
+	async function showAll() {
+		loadingFull = true;
+		fullOutput = await fetchFullOutput(tool.id);
+		loadingFull = false;
+	}
 
 	const detail = $derived(toolDetail(tool, cwd));
 	const stats = $derived(patchStats(tool.patch));
@@ -43,6 +64,9 @@
 				<span class="text-wb-err">−{stats.removed}</span>
 			</span>
 		{/if}
+		{#if running && startedAt}
+			<span class="shrink-0 text-[11px] text-wb-ink-soft"><Elapsed since={startedAt} /></span>
+		{/if}
 		{#if expandable}
 			<ChevronRightIcon
 				class={cn('size-3 shrink-0 text-wb-ink-soft transition-transform', open && 'rotate-90')}
@@ -73,7 +97,17 @@
 					{/each}
 				{/each}
 			{:else}
-				<pre class="px-2.5 whitespace-pre-wrap text-wb-ink-mute">{tool.output}</pre>
+				<pre class="px-2.5 whitespace-pre-wrap text-wb-ink-mute">{fullOutput ?? tool.output}</pre>
+				{#if tool.fullOutputBytes && fullOutput === null}
+					<button
+						type="button"
+						class="mx-2.5 my-1 rounded px-1.5 py-0.5 font-sans text-[11px] text-wb-accent hover:underline focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
+						disabled={loadingFull}
+						onclick={showAll}
+					>
+						{loadingFull ? 'Loading…' : `Show all (${formatBytes(tool.fullOutputBytes)})`}
+					</button>
+				{/if}
 			{/if}
 		</div>
 	{/if}

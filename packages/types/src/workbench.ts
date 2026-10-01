@@ -519,6 +519,8 @@ export type TranscriptItem =
 			input: Record<string, unknown> | null;
 			status: TranscriptToolStatus;
 			output?: string;
+			/** Size of the whole output when `output` is a preview (ask the server for it). */
+			fullOutputBytes?: number;
 			patch?: TranscriptPatchHunk[];
 	  }
 	| {
@@ -556,6 +558,24 @@ export interface TaskInfo {
 	summary?: string;
 }
 
+/** The API call is being retried (overloaded, rate limited, …). */
+export interface RetryInfo {
+	attempt: number;
+	maxRetries: number;
+	retryDelayMs: number;
+	error: string | null;
+}
+
+/** Latest usage-limit status. */
+export interface RateLimitInfo {
+	status: 'allowed' | 'allowed_warning' | 'rejected';
+	/** Unix seconds. */
+	resetsAt: number | null;
+	kind: string | null;
+	/** 0–1 share used. */
+	utilization: number | null;
+}
+
 export interface TranscriptMeta {
 	title: string | null;
 	model: string | null;
@@ -563,6 +583,8 @@ export interface TranscriptMeta {
 	contextTokens: number | null;
 	busy: boolean;
 	tasks: TaskInfo[];
+	retry: RetryInfo | null;
+	rateLimit: RateLimitInfo | null;
 }
 
 export type AgentServerMsg =
@@ -579,6 +601,8 @@ export type AgentServerMsg =
 	| { t: 'update'; changes: [number, TranscriptItem][]; meta: TranscriptMeta }
 	| { t: 'exit'; code: number | null; message: string | null }
 	| { t: 'error'; message: string }
+	/** Reply to `output`: the whole output of a tool shown as a preview. */
+	| { t: 'output'; toolId: string; text: string | null }
 	| { t: 'revoked' };
 
 export type AgentClientMsg =
@@ -590,7 +614,8 @@ export type AgentClientMsg =
 			answers?: Record<string, string>;
 	  }
 	| { t: 'interrupt' }
-	| { t: 'mode'; mode: PermissionMode };
+	| { t: 'mode'; mode: PermissionMode }
+	| { t: 'output'; toolId: string };
 
 export interface StartAgentBody {
 	projectPath: string;

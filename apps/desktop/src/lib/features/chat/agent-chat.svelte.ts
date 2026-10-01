@@ -46,14 +46,19 @@ export class AgentChat {
 	busySince = $state<number | null>(null);
 	/** The session continued under a new id (`/clear`); the pane follows it. */
 	sessionId = $state('');
-	/** When each task was first seen (client clock), for its running timer. */
-	taskSeenAt = $state.raw<Record<string, number>>({});
+	/** When each task or running tool was first seen (client clock), for timers. */
+	seenAt = $state.raw<Record<string, number>>({});
 
 	private readonly body: StartAgentBody;
 	private readonly api: AgentApi;
 	private ws: WebSocket | null = null;
 	private retryTimer: ReturnType<typeof setTimeout> | null = null;
 	private disposed = false;
+	/** Called when Claude starts or stops waiting on the person (approval, question). */
+	onNeedsYou: ((waiting: boolean) => void) | null = null;
+	private waitingOnYou = false;
+	/** Callbacks waiting on `output` replies; not UI state, so not reactive. */
+	private outputWaiters: Record<string, (text: string | null) => void> = {};
 
 	constructor(body: StartAgentBody, api: AgentApi = loopbackAgentApi) {
 		this.body = body;
@@ -116,12 +121,19 @@ export class AgentChat {
 				this.setMeta(msg.meta);
 				this.status = msg.exited ? 'exited' : 'live';
 				this.settlePending();
+				this.reportWaiting();
 				break;
 			case 'update':
 				this.items = applyChanges(this.items, this.start, msg.changes);
+				this.markSeen(
+					msg.changes.flatMap(([, i]) =>
+						i.kind === 'tool' && i.status === 'running' ? [i.id] : []
+					)
+				);
 				this.setMeta(msg.meta);
 				this.notice = null;
 				this.settlePending();
+				this.reportWaiting();
 				break;
 			case 'exit':
 				this.status = 'exited';
@@ -131,6 +143,10 @@ export class AgentChat {
 				break;
 			case 'error':
 				this.notice = msg.message;
+				break;
+			case 'output':
+				this.outputWaiters[msg.toolId]?.(msg.text);
+				delete this.outputWaiters[msg.toolId];
 				break;
 			case 'revoked':
 				this.status = 'exited';
@@ -143,15 +159,22 @@ export class AgentChat {
 	private setMeta(meta: TranscriptMeta): void {
 		if (meta.busy && !this.meta?.busy) this.busySince = Date.now();
 		if (!meta.busy) this.busySince = null;
-		const unseen = meta.tasks.filter((t) => !(t.id in this.taskSeenAt));
-		if (unseen.length > 0) {
-			const now = Date.now();
-			this.taskSeenAt = {
-				...this.taskSeenAt,
-				...Object.fromEntries(unseen.map((t) => [t.id, now]))
-			};
-		}
+		this.markSeen(meta.tasks.map((t) => t.id));
 		this.meta = meta;
+	}
+
+	private markSeen(ids: string[]): void {
+		const unseen = ids.filter((id) => !(id in this.seenAt));
+		if (unseen.length === 0) return;
+		const now = Date.now();
+		this.seenAt = { ...this.seenAt, ...Object.fromEntries(unseen.map((id) => [id, now])) };
+	}
+
+	private reportWaiting(): void {
+		const waiting = this.items.some((i) => i.kind === 'approval' && !i.decision && !i.expired);
+		if (waiting === this.waitingOnYou) return;
+		this.waitingOnYou = waiting;
+		this.onNeedsYou?.(waiting);
 	}
 
 	/** Drop optimistic prompts Claude has echoed back. */
@@ -194,7 +217,16 @@ export class AgentChat {
 		this.send({ t: 'mode', mode });
 	}
 
+	/** The whole output of a tool shown as a preview; null if it's gone. */
+	fullOutput(toolId: string): Promise<string | null> {
+		return new Promise((resolve) => {
+			if (!this.send({ t: 'output', toolId })) return resolve(null);
+			this.outputWaiters[toolId] = resolve;
+		});
+	}
+
 	dispose(): void {
+		if (this.waitingOnYou) this.onNeedsYou?.(false);
 		this.disposed = true;
 		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close();

@@ -25,6 +25,7 @@ import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
+import { releaseChat } from '$features/chat/chat-registry';
 import {
 	adoptionWorkspace,
 	paneDisplayName,
@@ -305,6 +306,7 @@ export class WorkspaceStore {
 		const next = { ...this.serverTerminalIds };
 		let changed = false;
 		for (const paneId of paneIds) {
+			releaseChat(paneId);
 			void stopAgentForPane(paneId);
 			const serverId = next[paneId];
 			if (serverId) {
@@ -598,8 +600,9 @@ export class WorkspaceStore {
 				this.serverTerminalIds = rest;
 				await deleteServerTerminal(serverId);
 			}
-		} else if (pane.claudeSessionId) {
-			await stopAgent(pane.claudeSessionId).catch(() => {});
+		} else {
+			releaseChat(paneId);
+			if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
 		}
 		const location = this.findPaneLocation(paneId);
 		if (!location) return;
