@@ -310,6 +310,23 @@ fn mid_turn_prompts_are_shown() {
 }
 
 #[test]
+fn mid_turn_prompts_with_images_are_shown() {
+    let mut t = Transcript::default();
+    let image = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw=="}});
+    t.apply(&json!({"type":"attachment","uuid":"q1","attachment":{
+        "type":"queued_command","commandMode":"prompt","timestamp":"t",
+        "prompt":[image, {"type":"text","text":"stuck like this "}]}}));
+    t.apply(&json!({"type":"attachment","uuid":"q2","attachment":{
+        "type":"queued_command","commandMode":"prompt","timestamp":"t","prompt":[image]}}));
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::User { text, images: 1, .. } if text == "stuck like this")
+    );
+    assert!(
+        matches!(&t.items()[1], TranscriptItem::User { text, images: 1, .. } if text.is_empty())
+    );
+}
+
+#[test]
 fn interrupt_ends_the_turn() {
     let mut t = Transcript::default();
     t.apply(&user("u1", json!("go")));
