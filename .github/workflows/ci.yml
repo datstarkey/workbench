@@ -95,10 +95,14 @@ jobs:
           # quota and evicts main's. Save from main only; PRs restore main's.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Runners are fresh VMs, so plain apt re-downloads ~73 MB of GTK/WebKit
+      # from a mirror that crawls at times (1-5 min). Cached, it restores in
+      # seconds; bump `version` to force a fresh install.
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          version: 1
 
       - name: Run Rust tests
         run: cargo test --workspace
@@ -141,9 +145,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
+          version: 1
 
       - name: Install dependencies
         run: bun install
