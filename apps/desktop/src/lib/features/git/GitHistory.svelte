@@ -11,7 +11,7 @@
 	import { getGitStore } from '$stores/context';
 	import { ConfirmAction } from '$lib/utils/confirm-action.svelte';
 	import { formatRelativeTime } from '$lib/utils/format';
-	import { openInGitHub } from '$lib/utils/github';
+	import { openUrl } from '$lib/utils/open-url';
 	import type { GitCommitFile, GitLogEntry } from '$types/workbench';
 	import { toast } from 'svelte-sonner';
 	import { getStatusDisplay, splitPath } from './git-view';
@@ -117,7 +117,7 @@
 							<CopyIcon class="size-3.5" /> Copy SHA
 						</DropdownMenu.Item>
 						{#if repoUrl && !isUnpushed}
-							<DropdownMenu.Item onclick={() => openInGitHub(commitUrl(repoUrl, entry.sha))}>
+							<DropdownMenu.Item onclick={() => openUrl(commitUrl(repoUrl, entry.sha))}>
 								<ExternalLinkIcon class="size-3.5" /> Open on GitHub
 							</DropdownMenu.Item>
 						{/if}

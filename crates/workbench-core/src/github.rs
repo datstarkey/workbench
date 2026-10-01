@@ -583,28 +583,6 @@ pub fn fetch_pr_branch(path: &str, branch: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn open_url(url: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        crate::shell::spawn_detached(crate::shell::command("open").arg(url))
-            .context("Failed to open URL")?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        crate::shell::spawn_detached(crate::shell::command("xdg-open").arg(url))
-            .context("Failed to open URL")?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // Empty title ("") prevents `start` from misinterpreting URLs with special chars
-        crate::shell::spawn_detached(
-            crate::shell::command("cmd").args(["/c", "start", "\"\"", url]),
-        )
-        .context("Failed to open URL")?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
