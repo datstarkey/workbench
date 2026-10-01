@@ -140,7 +140,8 @@ export class AdoptionPoller {
 		if (this.running || document.visibilityState !== 'visible') return;
 		this.running = true;
 		try {
-			for (const round of this.rounds) await round();
+			// One source failing must not cost the others their round.
+			await Promise.allSettled(this.rounds.map((round) => round()));
 		} finally {
 			this.running = false;
 		}

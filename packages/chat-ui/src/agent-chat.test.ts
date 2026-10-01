@@ -187,6 +187,34 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('re-attaches an attach-only chat, and only a restart after it ended starts it here', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue();
+		const attach = { ...body, attachOnly: true };
+		const chat = new AgentChat(attach, fakeApi(start));
+		const onTakeOver = vi.fn();
+		chat.onTakeOver = onTakeOver;
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		FakeSocket.last!.emit({
+			t: 'snapshot',
+			sessionId: 'sid',
+			start: 0,
+			items: [],
+			meta: meta(),
+			commands: [],
+			exited: false
+		});
+
+		await chat.open();
+		expect(start).toHaveBeenLastCalledWith(attach);
+		expect(onTakeOver).not.toHaveBeenCalled();
+
+		FakeSocket.last!.emit({ t: 'exit', code: 0, message: null });
+		await chat.open();
+		expect(onTakeOver).toHaveBeenCalledOnce();
+		expect(start).toHaveBeenLastCalledWith({ ...body, attachOnly: false });
+		chat.dispose();
+	});
+
 	it('marks the session ended on exit and refuses to send', async () => {
 		const { chat, ws } = await connected();
 		ws.emit({ t: 'exit', code: 1, message: 'Not logged in' });

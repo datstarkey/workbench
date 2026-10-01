@@ -52,6 +52,7 @@ const chat = (sessionId: string, overrides: Partial<AgentSummary> = {}): AgentSu
 	updatedAt: 0,
 	waiting: null,
 	running: null,
+	previousIds: [],
 	...overrides
 });
 
@@ -210,5 +211,25 @@ describe('AdoptionPoller', () => {
 		await both.tick();
 		expect(adopt).toHaveBeenCalledTimes(2);
 		expect(adoptChat).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
+	});
+
+	it('still runs the other sources when one throws', async () => {
+		const adoptChat = vi.fn(() => true);
+		const both = new AdoptionPoller([
+			adoptionRound<AdoptableTerminal>({
+				list: async () => {
+					throw new Error('boom');
+				},
+				adoptable: (l) => l,
+				adopt
+			}),
+			adoptionRound<AgentSummary>({
+				list: async () => [chat('s1')],
+				adoptable: (l) => l,
+				adopt: adoptChat
+			})
+		]);
+		await expect(both.tick()).resolves.toBeUndefined();
+		expect(adoptChat).toHaveBeenCalledOnce();
 	});
 });

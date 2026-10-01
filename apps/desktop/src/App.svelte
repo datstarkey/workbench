@@ -56,13 +56,11 @@
 	import { onDestroy, onMount } from 'svelte';
 	import {
 		AdoptionPoller,
-		adoptableChats,
 		adoptableTerminals,
 		adoptionRound
 	} from '$features/terminal/server-terminals';
 	import { isClaimedLocally, listServerTerminals } from '$features/terminal/terminal-connection';
 	import { listAgents } from '$features/chat/agent-api';
-	import { isChatClaimed } from '$features/chat/chat-registry';
 	import { watch } from 'runed';
 	import { Toaster, toast } from 'svelte-sonner';
 
@@ -203,8 +201,7 @@
 		}),
 		adoptionRound({
 			list: listAgents,
-			adoptable: (list) =>
-				adoptableChats(list, new Set(workspaceStore.knownChatIds()), isChatClaimed),
+			adoptable: (list) => workspaceStore.adoptableServerChats(list),
 			adopt: (c) => workspaceStore.adoptServerChat(c),
 			onAdopted: (c) => toast.info(`Chat opened on another device: ${c.title ?? 'chat'}`)
 		})

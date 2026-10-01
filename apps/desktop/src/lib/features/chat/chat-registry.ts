@@ -9,8 +9,6 @@ import { loopbackAgentApi } from './agent-api';
  * Released when the pane goes back to the terminal or is closed.
  */
 const chats = new Map<string, AgentChat>();
-/** Session ids this window started or attached to; chat adoption skips them. */
-const claimed = new Set<string>();
 
 /** The pane's chat, created on first use or when the pane moved to another session. */
 export function acquireChat(
@@ -21,14 +19,22 @@ export function acquireChat(
 	// `/clear` re-keys the same chat; any other new id is a different conversation.
 	if (existing && existing.sessionId === body.sessionId) return { chat: existing, created: false };
 	existing?.dispose();
-	claimed.add(body.sessionId);
 	const chat = new AgentChat(body, loopbackAgentApi);
 	chats.set(paneId, chat);
 	return { chat, created: true };
 }
 
+/**
+ * A chat in this window holds the session, e.g. it re-keyed (`/clear`) before
+ * its pane did. Chat adoption skips it.
+ */
 export function isChatClaimed(sessionId: string): boolean {
-	return claimed.has(sessionId) || [...chats.values()].some((c) => c.sessionId === sessionId);
+	return [...chats.values()].some((c) => c.sessionId === sessionId);
+}
+
+/** Re-attach the pane's chat (a Restart of a chat another device owns). */
+export function reopenChat(paneId: string): void {
+	void chats.get(paneId)?.open();
 }
 
 export function releaseChat(paneId: string): void {

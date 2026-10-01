@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WorkspaceStore } from './workspaces.svelte';
 import { SANDBOX_RUNTIME_PACKAGE } from '$lib/utils/claude';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
-import { adoptableChats, adoptableTerminals } from '$features/terminal/server-terminals';
+import { adoptableTerminals } from '$features/terminal/server-terminals';
 import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
+import { reopenChat } from '$features/chat/chat-registry';
 import type {
 	AgentSummary,
 	ClaudePermissionMode,
@@ -30,6 +31,11 @@ vi.mock('$features/chat/agent-api', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$features/chat/agent-api')>()),
 	stopAgent: vi.fn(async () => {}),
 	stopAgentForPane: vi.fn(async () => {})
+}));
+
+vi.mock('$features/chat/chat-registry', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$features/chat/chat-registry')>()),
+	reopenChat: vi.fn()
 }));
 
 // Mock context so getGitStore() and getWorkbenchSettingsStore() work outside a component
@@ -2076,7 +2082,7 @@ describe('WorkspaceStore', () => {
 			const paneId = adopted.panes[0].id;
 			expect(store.getServerTerminalId(paneId)).toBe('srv-remote');
 			expect(store.knownServerTerminalIds()).toContain('srv-remote');
-			expect(store.startsDetached(paneId)).toBe(true);
+			expect(store.isAdoptedPane(paneId)).toBe(true);
 			// Doesn't steal focus from the tab the user is on.
 			expect(store.workspaces[0].activeTerminalTabId).toBe('tab-active');
 			expect(invokeSpy).toHaveBeenCalledWith('save_workspaces', expect.anything());
@@ -2182,9 +2188,10 @@ describe('WorkspaceStore', () => {
 			busySince: null,
 			updatedAt: 0,
 			waiting: null,
-			running: null
+			running: null,
+			previousIds: []
 		};
-		const adoptable = () => adoptableChats([remote], new Set(store.knownChatIds()), () => false);
+		const adoptable = (list = [remote]) => store.adoptableServerChats(list);
 		const lastSnapshot = () =>
 			invokeSpy.mock.calls.filter((c) => c[0] === 'save_workspaces').slice(-1)[0]?.[1] as {
 				snapshot: { workspaces: ProjectWorkspace[] };
@@ -2193,6 +2200,7 @@ describe('WorkspaceStore', () => {
 		beforeEach(() => {
 			vi.mocked(stopAgent).mockClear();
 			vi.mocked(stopAgentForPane).mockClear();
+			vi.mocked(reopenChat).mockClear();
 		});
 
 		it('adds a background chat tab on the running session', () => {
@@ -2212,8 +2220,21 @@ describe('WorkspaceStore', () => {
 				claudeAccountId: 'work'
 			});
 			expect(tab.panes[0].startupCommand).toBeUndefined();
+			expect(store.isAdoptedPane(tab.panes[0].id)).toBe(true);
 			expect(store.workspaces[0].activeTerminalTabId).toBe('tab-active');
 			expect(adoptable()).toEqual([]);
+		});
+
+		it('follows a /clear re-key instead of adopting the new id as a second tab', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.adoptServerChat(remote);
+			const rekeyed = { ...remote, sessionId: 'sess-cleared', previousIds: ['sess-phone'] };
+
+			expect(adoptable([rekeyed])).toEqual([]);
+
+			const tabs = store.workspaces[0].terminalTabs;
+			expect(tabs).toHaveLength(1);
+			expect(tabs[0].panes[0].claudeSessionId).toBe('sess-cleared');
 		});
 
 		it('routes a worktree chat to the worktree workspace and skips unknown cwds', () => {
@@ -2261,6 +2282,42 @@ describe('WorkspaceStore', () => {
 			expect(adoptable()).toEqual([]);
 		});
 
+		it('adopts a closed chat again once it ended and the other device continued it', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.adoptServerChat(remote);
+			store.closeTerminalTab('ws-a', store.workspaces[0].terminalTabs[0].id);
+
+			expect(adoptable()).toEqual([]);
+			expect(adoptable([])).toEqual([]);
+			expect(adoptable()).toEqual([remote]);
+		});
+
+		it('restarting an adopted chat re-attaches it instead of stopping the process', async () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.adoptServerChat(remote);
+			const tab = store.workspaces[0].terminalTabs[0];
+
+			await store.restartAISession('ws-a', tab.id);
+
+			expect(reopenChat).toHaveBeenCalledWith(tab.panes[0].id);
+			expect(stopAgent).not.toHaveBeenCalled();
+			expect(store.workspaces[0].terminalTabs[0]).toBe(tab);
+		});
+
+		it('a takeover makes the pane its own: persisted, and stopped on close', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.adoptServerChat(remote);
+			const tab = store.workspaces[0].terminalTabs[0];
+			const paneId = tab.panes[0].id;
+
+			store.takeOverPane(paneId);
+
+			expect(store.isAdoptedPane(paneId)).toBe(false);
+			expect(lastSnapshot().snapshot.workspaces[0].terminalTabs).toHaveLength(1);
+			store.closeTerminalTab('ws-a', tab.id);
+			expect(stopAgentForPane).toHaveBeenCalledWith(paneId);
+		});
+
 		it('closing an own chat stops it and does not adopt it while it stops', () => {
 			const own = makeTab({
 				id: 'tab-own',
@@ -2272,8 +2329,7 @@ describe('WorkspaceStore', () => {
 			store.closeTerminalTab('ws-a', 'tab-own');
 
 			expect(stopAgentForPane).toHaveBeenCalledWith('pane-own');
-			const stillListed = { ...remote, sessionId: 'sess-own', paneId: 'pane-own' };
-			expect(adoptableChats([stillListed], new Set(store.knownChatIds()), () => false)).toEqual([]);
+			expect(adoptable([{ ...remote, sessionId: 'sess-own', paneId: 'pane-own' }])).toEqual([]);
 		});
 
 		it('switching an adopted chat to the terminal takes it over', async () => {

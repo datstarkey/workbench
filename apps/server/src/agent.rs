@@ -101,6 +101,8 @@ pub struct AgentSummary {
     pub updated_at: u64,
     pub waiting: Option<WaitingSummary>,
     pub running: Option<RunningSummary>,
+    /// Ids it ran under before a `/clear`, so a client holding one follows the re-key.
+    pub previous_ids: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -291,10 +293,22 @@ impl AgentManager {
 
     /// Every live session, most recently changed first.
     pub fn summaries(&self) -> Vec<AgentSummary> {
-        let mut all: Vec<AgentSummary> = self
-            .sessions(|_| true)
-            .iter()
-            .map(|s| s.summary())
+        let mut grouped: Vec<(Arc<AgentSession>, Vec<String>)> = Vec::new();
+        for (id, session) in lock(&self.inner).iter() {
+            match grouped.iter_mut().find(|(s, _)| Arc::ptr_eq(s, session)) {
+                Some((_, ids)) => ids.push(id.clone()),
+                None => grouped.push((session.clone(), vec![id.clone()])),
+            }
+        }
+        let mut all: Vec<AgentSummary> = grouped
+            .into_iter()
+            .map(|(session, mut ids)| {
+                let mut summary = session.summary();
+                ids.retain(|id| *id != summary.session_id);
+                ids.sort();
+                summary.previous_ids = ids;
+                summary
+            })
             .collect();
         all.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         all
@@ -348,6 +362,7 @@ impl AgentSession {
             updated_at: self.updated_at.load(Ordering::SeqCst),
             waiting: t.waiting_on().and_then(TranscriptItem::waiting_summary),
             running: t.running_tool().and_then(TranscriptItem::running_summary),
+            previous_ids: Vec::new(),
         }
     }
 

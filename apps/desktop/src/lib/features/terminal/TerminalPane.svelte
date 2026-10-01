@@ -595,7 +595,7 @@
 				hookSocket,
 				claudeAccountId
 			};
-			if (existingServerTerminalId && workspaceStore.startsDetached(paneId)) {
+			if (existingServerTerminalId && workspaceStore.isAdoptedPane(paneId)) {
 				conn.connectDetached(connectOpts, existingServerTerminalId);
 				takenOver = true;
 			} else {
