@@ -31,8 +31,8 @@
 	{@const terminalId = c.activeTerminal.id}
 	{#key terminalId}
 		<Terminal
-			serverUrl={c.url}
-			token={c.token}
+			serverUrl={c.connection?.url ?? ''}
+			token={c.connection?.token ?? ''}
 			id={terminalId}
 			name={c.activeTerminal.name ?? 'terminal'}
 			onClose={c.closeTerminal}

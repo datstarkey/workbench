@@ -13,10 +13,8 @@ const LS_ACTIVE = 'wb.activeMachine';
 /** The single server saved before machines existed; migrated into the list once. */
 const LEGACY_URL = 'wb.serverUrl';
 const LEGACY_TOKEN = 'wb.token';
-/** Terminal id → the conversation its `claude` runs (terminal ids belong to one machine). */
+/** Terminal id → the conversation its `claude` runs; stored per machine (see `machineKey`). */
 export const LS_LINKS = 'wb.claudeTerminals';
-/** Keys stored per machine as `<key>.<machine id>`. */
-const PER_MACHINE = [LS_LINKS];
 const DEFAULT_PORT = '4317';
 
 export const machineKey = (key: string, machineId: string) => `${key}.${machineId}`;
@@ -95,14 +93,27 @@ export class SavedMachines {
 		this.list = [legacy];
 		this.activeId = legacy.id;
 		this.persist();
-		for (const key of [LEGACY_URL, LEGACY_TOKEN, LS_LINKS]) lsRemove(key);
+		// Keep the old pairing unless the new list really reached storage.
+		if (!readList(lsGet(LS_MACHINES) ?? '').some((m) => m.id === legacy.id)) return;
+		lsRemove(LEGACY_URL);
+		lsRemove(LEGACY_TOKEN);
+		const links = lsGet(LS_LINKS);
+		if (links === null || lsGet(machineKey(LS_LINKS, legacy.id)) === links) lsRemove(LS_LINKS);
 	}
 
-	/** Pairing: add the machine at `url`, or update its token if already saved; it becomes active. */
+	/**
+	 * The saved machine at `url` or, failing that, with `token`: tokens are random
+	 * per server, so the same token at another address (LAN vs Tailscale) is the same machine.
+	 */
+	find(url: string, token: string): Machine | undefined {
+		return this.list.find((m) => m.url === url) ?? this.list.find((m) => m.token === token);
+	}
+
+	/** Pairing: add the machine, or update the matching saved one (`find`); it becomes active. */
 	save(url: string, token: string): Machine {
-		const existing = this.list.find((m) => m.url === url);
+		const existing = this.find(url, token);
 		const machine = existing
-			? { ...existing, token }
+			? { ...existing, url, token }
 			: { id: crypto.randomUUID(), name: hostOf(url), url, token };
 		this.list = existing
 			? this.list.map((m) => (m.id === machine.id ? machine : m))
@@ -112,18 +123,21 @@ export class SavedMachines {
 		return machine;
 	}
 
-	rename(id: string, name: string): void {
+	/** Renames unless `name` is blank; returns the name now stored. */
+	rename(id: string, name: string): string {
 		const trimmed = name.trim();
-		if (!trimmed) return;
-		this.list = this.list.map((m) => (m.id === id ? { ...m, name: trimmed } : m));
-		this.persist();
+		if (trimmed) {
+			this.list = this.list.map((m) => (m.id === id ? { ...m, name: trimmed } : m));
+			this.persist();
+		}
+		return this.list.find((m) => m.id === id)?.name ?? '';
 	}
 
 	/** Forget a machine and everything stored for it. */
 	remove(id: string): void {
 		this.list = this.list.filter((m) => m.id !== id);
 		if (this.activeId === id) this.activeId = null;
-		for (const key of PER_MACHINE) lsRemove(machineKey(key, id));
+		lsRemove(machineKey(LS_LINKS, id));
 		this.persist();
 	}
 

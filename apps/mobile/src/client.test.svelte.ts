@@ -101,6 +101,21 @@ describe('MobileClient', () => {
 		expect(c.connectError).toMatch(/503/);
 	});
 
+	it('connect() gives up on a machine that does not answer', async () => {
+		const fetchSpy = vi.fn((_input: string, init?: RequestInit) => {
+			expect(init?.signal).toBeInstanceOf(AbortSignal);
+			return Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'));
+		});
+		vi.stubGlobal('fetch', fetchSpy);
+		const c = new MobileClient();
+		c.url = 'box:4317';
+		c.token = TOKEN;
+		await c.connect();
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(c.connectError).toBe('not responding (timed out)');
+		expect(c.connecting).toBe(false);
+	});
+
 	it('refreshTerminals() guards a non-array body instead of throwing', async () => {
 		const c = await connected({ '/remote/terminals': () => jsonResponse({ not: 'an array' }) });
 		expect(c.terminals).toEqual([]);
@@ -517,14 +532,14 @@ describe('MobileClient', () => {
 			await c.scanAndConnect();
 
 			expect(c.url).toBe(origin);
-			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`);
+			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`, expect.anything());
 			expect(c.machines.active?.url).toBe(origin);
 
 			// Relaunch: the saved origin is reused as-is too.
 			fetchSpy.mockClear();
 			const relaunched = new MobileClient(s);
 			await relaunched.connect();
-			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`);
+			expect(fetchSpy).toHaveBeenCalledWith(`${origin}/health`, expect.anything());
 		});
 
 		it('surfaces other scanner errors', async () => {

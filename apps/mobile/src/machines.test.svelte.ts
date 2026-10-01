@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { stubLocalStorage, TOKEN } from './test-helpers.ts';
 
+const PC_TOKEN = 'pc-token-0123456789abcdef0123456789ab';
+
 describe('normalizeUrl', () => {
 	it('adds scheme and default port to a bare host', () => {
 		expect(normalizeUrl('100.1.2.3')).toBe('http://100.1.2.3:4317');
@@ -24,7 +26,10 @@ describe('hostOf', () => {
 
 describe('SavedMachines', () => {
 	beforeEach(() => stubLocalStorage());
-	afterEach(() => vi.unstubAllGlobals());
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+	});
 
 	const MAC = 'http://100.64.1.2:4317';
 	const PC = 'http://100.64.1.3:4317';
@@ -52,6 +57,24 @@ describe('SavedMachines', () => {
 		expect(new SavedMachines().active).toEqual(m.active);
 	});
 
+	it('keeps the old pairing when the migrated list could not be written', () => {
+		localStorage.setItem('wb.serverUrl', MAC);
+		localStorage.setItem('wb.token', TOKEN);
+		localStorage.setItem('wb.claudeTerminals', '{}');
+		const setItem = localStorage.setItem.bind(localStorage);
+		vi.spyOn(localStorage, 'setItem').mockImplementation((k: string, v: string) => {
+			if (k === 'wb.machines') throw new Error('QuotaExceededError');
+			setItem(k, v);
+		});
+
+		const m = new SavedMachines();
+
+		expect(m.active?.url).toBe(MAC);
+		expect(localStorage.getItem('wb.serverUrl')).toBe(MAC);
+		expect(localStorage.getItem('wb.token')).toBe(TOKEN);
+		expect(localStorage.getItem('wb.claudeTerminals')).toBe('{}');
+	});
+
 	it('does not migrate an address saved without a token', () => {
 		localStorage.setItem('wb.serverUrl', MAC);
 		expect(new SavedMachines().list).toEqual([]);
@@ -60,7 +83,7 @@ describe('SavedMachines', () => {
 	it('save() adds a machine and makes it active', () => {
 		const m = new SavedMachines();
 		const mac = m.save(MAC, TOKEN);
-		const pc = m.save(PC, TOKEN);
+		const pc = m.save(PC, PC_TOKEN);
 		expect(m.list.map((x) => x.url)).toEqual([MAC, PC]);
 		expect(m.activeId).toBe(pc.id);
 		expect(mac.id).not.toBe(pc.id);
@@ -70,7 +93,7 @@ describe('SavedMachines', () => {
 	it('save() updates the token of the machine at the same url instead of adding one', () => {
 		const m = new SavedMachines();
 		const mac = m.save(MAC, TOKEN);
-		m.save(PC, TOKEN);
+		m.save(PC, PC_TOKEN);
 		m.rename(mac.id, 'MacBook');
 		const rotated = 'rotated-token-0123456789abcdef0123456';
 
@@ -79,6 +102,19 @@ describe('SavedMachines', () => {
 		expect(m.list).toHaveLength(2);
 		expect(again).toEqual({ id: mac.id, name: 'MacBook', url: MAC, token: rotated });
 		expect(m.activeId).toBe(mac.id);
+	});
+
+	it('save() treats the same token at another address as the same machine', () => {
+		const m = new SavedMachines();
+		const mac = m.save(MAC, TOKEN);
+		m.save(PC, PC_TOKEN);
+		const viaMagicDns = 'https://mac.tail1234.ts.net';
+
+		const again = m.save(viaMagicDns, TOKEN);
+
+		expect(m.list).toHaveLength(2);
+		expect(again).toMatchObject({ id: mac.id, url: viaMagicDns, token: TOKEN });
+		expect(m.find(viaMagicDns, 'other')).toEqual(again);
 	});
 
 	it('rename() ignores a blank name', () => {
@@ -93,7 +129,7 @@ describe('SavedMachines', () => {
 	it('remove() forgets the machine and its stored state; removing the active one clears it', () => {
 		const m = new SavedMachines();
 		const mac = m.save(MAC, TOKEN);
-		const pc = m.save(PC, TOKEN);
+		const pc = m.save(PC, PC_TOKEN);
 		localStorage.setItem(machineKey('wb.claudeTerminals', pc.id), '{}');
 
 		m.remove(pc.id);

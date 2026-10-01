@@ -5,7 +5,6 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
-	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
@@ -15,7 +14,7 @@
 	import type { AgentSummary, ProjectConfig } from '@workbench/types';
 	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
 	import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
-	import MachineList from './MachineList.svelte';
+	import MachinesSheet from './MachinesSheet.svelte';
 	import Sheet from './Sheet.svelte';
 
 	let { client }: { client: MobileClient } = $props();
@@ -24,7 +23,10 @@
 	let query = $state('');
 	let settingsOpen = $state(false);
 	let machinesOpen = $state(false);
-	const machineName = $derived(client.machine?.name ?? client.url);
+	const machineName = $derived(client.machine?.name ?? client.connection?.url ?? '');
+	const status = $derived(
+		client.connecting ? 'switching' : client.online ? 'connected' : 'not responding'
+	);
 	const expanded = new SvelteSet<string>();
 	let newBranch = $state<Record<string, string>>({});
 	/** Re-render relative times without refetching. */
@@ -100,12 +102,14 @@
 		<button
 			type="button"
 			class="ml-auto flex h-9 min-w-0 items-center gap-1.5 rounded-full border border-wb-hair px-3 text-[12px] text-wb-ink-mute active:bg-wb-panel2"
-			aria-label="Machine: {machineName}, {client.online
-				? 'connected'
-				: 'not responding'}. Switch machine"
+			aria-label="Machine: {machineName}, {status}. Switch machine"
 			onclick={() => (machinesOpen = true)}
 		>
-			<span class={cn('size-1.5 shrink-0 rounded-full', client.online ? 'bg-wb-ok' : 'bg-wb-err')}
+			<span
+				class={cn(
+					'size-1.5 shrink-0 rounded-full',
+					client.connecting ? 'animate-pulse bg-wb-warn' : client.online ? 'bg-wb-ok' : 'bg-wb-err'
+				)}
 			></span>
 			<span class="truncate font-medium">{machineName}</span>
 			<ChevronDownIcon class="size-3.5 shrink-0" />
@@ -388,39 +392,7 @@
 </div>
 
 {#if machinesOpen}
-	<Sheet label="Machines" onClose={() => (machinesOpen = false)}>
-		<div class="flex flex-col gap-4 pb-2">
-			{#if client.machine}
-				{@const id = client.machine.id}
-				<label class="flex flex-col gap-1.5">
-					<span class="text-[13px] font-semibold">This machine's name</span>
-					<input
-						value={client.machine.name}
-						onchange={(e) => client.machines.rename(id, e.currentTarget.value)}
-						autocapitalize="words"
-						autocorrect="off"
-						spellcheck={false}
-						class="h-10 rounded-lg border border-wb-hair bg-wb-panel2 px-3 text-[13px] text-wb-ink focus:border-wb-ink-soft focus:outline-none"
-					/>
-				</label>
-			{/if}
-			<div class="flex flex-col gap-2">
-				<span class="text-[13px] font-semibold">Switch to</span>
-				<MachineList {client} onPick={() => (machinesOpen = false)} />
-			</div>
-			<button
-				type="button"
-				class="flex h-10 items-center justify-center gap-1.5 rounded-lg border border-wb-hair bg-wb-panel2 text-[13px] font-medium active:bg-wb-panel"
-				onclick={() => {
-					machinesOpen = false;
-					client.addMachine();
-				}}
-			>
-				<PlusIcon class="size-4" />
-				Add machine
-			</button>
-		</div>
-	</Sheet>
+	<MachinesSheet {client} onClose={() => (machinesOpen = false)} />
 {/if}
 
 {#if settingsOpen}
@@ -451,7 +423,7 @@
 			</div>
 			<div class="flex flex-col gap-1">
 				<span class="text-[13px] font-semibold">Server</span>
-				<span class="font-mono text-xs break-all text-wb-ink-mute">{client.url}</span>
+				<span class="font-mono text-xs break-all text-wb-ink-mute">{client.connection?.url}</span>
 			</div>
 			<div class="flex gap-2">
 				<button

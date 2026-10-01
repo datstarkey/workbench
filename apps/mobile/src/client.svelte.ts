@@ -3,36 +3,11 @@ import { ControlPlaneStore } from '@workbench/control-plane-ui';
 import { createHttpTransport } from '@workbench/transport';
 import type { AgentSummary, ApprovalDecision } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { hostOf, LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
+import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
-
-export type TerminalMeta = {
-	id: string;
-	name?: string;
-	cwd: string;
-	createdAt: number;
-	alive: boolean;
-};
-
-/** How a new Claude session opens on this phone. */
-export type ClaudeView = 'chat' | 'terminal';
-
-/** A Claude conversation, shown as chat or as a terminal running `claude`. */
-export interface ChatRef {
-	sessionId: string;
-	projectPath: string;
-	worktreePath?: string;
-	name: string;
-	/** The Claude account it belongs to; absent is the default login. */
-	claudeAccountId?: string;
-}
-
-/** Extras for a terminal that runs `claude` on a conversation (the server builds the command). */
-interface ClaudeLaunch {
-	claudeSession: { id: string; resume: boolean };
-	claudeAccountId?: string;
-}
+import type { ChatRef, ClaudeLaunch, ClaudeView, TerminalMeta } from './types.ts';
 
 const LS_VIEW = 'wb.claudeView';
 /** Home-screen refresh while the app is in front. */
@@ -72,11 +47,15 @@ export function openExternal(url: string): void {
  */
 export class MobileClient {
 	readonly machines = new SavedMachines();
-	/** The connect form's fields, and the connected machine's address and token. */
+	/** The connect form's fields (they show the last connected machine). */
 	url = $state(this.machines.active?.url ?? '');
 	token = $state(this.machines.active?.token ?? '');
+	/** The server every request goes to; null while disconnected. */
+	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
 	connecting = $state(false);
+	/** The saved machine a connect is in flight to (null for one not saved yet). */
+	connectingTo = $state<string | null>(null);
 	connectError = $state<string | null>(null);
 	/** The connected machine's id (null while disconnected). */
 	machineId = $state<string | null>(null);
@@ -95,7 +74,10 @@ export class MobileClient {
 	/** Why the last action failed (switch, approve, open); shown on whichever screen is up. */
 	notice = $state<string | null>(null);
 
-	readonly agents = agentClient(() => ({ baseUrl: this.url, token: this.token }));
+	readonly agents = agentClient(() => ({
+		baseUrl: this.connection?.url ?? '',
+		token: this.connection?.token ?? ''
+	}));
 
 	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
@@ -103,8 +85,10 @@ export class MobileClient {
 	private readonly pairing: PairingScan;
 	/** A URL that is already a complete origin (saved, or from a pairing code): never re-normalised. */
 	private exactUrl: string | null;
-	/** Bumped on every disconnect; a response for an older connection is dropped. */
+	/** Bumped whenever the connection goes; a response for an older connection is dropped. */
 	private generation = 0;
+	/** Bumped on every connect attempt; a newer attempt, a disconnect or forgetting its machine supersedes it. */
+	private attempt = 0;
 
 	constructor(scanner?: QrScanner) {
 		this.pairing = new PairingScan(scanner);
@@ -117,63 +101,79 @@ export class MobileClient {
 	}
 
 	private authHeaders(): Record<string, string> {
-		return { authorization: `Bearer ${this.token}` };
+		return { authorization: `Bearer ${this.connection?.token ?? ''}` };
 	}
 
-	/** Connect to the form's server, leaving the current one; on success it is saved and active. */
-	async connect(): Promise<void> {
-		this.disconnect();
-		const generation = this.generation;
-		const stale = () => generation !== this.generation;
-		this.connecting = true;
-		try {
-			// Only hand-typed input gets a scheme and the default port added: a scanned
-			// `https://box.ts.net` must not become `https://box.ts.net:4317`.
-			const base = this.url === this.exactUrl ? this.url : normalizeUrl(this.url);
-			if (!base) throw new Error('enter a server address');
-			this.token = this.token.trim();
-			// Every Workbench server requires a token (see Settings → Server mode).
-			if (!this.token) throw new Error('enter the server token');
-			const res = await fetch(`${base}/health`);
-			if (!res.ok) throw new Error(`health check returned ${res.status}`);
-			// /health is unauthenticated, so check the token on a protected route.
-			const authed = await fetch(`${base}/remote/terminals`, { headers: this.authHeaders() });
-			if (authed.status === 401) throw new Error('invalid token');
-			if (!authed.ok) throw new Error(`server returned ${authed.status}`);
-			if (stale()) return;
+	private get base(): string {
+		return this.connection?.url ?? '';
+	}
 
+	/** True while the connection it was taken on is still the current one. */
+	private live(): () => boolean {
+		const generation = this.generation;
+		return () => generation === this.generation;
+	}
+
+	/** Connect to the form's server; on success it is saved and active. */
+	connect(): Promise<void> {
+		// Only hand-typed input gets a scheme and the default port added: a scanned
+		// `https://box.ts.net` must not become `https://box.ts.net:4317`.
+		return this.open(this.url, this.token, this.url === this.exactUrl);
+	}
+
+	/** Switch to a saved machine. The current connection stays until the new one has answered. */
+	async switchTo(id: string): Promise<void> {
+		const machine = this.machines.list.find((m) => m.id === id);
+		if (machine) await this.open(machine.url, machine.token, true);
+	}
+
+	/**
+	 * Verify a server (health + token), then replace the current connection with
+	 * it. A failure leaves the current connection as it was.
+	 */
+	private async open(rawUrl: string, rawToken: string, exact: boolean): Promise<void> {
+		const attempt = ++this.attempt;
+		const superseded = () => attempt !== this.attempt;
+		const base = exact ? rawUrl : normalizeUrl(rawUrl);
+		const token = rawToken.trim();
+		const saved = this.machines.find(base, token);
+		this.connectingTo = saved?.id ?? null;
+		this.connecting = true;
+		this.connectError = null;
+		try {
+			if (!base) throw new Error('enter a server address');
+			// Every Workbench server requires a token (see Settings → Server mode).
+			if (!token) throw new Error('enter the server token');
+			await verifyServer(base, token);
+			if (superseded()) return;
+			const next = new ControlPlaneStore(createHttpTransport({ baseUrl: base, token }));
+			await next.refresh();
+			if (superseded()) return next.dispose();
+
+			this.teardown();
+			const machine = this.machines.save(base, token);
 			this.url = base;
 			this.exactUrl = base;
-			const machine = this.machines.save(base, this.token);
-
-			const transport = createHttpTransport({ baseUrl: base, token: this.token });
-			const next = new ControlPlaneStore(transport);
-			await next.refresh();
-			if (stale()) return next.dispose();
+			this.token = token;
+			this.connection = { url: base, token };
 			this.machineId = machine.id;
 			this.claudeTerminals = readLinks(machine.id);
 			this.online = true;
 			this.store = next;
 			await Promise.all([this.refreshTerminals(), this.refreshChats()]);
 		} catch (e) {
-			if (!stale()) this.connectError = errorText(e);
+			if (superseded()) return;
+			if (this.store)
+				this.notice = `Couldn't switch to ${saved?.name ?? hostOf(base)}: ${errorText(e)}`;
+			else this.connectError = saved ? `${saved.name}: ${errorText(e)}` : errorText(e);
 		} finally {
-			if (!stale()) this.connecting = false;
+			if (!superseded()) this.endConnecting();
 		}
 	}
 
-	/** Leave the current machine for a saved one. */
-	async switchTo(id: string): Promise<void> {
-		const machine = this.machines.list.find((m) => m.id === id);
-		if (machine) await this.connectTo(machine.url, machine.token);
-	}
-
-	/** Connect to a complete origin (saved or scanned), never re-normalised. */
-	private async connectTo(url: string, token: string): Promise<void> {
-		this.url = url;
-		this.exactUrl = url;
-		this.token = token;
-		await this.connect();
+	private endConnecting(): void {
+		this.connecting = false;
+		this.connectingTo = null;
 	}
 
 	/** Leave the current machine for an empty connect form (scan or type a new one). */
@@ -186,6 +186,10 @@ export class MobileClient {
 
 	/** Forget a saved machine; forgetting the connected one returns to the connect form. */
 	forget(id: string): void {
+		if (id === this.connectingTo) {
+			this.attempt++;
+			this.endConnecting();
+		}
 		const current = id === this.machineId;
 		this.machines.remove(id);
 		if (current) this.addMachine();
@@ -193,11 +197,14 @@ export class MobileClient {
 
 	/** Scan the desktop's pairing QR code, then connect to (and save) that machine. */
 	async scanAndConnect(): Promise<void> {
-		if (this.pairing.scanning) return;
 		this.connectError = null;
 		try {
 			const pairing = await this.pairing.scan();
-			if (pairing) await this.connectTo(pairing.url, pairing.token);
+			if (!pairing) return;
+			this.url = pairing.url;
+			this.exactUrl = pairing.url;
+			this.token = pairing.token;
+			await this.connect();
 		} catch (e) {
 			this.connectError = errorText(e);
 		}
@@ -210,19 +217,27 @@ export class MobileClient {
 	/** Overlay Cancel / Android back. */
 	cancelScan = (): Promise<void> => this.pairing.cancel();
 
-	/** Close the connection: every screen of it goes, and late responses for it are dropped. */
+	/** Close the connection (and any connect in flight). */
 	disconnect(): void {
+		this.attempt++;
+		this.endConnecting();
+		this.connectError = null;
+		this.teardown();
+	}
+
+	/** Drop the connection: every screen of it goes, and late responses for it are dropped. */
+	private teardown(): void {
 		this.generation++;
 		this.store?.dispose();
 		this.store = null;
+		this.connection = null;
 		this.machineId = null;
-		this.connecting = false;
-		this.connectError = null;
 		this.claudeTerminals = {};
 		this.terminals = [];
 		this.chats = [];
 		this.activeTerminalId = null;
 		this.activeChat = null;
+		this.switching = false;
 		this.notice = null;
 	}
 
@@ -233,10 +248,10 @@ export class MobileClient {
 
 	async refreshChats(): Promise<void> {
 		if (!this.store) return;
-		const generation = this.generation;
+		const live = this.live();
 		try {
 			const chats = await this.agents.list();
-			if (generation === this.generation) this.chats = chats;
+			if (live()) this.chats = chats;
 		} catch {
 			/* keep the last list */
 		}
@@ -294,18 +309,21 @@ export class MobileClient {
 
 	/** Answer an approval from the home screen, without opening the chat. */
 	async answer(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
+		const live = this.live();
 		this.notice = null;
 		try {
 			await this.agents.send(sessionId, { t: 'approve', requestId, decision });
 		} catch (e) {
-			this.notice = `Couldn't answer Claude: ${errorText(e)}`;
+			if (live()) this.notice = `Couldn't answer Claude: ${errorText(e)}`;
 		}
-		await this.refreshChats();
+		if (live()) await this.refreshChats();
 	}
 
 	/** End a chat session's `claude` process and leave its screen; the conversation stays on disk. */
 	async endChat(sessionId: string): Promise<void> {
+		const live = this.live();
 		await this.agents.stop(sessionId).catch(() => {});
+		if (!live()) return;
 		this.activeChat = null;
 		await this.refreshChats();
 	}
@@ -315,29 +333,35 @@ export class MobileClient {
 	 * file), then continue the conversation in a real `claude`.
 	 */
 	async showAsTerminal(ref: ChatRef, hasHistory: boolean): Promise<void> {
+		const live = this.live();
 		this.switching = true;
 		this.notice = null;
 		try {
 			await this.agents.stop(ref.sessionId);
 		} catch (e) {
+			if (!live()) return;
 			this.notice = `Couldn't stop the chat: ${errorText(e)}`;
 			this.switching = false;
 			return;
 		}
+		// A session id only means something on the machine it came from.
+		if (!live()) return;
 		this.activeChat = null;
 		await this.openClaudeTerminal(ref, hasHistory);
-		this.switching = false;
+		if (live()) this.switching = false;
 	}
 
 	/** Terminal → chat: end the terminal's `claude`, then pick the conversation up in chat. */
 	async showAsChat(terminalId: string): Promise<void> {
 		const ref = this.claudeTerminals[terminalId];
 		if (!ref) return;
+		const live = this.live();
 		this.switching = true;
 		this.notice = null;
 		// Wait until the terminal's process group is gone: two `claude`s on one
 		// session would both write its transcript.
 		const stopped = await this.deleteTerminal(terminalId, true);
+		if (!live()) return;
 		if (stopped) {
 			this.openChat(ref);
 			await this.refreshTerminals();
@@ -362,10 +386,9 @@ export class MobileClient {
 
 	async refreshTerminals(): Promise<void> {
 		if (!this.store) return;
-		const generation = this.generation;
-		const current = () => generation === this.generation;
+		const current = this.live();
 		try {
-			const res = await fetch(`${this.url}/remote/terminals`, { headers: this.authHeaders() });
+			const res = await fetch(`${this.base}/remote/terminals`, { headers: this.authHeaders() });
 			if (current()) this.online = res.ok;
 			if (res.ok) {
 				const data = await res.json();
@@ -392,9 +415,9 @@ export class MobileClient {
 	): Promise<string | null> => {
 		if (!this.store) return null;
 		this.notice = null;
-		const generation = this.generation;
+		const live = this.live();
 		try {
-			const res = await fetch(`${this.url}/remote/terminals`, {
+			const res = await fetch(`${this.base}/remote/terminals`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', ...this.authHeaders() },
 				body: JSON.stringify({ projectPath, worktreePath, name, ...claude, cols: 80, rows: 24 })
@@ -407,7 +430,7 @@ export class MobileClient {
 				throw new Error(reason || `the server returned ${res.status}`);
 			}
 			const meta: TerminalMeta = await res.json();
-			if (generation !== this.generation) return null;
+			if (!live()) return null;
 			// Show the new terminal immediately AND keep it after refreshTerminals()
 			// reconciles — otherwise the refresh overwrites `terminals` with a server
 			// list that hasn't surfaced the new id yet, the $derived activeTerminal goes
@@ -424,28 +447,32 @@ export class MobileClient {
 			ensureVisible();
 			return meta.id;
 		} catch (e) {
-			this.notice = `Couldn't open a terminal: ${errorText(e)}`;
+			if (live()) this.notice = `Couldn't open a terminal: ${errorText(e)}`;
 			return null;
 		}
 	};
 
 	/** `wait` returns only once its processes are gone. */
 	private async deleteTerminal(id: string, wait = false): Promise<boolean> {
+		const live = this.live();
 		try {
 			const res = await fetch(
-				`${this.url}/remote/terminals/${encodeURIComponent(id)}${wait ? '?wait=true' : ''}`,
+				`${this.base}/remote/terminals/${encodeURIComponent(id)}${wait ? '?wait=true' : ''}`,
 				{ method: 'DELETE', headers: this.authHeaders() }
 			);
 			if (!res.ok) return false;
 		} catch {
 			return false;
 		}
+		if (!live()) return false;
 		if (this.activeTerminalId === id) this.activeTerminalId = null;
 		return true;
 	}
 
 	async killTerminal(id: string): Promise<void> {
+		const live = this.live();
 		await this.deleteTerminal(id);
+		if (!live()) return;
 		if (this.activeTerminalId === id) this.activeTerminalId = null;
 		await this.refreshTerminals();
 	}
