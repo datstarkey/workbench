@@ -370,6 +370,12 @@ pub struct WorkbenchSettings {
     /// How new Claude tabs open: `terminal` or `chat`.
     #[serde(default = "default_claude_view")]
     pub default_claude_view: String,
+    /// Codex `approval_policy` override; `default` passes nothing.
+    #[serde(default = "default_codex_override")]
+    pub codex_approval_policy: String,
+    /// Codex `sandbox_mode` override; `default` passes nothing.
+    #[serde(default = "default_codex_override")]
+    pub codex_sandbox_mode: String,
     #[serde(default)]
     pub sandbox_runtime_enabled: bool,
     #[serde(default = "default_sandbox_allowed_domains")]
@@ -451,6 +457,10 @@ fn default_claude_permission_mode() -> String {
     "default".to_string()
 }
 
+fn default_codex_override() -> String {
+    "default".to_string()
+}
+
 fn default_sandbox_allowed_domains() -> Vec<String> {
     crate::sandbox_runtime::default_allowed_domains()
 }
@@ -470,6 +480,8 @@ impl Default for WorkbenchSettings {
             worktree_start_point: default_worktree_start_point(),
             worktree_custom_branch: String::new(),
             claude_permission_mode: default_claude_permission_mode(),
+            codex_approval_policy: default_codex_override(),
+            codex_sandbox_mode: default_codex_override(),
             default_claude_view: default_claude_view(),
             sandbox_runtime_enabled: false,
             sandbox_allowed_domains: default_sandbox_allowed_domains(),

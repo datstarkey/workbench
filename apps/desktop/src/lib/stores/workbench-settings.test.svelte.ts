@@ -23,6 +23,8 @@ function makeSettings(overrides: Partial<WorkbenchSettings> = {}): WorkbenchSett
 		terminalRenderer: 'xterm',
 		agentActions: [],
 		claudePermissionMode: 'default',
+		codexApprovalPolicy: 'default',
+		codexSandboxMode: 'default',
 		defaultClaudeView: 'terminal',
 		sandboxRuntimeEnabled: false,
 		sandboxAllowedDomains: [],
@@ -106,6 +108,22 @@ describe('WorkbenchSettingsStore', () => {
 			await store.load();
 
 			expect(store.claudePermissionMode).toBe('default');
+		});
+
+		it('keeps valid Codex overrides and drops unknown ones', async () => {
+			mockInvoke('load_workbench_settings', () => ({
+				...makeSettings({ codexSandboxMode: 'read-only' }),
+				codexApprovalPolicy: 'untrusted'
+			}));
+
+			await store.load();
+
+			expect(store.codexSandboxMode).toBe('read-only');
+			expect(store.codexApprovalPolicy).toBe('default');
+			expect(store.launchOptions).toMatchObject({
+				codexApprovalPolicy: 'default',
+				codexSandboxMode: 'read-only'
+			});
 		});
 
 		it('sets loaded and clears dirty', async () => {
@@ -260,6 +278,8 @@ describe('WorkbenchSettingsStore', () => {
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
 					claudePermissionMode: 'default',
+					codexApprovalPolicy: 'default',
+					codexSandboxMode: 'default',
 					defaultClaudeView: 'terminal',
 					sandboxRuntimeEnabled: false,
 					sandboxAllowedDomains: [],
@@ -522,6 +542,8 @@ describe('WorkbenchSettingsStore', () => {
 					claudeHooksApproved: null,
 					codexConfigApproved: null,
 					claudePermissionMode: 'default',
+					codexApprovalPolicy: 'default',
+					codexSandboxMode: 'default',
 					defaultClaudeView: 'terminal',
 					sandboxRuntimeEnabled: false,
 					sandboxAllowedDomains: [],

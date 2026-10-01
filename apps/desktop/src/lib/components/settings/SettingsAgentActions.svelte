@@ -54,17 +54,7 @@
 </script>
 
 <div class="space-y-3">
-	<div class="flex items-center justify-between">
-		<div>
-			<h2 class="text-sm font-semibold">Agent Actions</h2>
-			<p class="mt-1 text-xs text-muted-foreground">
-				Reusable prompts for Claude/Codex. Launches a new session and submits the prompt
-				immediately.
-			</p>
-			<p class="mt-1 text-xs text-muted-foreground/80">
-				New installs include starter actions for PR review, DRY audits, and security scans.
-			</p>
-		</div>
+	<div class="flex justify-end">
 		<Button
 			type="button"
 			size="sm"
@@ -73,7 +63,7 @@
 			onclick={() => store.addAgentAction()}
 		>
 			<PlusIcon class="size-3.5" />
-			Add Action
+			Add action
 		</Button>
 	</div>
 
@@ -84,10 +74,11 @@
 	{:else}
 		<div class="space-y-3">
 			{#each store.agentActions as action (action.id)}
-				<div class="rounded-md border border-border/60 bg-muted/20 p-3">
+				<div class="rounded-lg border border-wb-hair bg-wb-panel2/50 p-3">
 					<div class="flex items-center gap-2">
 						<Input
 							class="h-8"
+							aria-label="Action name"
 							value={action.name}
 							placeholder="Review PR for regressions"
 							oninput={(event) => updateActionText(action.id, 'name', event)}
@@ -97,7 +88,9 @@
 							value={action.target}
 							onValueChange={(value) => updateActionTarget(action.id, value)}
 						>
-							<Select.Trigger class="h-8 w-36 text-xs">{targetLabel(action)}</Select.Trigger>
+							<Select.Trigger class="h-8 w-36 text-xs" aria-label="Runs in"
+								>{targetLabel(action)}</Select.Trigger
+							>
 							<Select.Content>
 								{#each targetOptions as option (option.value)}
 									<Select.Item value={option.value}>{option.label}</Select.Item>

@@ -159,7 +159,7 @@ Control-plane stores call `invoke`/`listen` imported from **`$lib/transport`** (
 **Components** (`src/lib/components/`):
 
 - `ConfirmDialog`, `EmptyState`, `UpdateDialog`, `IntegrationApprovalDialog`
-- `settings/` — rendered in a separate OS window (`utils/settings-window.ts`; `index.html?view=settings`, mounted by `main.ts`). `SettingsContent` + one component per section (`SettingsWorkbench`, `SettingsServerMode`, `SettingsSandbox`, `SettingsPermissions`, `SettingsHooks`, `SettingsMcp`, …)
+- `settings/` — rendered in a separate OS window (`utils/settings-window.ts`; `index.html?view=settings`, mounted by `main.ts`). `SettingsContent` is the shell (nav, page header, scope switch, Save footer); `settings-pages.ts` is the page registry (nav groups, titles, which store a page saves to — `immediate` pages like Remote access have no Save). One component per page (`SettingsGeneral`, `SettingsClaudeSessions`, `SettingsCodexSessions`, `SettingsServerMode`, `SettingsPermissions`, `SettingsBashSandbox`, …), built from `SettingsSection` (titled card) + `SettingsRow` (label/description left, compact control right, `stack` for wide controls); `SettingsToggle`/`SettingsSelect` wrap `SettingsRow`. Workbench-owned launch settings (`--permission-mode`, sandbox runtime, Codex `approval_policy`/`sandbox_mode`) live on the Sessions pages; the `settings.json` pages edit Claude Code's own files.
 - shadcn primitives live in `@workbench/ui`, not here
 
 **Utils** (`src/lib/utils/`):
@@ -184,7 +184,7 @@ Control-plane stores call `invoke`/`listen` imported from **`$lib/transport`** (
 Tailwind CSS v4 via `@tailwindcss/vite`. shadcn-svelte components (`components.json`, base color: slate). Dark mode forced on.
 
 - Pro chrome tokens: `--wb-*` CSS vars in `packages/theme/theme.css` (`bg`/`panel`/`panel2`/`rail`/`ink`/`hair` + session colors `claude`/`codex`/`shell`/`ok`/`warn`/`err`), exposed as Tailwind utilities (`bg-wb-panel`, `text-wb-claude`). Use these for new chrome instead of shadcn surface tokens (keeps dialogs/inputs unbroken).
-- Accent is theme-selectable: `:root[data-accent='violet|tideline|ember|moss|iris']` presets in `theme.css` drive `--wb-accent` + shadcn `--primary`; the attribute is set from `workbenchSettingsStore.accentColor`. Add new presets in `theme.css` AND the swatch list in `SettingsWorkbench.svelte`.
+- Accent is theme-selectable: `:root[data-accent='violet|tideline|ember|moss|iris']` presets in `theme.css` drive `--wb-accent` + shadcn `--primary`; the attribute is set from `workbenchSettingsStore.accentColor`. Add new presets in `theme.css` AND the swatch list in `SettingsGeneral.svelte`.
 - Window chrome components live in `src/lib/features/chrome/` (`ActivityRail` 44px left rail, `StatusBar` 22px bottom). App uses the native titlebar (`decorations: true`) — no custom traffic-light bar.
 - The theme is synced to claude.ai/design as a tokens-only design system (Svelte components can't sync; Claude Design renders React). Changing tokens or `packages/ui` class strings means re-running `/design-sync`; `.design-sync/NOTES.md` lists what drifts.
 
@@ -198,6 +198,7 @@ All TerminalGrids render simultaneously, hidden via `class:hidden` when inactive
 
 - New sessions: `CLAUDE_NEW_SESSION_COMMAND` constant — just `claude` with no flags (CLI assigns session ID)
 - Resume sessions: `claudeResumeCommand(sessionId)` → `claude --resume <uuid>` (validates UUID before shell interpolation)
+- Launch options come from `WorkbenchSettingsStore.launchOptions` (Claude permission mode + sandbox wrapper, Codex overrides). Codex gets `-c approval_policy=…` / `-c sandbox_mode=…` — `-c` keys, not `-a`/`-s`, because older Codex builds refuse unknown flags; `default` writes nothing, so `~/.codex/config.toml` still decides. Codex 0.159 only accepts `on-request`/`never` for approvals.
 - Commands typed into shell (not executed directly) — CLI errors don't trigger `terminal:exit`. Detect errors by buffering early terminal output, not process exit.
 - Session data: `~/.claude/projects/<encoded-path>/<session-id>.jsonl` (path encoding: `/` → `-`)
 - JSONL format: JSON objects with `type` ("user"/"assistant"), `message.content[]`, `sessionId`, `timestamp`. First user message = session label.

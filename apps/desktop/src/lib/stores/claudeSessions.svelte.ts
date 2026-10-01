@@ -2,11 +2,7 @@ import { invoke } from '$lib/transport';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { stripAnsi } from '$lib/utils/format';
-import {
-	newSessionCommandWithPrompt,
-	warnMissingSandboxSettingsPath,
-	type ClaudeLaunchOptions
-} from '$lib/utils/claude';
+import { newSessionCommandWithPrompt, type LaunchOptions } from '$lib/utils/claude';
 import { getWorkbenchSettingsStore } from './context';
 import {
 	isAISessionType,
@@ -76,17 +72,8 @@ export class ClaudeSessionStore {
 	/** Reference to workbench settings store */
 	private settingsStore = getWorkbenchSettingsStore();
 
-	private get claudeLaunchOptions(): ClaudeLaunchOptions {
-		const sandboxSettingsPath = this.settingsStore.sandboxSettingsPath;
-		// Enabled but unresolved means the backend could not write the settings
-		// file; launching unwrapped is the safe-to-run fallback, but say so.
-		if (this.settingsStore.sandboxRuntimeEnabled && !sandboxSettingsPath) {
-			warnMissingSandboxSettingsPath();
-		}
-		return {
-			permissionMode: this.settingsStore.claudePermissionMode,
-			sandboxSettingsPath
-		};
+	private get launchOptions(): LaunchOptions {
+		return this.settingsStore.launchOptions;
 	}
 
 	/** Callbacks invoked when a pane transitions into awaiting-input state */
@@ -201,7 +188,7 @@ export class ClaudeSessionStore {
 		this.projects.openProject(projectPath);
 		this.workspaces.addAIByProject(projectPath, type, {
 			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.claudeLaunchOptions)
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.launchOptions)
 		});
 	}
 
@@ -248,7 +235,7 @@ export class ClaudeSessionStore {
 	) {
 		this.workspaces.addAISession(ws.id, type, {
 			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.claudeLaunchOptions)
+			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.launchOptions)
 		});
 	}
 

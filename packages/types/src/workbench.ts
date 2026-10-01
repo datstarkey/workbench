@@ -430,6 +430,12 @@ export type ClaudePermissionMode =
 	| 'auto'
 	| 'bypassPermissions';
 
+/** Codex `approval_policy` override; `default` leaves Codex's own config in charge. */
+export type CodexApprovalPolicy = 'default' | 'on-request' | 'never';
+
+/** Codex `sandbox_mode` override; `default` leaves Codex's own config in charge. */
+export type CodexSandboxMode = 'default' | 'read-only' | 'workspace-write' | 'danger-full-access';
+
 export interface AgentAction {
 	id: string;
 	name: string;
@@ -455,6 +461,8 @@ export interface WorkbenchSettings {
 	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
 	claudePermissionMode: ClaudePermissionMode;
+	codexApprovalPolicy: CodexApprovalPolicy;
+	codexSandboxMode: CodexSandboxMode;
 	/** Wrap Claude launches in @anthropic-ai/sandbox-runtime. */
 	sandboxRuntimeEnabled: boolean;
 	/** Domains the sandbox runtime permits egress to. */

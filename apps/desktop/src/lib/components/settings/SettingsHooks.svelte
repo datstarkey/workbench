@@ -179,7 +179,7 @@
 
 	{#if availableEvents.length > 0}
 		<div>
-			<h3 class="text-xs font-medium text-muted-foreground">Add Hook Event</h3>
+			<h3 class="text-xs font-medium text-muted-foreground">Add hook event</h3>
 			<div class="mt-2 flex flex-wrap gap-1.5">
 				{#each availableEvents as event (event)}
 					<Button
@@ -202,7 +202,7 @@
 
 	{#if claudeSettingsStore.hookScripts.length > 0}
 		<div>
-			<h3 class="text-xs font-medium text-muted-foreground">Hook Scripts on Disk</h3>
+			<h3 class="text-xs font-medium text-muted-foreground">Hook scripts on disk</h3>
 			<div class="mt-2 space-y-1">
 				{#each claudeSettingsStore.hookScripts as script (script.path)}
 					<div class="rounded-md border border-border/60 px-2 py-1">
@@ -223,7 +223,7 @@
 			{:else}
 				<ChevronRightIcon class="size-3" />
 			{/if}
-			Recent Activity
+			Recent activity
 			{#if logEntries.length > 0}
 				<Badge variant="secondary" class="text-[10px]">{logEntries.length}</Badge>
 			{/if}
