@@ -54,7 +54,7 @@
 	{/if}
 	{#if open}
 		<div
-			class="max-h-80 overflow-auto border-t border-wb-hair py-1 font-mono text-[11px] leading-relaxed"
+			class="scrollbar-thin max-h-80 overflow-auto border-t border-wb-hair py-1 font-mono text-[11px] leading-relaxed"
 		>
 			{#if tool.patch?.length}
 				{#each tool.patch as hunk, h (h)}

@@ -68,7 +68,7 @@
 		rows="1"
 		disabled={disabledReason !== null}
 		placeholder={disabledReason ?? 'Message Claude'}
-		class="block max-h-[180px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm leading-relaxed text-wb-ink placeholder:text-wb-ink-soft focus:outline-none disabled:cursor-not-allowed"
+		class="scrollbar-thin block max-h-[180px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm leading-relaxed text-wb-ink placeholder:text-wb-ink-soft focus:outline-none disabled:cursor-not-allowed"
 	></textarea>
 	<div class="flex items-center gap-1.5 px-2 pb-2">
 		<DropdownMenu.Root>

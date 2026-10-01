@@ -78,7 +78,7 @@
 		</header>
 		<pre
 			class={cn(
-				'mx-3.5 mt-2.5 max-h-48 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-wb-ink',
+				'scrollbar-thin mx-3.5 mt-2.5 max-h-48 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap text-wb-ink',
 				isCommand && 'command'
 			)}>{preview}</pre>
 		{#if approval.description || approval.blockedPath}

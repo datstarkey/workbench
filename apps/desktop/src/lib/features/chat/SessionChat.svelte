@@ -2,6 +2,8 @@
 	import { onDestroy } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
+	import { OverlayScrollbars } from 'overlayscrollbars';
+	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
 	import type { ProjectConfig } from '$types/workbench';
@@ -87,8 +89,13 @@
 		}
 	});
 
-	/** Keep the newest message in view, unless the reader has scrolled up. */
-	const followLatest: Attachment<HTMLDivElement> = (node) => {
+	/**
+	 * Keep the newest message in view, unless the reader has scrolled up.
+	 * Attached after `overlayScrollbars()`, so it scrolls the viewport that
+	 * library generates rather than the host element.
+	 */
+	const followLatest: Attachment<HTMLDivElement> = (host) => {
+		const node = OverlayScrollbars(host)?.elements().viewport ?? host;
 		const onScroll = () => {
 			stickToBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
 		};
@@ -156,7 +163,13 @@
 		</div>
 	{/if}
 
-	<div {@attach followLatest} class="min-h-0 flex-1 overflow-y-auto" role="log" aria-live="polite">
+	<div
+		{@attach overlayScrollbars()}
+		{@attach followLatest}
+		class="min-h-0 flex-1"
+		role="log"
+		aria-live="polite"
+	>
 		<div class="mx-auto flex max-w-3xl flex-col gap-3.5 px-5 py-5">
 			{#if chat.status === 'failed'}
 				<div class="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 text-center">
@@ -230,7 +243,7 @@
 						{#each splitFences(block.item.text) as segment, i (i)}
 							{#if segment.kind === 'code'}
 								<pre
-									class="overflow-x-auto rounded-md border border-wb-hair bg-wb-panel px-3 py-2 font-mono text-xs">{segment.text}</pre>
+									class="scrollbar-thin overflow-x-auto rounded-md border border-wb-hair bg-wb-panel px-3 py-2 font-mono text-xs">{segment.text}</pre>
 							{:else}
 								<p class="whitespace-pre-wrap">{segment.text}</p>
 							{/if}
