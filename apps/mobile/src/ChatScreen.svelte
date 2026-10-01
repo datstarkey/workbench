@@ -65,7 +65,7 @@
 	const contextShare = $derived(contextUsed(chat.meta));
 	// svelte-ignore state_referenced_locally
 	const usage = usePlanUsage(
-		`${client.url}|${ref.claudeAccountId ?? ''}`,
+		`${client.connection?.url ?? ''}|${ref.claudeAccountId ?? ''}`,
 		(fresh) => client.agents.usage(ref.claudeAccountId, fresh),
 		() => chat.meta
 	);
