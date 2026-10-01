@@ -218,6 +218,8 @@ export interface GitInfo {
 	branch: string;
 	repoRoot: string;
 	isWorktree: boolean;
+	/** Web URL of `origin` when it is a GitHub remote. */
+	githubUrl: string | null;
 }
 
 export interface WorktreeInfo {

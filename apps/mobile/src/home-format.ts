@@ -11,6 +11,11 @@ export function age(then: number, now: number): string {
 	return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
+/** "github.com/o/r": a repo web URL without its scheme. */
+export function repoLabel(url: string): string {
+	return url.replace(/^https?:\/\//, '');
+}
+
 /** What Claude is waiting on, in a few words. */
 export function waitingLabel(item: Waiting): string {
 	switch (item.tool) {

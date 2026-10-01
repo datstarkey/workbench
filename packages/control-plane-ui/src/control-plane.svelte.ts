@@ -1,3 +1,4 @@
+import { SvelteSet } from 'svelte/reactivity';
 import type { ControlPlaneTransport, RemoteSession } from '@workbench/transport';
 import type { ProjectConfig, WorktreeInfo } from '@workbench/types';
 
@@ -15,11 +16,13 @@ export class ControlPlaneStore {
 	sessions = $state<RemoteSession[]>([]);
 	/** Worktrees per project path, loaded on demand. */
 	worktrees = $state<Record<string, WorktreeInfo[]>>({});
+	/** GitHub web URL per project path (null when it has none), loaded on demand. */
+	githubUrls = $state<Record<string, string | null>>({});
 	loading = $state(false);
 	error = $state<string | null>(null);
 
 	/** Active spawn-status poll intervals, so they can be cancelled on dispose. */
-	private pollTimers = new Set<ReturnType<typeof setInterval>>();
+	private pollTimers = new SvelteSet<ReturnType<typeof setInterval>>();
 
 	constructor(transport: ControlPlaneTransport) {
 		this.transport = transport;
@@ -63,6 +66,12 @@ export class ControlPlaneStore {
 			this.transport.invoke('list_worktrees', { path: projectPath })
 		);
 		if (list) this.worktrees = { ...this.worktrees, [projectPath]: list };
+	}
+
+	/** Best-effort: a folder that isn't a git repo just has no link, so no `error`. */
+	async loadGithubUrl(projectPath: string) {
+		const info = await this.transport.invoke('git_info', { path: projectPath }).catch(() => null);
+		this.githubUrls = { ...this.githubUrls, [projectPath]: info?.githubUrl ?? null };
 	}
 
 	async createWorktree(projectPath: string, branch: string) {

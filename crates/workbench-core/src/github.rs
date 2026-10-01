@@ -627,6 +627,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_ssh_url_remote() {
+        let remote = parse_github_remote("ssh://git@github.com/user/repo.git").unwrap();
+        assert_eq!(remote.html_url, "https://github.com/user/repo");
+    }
+
+    #[test]
+    fn parse_https_remote_drops_credentials() {
+        let remote = parse_github_remote("https://user:secret@github.com/user/repo.git").unwrap();
+        assert_eq!(remote.html_url, "https://github.com/user/repo");
+    }
+
+    #[test]
     fn parse_non_github_remote_fails() {
         assert!(parse_github_remote("https://gitlab.com/user/repo.git").is_err());
     }

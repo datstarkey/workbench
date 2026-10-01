@@ -40,6 +40,21 @@ describe('ControlPlaneStore', () => {
 		expect(store.worktrees['/a']).toHaveLength(1);
 	});
 
+	it('loadGithubUrl stores the repo URL from git_info', async () => {
+		transport.mockInvoke('git_info', () => ({ githubUrl: 'https://github.com/o/r' }));
+		await store.loadGithubUrl('/a');
+		expect(store.githubUrls['/a']).toBe('https://github.com/o/r');
+	});
+
+	it('loadGithubUrl records null without surfacing an error when git_info fails', async () => {
+		transport.mockInvoke('git_info', () => {
+			throw new Error('not a git repository');
+		});
+		await store.loadGithubUrl('/a');
+		expect(store.githubUrls['/a']).toBeNull();
+		expect(store.error).toBeNull();
+	});
+
 	it('createWorktree reloads worktrees on success', async () => {
 		const calls: string[] = [];
 		transport.mockInvoke('create_worktree', () => {
