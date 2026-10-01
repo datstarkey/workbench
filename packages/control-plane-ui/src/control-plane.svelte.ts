@@ -15,11 +15,16 @@ export class ControlPlaneStore {
 	sessions = $state<RemoteSession[]>([]);
 	/** Worktrees per project path, loaded on demand. */
 	worktrees = $state<Record<string, WorktreeInfo[]>>({});
+	/** GitHub web URL per project path (null when it has none), loaded on demand. */
+	githubUrls = $state<Record<string, string | null>>({});
 	loading = $state(false);
 	error = $state<string | null>(null);
 
 	/** Active spawn-status poll intervals, so they can be cancelled on dispose. */
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- internal bookkeeping only
 	private pollTimers = new Set<ReturnType<typeof setInterval>>();
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- internal bookkeeping only
+	private githubUrlsInFlight = new Set<string>();
 
 	constructor(transport: ControlPlaneTransport) {
 		this.transport = transport;
@@ -44,7 +49,11 @@ export class ControlPlaneStore {
 
 	async refresh() {
 		this.loading = true;
-		await Promise.all([this.loadProjects(), this.refreshSessions()]);
+		await Promise.all([
+			this.loadProjects(),
+			this.refreshSessions(),
+			...Object.keys(this.githubUrls).map((path) => this.fetchGithubUrl(path))
+		]);
 		this.loading = false;
 	}
 
@@ -63,6 +72,26 @@ export class ControlPlaneStore {
 			this.transport.invoke('list_worktrees', { path: projectPath })
 		);
 		if (list) this.worktrees = { ...this.worktrees, [projectPath]: list };
+	}
+
+	/** Loads once per path; `refresh()` re-fetches the loaded ones. */
+	async loadGithubUrl(projectPath: string) {
+		if (!(projectPath in this.githubUrls)) await this.fetchGithubUrl(projectPath);
+	}
+
+	/** Best-effort, so it never sets `error`: a failed request keeps what was cached
+	 *  (nothing, the first time) and a later call retries. */
+	private async fetchGithubUrl(projectPath: string) {
+		if (this.githubUrlsInFlight.has(projectPath)) return;
+		this.githubUrlsInFlight.add(projectPath);
+		try {
+			const remote = await this.transport.invoke('github_get_remote', { path: projectPath });
+			this.githubUrls = { ...this.githubUrls, [projectPath]: remote?.htmlUrl ?? null };
+		} catch {
+			// Unreachable server: keep the cached value.
+		} finally {
+			this.githubUrlsInFlight.delete(projectPath);
+		}
 	}
 
 	async createWorktree(projectPath: string, branch: string) {

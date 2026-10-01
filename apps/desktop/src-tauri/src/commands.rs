@@ -337,8 +337,8 @@ pub fn github_is_available() -> bool {
 }
 
 #[tauri::command(async)]
-pub fn github_get_remote(path: String) -> Result<GitHubRemote, String> {
-    github::get_github_remote(&path).map_err(|e| e.to_string())
+pub fn github_get_remote(path: String) -> Option<GitHubRemote> {
+    github::get_github_remote(&path).ok()
 }
 
 #[tauri::command(async)]

@@ -3,6 +3,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
@@ -11,8 +12,8 @@
 	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { AgentSummary, ProjectConfig } from '@workbench/types';
-	import { baseName, type MobileClient } from './client.svelte.ts';
-	import { age, answerableFromHome, waitingLabel } from './home-format.ts';
+	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
+	import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
 	import Sheet from './Sheet.svelte';
 
 	let { client }: { client: MobileClient } = $props();
@@ -50,6 +51,7 @@
 	async function toggle(path: string) {
 		if (expanded.has(path)) return void expanded.delete(path);
 		expanded.add(path);
+		void store.loadGithubUrl(path);
 		if (!store.worktrees[path]) await store.loadWorktrees(path);
 	}
 </script>
@@ -311,7 +313,20 @@
 						{@render startButtons(p.path, undefined, projectName(p))}
 					</div>
 					{#if open}
+						{@const githubUrl = store.githubUrls[p.path]}
 						<div class="flex flex-col border-t border-wb-hair-soft bg-wb-rail/50">
+							{#if githubUrl}
+								<button
+									type="button"
+									class="flex items-center gap-2 border-b border-wb-hair-soft py-2.5 pr-3 pl-10 text-left text-wb-ink-mute active:bg-wb-panel2"
+									onclick={() => openExternal(githubUrl)}
+								>
+									<span class="min-w-0 flex-1 truncate font-mono text-[12px]"
+										><span class="sr-only">Open on GitHub: </span>{repoLabel(githubUrl)}</span
+									>
+									<ExternalLinkIcon class="size-3.5 shrink-0" />
+								</button>
+							{/if}
 							{#each (store.worktrees[p.path] ?? []).filter((w) => !w.isMain) as w (w.path)}
 								<div class="flex items-center gap-2 border-b border-wb-hair-soft py-2 pr-2 pl-10">
 									<span class="flex min-w-0 flex-1 flex-col">

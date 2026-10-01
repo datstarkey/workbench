@@ -20,6 +20,7 @@ import type {
 	ClaudeHookEvent,
 	CodexNotifyEvent,
 	DiscoveredClaudeSession,
+	GitHubRemote,
 	GitInfo,
 	ProjectConfig,
 	ProjectRefreshRequestedEvent,
@@ -51,6 +52,8 @@ export interface ControlPlaneCommands {
 	};
 	list_branches: { args: { path: string }; result: BranchInfo[] };
 	git_info: { args: { path: string }; result: GitInfo };
+	/** `null` when the folder has no GitHub `origin`. */
+	github_get_remote: { args: { path: string }; result: GitHubRemote | null };
 	discover_claude_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
 	discover_codex_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
 	load_claude_settings: { args: { scope: string; projectPath?: string }; result: unknown };

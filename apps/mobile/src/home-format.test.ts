@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentSummary } from '@workbench/types';
-import { age, answerableFromHome, waitingLabel } from './home-format.ts';
+import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
 
 const approval = (tool: string): NonNullable<AgentSummary['waiting']> => ({
 	id: 'r1',
@@ -15,6 +15,12 @@ describe('age', () => {
 		expect(age(now - 12 * 60_000, now)).toBe('12m');
 		expect(age(now - 3 * 3_600_000, now)).toBe('3h');
 		expect(age(now - 50 * 3_600_000, now)).toBe('2d');
+	});
+});
+
+describe('repoLabel', () => {
+	it('drops the scheme', () => {
+		expect(repoLabel('https://github.com/o/r')).toBe('github.com/o/r');
 	});
 });
 

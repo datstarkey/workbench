@@ -38,6 +38,8 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 			return { method: 'GET', path: '/projects/branches', query: { path: String(a.path) } };
 		case 'git_info':
 			return { method: 'GET', path: '/projects/git-info', query: { path: String(a.path) } };
+		case 'github_get_remote':
+			return { method: 'GET', path: '/projects/github-remote', query: { path: String(a.path) } };
 		case 'discover_claude_sessions':
 			return {
 				method: 'GET',

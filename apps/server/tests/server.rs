@@ -149,6 +149,39 @@ async fn health_sync_and_validation() {
 }
 
 #[tokio::test]
+async fn github_remote_is_null_without_a_github_origin() {
+    let (handle, base) = start().await;
+    let http = client();
+    let repo = tempfile::tempdir().unwrap();
+    let get = |path: &std::path::Path| {
+        http.get(format!("{base}/projects/github-remote"))
+            .query(&[("path", path.to_str().unwrap())])
+            .send()
+    };
+
+    let none = get(repo.path()).await.unwrap();
+    assert_eq!(none.status(), 200);
+    assert_eq!(none.json::<Value>().await.unwrap(), Value::Null);
+
+    for args in [
+        &["init", "-q"][..],
+        &["remote", "add", "origin", "git@github.com:o/r.git"],
+    ] {
+        let ok = workbench_core::shell::command("git")
+            .args(args)
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+    }
+    let remote: Value = get(repo.path()).await.unwrap().json().await.unwrap();
+    assert_eq!(remote["htmlUrl"], "https://github.com/o/r");
+
+    handle.stop().await;
+}
+
+#[tokio::test]
 async fn auth_gate() {
     let (handle, base) = start().await;
     let http = reqwest::Client::new();

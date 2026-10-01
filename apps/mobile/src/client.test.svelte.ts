@@ -4,9 +4,13 @@ import {
 	MobileClient,
 	NOT_A_PAIRING_CODE,
 	normalizeUrl,
+	openExternal,
 	type QrScanner
 } from './client.svelte.ts';
 import { buildPairingUri } from '@workbench/transport';
+import { openUrl } from '@tauri-apps/plugin-opener';
+
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 
 /** Object-backed localStorage stub (jsdom's may lack `clear`). */
 function stubLocalStorage() {
@@ -58,6 +62,17 @@ describe('normalizeUrl', () => {
 	});
 	it('returns empty for blank input', () => {
 		expect(normalizeUrl('   ')).toBe('');
+	});
+});
+
+describe('openExternal', () => {
+	it('logs a failed open instead of throwing', async () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		vi.mocked(openUrl).mockRejectedValueOnce(new Error('denied'));
+		expect(() => openExternal('https://github.com/o/r')).not.toThrow();
+		await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+		expect(openUrl).toHaveBeenCalledWith('https://github.com/o/r');
+		warn.mockRestore();
 	});
 });
 
