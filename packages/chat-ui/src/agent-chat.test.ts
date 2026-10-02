@@ -98,6 +98,18 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('matches a slash command echoed with its spaces collapsed', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('/code-review  check it');
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'u1', text: '/code-review check it', timestamp: '' }]],
+			meta: meta(true)
+		});
+		expect(chat.pending).toEqual([]);
+		chat.dispose();
+	});
+
 	it('shows a prompt at once and drops it when Claude echoes it', async () => {
 		const { chat, ws } = await connected();
 		expect(chat.prompt('  fix the build  ')).toBe(true);

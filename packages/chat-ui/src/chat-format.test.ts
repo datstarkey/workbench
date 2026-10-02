@@ -18,6 +18,8 @@ import {
 	formatElapsed,
 	formatTokens,
 	groupBlocks,
+	jsonAsMarkdown,
+	outputMarkdown,
 	stepNames,
 	latestTodos,
 	modeLabel,
@@ -144,6 +146,24 @@ describe('modes and time', () => {
 	it('formats the turn timer', () => {
 		expect(formatElapsed(0)).toBe('0:00');
 		expect(formatElapsed(65_400)).toBe('1:05');
+	});
+});
+
+describe('tool output', () => {
+	it('fences text that is only JSON, exactly as written', () => {
+		expect(jsonAsMarkdown(' {"id": 12345678901234567890, "2": 1.0} ')).toBe(
+			'```json\n{"id": 12345678901234567890, "2": 1.0}\n```'
+		);
+		expect(jsonAsMarkdown('{"code":"```"}')).toBe('````json\n{"code":"```"}\n````');
+		expect(jsonAsMarkdown('{"cut": "abc…')).toBe('{"cut": "abc…');
+		expect(jsonAsMarkdown('[Image] ok')).toBe('[Image] ok');
+	});
+
+	it('renders JSON, skills and subagents as Markdown, the rest as text', () => {
+		expect(outputMarkdown(tool('s', 'Skill'), '# Help')).toBe('# Help');
+		expect(outputMarkdown(tool('a', 'Agent'), '[1]')).toBe('```json\n[1]\n```');
+		expect(outputMarkdown(tool('m', 'mcp__x__get'), '[]')).toBe('```json\n[]\n```');
+		expect(outputMarkdown(tool('b', 'Bash'), '# not a heading')).toBe(null);
 	});
 });
 

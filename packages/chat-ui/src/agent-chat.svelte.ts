@@ -266,9 +266,11 @@ export class AgentChat {
 	private settlePending(): void {
 		if (this.pending.length === 0) return;
 		const users = this.items.filter((i) => i.kind === 'user');
+		// The CLI collapses runs of spaces in a slash command's echo.
+		const same = (a: string, b: string) => a.replace(/\s+/g, ' ') === b.replace(/\s+/g, ' ');
 		const previews: Record<string, string[]> = {};
 		this.pending = this.pending.filter((p) => {
-			const echo = users.slice(p.after).find((u) => u.kind === 'user' && u.text === p.text);
+			const echo = users.slice(p.after).find((u) => u.kind === 'user' && same(u.text, p.text));
 			if (echo && p.previews.length > 0) previews[echo.id] = p.previews;
 			return !echo;
 		});

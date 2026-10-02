@@ -3,7 +3,14 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import { formatBytes, patchStats, toolDetail, type ToolItem } from './chat-format';
+	import {
+		formatBytes,
+		outputMarkdown,
+		patchStats,
+		toolDetail,
+		type ToolItem
+	} from './chat-format';
+	import ChatMarkdown from './ChatMarkdown.svelte';
 	import Elapsed from './Elapsed.svelte';
 
 	let {
@@ -34,6 +41,8 @@
 	const stats = $derived(patchStats(tool.patch));
 	const expandable = $derived(Boolean(tool.patch?.length || tool.output));
 	const running = $derived(tool.status === 'running');
+	const shown = $derived(fullOutput ?? tool.output ?? '');
+	const markdown = $derived(outputMarkdown(tool, shown));
 </script>
 
 <div
@@ -97,7 +106,16 @@
 					{/each}
 				{/each}
 			{:else}
-				<pre class="px-2.5 whitespace-pre-wrap text-wb-ink-mute">{fullOutput ?? tool.output}</pre>
+				{#if markdown !== null}
+					<!-- A skill's `# Title` stays card-sized, not chat-sized. -->
+					<div
+						class="px-2.5 py-1 font-sans text-xs [&_[role=heading]]:text-xs [&_[role=heading]]:font-semibold"
+					>
+						<ChatMarkdown text={markdown} />
+					</div>
+				{:else}
+					<pre class="px-2.5 whitespace-pre-wrap text-wb-ink-mute">{shown}</pre>
+				{/if}
 				{#if tool.fullOutputBytes && fullOutput === null}
 					<button
 						type="button"
