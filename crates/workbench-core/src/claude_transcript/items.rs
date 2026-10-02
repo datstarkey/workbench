@@ -192,7 +192,8 @@ pub struct TranscriptMeta {
     pub model_choice: Option<String>,
     /// The effort level picked in Workbench; `None` means the model's default.
     pub effort: Option<String>,
-    /// Codex only: the model's context window, in tokens.
+    /// The model's context window, in tokens, as the CLI reports it (Claude:
+    /// each turn's `result`; `None` before the first).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     /// Codex only: plan limits as its stream reports them (Claude's come from
