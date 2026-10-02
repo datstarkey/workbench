@@ -122,6 +122,8 @@ pub struct Transcript {
     /// Whole outputs of tools whose item only carries a preview.
     full_outputs: HashMap<String, String>,
     commands: Vec<SlashCommand>,
+    /// Skill calls that launched and still await their body, oldest first.
+    skill_bodies_due: VecDeque<String>,
 }
 
 /// Largest tool output kept whole for "show full output".
@@ -616,11 +618,13 @@ impl Transcript {
     }
 
     fn apply_user(&mut self, obj: &Value, changed: &mut Vec<usize>) {
-        if obj.get("isMeta").and_then(Value::as_bool) == Some(true)
-            || obj.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
-        {
+        if obj.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
             return;
         }
+        // JSONL marks text the CLI injected (skill bodies, reminders) isMeta;
+        // stream-json marks it isSynthetic.
+        let injected = obj.get("isMeta").and_then(Value::as_bool) == Some(true)
+            || obj.get("isSynthetic").and_then(Value::as_bool) == Some(true);
         let id = str_at(obj, "uuid").unwrap_or_default().to_string();
         // JSONL spells it toolUseResult; stream-json, tool_use_result.
         let result = obj
@@ -665,6 +669,10 @@ impl Transcript {
             );
             return;
         }
+        if injected {
+            self.attach_skill_body(obj, text, changed);
+            return;
+        }
         let text = match if text.is_empty() {
             Some(UserText::Prompt(String::new()))
         } else {
@@ -677,6 +685,7 @@ impl Transcript {
             Some(UserText::Command(text)) => text,
             None => return,
         };
+        self.skill_bodies_due.clear();
         let timestamp = str_at(obj, "timestamp").unwrap_or_default().to_string();
         self.upsert(
             TranscriptItem::User {
@@ -742,9 +751,8 @@ impl Transcript {
             return;
         };
         let TranscriptItem::Tool {
+            name,
             status,
-            output,
-            full_output_bytes,
             patch,
             ..
         } = &mut self.items[i]
@@ -757,7 +765,27 @@ impl Transcript {
         } else {
             ToolStatus::Ok
         };
+        *patch = result
+            .and_then(|r| r.get("structuredPatch"))
+            .and_then(clip_patch);
+        if name == "Skill" && !is_error {
+            self.skill_bodies_due.push_back(tool_id.to_string());
+        }
         let text = tool_output_text(block.get("content"));
+        self.set_tool_output(i, tool_id, text);
+        changed.push(i);
+    }
+
+    fn set_tool_output(&mut self, i: usize, tool_id: &str, text: Option<String>) {
+        self.full_outputs.remove(tool_id);
+        let TranscriptItem::Tool {
+            output,
+            full_output_bytes,
+            ..
+        } = &mut self.items[i]
+        else {
+            return;
+        };
         *output = text.as_deref().map(clip);
         *full_output_bytes = None;
         if let Some(text) = text.filter(|t| t.len() > parse::MAX_TEXT_BYTES) {
@@ -765,9 +793,33 @@ impl Transcript {
             let kept = crate::text::truncate_bytes(&text, MAX_FULL_OUTPUT_BYTES).to_string();
             self.full_outputs.insert(tool_id.to_string(), kept);
         }
-        *patch = result
-            .and_then(|r| r.get("structuredPatch"))
-            .and_then(clip_patch);
+    }
+
+    /// A skill's body follows its `Skill` call's "Launching skill" result and
+    /// becomes that card's output. JSONL names the call (`sourceToolUseID`);
+    /// stream-json doesn't, so there bodies go to launched calls in order. A
+    /// skill run as a slash command has no card, and its body stays hidden.
+    fn attach_skill_body(&mut self, obj: &Value, text: &str, changed: &mut Vec<usize>) {
+        if !text.starts_with("Base directory for this skill:") {
+            return;
+        }
+        let id = match str_at(obj, "sourceToolUseID") {
+            Some(id) => {
+                self.skill_bodies_due.retain(|due| due != id);
+                id.to_string()
+            }
+            None => match self.skill_bodies_due.pop_front() {
+                Some(id) => id,
+                None => return,
+            },
+        };
+        let Some(&i) = self.index.get(&id) else {
+            return;
+        };
+        if !matches!(&self.items[i], TranscriptItem::Tool { name, .. } if name == "Skill") {
+            return;
+        }
+        self.set_tool_output(i, &id, Some(text.to_string()));
         changed.push(i);
     }
 

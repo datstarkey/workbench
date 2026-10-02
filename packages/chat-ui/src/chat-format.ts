@@ -158,6 +158,30 @@ export function toolDetail(tool: ToolItem, cwd?: string): string {
 	}
 }
 
+/** Tools whose output is Markdown: a skill's body, a subagent's report. */
+const MARKDOWN_OUTPUT = new Set(['Skill', 'Agent', 'Task']);
+
+/** Tool output to render as Markdown, or null for plain text. */
+export function outputMarkdown(tool: ToolItem, output: string): string | null {
+	const json = jsonAsMarkdown(output);
+	if (json !== output) return json;
+	return MARKDOWN_OUTPUT.has(tool.name) ? output : null;
+}
+
+/** Text that is only JSON, fenced as-is (never re-serialised: that loses big numbers and key order). */
+export function jsonAsMarkdown(text: string): string {
+	const trimmed = text.trim();
+	if (!/^[[{]/.test(trimmed)) return text;
+	try {
+		JSON.parse(trimmed);
+	} catch {
+		return text;
+	}
+	const longest = Math.max(0, ...(trimmed.match(/`+/g) ?? []).map((run) => run.length));
+	const fence = '`'.repeat(Math.max(3, longest + 1));
+	return `${fence}json\n${trimmed}\n${fence}`;
+}
+
 export function patchStats(patch: TranscriptPatchHunk[] | undefined): {
 	added: number;
 	removed: number;

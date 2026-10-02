@@ -335,6 +335,109 @@ fn subagent_events_are_left_to_their_task_card() {
 }
 
 #[test]
+fn skill_body_becomes_its_cards_output() {
+    let skill_output = |t: &Transcript, i: usize| match &t.items()[i] {
+        TranscriptItem::Tool { output, .. } => output.clone(),
+        _ => None,
+    };
+    let body = "Base directory for this skill: /s\n\n# Help";
+    let mut t = Transcript::default();
+    t.apply(&assistant(
+        "a",
+        "m",
+        json!({"type":"tool_use","id":"toolu_s","name":"Skill","input":{"skill":"help"}}),
+    ));
+    t.apply(&user(
+        "r",
+        json!([{"type":"tool_result","tool_use_id":"toolu_s","content":"Launching skill: help"}]),
+    ));
+    // stream-json: no sourceToolUseID.
+    let applied = t.apply(&json!({"type":"user","isSynthetic":true,
+        "message":{"role":"user","content":[{"type":"text","text":body}]}}));
+    assert_eq!(applied.items, vec![0]);
+    assert_eq!(skill_output(&t, 0).as_deref(), Some(body));
+
+    // JSONL names the call; a reminder or a slash-command skill stays hidden.
+    let mut t = Transcript::default();
+    t.apply(&assistant(
+        "a",
+        "m",
+        json!({"type":"tool_use","id":"toolu_s","name":"Skill","input":{"skill":"help"}}),
+    ));
+    t.apply(&assistant(
+        "b",
+        "m",
+        json!({"type":"tool_use","id":"toolu_b","name":"Bash","input":{"command":"ls"}}),
+    ));
+    t.apply(&json!({"type":"user","uuid":"m1","isMeta":true,"sourceToolUseID":"toolu_s",
+        "message":{"content":[{"type":"text","text":body}]}}));
+    t.apply(&json!({"type":"user","uuid":"m2","isSynthetic":true,
+        "message":{"content":[{"type":"text","text":"Base directory for this skill: /other"}]}}));
+    t.apply(&json!({"type":"user","uuid":"m3","isSynthetic":true,
+        "message":{"content":"<system-reminder>x</system-reminder>"}}));
+    assert_eq!(skill_output(&t, 0).as_deref(), Some(body));
+    assert_eq!(skill_output(&t, 1), None);
+    assert!(user_texts(&t).is_empty());
+}
+
+#[test]
+fn stream_skill_bodies_go_to_launched_calls_in_order() {
+    let skill_output = |t: &Transcript, i: usize| match &t.items()[i] {
+        TranscriptItem::Tool { output, .. } => output.clone(),
+        _ => None,
+    };
+    let launch = |t: &mut Transcript, id: &str, name: &str| {
+        t.apply(&assistant(
+            id,
+            "m",
+            json!({"type":"tool_use","id":id,"name":name,"input":{}}),
+        ));
+    };
+    let result = |id: &str, text: &str| {
+        user(
+            &format!("r{id}"),
+            json!([{"type":"tool_result","tool_use_id":id,"content":text}]),
+        )
+    };
+    let body = |text: &str| {
+        json!({"type":"user","isSynthetic":true,
+            "message":{"content":[{"type":"text","text":format!("Base directory for this skill: {text}")}]}})
+    };
+    let mut t = Transcript::default();
+    launch(&mut t, "a", "Skill");
+    launch(&mut t, "b", "Skill");
+    launch(&mut t, "c", "Bash");
+    t.apply(&result("a", "Launching skill: a"));
+    t.apply(&result("b", "Launching skill: b"));
+    t.apply(&result("c", "ok"));
+    t.apply(&body("/a"));
+    t.apply(&body("/b"));
+    assert_eq!(skill_output(&t, 0).as_deref(), Some("Base directory for this skill: /a"));
+    assert_eq!(skill_output(&t, 1).as_deref(), Some("Base directory for this skill: /b"));
+    assert_eq!(skill_output(&t, 2).as_deref(), Some("ok"));
+
+    // A later `/release` loads a skill with no card: it touches no earlier one.
+    t.apply(&user("cmd", json!("<command-name>/release</command-name>")));
+    t.apply(&body("/release"));
+    assert_eq!(skill_output(&t, 1).as_deref(), Some("Base directory for this skill: /b"));
+}
+
+#[test]
+fn injected_messages_still_settle_tools_and_interrupts() {
+    let mut t = Transcript::default();
+    t.apply(&assistant(
+        "a",
+        "m",
+        json!({"type":"tool_use","id":"toolu_x","name":"Bash","input":{}}),
+    ));
+    t.apply(&json!({"type":"user","uuid":"s","isSynthetic":true,"message":{"content":[
+        {"type":"tool_result","tool_use_id":"toolu_x","content":"cancelled","is_error":true},
+        {"type":"text","text":"[Request interrupted by user]"}]}}));
+    assert!(matches!(&t.items()[0], TranscriptItem::Tool { status: ToolStatus::Error, .. }));
+    assert!(matches!(&t.items()[1], TranscriptItem::Notice { text, .. } if text == "Interrupted"));
+}
+
+#[test]
 fn hides_bookkeeping_and_shows_slash_commands_and_html() {
     let mut t = Transcript::default();
     t.apply(
