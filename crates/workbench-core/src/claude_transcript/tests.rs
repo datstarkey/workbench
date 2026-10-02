@@ -281,6 +281,50 @@ fn picking_a_1m_model_keeps_the_1m_window() {
 }
 
 #[test]
+fn the_context_window_comes_from_the_sessions_model_usage() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
+    assert_eq!(t.meta().context_window, None);
+    t.apply(
+        &json!({"type":"result","subtype":"success","is_error":false,"modelUsage":{
+        "claude-haiku-4-5":{"contextWindow":200000},
+        "claude-opus-5-5[1m]":{"contextWindow":1000000}}}),
+    );
+    assert_eq!(t.meta().context_window, Some(1_000_000));
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
+    assert_eq!(t.meta().context_window, Some(1_000_000));
+    t.apply(&json!({"type":"assistant","uuid":"a1","message":{"id":"m1","model":"claude-sonnet-5-5","content":[]}}));
+    assert_eq!(t.meta().context_window, None);
+}
+
+#[test]
+fn another_models_usage_never_sets_the_window() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
+    t.apply(
+        &json!({"type":"result","subtype":"success","is_error":false,
+        "modelUsage":{"claude-opus-5-5":{"contextWindow":200000}}}),
+    );
+    assert_eq!(t.meta().context_window, None);
+}
+
+#[test]
+fn picking_a_model_forgets_the_old_window() {
+    let mut t = Transcript::default();
+    t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[{"value":"sonnet","resolvedModel":"claude-sonnet-5-5"}]}}}),
+    );
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5"}));
+    t.apply(
+        &json!({"type":"result","subtype":"success","is_error":false,
+        "modelUsage":{"claude-opus-5-5":{"contextWindow":200000}}}),
+    );
+    t.set_model_choice("sonnet");
+    assert_eq!(t.meta().context_window, None);
+}
+
+#[test]
 fn subagent_events_are_left_to_their_task_card() {
     let mut t = Transcript::default();
     let mut line = assistant("a", "m", json!({"type":"text","text":"inside a subagent"}));

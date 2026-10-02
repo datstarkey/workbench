@@ -190,7 +190,7 @@ impl Transcript {
             }
             Some("system") => match str_at(obj, "subtype") {
                 Some("init") => {
-                    self.meta.model = str_at(obj, "model").map(String::from);
+                    self.set_model(str_at(obj, "model").map(String::from));
                     self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from);
                 }
                 Some("status") if str_at(obj, "status") == Some("requesting") => {
@@ -433,7 +433,7 @@ impl Transcript {
             .and_then(|m| m.resolved_model.clone());
         if let Some(model) = resolved {
             let wide = value.ends_with("[1m]") && !model.ends_with("[1m]");
-            self.meta.model = Some(if wide { format!("{model}[1m]") } else { model });
+            self.set_model(Some(if wide { format!("{model}[1m]") } else { model }));
         }
     }
 
@@ -589,6 +589,17 @@ impl Transcript {
         self.meta.busy = false;
         self.meta.retry = None;
         self.streaming_message = None;
+        // `modelUsage` is keyed by init's model id, `[1m]` included (CLI 2.1.286);
+        // subagents' models appear too, so only an exact match counts.
+        if let (Some(usage), Some(model)) = (obj.get("modelUsage"), self.meta.model.as_deref()) {
+            if let Some(window) = usage
+                .get(model)
+                .and_then(|u| u.get("contextWindow"))
+                .and_then(Value::as_u64)
+            {
+                self.meta.context_window = Some(window);
+            }
+        }
         if obj.get("is_error").and_then(Value::as_bool) == Some(true) {
             let text = str_at(obj, "result")
                 .or_else(|| str_at(obj, "subtype"))
@@ -852,7 +863,15 @@ impl Transcript {
                 .and_then(|m| m.strip_suffix("[1m]"))
                 != Some(model)
         {
-            self.meta.model = Some(model.to_string());
+            self.set_model(Some(model.to_string()));
+        }
+    }
+
+    /// A new model's window is unknown until its next `result` reports it.
+    fn set_model(&mut self, model: Option<String>) {
+        if self.meta.model != model {
+            self.meta.model = model;
+            self.meta.context_window = None;
         }
     }
 
