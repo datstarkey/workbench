@@ -73,6 +73,8 @@
 			{#if href}
 				<a
 					{href}
+					target="_blank"
+					rel="noopener noreferrer"
 					title={link.title ?? href}
 					class="text-wb-accent underline decoration-wb-accent/40 underline-offset-2 hover:decoration-wb-accent"
 					onclick={(e) => openLink(e, href)}>{@render inline(link.tokens)}</a
@@ -87,6 +89,8 @@
 			{#if href}
 				<a
 					{href}
+					target="_blank"
+					rel="noopener noreferrer"
 					class="text-wb-accent underline underline-offset-2"
 					onclick={(e) => openLink(e, href)}>{image.text || 'image'}</a
 				>

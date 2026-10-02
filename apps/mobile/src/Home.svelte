@@ -16,6 +16,8 @@
 	import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
 	import MachinesSheet from './MachinesSheet.svelte';
 	import Sheet from './Sheet.svelte';
+	import ProjectReviewSheet from './ProjectReviewSheet.svelte';
+	import type { ReviewFolder } from './project-review.svelte';
 
 	let { client }: { client: MobileClient } = $props();
 
@@ -23,6 +25,8 @@
 	let query = $state('');
 	let settingsOpen = $state(false);
 	let machinesOpen = $state(false);
+	let reviewFolder = $state<ReviewFolder | null>(null);
+	let reviewTab = $state<'history' | 'changes'>('history');
 	const machineName = $derived(client.machine?.name ?? client.connection?.url ?? '');
 	const status = $derived(
 		client.connecting ? 'switching' : client.online ? 'connected' : 'not responding'
@@ -36,8 +40,8 @@
 		return () => clearInterval(timer);
 	});
 
-	const needsYou = $derived(client.chats.filter((c) => c.waiting));
-	const runningChats = $derived(client.chats.filter((c) => !c.waiting));
+	const needsYou = $derived(client.chats.filter((c) => !c.exited && c.waiting));
+	const runningChats = $derived(client.chats.filter((c) => !c.exited && !c.waiting));
 	const projects = $derived.by(() => {
 		const q = query.trim().toLowerCase();
 		return q
@@ -98,6 +102,23 @@
 		>
 			<SquareTerminalIcon class="size-4" />
 		</button>
+	</div>
+{/snippet}
+
+{#snippet reviewButtons(projectPath: string, worktreePath: string | undefined, name: string)}
+	<div class="flex gap-2 py-2 pr-2 pl-10">
+		{#each ['history', 'changes'] as const as tab (tab)}
+			<button
+				type="button"
+				class="h-9 rounded-lg border border-wb-hair bg-wb-panel px-3 text-xs text-wb-ink-mute active:bg-wb-panel2"
+				onclick={() => {
+					reviewTab = tab;
+					reviewFolder = { projectPath, worktreePath, name };
+				}}
+			>
+				{tab === 'history' ? 'History' : 'Review changes'}
+			</button>
+		{/each}
 	</div>
 {/snippet}
 
@@ -352,6 +373,7 @@
 					{#if open}
 						{@const githubUrl = store.githubUrls[p.path]}
 						<div class="flex flex-col border-t border-wb-hair-soft bg-wb-rail/50">
+							{@render reviewButtons(p.path, undefined, projectName(p))}
 							{#if githubUrl}
 								<button
 									type="button"
@@ -378,6 +400,11 @@
 										`${projectName(p)} · ${w.branch || baseName(w.path)}`
 									)}
 								</div>
+								{@render reviewButtons(
+									p.path,
+									w.path,
+									`${projectName(p)} · ${w.branch || baseName(w.path)}`
+								)}
 							{/each}
 							<form
 								class="flex gap-2 py-2 pr-2 pl-10"
@@ -440,9 +467,40 @@
 					{/each}
 				</div>
 				<p class="text-xs text-wb-ink-mute">
-					Any session can switch between chat and terminal from its header.
+					Claude sessions can switch between chat and terminal from their header.
 				</p>
 			</div>
+			{#if client.notifications.supported}
+				<label class="flex items-center gap-3 text-[13px] font-semibold">
+					<input
+						type="checkbox"
+						checked={client.notifications.enabled}
+						onchange={(e) => client.notifications.setEnabled(e.currentTarget.checked)}
+						class="size-4 accent-wb-accent"
+					/>
+					Approval and completion notifications
+				</label>
+				<p class="text-xs text-wb-ink-mute">
+					Monitor the open chat while the app is in the background. Returning Home stops monitoring.
+					Android shows an ongoing notification while monitoring is active.
+				</p>
+				{#if client.notifications.error}<p role="alert" class="text-xs text-wb-err">
+						{client.notifications.error}
+					</p>{/if}
+			{/if}
+			<label class="flex flex-col gap-2 text-[13px] font-semibold"
+				>Claude account for new sessions
+				<select
+					class="h-10 rounded-lg border border-wb-hair bg-wb-panel2 px-3 font-normal"
+					value={client.accountId ?? ''}
+					onchange={(e) => client.setAccount(e.currentTarget.value)}
+				>
+					<option value="">Default</option>
+					{#each client.accounts as account (account.id)}<option value={account.id}
+							>{account.name}</option
+						>{/each}
+				</select>
+			</label>
 			<div class="flex flex-col gap-1">
 				<span class="text-[13px] font-semibold">Server</span>
 				<span class="font-mono text-xs break-all text-wb-ink-mute">{client.connection?.url}</span>
@@ -471,6 +529,16 @@
 			</div>
 		</div>
 	</Sheet>
+{/if}
+
+{#if reviewFolder}
+	<ProjectReviewSheet
+		{client}
+		folder={reviewFolder}
+		initialTab={reviewTab}
+		accountId={client.accountId}
+		onClose={() => (reviewFolder = null)}
+	/>
 {/if}
 
 <style>

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { watch } from 'runed';
 	import { Button } from '@workbench/ui/button';
 	import { Input } from '@workbench/ui/input';
 	import ChatScreen from './ChatScreen.svelte';
@@ -14,17 +15,57 @@
 	const c = new MobileClient();
 	const updater = new AppUpdater();
 
+	watch(
+		() => [
+			c.notifications.enabled,
+			c.connection,
+			c.machineId,
+			c.machine?.name,
+			c.activeChat?.sessionId,
+			c.chatScreenKey
+		],
+		() => {
+			void c.notifications.configure(
+				c.connection && c.machineId && c.activeChat?.sessionId
+					? {
+							...c.connection,
+							machineId: c.machineId,
+							sessionId: c.activeChat.sessionId,
+							name: c.machine?.name ?? 'Workbench'
+						}
+					: null
+			);
+		}
+	);
+
 	// Remember the last server: auto-reconnect on launch if one was saved.
 	onMount(() => {
 		if (c.hasSavedServer) void c.connect();
-		return c.watch();
+		const stopWatching = c.watch();
+		let destroyed = false;
+		let removeAlerts = () => {};
+		void c.notifications
+			.listen(async (machineId, chat) => {
+				if (!c.machines.list.some((m) => m.id === machineId)) return;
+				if (c.machineId !== machineId) await c.switchTo(machineId);
+				if (!destroyed && c.machineId === machineId) c.openChat(c.chatRef(chat));
+			})
+			.then((remove) => {
+				if (destroyed) remove();
+				else removeAlerts = remove;
+			});
+		return () => {
+			destroyed = true;
+			stopWatching();
+			removeAlerts();
+		};
 	});
 </script>
 
 {#if c.scanning}
 	<ScanOverlay onCancel={c.cancelScan} />
 {:else if c.activeChat && c.store}
-	{#key c.activeChat.sessionId}
+	{#key c.chatScreenKey}
 		<ChatScreen client={c} ref={c.activeChat} />
 	{/key}
 {:else if c.activeTerminal && c.store}

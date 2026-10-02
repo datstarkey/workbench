@@ -8,13 +8,12 @@
 		activity,
 		agentName,
 		ChatComposer,
+		ChatContext,
 		ChatModelPicker,
 		ChatPlan,
 		ChatTasks,
 		ChatTranscript,
 		ChatUsage,
-		contextUsed,
-		formatTokens,
 		isRunning,
 		latestTodos,
 		limitNotice,
@@ -160,7 +159,6 @@
 	const todos = $derived(latestTodos(chat.items));
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
-	const contextShare = $derived(contextUsed(chat.meta));
 	// Codex reports its limits in the stream; Claude's come from the server's `/usage` check.
 	// svelte-ignore state_referenced_locally
 	const planLimits =
@@ -241,24 +239,8 @@
 			<span class="shrink-0 text-wb-ink-soft">{chat.meta.model.replace(/\[1m\]$/, '')}</span>
 		{/if}
 		<div class="ml-auto flex shrink-0 items-center gap-3">
-			<ChatUsage {chips} chipClass="rounded px-0.5" />
-			{#if contextShare > 0}
-				<span
-					class="flex shrink-0 items-center gap-1.5 text-wb-ink-soft tabular-nums"
-					title="{formatTokens(chat.meta?.contextTokens ?? null)} tokens of context in use"
-				>
-					<span class="h-1 w-12 overflow-hidden rounded-full bg-wb-panel2">
-						<span
-							class={cn(
-								'block h-full rounded-full',
-								contextShare > 0.8 ? 'bg-wb-warn' : 'bg-wb-ink-soft'
-							)}
-							style:width="{contextShare * 100}%"
-						></span>
-					</span>
-					{Math.round(contextShare * 100)}%
-				</span>
-			{/if}
+			<ChatUsage {chips} chipClass="h-6 px-2 text-[11px]" />
+			<ChatContext meta={chat.meta} class="h-6 px-2 text-[11px]" />
 			{#if tasks.length > 0 && !wide}
 				<button
 					type="button"

@@ -5692,6 +5692,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-plugin-session-notifications"
+version = "0.1.0"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "tauri-plugin-shell"
 version = "2.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7552,6 +7560,7 @@ dependencies = [
  "tauri-plugin-barcode-scanner",
  "tauri-plugin-log",
  "tauri-plugin-opener",
+ "tauri-plugin-session-notifications",
 ]
 
 [[package]]

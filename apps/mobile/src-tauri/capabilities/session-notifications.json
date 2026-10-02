@@ -1,0 +1,8 @@
+{
+	"$schema": "../gen/schemas/mobile-schema.json",
+	"identifier": "session-notifications",
+	"description": "Opt-in background session alerts on Android.",
+	"windows": ["main"],
+	"platforms": ["android"],
+	"permissions": ["session-notifications:default"]
+}

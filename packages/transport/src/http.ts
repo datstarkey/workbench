@@ -38,6 +38,19 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 			return { method: 'GET', path: '/projects/branches', query: { path: String(a.path) } };
 		case 'git_info':
 			return { method: 'GET', path: '/projects/git-info', query: { path: String(a.path) } };
+		case 'git_status':
+		case 'git_file_diff': {
+			const projectPath = String(a.projectPath ?? a.path);
+			return {
+				method: 'GET',
+				path: name === 'git_status' ? '/projects/git-status' : '/projects/git-diff',
+				query: {
+					projectPath,
+					...(a.path !== projectPath ? { worktreePath: String(a.path) } : {}),
+					...(name === 'git_file_diff' ? { file: String(a.file), staged: String(a.staged) } : {})
+				}
+			};
+		}
 		case 'github_get_remote':
 			return { method: 'GET', path: '/projects/github-remote', query: { path: String(a.path) } };
 		case 'discover_claude_sessions':

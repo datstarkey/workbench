@@ -76,6 +76,7 @@ export interface UsageChip {
 	percent: number;
 	high: boolean;
 	resets: string | null;
+	resetsAt: number | null;
 	title: string;
 }
 
@@ -92,6 +93,7 @@ export function usageChips(
 	const merged = limits.map((l) => ({
 		label: l.label,
 		percent: l.percent,
+		resetsAt: l.resetsAt ?? (l.resets ? parseResetTime(l.resets, now) : null),
 		resets: l.resets
 			? shortenReset(l.resets, now, timeZone)
 			: l.resetsAt != null
@@ -110,6 +112,7 @@ export function usageChips(
 				limits.map((l) => l.label)
 			),
 			percent: Math.round(event.utilization * 100),
+			resetsAt: event.resetsAt,
 			resets: formatEventReset(event.resetsAt, now, timeZone)
 		};
 		const i = merged.findIndex((l) => l.label === live.label);
@@ -125,6 +128,7 @@ export function usageChips(
 				percent: l.percent,
 				high: l.percent >= HIGH_USAGE_PERCENT,
 				resets: l.resets,
+				resetsAt: l.resetsAt,
 				title: `${long}: ${l.percent}% used${l.resets ? ` · resets ${l.resets}` : ''}`
 			};
 		});
@@ -136,4 +140,94 @@ export function metaUsageChips(
 	clock?: { now?: Date; timeZone?: string }
 ): UsageChip[] {
 	return usageChips(meta?.usageLimits ?? [], null, clock);
+}
+
+/** Parse the CLI's wall clock in its named timezone, never in the phone's timezone. */
+export function parseResetTime(text: string, now: Date = new Date()): number | null {
+	const match = /^([A-Za-z]{3}) (\d{1,2}) at (\d{1,2})(?::(\d{2}))?\s*(am|pm) \(([^)]+)\)$/i.exec(
+		text.trim()
+	);
+	if (!match) return null;
+	const [, monthName, dayText, hourText, minuteText, period, zone] = match;
+	const month = [
+		'jan',
+		'feb',
+		'mar',
+		'apr',
+		'may',
+		'jun',
+		'jul',
+		'aug',
+		'sep',
+		'oct',
+		'nov',
+		'dec'
+	].indexOf(monthName.toLowerCase());
+	const day = Number(dayText),
+		hour = Number(hourText),
+		minute = Number(minuteText ?? 0);
+	if (month < 0 || day < 1 || day > 31 || hour < 1 || hour > 12 || minute > 59) return null;
+	try {
+		const formatter = new Intl.DateTimeFormat('en-US', {
+			timeZone: zone,
+			year: 'numeric',
+			month: 'numeric',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: 'numeric',
+			hourCycle: 'h23'
+		});
+		const wall = (time: number) => {
+			const parts = Object.fromEntries(formatter.formatToParts(time).map((p) => [p.type, p.value]));
+			return Date.UTC(
+				Number(parts.year),
+				Number(parts.month) - 1,
+				Number(parts.day),
+				Number(parts.hour),
+				Number(parts.minute)
+			);
+		};
+		const year = new Date(wall(now.getTime())).getUTCFullYear();
+		const candidates: number[] = [];
+		for (const y of [year - 1, year, year + 1]) {
+			const target = Date.UTC(
+				y,
+				month,
+				day,
+				(hour % 12) + (period.toLowerCase() === 'pm' ? 12 : 0),
+				minute
+			);
+			if (new Date(target).getUTCDate() !== day) continue;
+			let guess = target;
+			for (let i = 0; i < 3; i++) guess += target - wall(guess);
+			if (wall(guess) === target) candidates.push(guess);
+		}
+		candidates.sort((a, b) => Math.abs(a - now.getTime()) - Math.abs(b - now.getTime()));
+		return candidates.length ? candidates[0] / 1000 : null;
+	} catch {
+		return null;
+	}
+}
+
+export function resetCountdown(resetsAt: number | null, now = Date.now()): string | null {
+	if (resetsAt === null || !Number.isFinite(resetsAt)) return null;
+	const minutes = Math.ceil((resetsAt * 1000 - now) / 60_000);
+	if (minutes <= 0) return 'Reset due';
+	const days = Math.floor(minutes / 1440),
+		hours = Math.floor((minutes % 1440) / 60),
+		mins = minutes % 60;
+	const parts = [days ? `${days}d` : '', hours ? `${hours}h` : '', mins ? `${mins}m` : ''].filter(
+		Boolean
+	);
+	return `Resets in ${parts.join(' ')}`;
+}
+
+export function contextUsage(
+	meta: TranscriptMeta | null
+): { used: number; limit: number; percent: number } | null {
+	if (!meta) return null;
+	const used = Math.max(0, meta.contextTokens ?? 0);
+	const limit = meta.contextWindow ?? (meta.model?.endsWith('[1m]') ? 1_000_000 : 200_000);
+	if (!Number.isFinite(limit) || limit <= 0 || !Number.isFinite(used)) return null;
+	return { used, limit, percent: Math.min(100, (used / limit) * 100) };
 }

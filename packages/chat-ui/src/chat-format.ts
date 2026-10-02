@@ -1,3 +1,4 @@
+import { contextUsage } from './usage-format';
 import type {
 	AgentKind,
 	CodexMode,
@@ -407,9 +408,7 @@ export function formatBytes(n: number): string {
  * `[1m]` on the model means a 1M window, else 200k.
  */
 export function contextUsed(meta: TranscriptMeta | null): number {
-	if (!meta?.contextTokens) return 0;
-	const limit = meta.contextWindow ?? (meta.model?.endsWith('[1m]') ? 1_000_000 : 200_000);
-	return Math.min(1, meta.contextTokens / limit);
+	return (contextUsage(meta)?.percent ?? 0) / 100;
 }
 
 /** The model the session is on: the one picked here, else matched by id, else the default. */

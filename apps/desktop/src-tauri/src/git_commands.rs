@@ -7,6 +7,11 @@ pub fn git_status(path: String) -> Result<GitStatusResult, String> {
 }
 
 #[tauri::command(async)]
+pub fn git_file_diff(path: String, file: String, staged: bool) -> Result<String, String> {
+    git::git_file_diff(&path, &file, staged).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
 pub fn git_log(path: String, max_count: Option<u32>) -> Result<Vec<GitLogEntry>, String> {
     git::git_log(&path, max_count.unwrap_or(50)).map_err(|e| e.to_string())
 }

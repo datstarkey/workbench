@@ -32,6 +32,7 @@
 		id,
 		agent = 'claude',
 		draft = $bindable(''),
+		images = $bindable<ChatImage[]>([]),
 		mode,
 		busy,
 		disabledReason,
@@ -46,6 +47,8 @@
 		id: string;
 		agent?: AgentKind;
 		draft?: string;
+		/** Hosts may retain image attachments when navigating away. */
+		images?: ChatImage[];
 		mode: PermissionMode | CodexMode | null;
 		busy: boolean;
 		/** Set when nothing can be sent right now; shown as the placeholder. */
@@ -75,7 +78,6 @@
 	const platform = getChatPlatform();
 	const enterSends = platform.enterSends ?? true;
 
-	let images = $state<ChatImage[]>([]);
 	let imageError = $state('');
 	/** A file is being dragged over this composer. */
 	let dropping = $state(false);

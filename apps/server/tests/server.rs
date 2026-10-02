@@ -1608,3 +1608,52 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
     assert_eq!(res.status(), 204);
     handle.stop().await;
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn git_review_is_read_only_and_restricted_to_registered_checkouts() {
+    let env = env_guard();
+    let project = tempfile::tempdir().unwrap();
+    git_init(project.path());
+    let _cfg = register_project(&env, project.path());
+    std::fs::write(project.path().join("new file.txt"), "review me").unwrap();
+    let (handle, base) = start().await;
+    let http = client();
+    let status = http
+        .get(format!("{base}/projects/git-status"))
+        .query(&[("projectPath", project.path().to_str().unwrap())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status.status(), 200);
+    let status: Value = status.json().await.unwrap();
+    assert_eq!(status["files"][0]["path"], "new file.txt");
+    let diff = http
+        .get(format!("{base}/projects/git-diff"))
+        .query(&[
+            ("projectPath", project.path().to_str().unwrap()),
+            ("file", "new file.txt"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(diff.status(), 200);
+    assert!(diff.json::<String>().await.unwrap().contains("review me"));
+    for (path, file) in [
+        ("/not-registered", "new file.txt"),
+        (project.path().to_str().unwrap(), "../outside"),
+    ] {
+        let response = http
+            .get(format!("{base}/projects/git-diff"))
+            .query(&[("projectPath", path), ("file", file)])
+            .send()
+            .await
+            .unwrap();
+        assert!(!response.status().is_success());
+    }
+    let no_auth = reqwest::get(format!("{base}/projects/git-status"))
+        .await
+        .unwrap();
+    assert_eq!(no_auth.status(), 401);
+    handle.stop().await;
+}

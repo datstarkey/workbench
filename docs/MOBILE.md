@@ -16,10 +16,28 @@ Switching verifies the target first (`server-check.ts`: `/health` + a token chec
 
 ## Chat and terminal
 
-The home screen (`Home.svelte`) lists what needs you (unanswered approvals from `GET /agent/claude`, answerable in place via `POST /agent/claude/:id/message`), what is running (chats from any device, plus server terminals), and projects to start in. New Claude sessions open in the phone's default view (Settings sheet, `wb.claudeView` in localStorage, chat unless set).
+The home screen (`Home.svelte`) lists what needs you (unanswered approvals from `GET /agent`, answerable in place via the agent's message endpoint), what is running (chats from any device, plus server terminals), and projects to start in. New Claude sessions open in the phone's default view (Settings sheet, `wb.claudeView` in localStorage, chat unless set).
 
 - Only one process may own a Claude session, so switching always stops one side before starting the other: chat → terminal `DELETE /agent/claude/:id`, then a terminal created with `claudeSession: {id, resume}` (resume unless nothing was sent yet, `AgentChat.hasHistory`); terminal → chat `DELETE /remote/terminals/:id?wait=true`, which returns only once the terminal's process group is gone, then `AgentChat` resumes the id. A failed kill leaves the terminal up with a notice rather than starting a second `claude`.
 - The server builds the `claude` command for `claudeSession` itself (permission mode from settings, and the sandbox-runtime wrapper when it is on, failing closed if its settings file is missing). The phone never types a Claude command, so it can't skip the sandbox. Chats carry `claudeAccountId` from `GET /agent/claude`, and resumes and terminals keep it.
 - Which terminals run a conversation lives in localStorage (`wb.claudeTerminals.<machine id>`, terminal id → session), pruned whenever the terminal list refreshes. A terminal opened elsewhere has no entry, so it shows no Chat switch.
 - Opening a desktop pane's chat and switching it to the terminal stops the desktop's chat process too; the desktop pane shows it ended.
 - Android drops sockets while the screen is locked. The terminal re-attaches when the app is visible again; the chat calls `AgentChat.reconnect()` after more than 10 s hidden, and the home lists refresh on `visibilitychange`.
+
+## Conversation history and review
+
+Expanded projects and worktrees offer **History** (Claude or Codex, searchable) and **Review changes** (branch, changed files, staged/working-tree diffs). The chat's three-dot menu offers the same actions, plus **Open on GitHub** when the project has a GitHub origin. `/resume` opens history locally. Review uses the authenticated `/projects/git-status` and `/projects/git-diff` routes; both restrict the checkout to registered projects/worktrees. Untracked previews are bounded, and symlinks are shown without reading their targets.
+
+Settings offers the server's saved Claude accounts for new sessions; history can filter by account, and resumed chats retain their original account. Codex slash completions use the app-server's `skills/list`, refresh on `skills/changed`, and send an explicit skill input with the server-discovered path.
+
+Composer drafts are separated by machine, agent, account and conversation. Text survives app restarts; image attachments survive navigation within the app but are not saved to localStorage. The draft follows a newly assigned Codex thread ID or Claude `/clear` ID. Android Back dismisses the top sheet, then closes chat/terminal to Home; Home retains Android's default Back action.
+
+Claude and Codex usage pills show their percentages around the border. Tapping a plan limit shows the remaining time and reset date/time in the phone's timezone; a CLI reset with no usable timezone stays as its original text. The context pill shows its percentage, and tapping shows used/max tokens. Markdown links in both agents' chats use the native system URL handler, outside the chat webview.
+
+## Android session notifications
+
+Notifications are opt-in in the phone's Settings. The local `session-notifications` Tauri plugin runs an Android `remoteMessaging` foreground service while a chat with a session ID is open. It polls `/agent` every 10 seconds for **that conversation only**, including after the phone locks or the app goes into the background. Returning to Home, closing the chat, switching away, or disconnecting stops the service; there is no background polling without an open chat. Home's existing refresh runs only while the webview is visible.
+
+A new approval or a busy-to-idle completion posts a local notification while the app is in the background. Tapping it opens the saved machine and conversation. Android shows an ongoing monitor notification with a Stop action; Android 13+ asks for notification permission. Credentials live only in the running service, and the service does not restart automatically after force-stop or reboot. An authorization failure stops monitoring. A temporarily absent or exited session can restart from the same open chat; monitoring stays attached to that screen until it closes. Tests cover alert transitions, duplicate suppression, conversation ID changes, and stale configuration handling.
+
+These are **local notifications from native polling**, not Firebase/FCM push. Push delivery would need a separate device-registration and server-side delivery integration.

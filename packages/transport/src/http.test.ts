@@ -18,6 +18,27 @@ function json(body: unknown, status = 200) {
 describe('HttpTransport route mapping', () => {
 	afterEach(() => vi.unstubAllGlobals());
 
+	it('maps Git review to the registered project and exact worktree/file', async () => {
+		const f = mockFetch(() => json('diff'));
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await t.invoke('git_status', { path: '/repo' });
+		expect(f.mock.calls[0][0]).toBe('http://host:4317/projects/git-status?projectPath=%2Frepo');
+		await t.invoke('git_file_diff', {
+			path: '/repo-wt',
+			projectPath: '/repo',
+			file: 'space & name.ts',
+			staged: false
+		});
+		const url = new URL(f.mock.calls[1][0]);
+		expect(url.pathname).toBe('/projects/git-diff');
+		expect(Object.fromEntries(url.searchParams)).toEqual({
+			projectPath: '/repo',
+			worktreePath: '/repo-wt',
+			file: 'space & name.ts',
+			staged: 'false'
+		});
+	});
+
 	it('maps list_projects to GET /projects', async () => {
 		const f = mockFetch(() => json([{ name: 'a', path: '/a' }]));
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });

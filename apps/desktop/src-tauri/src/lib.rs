@@ -98,6 +98,7 @@ macro_rules! build_invoke_handler {
             commands::is_native_terminal_available,
             commands::get_package_info,
             git_commands::git_status,
+            git_commands::git_file_diff,
             git_commands::git_log,
             git_commands::git_stage,
             git_commands::git_unstage,
