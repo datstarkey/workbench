@@ -4,6 +4,7 @@
 	import { OverlayScrollbars } from 'overlayscrollbars';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import BotIcon from '@lucide/svelte/icons/bot';
+	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import {
 		activity,
 		agentName,
@@ -31,10 +32,13 @@
 	} from '$types/workbench';
 	import {
 		getClaudeSessionStore,
+		getGitHubStore,
 		getWorkbenchSettingsStore,
 		getWorkspaceStore
 	} from '$stores/context';
+	import PRStatusBadge from '$features/projects/PRStatusBadge.svelte';
 	import { codexChatMode } from '$lib/utils/claude';
+	import { openUrl } from '$lib/utils/open-url';
 	import { planUsage } from './agent-api';
 	import { acquireChat } from './chat-registry';
 	import { desktopChatPlatform } from './chat-platform';
@@ -72,6 +76,7 @@
 	const claudeSessionStore = getClaudeSessionStore();
 	const settingsStore = getWorkbenchSettingsStore();
 	const workspaceStore = getWorkspaceStore();
+	const githubStore = getGitHubStore();
 	// svelte-ignore state_referenced_locally
 	const agentLabel = agentName(agent);
 	const codexMode = codexChatMode(
@@ -97,6 +102,14 @@
 		// Another device's chat: join its process, never start one behind its back.
 		...(workspaceStore.isAdoptedPane(paneId) ? { attachOnly: true } : {})
 	});
+	const workspace = $derived(
+		cwd && cwd !== project.path
+			? workspaceStore.getByWorktreePath(cwd)
+			: workspaceStore.getByProjectPath(project.path)
+	);
+	const branch = $derived(workspace && workspaceStore.resolvedBranch(workspace));
+	const pr = $derived(branch ? githubStore.getBranchStatus(project.path, branch)?.pr : null);
+
 	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
 
@@ -237,6 +250,15 @@
 		<span class="min-w-0 truncate font-medium">{chat.meta?.title ?? agentLabel}</span>
 		{#if chat.meta?.model}
 			<span class="shrink-0 text-wb-ink-soft">{chat.meta.model.replace(/\[1m\]$/, '')}</span>
+		{/if}
+		{#if branch}
+			<span class="flex min-w-0 items-center gap-1 font-mono text-[11px] text-wb-ink-mute">
+				<GitBranchIcon class="size-3 shrink-0" />
+				<span class="max-w-48 truncate" title={branch}>{branch}</span>
+			</span>
+		{/if}
+		{#if pr}
+			<PRStatusBadge {pr} onClickPr={() => openUrl(pr.url)} />
 		{/if}
 		<div class="ml-auto flex shrink-0 items-center gap-3">
 			<ChatUsage {chips} chipClass="h-6 px-2 text-[11px]" />
