@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import BotIcon from '@lucide/svelte/icons/bot';
@@ -11,6 +11,7 @@
 		agentName,
 		ChatApproval,
 		ChatComposer,
+		ChatContext,
 		ChatModelPicker,
 		ChatPlan,
 		ChatQuestion,
@@ -32,6 +33,8 @@
 	import type { ChatRef } from './types.ts';
 	import Sheet from './Sheet.svelte';
 	import ViewSwitch from './ViewSwitch.svelte';
+	import { useBack } from './back-navigation';
+	import ProjectReviewSheet from './ProjectReviewSheet.svelte';
 
 	let { client, ref }: { client: MobileClient; ref: ChatRef } = $props();
 
@@ -52,6 +55,10 @@
 	const isClaude = chat.agent === 'claude';
 
 	const cwd = $derived(ref.worktreePath ?? ref.projectPath);
+	const githubUrl = $derived(client.store?.githubUrls[ref.projectPath]);
+	onMount(() => {
+		void client.store?.loadGithubUrl(ref.projectPath);
+	});
 	const place = $derived(
 		ref.worktreePath
 			? `${baseName(ref.projectPath)} · ${baseName(ref.worktreePath)}`
@@ -88,7 +95,28 @@
 	let sheetHiddenFor = $state<string | null>(null);
 	const sheetOpen = $derived(waiting !== null && sheetHiddenFor !== waiting.id && live);
 	let tasksOpen = $state(false);
-	let draft = $state('');
+	// svelte-ignore state_referenced_locally
+	const drafts = client.drafts;
+	// svelte-ignore state_referenced_locally
+	const draft = drafts.get(ref);
+	let reviewOpen = $state<'history' | 'changes' | null>(null);
+	useBack(() => client.closeChat());
+	watch(
+		() => [draft.text, draft.images],
+		() => drafts.save(ref, draft)
+	);
+	watch(
+		() => chat.sessionId,
+		(id) => {
+			if (!id || id === ref.sessionId) return;
+			drafts.move(ref, { ...ref, sessionId: id }, draft);
+			client.updateChatId(id);
+		}
+	);
+	const commands = $derived([
+		{ name: 'resume', description: 'Continue an earlier conversation' },
+		...chat.commands.filter((c) => c.name !== 'resume')
+	]);
 	let stickToBottom = true;
 
 	const disabledReason = $derived.by(() => {
@@ -137,7 +165,10 @@
 	}
 
 	// The session keeps running on the server; leaving only detaches.
-	onDestroy(() => chat.dispose());
+	onDestroy(() => {
+		drafts.save(ref, draft);
+		chat.dispose();
+	});
 </script>
 
 <svelte:document onvisibilitychange={onVisibility} />
@@ -190,6 +221,17 @@
 				{/snippet}
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Content align="end" class="w-52">
+				{#if githubUrl}
+					<DropdownMenu.Item onSelect={() => openExternal(githubUrl)}
+						>Open on GitHub</DropdownMenu.Item
+					>
+				{/if}
+				<DropdownMenu.Item onSelect={() => (reviewOpen = 'history')}
+					>Conversation history</DropdownMenu.Item
+				>
+				<DropdownMenu.Item onSelect={() => (reviewOpen = 'changes')}
+					>Review changes</DropdownMenu.Item
+				>
 				<DropdownMenu.Item onSelect={() => chat.open()}>Restart {name}</DropdownMenu.Item>
 				<DropdownMenu.Item class="text-wb-err" onSelect={() => client.endChat(chat.sessionId)}>
 					End session
@@ -213,7 +255,7 @@
 			{cwd}
 			projectName={place}
 			onShowTerminal={isClaude ? showTerminal : undefined}
-			onStarter={(text) => (draft = text)}
+			onStarter={(text) => (draft.text = text)}
 			inlineApprovals={false}
 			class="px-4 py-4"
 		/>
@@ -246,20 +288,8 @@
 					{runningTasks > 0 ? `${runningTasks} running` : `${tasks.length} tasks`}
 				</button>
 			{/if}
-			{#if contextShare > 0}
-				<span
-					class={cn(
-						'flex h-7 shrink-0 items-center rounded-full border border-wb-hair px-2.5 text-[11.5px] tabular-nums',
-						contextShare > 0.8 ? 'text-wb-warn' : 'text-wb-ink-soft'
-					)}
-				>
-					Context {Math.round(contextShare * 100)}%
-				</span>
-			{/if}
-			<ChatUsage
-				chips={usageChips}
-				chipClass="h-7 rounded-full border border-wb-hair px-2.5 text-[11.5px]"
-			/>
+			<ChatContext meta={chat.meta} />
+			<ChatUsage chips={usageChips} chipClass="h-7 px-2.5 text-[11.5px]" />
 		</div>
 	{/if}
 
@@ -288,13 +318,19 @@
 		<ChatComposer
 			id="chat-draft-{ref.sessionId}"
 			agent={chat.agent}
-			bind:draft
+			bind:draft={draft.text}
+			bind:images={draft.images}
 			mode={chat.meta?.permissionMode ?? null}
 			busy={Boolean(chat.meta?.busy) && live}
 			{disabledReason}
 			onSend={send}
 			onStop={() => chat.interrupt()}
-			commands={chat.commands}
+			{commands}
+			onCommand={(command) => {
+				if (command !== 'resume') return false;
+				reviewOpen = 'history';
+				return true;
+			}}
 			onMode={(mode) => chat.setMode(mode)}
 		>
 			{#snippet controls()}
@@ -338,6 +374,17 @@
 			class="h-auto w-full rounded-lg border border-wb-hair"
 		/>
 	</Sheet>
+{/if}
+
+{#if reviewOpen}
+	<ProjectReviewSheet
+		{client}
+		folder={{ projectPath: ref.projectPath, worktreePath: ref.worktreePath, name: place }}
+		initialTab={reviewOpen}
+		initialAgent={chat.agent}
+		accountId={ref.claudeAccountId}
+		onClose={() => (reviewOpen = null)}
+	/>
 {/if}
 
 <style>

@@ -511,7 +511,19 @@ pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
 
 pub(crate) fn parse_porcelain_status(output: &str) -> Vec<GitFileStatus> {
     let mut files = Vec::new();
-    for line in output.lines() {
+    let mut entries = Vec::new();
+    if output.contains('\0') {
+        let mut parts = output.split('\0');
+        while let Some(entry) = parts.next() {
+            entries.push(entry);
+            if matches!(entry.as_bytes().first(), Some(b'R' | b'C')) {
+                parts.next();
+            }
+        }
+    } else {
+        entries.extend(output.lines());
+    }
+    for line in entries {
         if line.len() < 4 {
             continue;
         }
@@ -546,7 +558,7 @@ pub fn git_status(path: &str) -> Result<GitStatusResult> {
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"], path)
         .unwrap_or_else(|_| "HEAD".to_string());
 
-    let porcelain = git_output(&["status", "--porcelain=v1"], path)?;
+    let porcelain = git_output(&["status", "--porcelain=v1", "-z"], path)?;
     let files = parse_porcelain_status(&porcelain);
 
     // ahead/behind — may fail if there's no upstream
@@ -573,6 +585,80 @@ pub fn git_status(path: &str) -> Result<GitStatusResult> {
         ahead,
         behind,
         has_upstream,
+    })
+}
+
+/// Read-only preview. Literal pathspecs and disabled diff drivers prevent a filename or
+/// repository attribute from running a command; untracked files never follow symlinks.
+pub fn git_file_diff(path: &str, file: &str, staged: bool) -> Result<String> {
+    use std::io::Read;
+    const LIMIT: usize = 512 * 1024;
+    if file.is_empty()
+        || Path::new(file)
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        bail!("file must be a relative path inside the repository");
+    }
+    let root = fs::canonicalize(path)?;
+    let target = root.join(file);
+    let mut args = vec![
+        "--literal-pathspecs",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+    ];
+    if staged {
+        args.push("--cached");
+    }
+    args.extend(["--", file]);
+    let mut diff = git_output(&args, path)?;
+    if diff.is_empty() && !staged {
+        let tracked = git_output(&["--literal-pathspecs", "ls-files", "--", file], path)?;
+        if tracked.is_empty() {
+            // A directory symlink must not expose files outside the checkout.
+            if !fs::canonicalize(target.parent().context("file has no parent")?)?.starts_with(&root)
+            {
+                bail!("file is outside the repository");
+            }
+            let meta = fs::symlink_metadata(&target)?;
+            if meta.file_type().is_symlink() {
+                return Ok(format!(
+                    "New symlink: {}",
+                    fs::read_link(&target)?.display()
+                ));
+            }
+            if !meta.is_file() {
+                bail!("not a regular file");
+            }
+            let mut bytes = Vec::new();
+            fs::File::open(&target)?
+                .take((LIMIT + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            if bytes.contains(&0) {
+                return Ok("Binary file (preview unavailable)".into());
+            }
+            let truncated = bytes.len() > LIMIT;
+            bytes.truncate(LIMIT);
+            diff = format!("New file: {file}\n{}", String::from_utf8_lossy(&bytes));
+            if truncated {
+                diff.push_str("\n… Preview truncated");
+            }
+        }
+    }
+    if diff.len() > LIMIT {
+        let mut end = LIMIT;
+        while !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        diff.truncate(end);
+        diff.push_str("\n… Preview truncated");
+    }
+    Ok(if diff.is_empty() {
+        "No changes in this version of the file.".into()
+    } else {
+        diff
     })
 }
 
@@ -794,6 +880,50 @@ fn commit_inner(path: &str, message: &str, amend: bool) -> Result<GitCommitResul
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn nul_status_preserves_special_filenames_and_rename_destination() {
+        let files = super::parse_porcelain_status(
+            " M space \"name\".ts\0R  new\nname.ts\0old.ts\0?? café.ts\0",
+        );
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].path, "space \"name\".ts");
+        assert_eq!(files[1].path, "new\nname.ts");
+        assert_eq!(files[2].path, "café.ts");
+    }
+
+    #[test]
+    fn review_previews_untracked_files_and_refuses_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        super::git_output(&["init", "-q"], path).unwrap();
+        std::fs::write(dir.path().join("space name.txt"), "new contents").unwrap();
+        assert!(super::git_file_diff(path, "space name.txt", false)
+            .unwrap()
+            .contains("new contents"));
+        assert!(super::git_file_diff(path, "../outside", false).is_err());
+        assert!(super::git_file_diff(path, "/absolute", false).is_err());
+        std::fs::write(dir.path().join("binary"), b"a\0b").unwrap();
+        assert!(super::git_file_diff(path, "binary", false)
+            .unwrap()
+            .contains("Binary"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn review_does_not_follow_symlinks_outside_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        super::git_output(&["init", "-q"], path).unwrap();
+        std::fs::write(outside.path().join("secret"), "private").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("outside")).unwrap();
+        assert!(super::git_file_diff(path, "outside/secret", false).is_err());
+        std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("link")).unwrap();
+        let diff = super::git_file_diff(path, "link", false).unwrap();
+        assert!(diff.starts_with("New symlink:"));
+        assert!(!diff.contains("private"));
+    }
+
     use super::*;
     use crate::types::WorktreeCopyOptions;
     use std::path::Path;

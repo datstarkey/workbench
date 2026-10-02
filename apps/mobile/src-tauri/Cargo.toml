@@ -25,3 +25,5 @@ tauri-plugin-barcode-scanner = "2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 tauri-plugin-apk-updater = { path = "plugins/apk-updater" }
+
+tauri-plugin-session-notifications = { path = "plugins/session-notifications" }

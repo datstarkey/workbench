@@ -23,6 +23,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/projects/branches", get(list_branches))
         .route("/projects/git-info", get(git_info))
+        .route("/projects/git-status", get(git_status))
+        .route("/projects/git-diff", get(git_file_diff))
         .route("/projects/github-remote", get(github_remote))
         .route("/sessions/claude", get(discover_claude_sessions))
         .route("/sessions/codex", get(discover_codex_sessions))
@@ -154,6 +156,44 @@ async fn list_branches(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
 async fn git_info(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
     let info = blocking(move || workbench_core::git::git_info(&q.path)).await?;
     Ok(Json(serde_json::to_value(info)?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitReviewQuery {
+    project_path: String,
+    worktree_path: Option<String>,
+    file: Option<String>,
+    #[serde(default)]
+    staged: bool,
+}
+
+fn review_cwd(q: &GitReviewQuery) -> anyhow::Result<String> {
+    let registered = workbench_core::config::load_projects()?
+        .into_iter()
+        .map(|p| p.path)
+        .collect::<Vec<_>>();
+    crate::spawn::RemoteControlManager::resolve_cwd(
+        &q.project_path,
+        q.worktree_path.as_deref(),
+        &registered,
+    )
+}
+
+async fn git_status(Query(q): Query<GitReviewQuery>) -> ApiResult<Json<Value>> {
+    let status = blocking(move || workbench_core::git::git_status(&review_cwd(&q)?)).await?;
+    Ok(Json(serde_json::to_value(status)?))
+}
+
+async fn git_file_diff(Query(q): Query<GitReviewQuery>) -> ApiResult<Json<String>> {
+    if q.file.as_deref().is_none_or(str::is_empty) {
+        return Err(ApiError::bad_request("file is required"));
+    }
+    let diff = blocking(move || {
+        workbench_core::git::git_file_diff(&review_cwd(&q)?, q.file.as_deref().unwrap(), q.staged)
+    })
+    .await?;
+    Ok(Json(diff))
 }
 
 /// `null` when the folder has no GitHub `origin` (not a repo, no remote, other host).

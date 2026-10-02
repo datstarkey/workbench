@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { useBack } from './back-navigation';
 
 	/** A bottom sheet over the current screen; `onClose` makes the backdrop and Esc dismiss it. */
 	let {
@@ -11,6 +12,7 @@
 		onClose?: () => void;
 		children: Snippet;
 	} = $props();
+	useBack(() => onClose?.(), 1);
 </script>
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && onClose?.()} />

@@ -1,12 +1,20 @@
 import { agentClient, agentName } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
 import { createHttpTransport } from '@workbench/transport';
-import type { AgentSummary, ApprovalDecision } from '@workbench/types';
+import type {
+	AgentSummary,
+	ApprovalDecision,
+	ClaudeAccount,
+	WorkbenchSettings
+} from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { hostOf, LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
+import { Drafts } from './drafts.svelte';
+import { SessionNotifications } from './session-notifications.svelte';
+import { ProjectReview, type ReviewFolder } from './project-review.svelte';
 import type { ChatRef, ClaudeLaunch, ClaudeView, TerminalMeta } from './types.ts';
 
 const LS_VIEW = 'wb.claudeView';
@@ -35,7 +43,7 @@ export function baseName(path: string): string {
 	);
 }
 
-/** Opens `url` in the system browser; a failure is logged, never thrown. */
+/** Uses the system URL handler without the opener plugin's inAppBrowser mode. */
 export function openExternal(url: string): void {
 	openUrl(url).catch((e) => console.warn('[mobile] open url', url, e));
 }
@@ -47,12 +55,44 @@ export function openExternal(url: string): void {
  */
 export class MobileClient {
 	readonly machines = new SavedMachines();
+	readonly notifications = new SessionNotifications();
 	/** The connect form's fields (they show the last connected machine). */
 	url = $state(this.machines.active?.url ?? '');
 	token = $state(this.machines.active?.token ?? '');
 	/** The server every request goes to; null while disconnected. */
 	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
+	drafts = new Drafts('disconnected');
+	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
+	accountId = $state<string | undefined>(undefined);
+	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
+
+	setAccount(id: string): void {
+		this.accountId = id || undefined;
+		if (this.machineId) lsSet(machineKey('wb.account', this.machineId), id);
+	}
+
+	private async loadAccounts(): Promise<void> {
+		const live = this.live();
+		try {
+			const settings = (await this.controlPlane?.invoke(
+				'load_workbench_settings',
+				undefined
+			)) as WorkbenchSettings | null;
+			if (!live()) return;
+			this.accounts = (settings?.claudeAccounts ?? []).map(({ id, name }) => ({ id, name }));
+			const saved = this.machineId ? lsGet(machineKey('wb.account', this.machineId)) : null;
+			const selected = saved ?? settings?.activeClaudeAccount ?? '';
+			this.accountId = this.accounts.some((a) => a.id === selected) ? selected : undefined;
+		} catch {
+			/* Older servers still support the default account. */
+		}
+	}
+
+	review(folder: ReviewFolder): ProjectReview {
+		if (!this.controlPlane) throw new Error('Connect to a machine first');
+		return new ProjectReview(this.controlPlane, folder);
+	}
 	connecting = $state(false);
 	/** The saved machine a connect is in flight to (null for one not saved yet). */
 	connectingTo = $state<string | null>(null);
@@ -67,6 +107,7 @@ export class MobileClient {
 	/** Chat sessions running on the server (any device's). */
 	chats = $state<AgentSummary[]>([]);
 	activeChat = $state<ChatRef | null>(null);
+	chatScreenKey = $state(0);
 	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
 	claudeTerminals = $state<Record<string, ChatRef>>({});
 	/** A chat ↔ terminal switch is stopping one process and starting the other. */
@@ -157,10 +198,12 @@ export class MobileClient {
 			this.token = token;
 			this.connection = { url: base, token };
 			this.machineId = machine.id;
+			this.drafts = new Drafts(machine.id);
+			this.controlPlane = createHttpTransport({ baseUrl: base, token });
 			this.claudeTerminals = readLinks(machine.id);
 			this.online = true;
 			this.store = next;
-			await Promise.all([this.refreshTerminals(), this.refreshChats()]);
+			await Promise.all([this.refreshTerminals(), this.refreshChats(), this.loadAccounts()]);
 		} catch (e) {
 			if (superseded()) return;
 			if (this.store)
@@ -231,6 +274,9 @@ export class MobileClient {
 		this.store?.dispose();
 		this.store = null;
 		this.connection = null;
+		this.controlPlane = null;
+		this.accounts = [];
+		this.accountId = undefined;
 		this.machineId = null;
 		this.claudeTerminals = {};
 		this.terminals = [];
@@ -280,7 +326,13 @@ export class MobileClient {
 
 	/** A new Claude conversation in the phone's default view. */
 	startClaude = async (projectPath: string, worktreePath: string | undefined, name: string) => {
-		const ref: ChatRef = { sessionId: crypto.randomUUID(), projectPath, worktreePath, name };
+		const ref: ChatRef = {
+			sessionId: crypto.randomUUID(),
+			projectPath,
+			worktreePath,
+			name,
+			...(this.accountId ? { claudeAccountId: this.accountId } : {})
+		};
 		if (this.defaultView === 'chat') this.openChat(ref);
 		else await this.openClaudeTerminal(ref, false);
 	};
@@ -304,7 +356,13 @@ export class MobileClient {
 	openChat(ref: ChatRef): void {
 		this.notice = null;
 		this.activeTerminalId = null;
+		this.chatScreenKey++;
 		this.activeChat = ref;
+	}
+
+	/** Update the screen's reference without remounting it when Codex starts or /clear re-keys. */
+	updateChatId(id: string): void {
+		if (this.activeChat && id) this.activeChat = { ...this.activeChat, sessionId: id };
 	}
 
 	/** Arrow field — the chat view's Back. The session keeps running on the server. */
@@ -330,7 +388,13 @@ export class MobileClient {
 	async endChat(sessionId: string): Promise<void> {
 		const live = this.live();
 		// A Codex chat that never got a thread id has nothing running to stop.
-		if (sessionId) await this.agents.stop(sessionId).catch(() => {});
+		this.notice = null;
+		try {
+			if (sessionId) await this.agents.stop(sessionId);
+		} catch (e) {
+			if (live()) this.notice = `Couldn't end the session: ${errorText(e)}`;
+			return;
+		}
 		if (!live()) return;
 		this.activeChat = null;
 		await this.refreshChats();
@@ -452,6 +516,7 @@ export class MobileClient {
 			this.activeChat = null;
 			this.activeTerminalId = meta.id;
 			await this.refreshTerminals();
+			if (!live()) return null;
 			ensureVisible();
 			return meta.id;
 		} catch (e) {
@@ -479,8 +544,13 @@ export class MobileClient {
 
 	async killTerminal(id: string): Promise<void> {
 		const live = this.live();
-		await this.deleteTerminal(id);
+		this.notice = null;
+		const stopped = await this.deleteTerminal(id);
 		if (!live()) return;
+		if (!stopped) {
+			this.notice = "Couldn't close the terminal. It may still be running; try again.";
+			return;
+		}
 		if (this.activeTerminalId === id) this.activeTerminalId = null;
 		await this.refreshTerminals();
 	}

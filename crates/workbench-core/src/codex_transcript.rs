@@ -84,6 +84,7 @@ pub struct CodexTranscript {
     /// The title came from the thread's name, not its first message.
     named: bool,
     unknown_seen: HashSet<String>,
+    commands: Vec<SlashCommand>,
 }
 
 impl ChatView for CodexTranscript {
@@ -94,7 +95,7 @@ impl ChatView for CodexTranscript {
         &self.meta
     }
     fn commands(&self) -> &[SlashCommand] {
-        &[]
+        &self.commands
     }
     fn full_output(&self, tool_id: &str) -> Option<&str> {
         self.full_outputs.get(tool_id).map(String::as_str)
@@ -106,6 +107,9 @@ impl ChatView for CodexTranscript {
 }
 
 impl CodexTranscript {
+    pub fn set_commands(&mut self, commands: Vec<SlashCommand>) {
+        self.commands = commands;
+    }
     /// The turn in progress, for steering and interrupting it.
     pub fn active_turn(&self) -> Option<&str> {
         self.active_turn.as_deref()

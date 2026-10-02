@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-take-open-session"
+description = "Enables the take_open_session command without any pre-configured scope."
+commands.allow = ["take_open_session"]
+
+[[permission]]
+identifier = "deny-take-open-session"
+description = "Denies the take_open_session command without any pre-configured scope."
+commands.deny = ["take_open_session"]

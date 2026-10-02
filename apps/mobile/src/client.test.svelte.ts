@@ -607,4 +607,47 @@ describe('MobileClient', () => {
 			expect(c.connectError).toBe('no camera');
 		});
 	});
+	it('keeps the current chat visible and reports a failed End session', async () => {
+		const c = await connected({ '/agent/claude/s': () => jsonResponse({ error: 'offline' }, 503) });
+		c.openChat({ sessionId: 's', projectPath: '/repo', name: 'repo' });
+		await c.endChat('s');
+		expect(c.activeChat?.sessionId).toBe('s');
+		expect(c.notice).toMatch(/Couldn't end.*offline/);
+	});
+
+	it('keeps a terminal visible when deletion fails', async () => {
+		const c = await connected({
+			'/remote/terminals': () =>
+				jsonResponse([{ id: 't1', cwd: '/repo', createdAt: 0, alive: true }]),
+			'/remote/terminals/t1': () => jsonResponse({ error: 'offline' }, 503)
+		});
+		c.selectTerminal('t1');
+		await c.killTerminal('t1');
+		expect(c.activeTerminalId).toBe('t1');
+		expect(c.notice).toMatch(/Couldn't close/);
+	});
+
+	it('loads accounts and carries the selected account into new chats', async () => {
+		const c = await connected({
+			'/settings/workbench': () =>
+				jsonResponse({
+					claudeAccounts: [{ id: 'work', name: 'Work', configDir: '/account' }],
+					activeClaudeAccount: 'work'
+				})
+		});
+		await c.startClaude('/repo', undefined, 'repo');
+		expect(c.activeChat?.claudeAccountId).toBe('work');
+		c.setAccount('');
+		await c.startClaude('/repo', undefined, 'repo');
+		expect(c.activeChat?.claudeAccountId).toBeUndefined();
+	});
+
+	it('updates a new Codex id without remounting its screen', async () => {
+		const c = await connected();
+		c.startCodex('/repo', undefined, 'repo');
+		const key = c.chatScreenKey;
+		c.updateChatId('thread-1');
+		expect(c.activeChat?.sessionId).toBe('thread-1');
+		expect(c.chatScreenKey).toBe(key);
+	});
 });

@@ -24,6 +24,9 @@ pub fn run() {
             // Sideloaded APK self-update (no Play Store); iOS would update through the App Store.
             #[cfg(target_os = "android")]
             _app.handle().plugin(tauri_plugin_apk_updater::init())?;
+            #[cfg(target_os = "android")]
+            _app.handle()
+                .plugin(tauri_plugin_session_notifications::init())?;
             Ok(())
         })
         .run(tauri::generate_context!())

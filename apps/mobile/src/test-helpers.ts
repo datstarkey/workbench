@@ -4,6 +4,10 @@ import { vi } from 'vitest';
 export function stubLocalStorage() {
 	const mem: Record<string, string> = {};
 	vi.stubGlobal('localStorage', {
+		get length() {
+			return Object.keys(mem).length;
+		},
+		key: (i: number) => Object.keys(mem)[i] ?? null,
 		getItem: (k: string) => (k in mem ? mem[k] : null),
 		setItem: (k: string, v: string) => void (mem[k] = String(v)),
 		removeItem: (k: string) => void delete mem[k],

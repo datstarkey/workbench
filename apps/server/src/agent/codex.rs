@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
-use workbench_core::claude_transcript::{ApprovalDecision, ChatView};
+use workbench_core::claude_transcript::{ApprovalDecision, ChatView, SlashCommand};
 use workbench_core::codex_config;
 use workbench_core::codex_transcript::{self, CodexTranscript, CODEX_MODES};
 
@@ -36,6 +36,7 @@ enum Pending {
     Initialize,
     Thread,
     Models,
+    Skills(u64),
     History,
     TurnStart,
     /// The input, re-submitted if the turn it steered has ended.
@@ -65,6 +66,8 @@ pub(super) struct CodexDriver {
     mode: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    skills: HashMap<String, String>,
+    skills_revision: u64,
 }
 
 /// `thread_id` resumes that thread; `None` starts a new one.
@@ -85,6 +88,8 @@ pub(super) fn launch(req: &StartAgent, thread_id: Option<&str>, mode: Option<&st
         mode: mode.map(String::from),
         model: None,
         effort: None,
+        skills: HashMap::new(),
+        skills_revision: 0,
     };
     let hello = driver.request(
         "initialize",
@@ -124,7 +129,9 @@ impl CodexDriver {
             return Effects::default();
         };
         let mut fx = Effects::default();
-        if msg.get("method").is_some() {
+        if msg.get("method").and_then(Value::as_str) == Some("skills/changed") {
+            fx.send.push(self.load_skills(true));
+        } else if msg.get("method").is_some() {
             let applied = self.t.apply(&msg);
             if let Some(method) = &applied.unknown_method {
                 tracing::warn!("codex sent an unrecognised notification: {method}");
@@ -171,6 +178,7 @@ impl CodexDriver {
                 fx.send.push(thread);
                 fx.send
                     .push(self.request("model/list", json!({}), Pending::Models));
+                fx.send.push(self.load_skills(false));
             }
             Pending::Thread => {
                 let Some(id) = result.pointer("/thread/id").and_then(Value::as_str) else {
@@ -204,6 +212,57 @@ impl CodexDriver {
                 self.t
                     .set_models(data.map(Vec::as_slice).unwrap_or_default());
                 fx.meta = true;
+            }
+            Pending::Skills(revision) => {
+                if revision != self.skills_revision {
+                    return;
+                }
+                self.skills.clear();
+                let mut commands = Vec::new();
+                for entry in result
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    for skill in entry
+                        .get("skills")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if skill.get("enabled").and_then(Value::as_bool) == Some(false) {
+                            continue;
+                        }
+                        let (Some(name), Some(path)) = (
+                            skill.get("name").and_then(Value::as_str),
+                            skill.get("path").and_then(Value::as_str),
+                        ) else {
+                            continue;
+                        };
+                        if name.is_empty()
+                            || name.chars().any(char::is_whitespace)
+                            || self.skills.contains_key(name)
+                        {
+                            continue;
+                        }
+                        self.skills.insert(name.to_string(), path.to_string());
+                        commands.push(SlashCommand {
+                            name: name.to_string(),
+                            description: skill
+                                .pointer("/interface/shortDescription")
+                                .or_else(|| skill.get("shortDescription"))
+                                .or_else(|| skill.get("description"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("Codex skill")
+                                .to_string(),
+                            argument_hint: Some("instructions".into()),
+                        });
+                    }
+                }
+                commands.sort_by(|a, b| a.name.cmp(&b.name));
+                self.t.set_commands(commands);
+                fx.commands = true;
             }
             Pending::TurnStart => {
                 self.starting_turn = false;
@@ -259,10 +318,19 @@ impl CodexDriver {
                     .t
                     .notice(&format!("rejected:{}", self.next_id), &message);
             }
-            Pending::Models | Pending::Interrupt => {
+            Pending::Skills(_) | Pending::Models | Pending::Interrupt => {
                 tracing::warn!("codex: {message}");
             }
         }
+    }
+
+    fn load_skills(&mut self, force: bool) -> Value {
+        self.skills_revision += 1;
+        self.request(
+            "skills/list",
+            json!({"cwds": [self.cwd], "forceReload": force}),
+            Pending::Skills(self.skills_revision),
+        )
     }
 
     fn history_page(&mut self, cursor: Value) -> Value {
@@ -324,7 +392,17 @@ impl CodexDriver {
         }
         let mut input = Vec::new();
         if !text.trim().is_empty() {
-            input.push(json!({"type": "text", "text": text, "text_elements": []}));
+            let trimmed = text.trim_start();
+            let split = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+            let name = trimmed[..split].strip_prefix('/');
+            if let Some((name, path)) =
+                name.and_then(|name| self.skills.get(name).map(|path| (name, path)))
+            {
+                input.push(json!({"type": "skill", "name": name, "path": path}));
+                input.push(json!({"type": "text", "text": format!("${name}{}", &trimmed[split..]), "text_elements": []}));
+            } else {
+                input.push(json!({"type": "text", "text": text, "text_elements": []}));
+            }
         }
         // Verified with codex-cli 0.159: data URLs are accepted as-is.
         input.extend(images.iter().map(|img| {
@@ -448,6 +526,8 @@ mod tests {
             mode: None,
             model: None,
             effort: None,
+            skills: HashMap::new(),
+            skills_revision: 0,
         }
     }
 
@@ -470,5 +550,46 @@ mod tests {
             .find(|m| m["method"] == "turn/interrupt")
             .expect("the started turn is interrupted");
         assert_eq!(stop["params"]["turnId"], "turn-1");
+    }
+
+    #[test]
+    fn lists_enabled_skills_and_invokes_them_with_their_server_path() {
+        let mut d = driver();
+        let req = d.load_skills(false);
+        assert_eq!(req["params"]["cwds"], json!(["/tmp"]));
+        let fx = d.apply_line(&json!({"id": req["id"], "result": {"data": [{"cwd": "/tmp", "skills": [
+            {"name": "review", "description": "Review code", "path": "/skills/review/SKILL.md", "enabled": true},
+            {"name": "disabled", "path": "/skills/disabled/SKILL.md", "enabled": false}
+        ]}]}}).to_string());
+        assert!(fx.commands);
+        assert_eq!(d.t.commands().len(), 1);
+        assert_eq!(d.t.commands()[0].name, "review");
+        let fx = d.prompt("/review my changes", &[]).unwrap();
+        assert_eq!(
+            fx.send[0]["params"]["input"][0],
+            json!({"type": "skill", "name": "review", "path": "/skills/review/SKILL.md"})
+        );
+        assert_eq!(
+            fx.send[0]["params"]["input"][1]["text"],
+            "$review my changes"
+        );
+    }
+
+    #[test]
+    fn skill_changes_reload_and_late_results_do_not_restore_old_skills() {
+        let mut d = driver();
+        let old = d.load_skills(false);
+        let changed = d.apply_line(r#"{"method":"skills/changed","params":{}}"#);
+        assert_eq!(changed.send[0]["method"], "skills/list");
+        assert_eq!(changed.send[0]["params"]["forceReload"], true);
+        d.apply_line(&json!({"id": changed.send[0]["id"], "result": {"data": []}}).to_string());
+        let fx = d.apply_line(&json!({"id": old["id"], "result": {"data": [{"skills": [{"name": "old", "path": "/old"}]}]}}).to_string());
+        assert!(!fx.commands);
+        assert!(d.t.commands().is_empty());
+        let fx = d.prompt("/unknown plain text", &[]).unwrap();
+        assert_eq!(
+            fx.send[0]["params"]["input"][0]["text"],
+            "/unknown plain text"
+        );
     }
 }

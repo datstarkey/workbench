@@ -312,4 +312,21 @@ describe('MobileClient with several machines', () => {
 		await c.refreshTerminals();
 		expect(c.online).toBe(true);
 	});
+	it('does not restore an old terminal or save its chat link after switching during the post-create refresh', async () => {
+		const hosts = servers('mac', 'pc');
+		const c = await connectedTo('mac');
+		await connectedTo('pc', c);
+		await c.switchTo(idOf(c, 'mac'));
+		const late = gate();
+		hosts.mac.holds['GET /remote/terminals'] = late.promise;
+		c.setDefaultView('terminal');
+		const opening = c.startClaude('/repo', undefined, 'repo');
+		await vi.waitFor(() => expect(c.activeTerminalId).toBe('mac-t1'));
+		await c.switchTo(idOf(c, 'pc'));
+		late.release();
+		await opening;
+		expect(c.terminals).toEqual([]);
+		expect(c.claudeTerminals).toEqual({});
+		expect(c.activeTerminalId).toBeNull();
+	});
 });

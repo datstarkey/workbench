@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { RateLimitInfo, TranscriptMeta } from '@workbench/types';
 import {
 	formatEventReset,
+	parseResetTime,
+	resetCountdown,
+	contextUsage,
 	metaUsageChips,
 	shortenReset,
 	usageChips,
@@ -39,6 +42,7 @@ describe('usage chips', () => {
 				percent: 3,
 				high: false,
 				resets: '5:10pm',
+				resetsAt: today510pm,
 				title: '5-hour session: 3% used · resets 5:10pm'
 			},
 			{
@@ -46,6 +50,7 @@ describe('usage chips', () => {
 				percent: 89,
 				high: true,
 				resets: 'Oct 2 at 9am',
+				resetsAt: oct2at9am,
 				title: 'Weekly limit: 89% used · resets Oct 2 at 9am'
 			}
 		]);
@@ -55,6 +60,7 @@ describe('usage chips', () => {
 				percent: 12,
 				high: false,
 				resets: null,
+				resetsAt: null,
 				title: 'Weekly Fable limit: 12% used'
 			}
 		]);
@@ -98,6 +104,7 @@ describe('Codex usage chips', () => {
 				percent: 40,
 				high: false,
 				resets: '5:10pm',
+				resetsAt: today510pm,
 				title: '5-hour session: 40% used · resets 5:10pm'
 			},
 			{
@@ -105,6 +112,7 @@ describe('Codex usage chips', () => {
 				percent: 85,
 				high: true,
 				resets: 'Oct 2 at 9am',
+				resetsAt: oct2at9am,
 				title: 'Weekly limit: 85% used · resets Oct 2 at 9am'
 			}
 		]);
@@ -154,4 +162,27 @@ describe('reset times', () => {
 		expect(formatEventReset(today510pm, now, LONDON)).toBe('5:10pm');
 		expect(formatEventReset(oct2at9am, now, LONDON)).toBe('Oct 2 at 9am');
 	});
+});
+
+it('parses server timezone resets and handles year boundaries without guessing unknown formats', () => {
+	expect(parseResetTime('Oct 1 at 5:10pm (Europe/London)', now)).toBe(today510pm);
+	expect(parseResetTime('Oct 2 at 9am (Europe/London)', now)).toBe(oct2at9am);
+	expect(parseResetTime('Jan 1 at 9am (Europe/London)', new Date('2026-12-31T12:00:00Z'))).toBe(
+		Date.parse('2027-01-01T09:00:00Z') / 1000
+	);
+	expect(parseResetTime('Feb 31 at 9am (Europe/London)', now)).toBeNull();
+	expect(parseResetTime('Oct 1 at 9am (Not/AZone)', now)).toBeNull();
+	expect(parseResetTime('unknown', now)).toBeNull();
+});
+it('formats reset countdowns and uses the actual context window', () => {
+	expect(resetCountdown(today510pm, now.getTime())).toBe('Resets in 5h 10m');
+	expect(resetCountdown(now.getTime() / 1000 - 1, now.getTime())).toBe('Reset due');
+	expect(resetCountdown(null)).toBeNull();
+	expect(contextUsage({ contextTokens: 100000, contextWindow: 1000000 } as TranscriptMeta)).toEqual(
+		{ used: 100000, limit: 1000000, percent: 10 }
+	);
+	expect(contextUsage({ contextTokens: 100000, model: 'opus[1m]' } as TranscriptMeta)?.limit).toBe(
+		1000000
+	);
+	expect(contextUsage({ contextWindow: 0 } as TranscriptMeta)).toBeNull();
 });

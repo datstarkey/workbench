@@ -6,6 +6,7 @@
 	import { terminalWsUrl } from './terminal-url.ts';
 	import { touchScroll } from './touch-scroll.ts';
 	import ViewSwitch from './ViewSwitch.svelte';
+	import { useBack } from './back-navigation';
 	import {
 		reconnectDelay,
 		statusForTextFrame,
@@ -34,6 +35,7 @@
 		/** Why the last switch failed. */
 		notice?: string | null;
 	} = $props();
+	useBack(() => onClose());
 
 	let status = $state<TerminalStatus>('connecting');
 	let ws: WebSocket | undefined;

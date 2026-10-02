@@ -138,6 +138,14 @@ export class SavedMachines {
 		this.list = this.list.filter((m) => m.id !== id);
 		if (this.activeId === id) this.activeId = null;
 		lsRemove(machineKey(LS_LINKS, id));
+		lsRemove(machineKey('wb.account', id));
+		// Remove drafts only for the forgotten machine.
+		try {
+			const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
+			for (const key of keys) if (key?.startsWith(`wb.drafts.${id}.`)) lsRemove(key);
+		} catch {
+			/* storage may be unavailable */
+		}
 		this.persist();
 	}
 

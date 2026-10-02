@@ -20,5 +20,6 @@ export { default as ChatQuestion } from './ChatQuestion.svelte';
 export { default as ChatTasks } from './ChatTasks.svelte';
 export { default as ChatToolCard } from './ChatToolCard.svelte';
 export { default as ChatTranscript } from './ChatTranscript.svelte';
+export { default as ChatContext } from './ChatContext.svelte';
 export { default as ChatUsage } from './ChatUsage.svelte';
 export { default as Elapsed } from './Elapsed.svelte';

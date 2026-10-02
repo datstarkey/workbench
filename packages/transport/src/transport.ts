@@ -22,6 +22,7 @@ import type {
 	DiscoveredClaudeSession,
 	GitHubRemote,
 	GitInfo,
+	GitStatusResult,
 	ProjectConfig,
 	ProjectRefreshRequestedEvent,
 	WorktreeInfo
@@ -52,6 +53,11 @@ export interface ControlPlaneCommands {
 	};
 	list_branches: { args: { path: string }; result: BranchInfo[] };
 	git_info: { args: { path: string }; result: GitInfo };
+	git_status: { args: { path: string; projectPath?: string }; result: GitStatusResult };
+	git_file_diff: {
+		args: { path: string; projectPath?: string; file: string; staged: boolean };
+		result: string;
+	};
 	/** `null` when the folder has no GitHub `origin`. */
 	github_get_remote: { args: { path: string }; result: GitHubRemote | null };
 	discover_claude_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
