@@ -378,3 +378,33 @@ fn artifact_calls_record_their_links() {
     t.apply(&json!({"type": "conversation_reset", "new_conversation_id": "n"}));
     assert!(t.meta().artifacts.is_empty());
 }
+
+#[test]
+fn a_rewind_forgets_artifacts_from_the_abandoned_branch() {
+    let line = |v: Value| v.to_string() + "\n";
+    let prompt = |uuid: &str, parent: Option<&str>, text: &str| {
+        line(json!({"type": "user", "uuid": uuid, "parentUuid": parent,
+            "message": {"role": "user", "content": text}}))
+    };
+    let mut jsonl = prompt("p0", None, "Start");
+    jsonl += &prompt("u1", Some("p0"), "Publish the plan");
+    jsonl += &line(
+        json!({"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+        "message": {"id": "m1", "content": [{"type": "tool_use", "id": "t1", "name": "Artifact", "input": {}}]}}),
+    );
+    jsonl += &line(json!({"type": "user", "uuid": "r1", "parentUuid": "a1",
+        "toolUseResult": {"url": "https://claude.ai/artifact/abc", "created_from_type": true},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Created"}]}}));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    std::fs::write(&path, &jsonl).unwrap();
+    assert_eq!(Transcript::load_at(&path, None).meta().artifacts.len(), 1);
+
+    // Rewound to before "Publish the plan" and continued with another prompt.
+    jsonl += &prompt("u2", Some("p0"), "Never mind");
+    std::fs::write(&path, &jsonl).unwrap();
+    let t = Transcript::load_at(&path, None);
+    assert!(t.meta().artifacts.is_empty());
+    // Suggestions live only in the stream, so a relaunched session starts without one.
+    assert_eq!(t.meta().prompt_suggestion, None);
+}

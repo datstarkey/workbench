@@ -180,7 +180,7 @@
 	const artifacts = $derived(chatArtifacts(chat.meta?.artifacts));
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
-	const suggestions = $derived(promptSuggestions(chat.meta, live, draft));
+	const suggestions = $derived(promptSuggestions(chat.meta, live && !chat.rewind, draft));
 	// Codex reports its limits in the stream; Claude's come from the server's `/usage` check.
 	// svelte-ignore state_referenced_locally
 	const planLimits =

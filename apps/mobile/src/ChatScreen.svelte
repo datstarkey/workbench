@@ -111,7 +111,7 @@
 	const drafts = client.drafts;
 	// svelte-ignore state_referenced_locally
 	const draft = drafts.get(ref);
-	const suggestions = $derived(promptSuggestions(chat.meta, live, draft.text));
+	const suggestions = $derived(promptSuggestions(chat.meta, live && !chat.rewind, draft.text));
 	let reviewOpen = $state<'history' | 'changes' | null>(null);
 	useBack(() => client.closeChat());
 	watch(
