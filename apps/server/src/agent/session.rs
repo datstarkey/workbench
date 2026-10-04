@@ -14,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
 use workbench_core::claude_transcript::{
-    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem,
+    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem, TranscriptMeta,
 };
 
 use super::driver::{Driver, Effects, Launch};
@@ -25,6 +25,10 @@ pub(super) const SNAPSHOT_ITEMS: usize = 500;
 const STOP_GRACE: Duration = Duration::from_secs(3);
 /// How much of a background task's output the panel shows.
 const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
+/// How long a host request (a file rewind) may take the CLI to answer.
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+
+type Waiter = std::sync::mpsc::Sender<Result<Value, String>>;
 
 pub(super) type Registry = Arc<Mutex<HashMap<String, Arc<AgentSession>>>>;
 
@@ -63,6 +67,12 @@ pub struct AgentSession {
     /// Set once the session has an id clients can use, or failed to get one.
     ready: Mutex<Option<Result<String, String>>>,
     ready_cv: Condvar,
+    /// How it was started, to start it again resumed elsewhere (a rewind).
+    relaunch: StartAgent,
+    /// Host requests awaiting the CLI's answer, by request id.
+    waiters: Mutex<HashMap<String, Waiter>>,
+    /// Stopped to make way for a relaunch: clients re-attach, not end.
+    replaced: AtomicBool,
 }
 
 /// The command every chat process starts from: cwd, pipes, the inherited
@@ -97,6 +107,7 @@ impl AgentSession {
     /// pending key) before the reader can see it exit. `registry` is also
     /// where aliases go when the id changes.
     pub(super) fn spawn(req: StartAgent, launch: Launch, registry: Registry) -> Result<Arc<Self>> {
+        let relaunch = req.clone();
         let Launch {
             mut cmd,
             driver,
@@ -135,6 +146,9 @@ impl AgentSession {
             program,
             ready: Mutex::new(ready.map(Ok)),
             ready_cv: Condvar::new(),
+            relaunch,
+            waiters: Mutex::new(HashMap::new()),
+            replaced: AtomicBool::new(false),
         });
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
         lock(&registry).insert(key, session.clone());
@@ -305,6 +319,48 @@ impl AgentSession {
         self.run(|d| d.set_effort(level))
     }
 
+    /// The session's meta, or an error while a turn runs: a rewind then
+    /// would race the edits and messages still being made.
+    pub(super) fn idle_meta(&self) -> Result<TranscriptMeta> {
+        let d = lock(&self.driver);
+        let meta = d.view().meta().clone();
+        if meta.busy || d.view().waiting_on().is_some() {
+            bail!("Wait for the current turn to finish, or stop it, before rewinding.");
+        }
+        Ok(meta)
+    }
+
+    /// Restore the files Claude changed since the prompt `message_id`, or
+    /// with `dry_run` only report what would change (`RewindFilesResult`).
+    pub fn rewind_files(&self, message_id: &str, dry_run: bool) -> Result<Value> {
+        self.idle_meta()?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (request_id, effects) = lock(&self.driver).rewind_files(message_id, dry_run)?;
+        lock(&self.waiters).insert(request_id.clone(), tx);
+        let sent = effects.send.iter().try_for_each(|msg| self.send(msg));
+        let reply = sent.and_then(|()| {
+            rx.recv_timeout(CONTROL_TIMEOUT)
+                .map_err(|_| anyhow::anyhow!("{} didn't answer the rewind", self.program))
+        });
+        lock(&self.waiters).remove(&request_id);
+        reply?.map_err(anyhow::Error::msg)
+    }
+
+    /// The start request to launch this conversation again, under its current id.
+    pub(super) fn relaunch(&self) -> StartAgent {
+        let mut req = self.relaunch.clone();
+        if let super::Launch::Claude { session_id, .. } = &mut req.launch {
+            *session_id = self.id();
+        }
+        req
+    }
+
+    /// Stop the process for a relaunch under the same id.
+    pub(super) fn replace(&self) {
+        self.replaced.store(true, Ordering::SeqCst);
+        self.shutdown();
+    }
+
     /// The end of a background task's live output and its total size. The
     /// file's path is cached once found. Claude only.
     pub fn task_output(&self, task_id: &str) -> Option<(String, u64)> {
@@ -358,6 +414,11 @@ impl AgentSession {
     fn apply_line(&self, line: &str, alias: impl FnOnce(&str)) {
         let mut d = lock(&self.driver);
         let effects = d.apply_line(line);
+        if let Some((id, reply)) = effects.response {
+            if let Some(waiter) = lock(&self.waiters).remove(&id) {
+                let _ = waiter.send(reply);
+            }
+        }
         for msg in &effects.send {
             if let Err(e) = self.send(msg) {
                 tracing::warn!("could not answer {}: {e}", self.program);
@@ -426,10 +487,13 @@ impl AgentSession {
             self.program,
             self.stderr_suffix()
         )));
-        let message = (code != Some(0) && !tail.is_empty()).then_some(tail);
-        let _ = self
-            .tx
-            .send(json!({"t": "exit", "code": code, "message": message}).to_string());
+        let frame = if self.replaced.load(Ordering::SeqCst) {
+            json!({"t": "replaced"})
+        } else {
+            let message = (code != Some(0) && !tail.is_empty()).then_some(tail);
+            json!({"t": "exit", "code": code, "message": message})
+        };
+        let _ = self.tx.send(frame.to_string());
     }
 
     /// Interrupt, close stdin, and kill the process (and its group) if it

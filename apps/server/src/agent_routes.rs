@@ -35,8 +35,8 @@ use workbench_core::claude_accounts::{self, UsageLimit};
 use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
-    AgentKind, AgentSession, AgentSummary, Launch, PromptFile, PromptImage, StartAgent, MAX_FILES,
-    MAX_IMAGES,
+    AgentKind, AgentManager, AgentSession, AgentSummary, Launch, PromptFile, PromptImage,
+    StartAgent, MAX_FILES, MAX_IMAGES,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
@@ -182,7 +182,8 @@ pub async fn agent_message(
     body: String,
 ) -> Result<Response, ApiError> {
     let session = find(&state, &id)?;
-    let reply = crate::routes::blocking(move || Ok(handle(&session, &body)))
+    let agents = state.agents.clone();
+    let reply = crate::routes::blocking(move || Ok(handle(&agents, &session, &body)))
         .await?
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(match reply {
@@ -252,13 +253,14 @@ pub async fn agent_attach(
     crate::auth::authorize_ws(&headers, auth.token.as_deref(), &state)?;
     let session = find(&state, &id)?;
     let revoked = state.revoked.clone();
+    let agents = state.agents.clone();
     // A prompt can carry 10 images of up to ~6.7 MB base64 each and 5 PDFs of
     // ~13.4 MB; the default 16 MiB frame limit would drop the socket instead
     // of the prompt.
     Ok(ws
         .max_frame_size(MAX_PROMPT_BYTES)
         .max_message_size(MAX_PROMPT_BYTES)
-        .on_upgrade(move |socket| stream(socket, session, revoked)))
+        .on_upgrade(move |socket| stream(socket, agents, session, revoked)))
 }
 
 const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
@@ -310,11 +312,44 @@ enum ClientMsg {
     TaskOutput {
         task_id: String,
     },
+    /// Go back to before the prompt `message_id`: restore the files Claude
+    /// changed since (`code`), restart the conversation from there
+    /// (`conversation`), or with `dry_run` only report which files would change.
+    #[serde(rename_all = "camelCase")]
+    Rewind {
+        message_id: String,
+        #[serde(default)]
+        code: bool,
+        #[serde(default)]
+        conversation: bool,
+        #[serde(default)]
+        dry_run: bool,
+    },
 }
 
 /// Apply a client message; `Some` is a reply for that client alone.
-fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
+fn handle(
+    agents: &AgentManager,
+    session: &AgentSession,
+    text: &str,
+) -> anyhow::Result<Option<Value>> {
     let reply = match serde_json::from_str::<ClientMsg>(text)? {
+        ClientMsg::Rewind {
+            message_id,
+            code,
+            conversation,
+            dry_run,
+        } => {
+            let result = rewind(agents, session, &message_id, code, conversation, dry_run);
+            let (files, error) = match result {
+                Ok(files) => (files, None),
+                Err(e) => (None, Some(e.to_string())),
+            };
+            return Ok(Some(json!({
+                "t": "rewind", "messageId": message_id, "dryRun": dry_run,
+                "files": files, "error": error,
+            })));
+        }
         ClientMsg::TaskOutput { task_id } => {
             let (text, bytes) = session.task_output(&task_id).unzip();
             return Ok(Some(
@@ -365,8 +400,41 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
     reply.map(|()| None)
 }
 
+/// Files first, while the process that tracked them still runs; a file
+/// restore that fails leaves the conversation alone.
+fn rewind(
+    agents: &AgentManager,
+    session: &AgentSession,
+    message_id: &str,
+    code: bool,
+    conversation: bool,
+    dry_run: bool,
+) -> anyhow::Result<Option<Value>> {
+    let files = if code {
+        Some(session.rewind_files(message_id, dry_run)?)
+    } else {
+        None
+    };
+    if dry_run {
+        return Ok(files);
+    }
+    if let Some(f) = &files {
+        if f["canRewind"] != true {
+            let why = f["error"]
+                .as_str()
+                .unwrap_or("Claude couldn't restore the files.");
+            anyhow::bail!("{why}");
+        }
+    }
+    if conversation {
+        agents.rewind_conversation(&session.id(), message_id)?;
+    }
+    Ok(files)
+}
+
 async fn stream(
     mut socket: WebSocket,
+    agents: AgentManager,
     session: Arc<AgentSession>,
     mut revoked: watch::Receiver<bool>,
 ) {
@@ -391,7 +459,7 @@ async fn stream(
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
-                let ended = frame.contains(r#""t":"exit""#);
+                let ended = frame.contains(r#""t":"exit""#) || frame.contains(r#""t":"replaced""#);
                 if socket.send(Message::Text(frame)).await.is_err() {
                     return;
                 }
@@ -405,7 +473,9 @@ async fn stream(
                     // Pipe writes (a prompt full of images) and the task-output
                     // directory walk block, so keep them off the async workers.
                     let worker = session.clone();
-                    let result = tokio::task::spawn_blocking(move || handle(&worker, &text)).await;
+                    let agents = agents.clone();
+                    let result =
+                        tokio::task::spawn_blocking(move || handle(&agents, &worker, &text)).await;
                     let frame = match result {
                         Ok(Ok(reply)) => reply,
                         Ok(Err(e)) => Some(json!({"t": "error", "message": e.to_string()})),

@@ -30,7 +30,8 @@ pub async fn read_chat_attachment(
     path: String,
 ) -> Result<workbench_core::chat_attachment::ChatAttachment, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        workbench_core::chat_attachment::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
+        workbench_core::chat_attachment::read(std::path::Path::new(&path))
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?

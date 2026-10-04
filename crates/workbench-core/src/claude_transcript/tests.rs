@@ -884,3 +884,23 @@ fn slash_commands_come_from_initialize_and_updates() {
     t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
     assert_eq!(t.commands().len(), 1, "/clear keeps the command list");
 }
+
+#[test]
+fn control_responses_reach_the_host() {
+    let mut t = Transcript::default();
+    let ok = t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success",
+        "request_id":"rw-1","response":{"canRewind":true,"filesChanged":["/a"]}}}),
+    );
+    let (id, result) = ok.response.unwrap();
+    assert_eq!(id, "rw-1");
+    assert_eq!(result.unwrap()["filesChanged"], json!(["/a"]));
+    let err = t.apply(
+        &json!({"type":"control_response","response":{"subtype":"error",
+        "request_id":"rw-2","error":"No file checkpoint found"}}),
+    );
+    assert_eq!(
+        err.response,
+        Some(("rw-2".into(), Err("No file checkpoint found".into())))
+    );
+}

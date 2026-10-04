@@ -9,6 +9,7 @@ import type {
 	EffortLevel,
 	ElicitationAction,
 	PermissionMode,
+	RewindFiles,
 	SlashCommand,
 	StartAgentBody,
 	TranscriptItem,
@@ -50,6 +51,19 @@ export interface TaskOutput {
 	bytes: number;
 }
 
+/** A rewind being set up: `checking` previews the file restore, `working` applies it. */
+export interface RewindState {
+	messageId: string;
+	/** The prompt rewound to; a conversation rewind puts it back in the composer. */
+	text: string;
+	phase: 'checking' | 'ready' | 'working';
+	/** The dry run's answer: which files a code restore would change. */
+	files: RewindFiles | null;
+	error: string | null;
+}
+
+type RewindReply = Extract<AgentServerMsg, { t: 'rewind' }>;
+
 /** One chat view's connection to its Claude or Codex session on a Workbench server. */
 export class AgentChat {
 	readonly agent: AgentKind;
@@ -76,6 +90,8 @@ export class AgentChat {
 	imagePreviews = $state.raw<Record<string, string[]>>({});
 	/** When each task or running tool was first seen (client clock), for timers. */
 	seenAt = $state.raw<Record<string, number>>({});
+	/** The open "Rewind to here" panel, if any. */
+	rewind = $state.raw<RewindState | null>(null);
 
 	private body: StartAgentBody;
 	private readonly api: AgentApi;
@@ -94,6 +110,7 @@ export class AgentChat {
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
 	private fileList: { at: number; files: Promise<string[]> } | null = null;
+	private rewindWaiters: Record<string, (reply: RewindReply | null) => void> = {};
 
 	constructor(body: StartAgentBody, api: AgentApi) {
 		this.body = body;
@@ -172,6 +189,7 @@ export class AgentChat {
 		ws.onclose = () => {
 			if (this.ws !== ws) return; // replaced by a Restart
 			this.ws = null;
+			this.settleRewinds();
 			if (this.status !== 'exited' && this.status !== 'failed') this.scheduleReconnect();
 		};
 	}
@@ -240,6 +258,14 @@ export class AgentChat {
 					msg.text === null ? null : { text: msg.text, bytes: msg.bytes ?? msg.text.length }
 				);
 				delete this.taskWaiters[msg.taskId];
+				break;
+			case 'rewind':
+				this.rewindWaiters[msg.messageId]?.(msg);
+				delete this.rewindWaiters[msg.messageId];
+				break;
+			case 'replaced':
+				// A conversation rewind restarted the process under the same id.
+				this.reconnect();
 				break;
 			case 'revoked':
 				this.status = 'exited';
@@ -387,6 +413,79 @@ export class AgentChat {
 			if (!this.send({ t: 'taskOutput', taskId })) return resolve(null);
 			this.taskWaiters[taskId] = chain(this.taskWaiters[taskId], resolve);
 		});
+	}
+
+	/** Rewind is offered only for Claude, attached, idle and not waiting on an answer. */
+	get canRewind(): boolean {
+		return (
+			this.agent === 'claude' &&
+			this.status === 'live' &&
+			!this.meta?.busy &&
+			this.pending.length === 0 &&
+			!this.items.some(awaitsAnswer)
+		);
+	}
+
+	/** Open the rewind panel for a prompt and preview what a code restore would change. */
+	async beginRewind(messageId: string, text: string): Promise<void> {
+		if (!this.canRewind) return;
+		const base: RewindState = { messageId, text, phase: 'checking', files: null, error: null };
+		this.rewind = base;
+		const reply = await this.requestRewind(messageId, true, false, true);
+		if (this.rewind !== base) return; // cancelled or another prompt picked
+		this.rewind = {
+			...base,
+			phase: 'ready',
+			files: reply?.files ?? null,
+			error: reply ? reply.error : 'Not connected.'
+		};
+	}
+
+	/**
+	 * Apply the open rewind. Resolves to the prompt's text after a conversation
+	 * rewind (for the composer), else null. The cut tail is dropped at once;
+	 * the server's restart then sends `replaced` and the re-attach confirms it.
+	 */
+	async confirmRewind(code: boolean, conversation: boolean): Promise<string | null> {
+		const open = this.rewind;
+		if (!open || open.phase !== 'ready' || (!code && !conversation)) return null;
+		const working: RewindState = { ...open, phase: 'working', error: null };
+		this.rewind = working;
+		const reply = await this.requestRewind(open.messageId, code, conversation, false);
+		if (this.rewind !== working) return null;
+		const error = reply ? reply.error : 'Not connected.';
+		if (error) {
+			this.rewind = { ...open, error };
+			return null;
+		}
+		this.rewind = null;
+		if (!conversation) return null;
+		const at = this.items.findIndex((i) => i.id === open.messageId);
+		if (at >= 0) this.items = this.items.slice(0, at);
+		return open.text;
+	}
+
+	cancelRewind(): void {
+		this.rewind = null;
+	}
+
+	private requestRewind(
+		messageId: string,
+		code: boolean,
+		conversation: boolean,
+		dryRun: boolean
+	): Promise<RewindReply | null> {
+		return new Promise((resolve) => {
+			if (!this.send({ t: 'rewind', messageId, code, conversation, dryRun })) return resolve(null);
+			this.rewindWaiters[messageId] = chain(this.rewindWaiters[messageId], resolve);
+		});
+	}
+
+	/** The socket closed: no reply is coming. */
+	private settleRewinds(): void {
+		const waiters = Object.values(this.rewindWaiters);
+		this.rewindWaiters = {};
+		for (const resolve of waiters) resolve(null);
 	}
 
 	/**

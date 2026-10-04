@@ -2,6 +2,7 @@ export {
 	AgentChat,
 	type ChatStatus,
 	type PendingPrompt,
+	type RewindState,
 	type TaskOutput
 } from './agent-chat.svelte.ts';
 export { agentClient, type AgentApi, type AgentClient, type AgentServer } from './agent-api.ts';
