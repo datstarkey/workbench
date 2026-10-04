@@ -767,6 +767,8 @@ export interface AgentSummary {
 	busySince: number | null;
 	/** Unix ms of the last change, for "12m ago". */
 	updatedAt: number;
+	/** Unix ms when the last turn went idle; null before one ends, absent from older servers. */
+	turnEndedAt?: number | null;
 	/** The oldest unanswered approval or question, if Claude is waiting on you. */
 	waiting: { id: string; tool: string; preview: string } | null;
 	/** The newest tool call still running in this turn. */

@@ -16,23 +16,11 @@
 	const updater = new AppUpdater();
 
 	watch(
-		() => [
-			c.notifications.enabled,
-			c.connection,
-			c.machineId,
-			c.machine?.name,
-			c.activeChat?.sessionId,
-			c.chatScreenKey
-		],
+		() => [c.notifications.enabled, c.connection, c.machineId, c.machine?.name],
 		() => {
 			void c.notifications.configure(
-				c.connection && c.machineId && c.activeChat?.sessionId
-					? {
-							...c.connection,
-							machineId: c.machineId,
-							sessionId: c.activeChat.sessionId,
-							name: c.machine?.name ?? 'Workbench'
-						}
+				c.connection && c.machineId
+					? { ...c.connection, machineId: c.machineId, name: c.machine?.name ?? 'Workbench' }
 					: null
 			);
 		}

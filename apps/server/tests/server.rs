@@ -1559,6 +1559,7 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
     assert_eq!(summary["waiting"], Value::Null);
     assert_eq!(summary["running"], Value::Null);
     assert!(summary["updatedAt"].as_u64().unwrap() > 0);
+    assert_eq!(summary["turnEndedAt"], Value::Null);
 
     let res = message(json!({"t":"prompt","text":"hello"})).await.unwrap();
     assert_eq!(res.status(), 204);
@@ -1580,6 +1581,7 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
     let summary = wait_for(|s| s["busy"] == false).await;
     assert_eq!(summary["waiting"], Value::Null);
     assert_eq!(summary["busySince"], Value::Null);
+    assert!(summary["turnEndedAt"].as_u64().unwrap() >= since);
 
     let res = message(json!({"t":"output","toolId":"nope"}))
         .await

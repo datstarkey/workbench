@@ -7,7 +7,6 @@ export interface NotificationConnection {
 	token: string;
 	machineId: string;
 	name: string;
-	sessionId: string;
 }
 export interface NotificationApi {
 	start(connection: NotificationConnection): Promise<void>;

@@ -3,26 +3,32 @@ package com.workbench.notifications
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class SessionState(val busy: Boolean, val waiting: String?, val updated: Long)
+data class SessionState(val busy: Boolean, val waiting: String?, val turnEnded: Long)
 data class SessionAlert(val session: JSONObject, val message: String)
 
-/** Seed completions on the first list, deduplicate approvals, and follow /clear aliases. */
+/**
+ * Seed every session on the first list, deduplicate approvals, and follow /clear aliases.
+ * A completion is a newer `turnEndedAt` (catches turns shorter than the poll interval) or,
+ * from servers that don't send it, an observed busy-to-idle change.
+ */
 class AlertTracker {
-  private var states = mapOf<String, SessionState>()
+  private var states: Map<String, SessionState>? = null
   fun update(list: JSONArray): List<SessionAlert> {
+    val previous = states
     val next = mutableMapOf<String, SessionState>()
     val alerts = mutableListOf<SessionAlert>()
     for (i in 0 until list.length()) {
       val s = list.getJSONObject(i)
       val id = s.getString("sessionId")
       val aliases = s.optJSONArray("previousIds") ?: JSONArray()
-      val old = states[id] ?: (0 until aliases.length()).mapNotNull { states[aliases.getString(it)] }.firstOrNull()
+      val old = previous?.let { p -> p[id] ?: (0 until aliases.length()).mapNotNull { p[aliases.getString(it)] }.firstOrNull() }
       val waiting = s.optJSONObject("waiting")?.optString("id")
       val busy = s.optBoolean("busy")
-      val updated = s.optLong("updatedAt")
+      val turnEnded = s.optLong("turnEndedAt", 0L)
+      next[id] = SessionState(busy, waiting, turnEnded)
+      if (previous == null) continue
       if (waiting != null && waiting != old?.waiting) alerts.add(SessionAlert(s, "Approval or answer needed"))
-      else if (old?.busy == true && !busy && waiting == null && !s.optBoolean("exited") && updated >= old.updated) alerts.add(SessionAlert(s, "Turn complete"))
-      next[id] = SessionState(busy, waiting, updated)
+      else if (old != null && !busy && waiting == null && !s.optBoolean("exited") && (turnEnded > old.turnEnded || old.busy)) alerts.add(SessionAlert(s, "Turn complete"))
     }
     states = next
     return alerts

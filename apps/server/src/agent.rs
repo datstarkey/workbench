@@ -108,6 +108,8 @@ pub struct AgentSummary {
     pub exited: bool,
     pub busy_since: Option<u64>,
     pub updated_at: u64,
+    /// Unix ms when the last turn went idle; null before the first one ends.
+    pub turn_ended_at: Option<u64>,
     pub waiting: Option<WaitingSummary>,
     pub running: Option<RunningSummary>,
     /// Ids it ran under before a `/clear`, so a client holding one follows the re-key.
