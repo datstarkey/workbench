@@ -443,19 +443,8 @@ pub fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
 // Integration check/apply commands
 
 #[tauri::command]
-pub fn check_claude_integration() -> IntegrationStatus {
-    settings::check_workbench_hook_integration()
-}
-
-#[tauri::command]
 pub fn check_codex_integration() -> IntegrationStatus {
     codex_config::check_codex_config_status()
-}
-
-#[tauri::command]
-pub fn apply_claude_integration() -> Result<bool, String> {
-    settings::ensure_workbench_hook_integration().map_err(|e| e.to_string())?;
-    Ok(true)
 }
 
 #[tauri::command]

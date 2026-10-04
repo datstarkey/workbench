@@ -184,6 +184,9 @@ impl TerminalManager {
         }
         if let Some(sock) = &hook_socket {
             cmd.env("WORKBENCH_HOOK_SOCKET", sock);
+            if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
+                cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
+            }
         }
         // Set on the shell, so every `claude` run in this pane uses that login.
         if let Some(dir) = claude_config_dir {

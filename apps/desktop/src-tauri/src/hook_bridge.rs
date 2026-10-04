@@ -10,6 +10,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::pty::PtyManager;
 use crate::refresh_dispatcher::RefreshDispatcher;
 
+mod http;
+
 const MAX_LOG_ENTRIES: usize = 500;
 
 #[derive(Clone, Debug, Serialize)]
@@ -663,16 +665,17 @@ mod tests {
 
 /// TCP-based hook bridge for all platforms.
 /// Binds to 127.0.0.1:0 (ephemeral port) so there are no port conflicts.
-/// Hook scripts connect via TCP using /dev/tcp (bash) or TcpClient (PowerShell).
+/// The `workbench` Claude Code plugin POSTs to it (`http`); Codex's notify
+/// script writes raw JSON lines via /dev/tcp (bash) or TcpClient (PowerShell).
 mod tcp {
     use std::collections::VecDeque;
-    use std::io::BufReader;
+    use std::io::{BufReader, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
     use tauri::AppHandle;
 
-    use super::{handle_stream, HookBridgeState};
+    use super::{handle_stream, http, HookBridgeState};
 
     pub fn start(app_handle: AppHandle) -> HookBridgeState {
         let logs = Arc::new(Mutex::new(VecDeque::new()));
@@ -716,7 +719,20 @@ mod tcp {
                 let handle = handle.clone();
                 let logs = logs_clone.clone();
                 std::thread::spawn(move || {
-                    handle_stream(BufReader::new(stream), &handle, &logs);
+                    let mut reader = BufReader::new(&stream);
+                    if !http::is_post(&mut reader) {
+                        return handle_stream(reader, &handle, &logs);
+                    }
+                    // Answer only once the event is handled: the plugin awaits
+                    // the reply, so events reach the frontend in order.
+                    let reply = match http::read_json_body(&mut reader) {
+                        Ok(Some(body)) => {
+                            handle_stream(BufReader::new(body.as_slice()), &handle, &logs);
+                            http::ACCEPTED
+                        }
+                        _ => http::REFUSED,
+                    };
+                    let _ = (&stream).write_all(reply);
                 });
             }
         });

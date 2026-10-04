@@ -16,6 +16,17 @@ Open the `.dmg` and drag Workbench to your Applications folder.
 
 > macOS is the primary target. Linux and Windows support is planned.
 
+### Claude Code plugin
+
+Workbench tracks Claude session activity with its own Claude Code plugin ([`plugins/workbench`](plugins/workbench)), which it loads into every Claude process it starts, so there's nothing to install. To keep it loaded in sessions started outside Workbench too, install it from this repo:
+
+```
+/plugin marketplace add datstarkey/workbench
+/plugin install workbench@workbench
+```
+
+It only reports when Workbench started the session; anywhere else it does nothing.
+
 ## Features
 
 - **Project sidebar** — add, edit, remove, and reorder local project folders

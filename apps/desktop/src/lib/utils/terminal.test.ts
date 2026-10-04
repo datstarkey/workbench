@@ -9,7 +9,7 @@
  * What remains testable here:
  *   - Native terminal IPC wrappers (createNativeTerminal, resizeNativeTerminal,
  *     etc.) — thin `invoke` shims whose correctness is worth a smoke test.
- *   - Integration-status helpers (checkClaudeIntegration, applyClaudeIntegration)
+ *   - Integration-status helpers (checkCodexIntegration, applyCodexIntegration)
  *     which are unrelated to the xterm path.
  *
  * xterm WS contract tests live in:
@@ -133,16 +133,6 @@ describe('native terminal IPC wrappers', () => {
 });
 
 describe('integration-status helpers', () => {
-	it('checkClaudeIntegration invokes check_claude_integration', async () => {
-		invokeSpy.mockResolvedValueOnce({ needsChanges: false, description: 'ok' });
-		const { checkClaudeIntegration } = await import('./terminal');
-
-		const result = await checkClaudeIntegration();
-
-		expect(invokeSpy).toHaveBeenCalledWith('check_claude_integration');
-		expect(result).toEqual({ needsChanges: false, description: 'ok' });
-	});
-
 	it('checkCodexIntegration invokes check_codex_integration', async () => {
 		invokeSpy.mockResolvedValueOnce({ needsChanges: true, description: 'missing' });
 		const { checkCodexIntegration } = await import('./terminal');
@@ -151,16 +141,6 @@ describe('integration-status helpers', () => {
 
 		expect(invokeSpy).toHaveBeenCalledWith('check_codex_integration');
 		expect(result).toEqual({ needsChanges: true, description: 'missing' });
-	});
-
-	it('applyClaudeIntegration invokes apply_claude_integration', async () => {
-		invokeSpy.mockResolvedValueOnce(true);
-		const { applyClaudeIntegration } = await import('./terminal');
-
-		const result = await applyClaudeIntegration();
-
-		expect(invokeSpy).toHaveBeenCalledWith('apply_claude_integration');
-		expect(result).toBe(true);
 	});
 
 	it('applyCodexIntegration invokes apply_codex_integration', async () => {
