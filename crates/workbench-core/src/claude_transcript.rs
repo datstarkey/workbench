@@ -92,6 +92,9 @@ impl ChatView for Transcript {
 }
 
 /// What one [`Transcript::apply`] changed.
+/// How the CLI opens every skill body it injects after a `Skill` call.
+const SKILL_BODY_PREFIX: &str = "Base directory for this skill:";
+
 #[derive(Debug, Default, PartialEq)]
 pub struct Applied {
     /// Indices into [`Transcript::items`] that were added or updated.
@@ -735,7 +738,7 @@ impl Transcript {
         }
         // JSONL marks text the CLI injected (skill bodies, reminders) isMeta;
         // stream-json marks it isSynthetic.
-        let injected = obj.get("isMeta").and_then(Value::as_bool) == Some(true)
+        let flagged = obj.get("isMeta").and_then(Value::as_bool) == Some(true)
             || obj.get("isSynthetic").and_then(Value::as_bool) == Some(true);
         let id = str_at(obj, "uuid").unwrap_or_default().to_string();
         // JSONL spells it toolUseResult; stream-json, tool_use_result.
@@ -784,7 +787,10 @@ impl Transcript {
             );
             return;
         }
-        if injected {
+        // Some turns stream a skill body with neither flag (seen on CLI
+        // 2.1.286 beside prompts sent mid-turn), so the body is also known by
+        // its opening line, which no prompt starts with.
+        if flagged || text.starts_with(SKILL_BODY_PREFIX) {
             self.attach_skill_body(obj, text, changed);
             return;
         }
@@ -929,7 +935,7 @@ impl Transcript {
     /// stream-json doesn't, so there bodies go to launched calls in order. A
     /// skill run as a slash command has no card, and its body stays hidden.
     fn attach_skill_body(&mut self, obj: &Value, text: &str, changed: &mut Vec<usize>) {
-        if !text.starts_with("Base directory for this skill:") {
+        if !text.starts_with(SKILL_BODY_PREFIX) {
             return;
         }
         let id = match str_at(obj, "sourceToolUseID") {

@@ -383,6 +383,27 @@ fn skill_body_becomes_its_cards_output() {
 }
 
 #[test]
+fn an_unflagged_skill_body_still_goes_to_its_card() {
+    let body = "Base directory for this skill: /s\n\n## `$state`";
+    let mut t = Transcript::default();
+    t.apply(&assistant(
+        "a",
+        "m",
+        json!({"type":"tool_use","id":"toolu_s","name":"Skill","input":{"skill":"svelte"}}),
+    ));
+    t.apply(&user(
+        "r",
+        json!([{"type":"tool_result","tool_use_id":"toolu_s","content":"Launching skill: svelte"}]),
+    ));
+    t.apply(&json!({"type":"user","uuid":"b",
+        "message":{"role":"user","content":[{"type":"text","text":body}]}}));
+    assert!(user_texts(&t).is_empty(), "{:?}", user_texts(&t));
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::Tool { output, .. } if output.as_deref() == Some(body))
+    );
+}
+
+#[test]
 fn stream_skill_bodies_go_to_launched_calls_in_order() {
     let skill_output = |t: &Transcript, i: usize| match &t.items()[i] {
         TranscriptItem::Tool { output, .. } => output.clone(),
