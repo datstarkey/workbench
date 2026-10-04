@@ -1,16 +1,20 @@
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import { tick, type Snippet } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import ImagePlusIcon from '@lucide/svelte/icons/image-plus';
+	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import type {
 		AgentKind,
+		ChatAttachment,
+		ChatFile,
 		ChatImage,
 		CodexMode,
 		PermissionMode,
@@ -24,8 +28,15 @@
 		modeOptions,
 		slashQuery
 	} from './chat-format';
-	import ChatSlashMenu from './ChatSlashMenu.svelte';
-	import { fileToChatImage, IMAGE_TYPES, imageFiles, MAX_IMAGES, previewUrl } from './image-intake';
+	import ChatMenu from './ChatMenu.svelte';
+	import {
+		addAttachments,
+		fileToAttachment,
+		filesIn,
+		IMAGE_TYPES,
+		previewUrl
+	} from './attachment-intake';
+	import { insertMention, matchFiles, mentionQuery } from './file-mentions';
 	import { getChatPlatform } from './platform';
 
 	let {
@@ -33,6 +44,7 @@
 		agent = 'claude',
 		draft = $bindable(''),
 		images = $bindable<ChatImage[]>([]),
+		files = $bindable<ChatFile[]>([]),
 		mode,
 		busy,
 		disabledReason,
@@ -42,6 +54,7 @@
 		controls,
 		commands = [],
 		onCommand,
+		loadFiles,
 		popover
 	}: {
 		id: string;
@@ -49,12 +62,14 @@
 		draft?: string;
 		/** Hosts may retain image attachments when navigating away. */
 		images?: ChatImage[];
+		/** PDFs and text files; Claude only (Codex can't take them). */
+		files?: ChatFile[];
 		mode: PermissionMode | CodexMode | null;
 		busy: boolean;
 		/** Set when nothing can be sent right now; shown as the placeholder. */
 		disabledReason: string | null;
 		/** Returns false if the message could not be sent (the draft is kept). */
-		onSend: (text: string, images: ChatImage[]) => boolean;
+		onSend: (text: string, images: ChatImage[], files: ChatFile[]) => boolean;
 		onStop: () => void;
 		onMode: (mode: PermissionMode | CodexMode) => void;
 		/** More pickers for the toolbar (model, effort). */
@@ -63,32 +78,63 @@
 		commands?: SlashCommand[];
 		/** Commands handled in the app rather than by the agent; true when it took it. */
 		onCommand?: (name: string) => boolean;
+		/** Paths in the session's cwd for the `@` menu; absent leaves it out. */
+		loadFiles?: () => Promise<string[]>;
 		/** Shown above the composer, e.g. the resume picker. */
 		popover?: Snippet;
 	} = $props();
 
 	const name = $derived(agentName(agent));
 	const modes = $derived(modeOptions(agent));
+	/** Claude reads PDFs and text files; Codex's input has no document kind. */
+	const documents = $derived(agent === 'claude');
 	const placeholder = $derived(
 		agent === 'codex'
-			? 'Message Codex or paste an image'
-			: 'Message Claude, / for commands, or paste an image'
+			? 'Message Codex, @ for files, or paste an image'
+			: 'Message Claude, / for commands, @ for files, or attach a file'
 	);
 
 	const platform = getChatPlatform();
 	const enterSends = platform.enterSends ?? true;
 
-	let imageError = $state('');
+	let attachError = $state('');
 	/** A file is being dragged over this composer. */
 	let dropping = $state(false);
 	let picker: HTMLInputElement | null = null;
+	let textarea: HTMLTextAreaElement | null = null;
 
-	/** The `/` menu: matches for the command being typed, unless dismissed with Esc. */
+	/** The `/` and `@` menus: matches for what's being typed, unless dismissed with Esc. */
 	let menuIndex = $state(0);
 	let dismissedAt = $state<string | null>(null);
 	const query = $derived(slashQuery(draft));
 	const matches = $derived(query === null ? [] : matchCommands(commands, query));
 	const menuOpen = $derived(matches.length > 0 && dismissedAt !== draft && !disabledReason);
+
+	let caret = $state(0);
+	let paths = $state.raw<string[]>([]);
+	const mention = $derived(loadFiles && !menuOpen ? mentionQuery(draft, caret) : null);
+	const fileMatches = $derived(mention ? matchFiles(paths, mention.query) : []);
+	const filesOpen = $derived(fileMatches.length > 0 && dismissedAt !== draft && !disabledReason);
+	const options = $derived(menuOpen ? matches.length : filesOpen ? fileMatches.length : 0);
+	const active = $derived(Math.min(menuIndex, options - 1));
+
+	/** Track the caret and fetch the file list (cached by the chat) once `@` is typed. */
+	function onCaret(node: HTMLTextAreaElement) {
+		caret = node.selectionStart;
+		if (loadFiles && mentionQuery(node.value, caret)) {
+			void loadFiles().then((list) => (paths = list));
+		}
+	}
+
+	async function pickFile(path: string) {
+		if (!mention || !textarea) return;
+		const next = insertMention(draft, mention, caret, path);
+		menuIndex = 0;
+		draft = next.text;
+		caret = next.caret;
+		await tick();
+		textarea.setSelectionRange(next.caret, next.caret);
+	}
 
 	function pick(command: SlashCommand, sendNow: boolean) {
 		menuIndex = 0;
@@ -104,7 +150,9 @@
 		send();
 	}
 
-	const canSend = $derived(!disabledReason && (draft.trim().length > 0 || images.length > 0));
+	const canSend = $derived(
+		!disabledReason && (draft.trim().length > 0 || images.length > 0 || files.length > 0)
+	);
 
 	/** Grow with the text up to ~8 lines, then scroll. */
 	const autosize: Attachment<HTMLTextAreaElement> = (node) => {
@@ -117,65 +165,69 @@
 		);
 	};
 
-	function addImages(added: ChatImage[]) {
-		const room = MAX_IMAGES - images.length;
-		if (added.length > room) imageError = `Attach up to ${MAX_IMAGES} images per message.`;
-		images = [...images, ...added.slice(0, Math.max(0, room))];
+	function attach(added: ChatAttachment[], error: string | null) {
+		const next = addAttachments({ images, files }, added, documents);
+		images = next.images;
+		files = next.files;
+		attachError = error ?? next.error ?? '';
 	}
 
-	async function addFiles(files: File[]) {
-		imageError = '';
-		const results = await Promise.allSettled(files.map(fileToChatImage));
-		addImages(results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])));
+	async function addFiles(picked: File[]) {
+		attachError = '';
+		const results = await Promise.allSettled(picked.map((f) => fileToAttachment(f, documents)));
 		const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
-		if (failed)
-			imageError = failed.reason instanceof Error ? failed.reason.message : String(failed.reason);
+		attach(
+			results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])),
+			failed
+				? failed.reason instanceof Error
+					? failed.reason.message
+					: String(failed.reason)
+				: null
+		);
 	}
 
 	function onPaste(event: ClipboardEvent) {
-		const files = imageFiles(event.clipboardData?.items);
-		if (files.length === 0) return;
+		const pasted = filesIn(event.clipboardData?.items);
+		if (pasted.length === 0) return;
 		event.preventDefault();
-		void addFiles(files);
+		void addFiles(pasted);
 	}
 
 	/** OS file drops the host reports (desktop); a phone pastes or picks instead. */
 	const dropTarget: Attachment<HTMLElement> = (node) =>
-		platform.watchImageDrops?.(node, {
+		platform.watchDrops?.(node, {
 			hover: (over) => (dropping = over && !disabledReason),
 			drop: (dropped, error) => {
 				dropping = false;
-				if (disabledReason) return;
-				imageError = error ?? '';
-				addImages(dropped);
+				if (!disabledReason) attach(dropped, error);
 			}
 		});
 
 	function send() {
 		const typed = /^\/(\S+)$/.exec(draft.trim());
-		if (typed && images.length === 0 && onCommand?.(typed[1])) {
+		if (typed && images.length === 0 && files.length === 0 && onCommand?.(typed[1])) {
 			draft = '';
 			return;
 		}
-		if (!canSend || !onSend(draft, images)) return;
+		if (!canSend || !onSend(draft, images, files)) return;
 		draft = '';
 		images = [];
-		imageError = '';
+		files = [];
+		attachError = '';
 	}
 
 	function onKeydown(event: KeyboardEvent) {
-		if (menuOpen) {
+		if (options > 0) {
 			const step = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
 			if (step) {
 				event.preventDefault();
-				menuIndex =
-					(Math.min(menuIndex, matches.length - 1) + step + matches.length) % matches.length;
+				menuIndex = (active + step + options) % options;
 				return;
 			}
-			const chosen = matches[Math.min(menuIndex, matches.length - 1)];
 			if ((event.key === 'Enter' && !event.shiftKey && !event.isComposing) || event.key === 'Tab') {
 				event.preventDefault();
-				pick(chosen, event.key === 'Enter' && enterSends);
+				if (menuOpen) pick(matches[active], event.key === 'Enter' && enterSends);
+				else void pickFile(fileMatches[active]);
 				return;
 			}
 			if (event.key === 'Escape') {
@@ -201,19 +253,48 @@
 >
 	{@render popover?.()}
 	{#if menuOpen}
-		<ChatSlashMenu
-			id="{id}-commands"
-			commands={matches}
-			active={Math.min(menuIndex, matches.length - 1)}
+		<ChatMenu
+			id="{id}-menu"
+			label="Commands"
+			items={matches}
+			key={(command) => command.name}
+			{active}
 			onPick={(command) => pick(command, true)}
 			onHover={(i) => (menuIndex = i)}
-		/>
+		>
+			{#snippet row(command)}
+				<span class="shrink-0 font-mono text-wb-ink">/{command.name}</span>
+				{#if command.argumentHint}
+					<span class="shrink-0 font-mono text-[11px] text-wb-ink-soft">{command.argumentHint}</span
+					>
+				{/if}
+				<span class="min-w-0 truncate text-wb-ink-mute">{command.description}</span>
+			{/snippet}
+		</ChatMenu>
+	{:else if filesOpen}
+		<ChatMenu
+			id="{id}-menu"
+			label="Files"
+			items={fileMatches}
+			key={(path) => path}
+			{active}
+			onPick={(path) => void pickFile(path)}
+			onHover={(i) => (menuIndex = i)}
+		>
+			{#snippet row(path)}
+				{@const slash = path.lastIndexOf('/')}
+				<span class="shrink-0 font-mono text-wb-ink">{path.slice(slash + 1)}</span>
+				<span class="min-w-0 truncate font-mono text-[11px] text-wb-ink-soft">
+					{path.slice(0, slash + 1)}
+				</span>
+			{/snippet}
+		</ChatMenu>
 	{/if}
 	{#if dropping}
 		<div
 			class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-wb-accent-soft text-xs font-medium text-wb-ink"
 		>
-			Drop images to attach
+			Drop {documents ? 'files' : 'images'} to attach
 		</div>
 	{/if}
 	{#if images.length > 0}
@@ -233,29 +314,58 @@
 			{/each}
 		</ul>
 	{/if}
+	{#if files.length > 0}
+		<ul
+			class={cn('flex flex-wrap gap-1.5 px-3', images.length > 0 ? 'pt-2' : 'pt-3')}
+			aria-label="Attached files"
+		>
+			{#each files as file, i (i)}
+				<li
+					class="thumb flex max-w-56 items-center gap-1.5 rounded-md border border-wb-hair bg-wb-panel2 py-1 pr-1 pl-2 text-xs text-wb-ink"
+				>
+					<FileTextIcon class="size-3.5 shrink-0 text-wb-ink-mute" aria-hidden="true" />
+					<span class="min-w-0 truncate">{file.name}</span>
+					<button
+						type="button"
+						class="flex size-5 shrink-0 items-center justify-center rounded text-wb-ink-mute hover:bg-wb-panel hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+						aria-label="Remove {file.name}"
+						onclick={() => (files = files.filter((_, j) => j !== i))}
+					>
+						<XIcon class="size-3" />
+					</button>
+				</li>
+			{/each}
+		</ul>
+	{/if}
 	<label for={id} class="sr-only">Message {name}</label>
 	<textarea
 		{id}
 		bind:value={draft}
+		{@attach (node: HTMLTextAreaElement) => {
+			textarea = node;
+		}}
 		{@attach autosize}
 		onkeydown={onKeydown}
 		onpaste={onPaste}
-		oninput={() => (menuIndex = 0)}
+		oninput={(e) => {
+			menuIndex = 0;
+			onCaret(e.currentTarget);
+		}}
+		onkeyup={(e) => onCaret(e.currentTarget)}
+		onclick={(e) => onCaret(e.currentTarget)}
 		role="combobox"
-		aria-expanded={menuOpen}
-		aria-controls={menuOpen ? `${id}-commands` : undefined}
+		aria-expanded={options > 0}
+		aria-controls={options > 0 ? `${id}-menu` : undefined}
 		aria-autocomplete="list"
-		aria-activedescendant={menuOpen
-			? `${id}-commands-${Math.min(menuIndex, matches.length - 1)}`
-			: undefined}
+		aria-activedescendant={options > 0 ? `${id}-menu-${active}` : undefined}
 		rows="1"
 		enterkeyhint={enterSends ? 'send' : 'enter'}
 		disabled={disabledReason !== null}
 		placeholder={disabledReason ?? placeholder}
 		class="scrollbar-thin block max-h-[180px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-sm leading-relaxed text-wb-ink placeholder:text-wb-ink-soft focus:outline-none disabled:cursor-not-allowed"
 	></textarea>
-	{#if imageError}
-		<p class="px-3.5 pb-1 text-[11px] text-wb-err" role="alert">{imageError}</p>
+	{#if attachError}
+		<p class="px-3.5 pb-1 text-[11px] text-wb-err" role="alert">{attachError}</p>
 	{/if}
 	<div class="flex items-center gap-1.5 px-2 pb-2">
 		<DropdownMenu.Root>
@@ -296,23 +406,27 @@
 		<button
 			type="button"
 			class="flex size-7 shrink-0 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
-			title="Attach images"
-			aria-label="Attach images"
+			title={documents ? 'Attach images, PDFs or text files' : 'Attach images'}
+			aria-label={documents ? 'Attach files' : 'Attach images'}
 			disabled={disabledReason !== null}
 			onclick={() => picker?.click()}
 		>
-			<ImagePlusIcon class="size-3.5" />
+			{#if documents}
+				<PaperclipIcon class="size-3.5" />
+			{:else}
+				<ImagePlusIcon class="size-3.5" />
+			{/if}
 		</button>
 		<input
 			{@attach (node: HTMLInputElement) => {
 				picker = node;
 			}}
 			type="file"
-			accept={IMAGE_TYPES.join(',')}
+			accept={documents ? undefined : IMAGE_TYPES.join(',')}
 			multiple
 			class="hidden"
 			onchange={(e) => {
-				void addFiles(imageFiles(e.currentTarget.files));
+				void addFiles(filesIn(e.currentTarget.files));
 				e.currentTarget.value = '';
 			}}
 		/>

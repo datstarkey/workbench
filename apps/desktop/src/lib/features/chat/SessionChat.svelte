@@ -25,6 +25,7 @@
 	import { cn } from '@workbench/ui';
 	import type {
 		AgentKind,
+		ChatFile,
 		ChatImage,
 		DiscoveredClaudeSession,
 		ProjectConfig,
@@ -217,9 +218,9 @@
 		return () => node.removeEventListener('scroll', onScroll);
 	};
 
-	function send(text: string, images: ChatImage[]): boolean {
+	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean {
 		stickToBottom = true;
-		return chat.prompt(text, images);
+		return chat.prompt(text, images, files);
 	}
 
 	function onKeydown(event: KeyboardEvent) {
@@ -340,6 +341,7 @@
 					onStop={() => chat.interrupt()}
 					commands={commandList}
 					onCommand={clientCommand}
+					loadFiles={() => chat.listFiles()}
 					onMode={(mode) => chat.setMode(mode)}
 				>
 					{#snippet popover()}

@@ -1,22 +1,28 @@
-<script lang="ts">
+<script lang="ts" generics="T">
+	import type { Snippet } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import { cn } from '@workbench/ui';
-	import type { SlashCommand } from '@workbench/types';
 
 	let {
 		id,
-		commands,
+		label,
+		items,
+		key,
 		active,
 		onPick,
-		onHover
+		onHover,
+		row
 	}: {
 		id: string;
+		label: string;
 		/** Already filtered and ranked. */
-		commands: SlashCommand[];
+		items: T[];
+		key: (item: T) => string;
 		active: number;
-		onPick: (command: SlashCommand) => void;
+		onPick: (item: T) => void;
 		onHover: (index: number) => void;
+		row: Snippet<[T]>;
 	} = $props();
 
 	/** Keep the highlighted row in view while arrowing through a long list. */
@@ -34,10 +40,10 @@
 	{id}
 	{@attach followActive}
 	role="listbox"
-	aria-label="Commands"
+	aria-label={label}
 	class="scrollbar-thin absolute inset-x-0 bottom-full z-30 mb-2 max-h-72 overflow-y-auto rounded-lg border border-wb-hair bg-wb-panel p-1 shadow-xl"
 >
-	{#each commands as command, i (command.name)}
+	{#each items as item, i (key(item))}
 		<li
 			id="{id}-{i}"
 			role="option"
@@ -48,15 +54,11 @@
 			)}
 			onmousedown={(e) => {
 				e.preventDefault(); // keep focus in the composer
-				onPick(command);
+				onPick(item);
 			}}
 			onmouseenter={() => onHover(i)}
 		>
-			<span class="shrink-0 font-mono text-wb-ink">/{command.name}</span>
-			{#if command.argumentHint}
-				<span class="shrink-0 font-mono text-[11px] text-wb-ink-soft">{command.argumentHint}</span>
-			{/if}
-			<span class="min-w-0 truncate text-wb-ink-mute">{command.description}</span>
+			{@render row(item)}
 		</li>
 	{/each}
 </ul>

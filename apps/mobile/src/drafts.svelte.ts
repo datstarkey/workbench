@@ -1,4 +1,4 @@
-import type { ChatImage } from '@workbench/types';
+import type { ChatFile, ChatImage } from '@workbench/types';
 import { lsGet, lsRemove, lsSet } from './storage';
 import type { ChatRef } from './types';
 
@@ -16,6 +16,7 @@ export function draftKey(ref: ChatRef): string {
 export class ChatDraft {
 	text = $state('');
 	images = $state<ChatImage[]>([]);
+	files = $state<ChatFile[]>([]);
 	constructor(text = '') {
 		this.text = text;
 	}

@@ -31,6 +31,9 @@ pub enum TranscriptItem {
         /// Images attached to the message (content not kept).
         #[serde(skip_serializing_if = "is_zero")]
         images: u32,
+        /// Names of the PDFs and text files attached (content not kept).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
     },
     Text {
         id: String,

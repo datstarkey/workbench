@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 use workbench_core::claude_transcript::{ApprovalDecision, ChatView, TranscriptItem};
 
 use super::driver::{Driver, Effects, Launch};
-use super::{lock, now_ms, AgentKind, AgentSummary, PromptImage, StartAgent};
+use super::{lock, now_ms, AgentKind, AgentSummary, PromptFile, PromptImage, StartAgent};
 
 /// Items in an attach snapshot; older history stays on disk.
 pub(super) const SNAPSHOT_ITEMS: usize = 500;
@@ -265,8 +265,8 @@ impl AgentSession {
         Ok(())
     }
 
-    pub fn prompt(&self, text: &str, images: &[PromptImage]) -> Result<()> {
-        self.run(|d| d.prompt(text, images))
+    pub fn prompt(&self, text: &str, images: &[PromptImage], files: &[PromptFile]) -> Result<()> {
+        self.run(|d| d.prompt(text, images, files))
     }
 
     pub fn approve(

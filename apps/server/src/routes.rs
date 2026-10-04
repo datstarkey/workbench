@@ -60,6 +60,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(crate::agent_routes::agent_stop_pane),
         )
         .route("/agent/usage", get(crate::agent_routes::agent_usage))
+        .route("/agent/files", get(crate::agent_routes::agent_files))
         .route(
             "/agent/claude/:id/message",
             post(crate::agent_routes::agent_message),

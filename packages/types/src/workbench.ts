@@ -576,6 +576,8 @@ export type TranscriptItem =
 			timestamp: string;
 			/** Images attached to the message (content isn't sent back). */
 			images?: number;
+			/** Names of the PDFs and text files attached (content isn't sent back). */
+			files?: string[];
 	  }
 	| { kind: 'text'; id: string; text: string }
 	| { kind: 'thinking'; id: string; text: string }
@@ -714,8 +716,21 @@ export interface ChatImage {
 	name: string;
 }
 
+/**
+ * A PDF or text file attached to a chat message, sent to Claude as a document
+ * block: `data` is base64 for a PDF and the text itself for a text file.
+ */
+export interface ChatFile {
+	mediaType: 'application/pdf' | 'text/plain';
+	data: string;
+	name: string;
+}
+
+/** A file read for a chat message (desktop drag-and-drop, `read_chat_attachment`). */
+export type ChatAttachment = ({ kind: 'image' } & ChatImage) | ({ kind: 'file' } & ChatFile);
+
 export type AgentClientMsg =
-	| { t: 'prompt'; text: string; images?: Omit<ChatImage, 'name'>[] }
+	| { t: 'prompt'; text: string; images?: Omit<ChatImage, 'name'>[]; files?: ChatFile[] }
 	| {
 			t: 'approve';
 			requestId: string;

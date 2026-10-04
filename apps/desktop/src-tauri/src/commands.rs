@@ -24,13 +24,13 @@ use crate::types::{
     WorktreeInfo,
 };
 
-/// Read an image dropped onto a chat so it can be attached to the message.
+/// Read a file dropped onto a chat (image, PDF or text) so it can be attached to the message.
 #[tauri::command]
-pub async fn read_chat_image(
+pub async fn read_chat_attachment(
     path: String,
-) -> Result<workbench_core::chat_image::ChatImage, String> {
+) -> Result<workbench_core::chat_attachment::ChatAttachment, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        workbench_core::chat_image::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
+        workbench_core::chat_attachment::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?

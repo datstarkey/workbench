@@ -31,8 +31,8 @@ pub use items::{
 };
 
 pub(crate) use parse::{clip, clip_patch, clip_value, str_at, MAX_TEXT_BYTES};
+use parse::{document_names, tool_output_text, user_visible_text, UserText};
 pub use parse::{find_transcript, is_uuid};
-use parse::{tool_output_text, user_visible_text, UserText};
 
 /// What a server reads from a chat transcript, whichever CLI it folds.
 pub trait ChatView {
@@ -632,6 +632,7 @@ impl Transcript {
             .or_else(|| obj.get("tool_use_result"));
         let content = obj.get("message").and_then(|m| m.get("content"));
         let mut images = 0;
+        let mut files = Vec::new();
         let text = match content {
             Some(Value::String(s)) => Some(s.clone()),
             Some(Value::Array(blocks)) => {
@@ -642,19 +643,21 @@ impl Transcript {
                         _ => {}
                     }
                 }
+                files = document_names(blocks);
                 let texts: Vec<&str> = blocks
                     .iter()
                     .filter(|b| str_at(b, "type") == Some("text"))
                     .filter_map(|b| str_at(b, "text"))
                     .collect();
-                (!texts.is_empty() || images > 0).then(|| texts.join("\n"))
+                (!texts.is_empty() || images > 0 || !files.is_empty()).then(|| texts.join("\n"))
             }
             _ => None,
         };
+        let attached = images > 0 || !files.is_empty();
         let Some(text) = text
             .as_deref()
             .map(str::trim)
-            .filter(|t| !t.is_empty() || images > 0)
+            .filter(|t| !t.is_empty() || attached)
         else {
             return;
         };
@@ -693,6 +696,7 @@ impl Transcript {
                 text,
                 timestamp,
                 images,
+                files,
             },
             changed,
         );
@@ -710,8 +714,8 @@ impl Transcript {
             return;
         }
         // A prompt with images is queued as content blocks, not a string.
-        let (text, images) = match att.get("prompt") {
-            Some(Value::String(s)) => (s.trim().to_string(), 0),
+        let (text, images, files) = match att.get("prompt") {
+            Some(Value::String(s)) => (s.trim().to_string(), 0, Vec::new()),
             Some(Value::Array(blocks)) => {
                 let texts: Vec<&str> = blocks
                     .iter()
@@ -722,11 +726,15 @@ impl Transcript {
                     .iter()
                     .filter(|b| str_at(b, "type") == Some("image"))
                     .count() as u32;
-                (texts.join("\n").trim().to_string(), images)
+                (
+                    texts.join("\n").trim().to_string(),
+                    images,
+                    document_names(blocks),
+                )
             }
             _ => return,
         };
-        if text.is_empty() && images == 0 {
+        if text.is_empty() && images == 0 && files.is_empty() {
             return;
         }
         let item = TranscriptItem::User {
@@ -734,6 +742,7 @@ impl Transcript {
             text,
             timestamp: str_at(att, "timestamp").unwrap_or_default().to_string(),
             images,
+            files,
         };
         self.upsert(item, changed);
     }

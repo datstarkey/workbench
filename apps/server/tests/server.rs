@@ -391,6 +391,61 @@ async fn spawn_rejects_unregistered_dir() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn agent_files_lists_a_registered_cwd_only() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    git_init(tmp.path());
+    std::fs::write(tmp.path().join(".gitignore"), "*.log\n").unwrap();
+    std::fs::write(tmp.path().join("main.rs"), "").unwrap();
+    std::fs::write(tmp.path().join("debug.log"), "").unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    let other = tempfile::tempdir().unwrap();
+    git_init(other.path());
+
+    let (handle, base) = start().await;
+    let url = |project: &std::path::Path| {
+        reqwest::Url::parse_with_params(
+            &format!("{base}/agent/files"),
+            [("projectPath", project.to_str().unwrap())],
+        )
+        .unwrap()
+    };
+
+    let res = reqwest::get(url(tmp.path())).await.unwrap();
+    assert_eq!(res.status(), 401, "listing files needs the token");
+
+    let files: Vec<String> = client()
+        .get(url(tmp.path()))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(files, [".gitignore", "main.rs"]);
+
+    let res = client().get(url(other.path())).send().await.unwrap();
+    assert!(
+        res.status().is_server_error(),
+        "an unregistered directory must be refused"
+    );
+
+    let res = client()
+        .get(url(tmp.path()))
+        .query(&[("worktreePath", other.path().to_str().unwrap())])
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        res.status().is_server_error(),
+        "a worktree path must be one of the project's worktrees"
+    );
+
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn spawn_respects_session_cap() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();

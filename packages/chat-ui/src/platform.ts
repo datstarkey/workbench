@@ -1,5 +1,5 @@
 import { getContext, setContext } from 'svelte';
-import type { ChatImage } from '@workbench/types';
+import type { ChatAttachment } from '@workbench/types';
 
 /** What the chat views need from the app hosting them. */
 export interface ChatPlatform {
@@ -9,11 +9,14 @@ export interface ChatPlatform {
 	enterSends?: boolean;
 	/**
 	 * Desktop: the webview takes OS file drops before the page sees them, so the
-	 * host watches drops over `node` and hands over the images it read.
+	 * host watches drops over `node` and hands over the files it read.
 	 */
-	watchImageDrops?(
+	watchDrops?(
 		node: HTMLElement,
-		on: { hover(over: boolean): void; drop(images: ChatImage[], error: string | null): void }
+		on: {
+			hover(over: boolean): void;
+			drop(attachments: ChatAttachment[], error: string | null): void;
+		}
 	): () => void;
 }
 
