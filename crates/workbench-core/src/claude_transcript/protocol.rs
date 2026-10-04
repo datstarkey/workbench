@@ -33,11 +33,18 @@ const HANDLED: &[&str] = &[
     "rate_limit_event",
     "system:commands_changed",
     "system:elicitation_complete",
+    "system:permission_denied",
+    "system:hook_response",
+    "system:memory_recall",
+    "system:model_refusal_fallback",
+    "system:model_refusal_no_fallback",
+    "prompt_suggestion",
     // JSONL only
     "attachment",
     "ai-title",
     "permission-mode",
     "system:turn_duration",
+    "system:stop_hook_summary",
 ];
 
 /// Kinds deliberately left out of the chat: bookkeeping, telemetry, or
@@ -47,21 +54,15 @@ const IGNORED: &[&str] = &[
     "tool_progress",
     "tool_use_summary",
     "auth_status",
-    "prompt_suggestion",
     "system:control_request_progress",
-    "system:model_refusal_fallback",
-    "system:model_refusal_no_fallback",
     "system:hook_started",
     "system:hook_progress",
-    "system:hook_response",
     "system:plugin_install",
     "system:thinking_tokens",
     "system:session_state_changed",
     "system:worker_shutting_down",
     "system:notification",
     "system:files_persisted",
-    "system:memory_recall",
-    "system:permission_denied",
     "system:mirror_error",
     "system:informational",
     // JSONL only
@@ -74,9 +75,10 @@ const IGNORED: &[&str] = &[
     "atis-latch",
     "bridge-session",
     "frame-link",
-    "system:stop_hook_summary",
     "system:away_summary",
     "system:bridge_status",
+    // Comment-watch bookkeeping keyed by artifact id; the links come from
+    // the Artifact tool's results.
     "artifact-comment-monitor",
     "artifact-autoreact-ledger",
 ];

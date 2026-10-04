@@ -63,6 +63,8 @@ pub(super) fn launch(
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        // Failed and blocking hooks become chat notices (successful ones are dropped).
+        "--include-hook-events",
         "--replay-user-messages",
         // Undocumented but what the Agent SDK passes: permission prompts
         // arrive as `can_use_tool` control requests on stdout.
@@ -91,7 +93,10 @@ pub(super) fn launch(
         cmd,
         driver: Driver::Claude(transcript),
         // The SDK handshake: without it the CLI won't route permission prompts here.
-        hello: vec![control(json!({"subtype": "initialize"}))],
+        // `promptSuggestions`: a likely next prompt after each turn, shown as a chip.
+        hello: vec![control(
+            json!({"subtype": "initialize", "promptSuggestions": true}),
+        )],
         ready: Some(session_id.to_string()),
         program: "claude",
     }
