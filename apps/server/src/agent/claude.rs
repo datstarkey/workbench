@@ -3,14 +3,14 @@
 //! conversation can move between chat and a terminal running
 //! `claude --resume <id>` — one process at a time.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
 use workbench_core::chat_attachment::PDF_TYPE;
 use workbench_core::claude_accounts;
 use workbench_core::claude_launch::PERMISSION_MODES;
-use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript};
+use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript, TranscriptMeta};
 
 use super::driver::{Driver, Effects, Launch};
 use super::{PromptFile, PromptImage, StartAgent};
@@ -30,18 +30,29 @@ pub(super) fn validate(session_id: &str, permission_mode: Option<&str>) -> Resul
     Ok(())
 }
 
+/// The session's JSONL, once the CLI has written one.
+pub(super) fn history(config_dir: Option<&Path>, session_id: &str) -> Option<PathBuf> {
+    let projects = config_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(workbench_core::paths::claude_user_dir)
+        .join("projects");
+    claude_transcript::find_transcript(&projects, session_id)
+}
+
+/// `resume_at`: continue the conversation from this entry, dropping what
+/// came after it (a rewind).
 pub(super) fn launch(
     req: &StartAgent,
     session_id: &str,
     permission_mode: Option<&str>,
     config_dir: Option<&Path>,
+    resume_at: Option<&str>,
 ) -> Launch {
-    let projects = config_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(workbench_core::paths::claude_user_dir)
-        .join("projects");
-    let history = claude_transcript::find_transcript(&projects, session_id);
-    let transcript = history.as_deref().map(Transcript::load).unwrap_or_default();
+    let history = history(config_dir, session_id);
+    let transcript = history
+        .as_deref()
+        .map(|path| Transcript::load_at(path, resume_at))
+        .unwrap_or_default();
 
     let mut cmd = super::session::base_command(claude_accounts::claude_binary(), req);
     cmd.args([
@@ -67,6 +78,12 @@ pub(super) fn launch(
         "--session-id"
     };
     cmd.args([id_flag, session_id]);
+    if let Some(at) = resume_at.filter(|_| history.is_some()) {
+        cmd.arg(format!("--resume-session-at={at}"));
+    }
+    // What the Agent SDK sets for `enableFileCheckpointing`: edits are backed
+    // up per prompt, so `rewind_files` can restore them.
+    cmd.env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true");
     if let Some(dir) = config_dir {
         cmd.env(claude_accounts::CONFIG_DIR_ENV, dir);
     }
@@ -78,6 +95,22 @@ pub(super) fn launch(
         ready: Some(session_id.to_string()),
         program: "claude",
     }
+}
+
+/// Keep the model and effort picked in chat across a relaunch: the new
+/// process asks for them right after the handshake.
+pub(super) fn carry_over(launch: &mut Launch, meta: &TranscriptMeta) {
+    let Driver::Claude(t) = &mut launch.driver else {
+        return;
+    };
+    let model = meta
+        .model_choice
+        .as_deref()
+        .and_then(|m| set_model(t, m).ok());
+    let effort = meta.effort.as_deref().and_then(|e| set_effort(t, e).ok());
+    launch
+        .hello
+        .extend(model.into_iter().chain(effort).flat_map(|e| e.send));
 }
 
 fn control(request: Value) -> Value {
@@ -99,6 +132,7 @@ pub(super) fn apply_line(t: &mut Transcript, line: &str) -> Effects {
         meta: applied.meta,
         commands: applied.commands,
         new_id: applied.new_session_id,
+        response: applied.response,
         ..Effects::default()
     }
 }
@@ -141,6 +175,8 @@ pub(super) fn prompt(
             "type": "user",
             "message": {"role": "user", "content": content},
             "parent_tool_use_id": null,
+            // File checkpoints are keyed by this id; the CLI echoes it back.
+            "uuid": uuid::Uuid::new_v4().to_string(),
             // Hosts relaying typed input must say so; unattributed input fails
             // closed at the CLI's isHuman() trust gates.
             "origin": {"kind": "human"},
@@ -172,6 +208,23 @@ pub(super) fn interrupt() -> Effects {
         send: vec![control(json!({"subtype": "interrupt"}))],
         ..Effects::default()
     }
+}
+
+pub(super) fn rewind_files(message_id: &str, dry_run: bool) -> Result<(String, Effects)> {
+    if !claude_transcript::is_uuid(message_id) {
+        bail!("message id must be a UUID");
+    }
+    let msg = control(json!({
+        "subtype": "rewind_files", "user_message_id": message_id, "dry_run": dry_run,
+    }));
+    let id = msg["request_id"].as_str().unwrap_or_default().to_string();
+    Ok((
+        id,
+        Effects {
+            send: vec![msg],
+            ..Effects::default()
+        },
+    ))
 }
 
 pub(super) fn set_mode(t: &mut Transcript, mode: &str) -> Result<Effects> {
@@ -252,5 +305,52 @@ mod tests {
 
         let plain = prompt(&mut t, "hi", &[], &[]).unwrap();
         assert_eq!(plain.send[0]["message"]["content"], "hi");
+    }
+
+    const MSG: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn rewind_files_is_the_sdks_control_request() {
+        let (id, effects) = rewind_files(MSG, true).unwrap();
+        let [msg] = effects.send.as_slice() else {
+            panic!("one line");
+        };
+        assert_eq!(msg["type"], "control_request");
+        assert_eq!(msg["request_id"], id.as_str());
+        assert_eq!(
+            msg["request"],
+            json!({"subtype": "rewind_files", "user_message_id": MSG, "dry_run": true})
+        );
+        assert!(rewind_files("../etc", false).is_err());
+    }
+
+    #[test]
+    fn prompts_carry_the_id_checkpoints_are_keyed_by() {
+        let effects = prompt(&mut Transcript::default(), "hi", &[], &[]).unwrap();
+        let id = effects.send[0]["uuid"].as_str().unwrap();
+        assert!(claude_transcript::is_uuid(id));
+    }
+
+    #[test]
+    fn a_relaunch_keeps_the_chosen_model_and_effort() {
+        let mut launch = Launch {
+            cmd: std::process::Command::new("true"),
+            driver: Driver::Claude(Transcript::default()),
+            hello: vec![],
+            ready: None,
+            program: "claude",
+        };
+        let meta = TranscriptMeta {
+            model_choice: Some("opus".into()),
+            effort: Some("high".into()),
+            ..TranscriptMeta::default()
+        };
+        carry_over(&mut launch, &meta);
+        let subtypes: Vec<_> = launch
+            .hello
+            .iter()
+            .map(|m| m["request"]["subtype"].clone())
+            .collect();
+        assert_eq!(subtypes, [json!("set_model"), json!("apply_flag_settings")]);
     }
 }

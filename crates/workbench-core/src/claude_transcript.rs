@@ -14,18 +14,18 @@
 //! answers.
 
 use std::collections::{HashMap, VecDeque};
-use std::fs;
-use std::io::BufRead;
 use std::path::Path;
 
 use serde_json::{json, Value};
 
+mod branch;
 mod elicitation;
 mod items;
 mod parse;
 mod protocol;
 mod summary;
 
+pub use branch::fork_point;
 pub use elicitation::ElicitationAction;
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use summary::{RunningSummary, WaitingSummary};
@@ -105,6 +105,9 @@ pub struct Applied {
     pub unknown_kind: Option<String>,
     /// The slash command list changed (kept out of meta: it's large).
     pub commands: bool,
+    /// The CLI's answer to a host request: its `request_id`, and the payload
+    /// or the error.
+    pub response: Option<(String, Result<Value, String>)>,
 }
 
 /// What an approval needs to be answered: the input to echo back and the
@@ -142,10 +145,18 @@ impl Transcript {
     /// History from a session JSONL. A missing or unreadable file is an empty
     /// transcript: a brand-new session has no file yet.
     pub fn load(path: &Path) -> Self {
+        Self::load_at(path, None)
+    }
+
+    /// History along the branch that ends at `leaf` (the newest entry when
+    /// `None`), as `claude --resume-session-at <leaf>` continues it.
+    pub fn load_at(path: &Path, leaf: Option<&str>) -> Self {
         let mut t = Self::default();
-        if let Ok(file) = fs::File::open(path) {
-            for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
-                t.apply_line(&line);
+        let entries = branch::read_entries(path);
+        let dead = branch::abandoned(&entries, leaf);
+        for entry in &entries {
+            if str_at(entry, "uuid").is_none_or(|id| !dead.contains(id)) {
+                t.apply(entry);
             }
         }
         // History never has a turn in flight: the process that wrote it is gone.
@@ -186,6 +197,7 @@ impl Transcript {
             Some("control_response") => {
                 self.apply_control_response(obj);
                 applied.commands = self.read_commands(obj.pointer("/response/response/commands"));
+                applied.response = control_reply(obj);
             }
             Some("conversation_reset") => {
                 let next = str_at(obj, "new_conversation_id").map(String::from);
@@ -1117,6 +1129,17 @@ impl Transcript {
         };
         changed.push(i);
     }
+}
+
+/// `{"response": {"subtype": "success"|"error", "request_id", "response"|"error"}}`.
+fn control_reply(obj: &Value) -> Option<(String, Result<Value, String>)> {
+    let r = obj.get("response")?;
+    let id = str_at(r, "request_id")?.to_string();
+    let result = match str_at(r, "subtype") {
+        Some("success") => Ok(r.get("response").cloned().unwrap_or(Value::Null)),
+        _ => Err(str_at(r, "error").unwrap_or("request failed").to_string()),
+    };
+    Some((id, result))
 }
 
 #[cfg(test)]

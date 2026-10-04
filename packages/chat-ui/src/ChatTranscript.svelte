@@ -1,6 +1,7 @@
 <script lang="ts">
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import HistoryIcon from '@lucide/svelte/icons/history';
 	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
@@ -10,6 +11,7 @@
 	import ChatElicitation from './ChatElicitation.svelte';
 	import ChatMarkdown from './ChatMarkdown.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
+	import ChatRewind from './ChatRewind.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
 	import {
 		activity,
@@ -168,6 +170,7 @@
 			{@render step(block)}
 		{:else if block.item.kind === 'user'}
 			{@const previews = chat.imagePreviews[block.item.id] ?? []}
+			{@const user = block.item}
 			<div class="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
 				{#if previews.length > 0}
 					<div class="flex flex-wrap justify-end gap-1.5">
@@ -185,10 +188,28 @@
 					</span>
 				{/if}
 				{@render attachedFiles(block.item.files ?? [])}
-				{#if block.item.text}
-					<div class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap">
-						{block.item.text}
+				{#if block.item.text || chat.canRewind}
+					<div class="user-row flex items-center gap-1.5">
+						{#if chat.canRewind && chat.rewind?.messageId !== user.id}
+							<button
+								type="button"
+								class="rewind-btn rounded-md p-1 text-wb-ink-soft hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+								title="Rewind to here"
+								aria-label="Rewind to before this message"
+								onclick={() => chat.beginRewind(user.id, user.text)}
+							>
+								<HistoryIcon class="size-3.5" />
+							</button>
+						{/if}
+						{#if user.text}
+							<div class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap">
+								{user.text}
+							</div>
+						{/if}
 					</div>
+				{/if}
+				{#if chat.rewind?.messageId === block.item.id}
+					<ChatRewind {chat} {cwd} onRestorePrompt={onStarter} />
 				{/if}
 			</div>
 		{:else if block.item.kind === 'text'}
@@ -357,6 +378,13 @@
 	.chat-btn:focus-visible {
 		outline: 2px solid var(--wb-accent);
 		outline-offset: 1px;
+	}
+
+	/* Shown on hover or focus with a mouse; always shown on touch screens. */
+	@media (hover: hover) {
+		.user-row:not(:hover) .rewind-btn:not(:focus-visible) {
+			opacity: 0;
+		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {

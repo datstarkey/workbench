@@ -730,7 +730,27 @@ export type AgentServerMsg =
 	| { t: 'output'; toolId: string; text: string | null }
 	/** Reply to `taskOutput`: the end of a background task's output, null until it exists. */
 	| { t: 'taskOutput'; taskId: string; text: string | null; bytes: number | null }
+	/** Reply to `rewind`: the file restore (or its preview, when `dryRun`), or why it failed. */
+	| {
+			t: 'rewind';
+			messageId: string;
+			dryRun: boolean;
+			files: RewindFiles | null;
+			error: string | null;
+	  }
+	/** The process restarted under the same id (a conversation rewind): attach again. */
+	| { t: 'replaced' }
 	| { t: 'revoked' };
+
+/** Claude's answer to a file rewind (the Agent SDK's `RewindFilesResult`). */
+export interface RewindFiles {
+	canRewind: boolean;
+	error?: string;
+	/** Absolute paths; only on a dry run. */
+	filesChanged?: string[];
+	insertions?: number;
+	deletions?: number;
+}
 
 /** An image attached to a chat message: base64 data the Claude API accepts. */
 export interface ChatImage {
@@ -771,7 +791,12 @@ export type AgentClientMsg =
 	| { t: 'model'; model: string }
 	| { t: 'effort'; effort: EffortLevel }
 	| { t: 'output'; toolId: string }
-	| { t: 'taskOutput'; taskId: string };
+	| { t: 'taskOutput'; taskId: string }
+	/**
+	 * Go back to before the prompt `messageId` (Claude only): restore the files
+	 * changed since (`code`) and/or restart the conversation from there.
+	 */
+	| { t: 'rewind'; messageId: string; code: boolean; conversation: boolean; dryRun: boolean };
 
 export interface StartAgentBody {
 	/** Picks the route (`/agent/claude` or `/agent/codex`); absent is Claude. */

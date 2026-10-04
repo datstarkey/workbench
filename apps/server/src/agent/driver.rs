@@ -38,6 +38,8 @@ pub(super) struct Effects {
     pub snapshot: bool,
     /// The session is ready under this id, or failed to start.
     pub ready: Option<Result<String, String>>,
+    /// The CLI answered a host request: its id, and the payload or error.
+    pub response: Option<(String, Result<Value, String>)>,
 }
 
 /// A process to spawn, the driver for it, and its opening lines.
@@ -128,6 +130,15 @@ impl Driver {
         match self {
             Self::Claude(t) => claude::set_model(t, model),
             Self::Codex(c) => c.set_model(model),
+        }
+    }
+
+    /// Ask the CLI to restore (or, dry, preview restoring) the files the
+    /// session changed since `message_id`. Returns the request id to await.
+    pub fn rewind_files(&mut self, message_id: &str, dry_run: bool) -> Result<(String, Effects)> {
+        match self {
+            Self::Claude(_) => claude::rewind_files(message_id, dry_run),
+            Self::Codex(_) => anyhow::bail!("Codex chats can't rewind"),
         }
     }
 
