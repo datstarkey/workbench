@@ -112,6 +112,27 @@ pub enum TranscriptItem {
         id: String,
         text: String,
     },
+    /// Something the CLI did around the conversation worth a line in it: a
+    /// denied tool, a hook that failed or blocked, recalled memories, a refusal.
+    Event {
+        id: String,
+        event: EventKind,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        /// Memory files (paths or URLs) for [`EventKind::Memory`].
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventKind {
+    PermissionDenied,
+    Hook,
+    Memory,
+    Refusal,
 }
 
 impl TranscriptItem {
@@ -123,7 +144,8 @@ impl TranscriptItem {
             | Self::Tool { id, .. }
             | Self::Approval { id, .. }
             | Self::Elicitation { id, .. }
-            | Self::Notice { id, .. } => id,
+            | Self::Notice { id, .. }
+            | Self::Event { id, .. } => id,
         }
     }
 }
@@ -204,6 +226,20 @@ pub struct TaskInfo {
     pub summary: Option<String>,
 }
 
+/// An artifact on claude.ai that an `Artifact` call published or opened.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactInfo {
+    pub tool_use_id: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `created` | `updated` | `opened` | `published`.
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptMeta {
@@ -233,6 +269,13 @@ pub struct TranscriptMeta {
     /// `GET /agent/usage`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_limits: Option<Vec<crate::claude_accounts::UsageLimit>>,
+    /// Artifacts this conversation's `Artifact` calls touched, in call order.
+    /// Kept here because their links only arrive in the tool's structured result.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactInfo>,
+    /// The CLI's guess at the next prompt; cleared when a turn starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_suggestion: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {

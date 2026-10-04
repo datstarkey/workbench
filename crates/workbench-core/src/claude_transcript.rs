@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 mod branch;
 mod elicitation;
+mod events;
 mod items;
 mod parse;
 mod protocol;
@@ -31,8 +32,8 @@ pub(crate) use elicitation::{Pending as PendingElicitation, Request as Elicitati
 pub use summary::{RunningSummary, WaitingSummary};
 
 pub use items::{
-    ApprovalDecision, ModelOption, RateLimitInfo, RetryInfo, SlashCommand, TaskInfo, ToolStatus,
-    TranscriptItem, TranscriptMeta,
+    ApprovalDecision, ArtifactInfo, EventKind, ModelOption, RateLimitInfo, RetryInfo, SlashCommand,
+    TaskInfo, ToolStatus, TranscriptItem, TranscriptMeta,
 };
 
 pub(crate) use parse::{clip, clip_patch, clip_value, str_at, MAX_TEXT_BYTES};
@@ -204,7 +205,20 @@ impl Transcript {
                 self.reset();
                 applied.new_session_id = next;
             }
-            Some("attachment") => self.apply_queued_prompt(obj, &mut changed),
+            Some("attachment") => {
+                self.apply_queued_prompt(obj, &mut changed);
+                if let Some(item) = obj
+                    .get("attachment")
+                    .and_then(|att| events::attachment_event(att, self.event_id(obj)))
+                {
+                    self.upsert(item, &mut changed);
+                }
+            }
+            Some("prompt_suggestion") => {
+                self.meta.prompt_suggestion = str_at(obj, "suggestion")
+                    .filter(|s| !s.trim().is_empty())
+                    .map(String::from)
+            }
             Some("result") => self.apply_result(obj, &mut changed),
             Some("rate_limit_event") => self.apply_rate_limit(obj),
             Some("ai-title") => self.meta.title = str_at(obj, "aiTitle").map(String::from),
@@ -263,9 +277,16 @@ impl Transcript {
                     let text = "Conversation compacted".to_string();
                     self.upsert(TranscriptItem::Notice { id, text }, &mut changed);
                 }
-                _ => {}
+                _ => {
+                    if let Some(item) = events::system_event(obj, self.event_id(obj)) {
+                        self.upsert(item, &mut changed);
+                    }
+                }
             },
             _ => {}
+        }
+        if self.meta.busy && !before.busy {
+            self.meta.prompt_suggestion = None;
         }
         applied.items = changed;
         applied.meta = self.meta != before;
@@ -422,6 +443,8 @@ impl Transcript {
             title: None,
             context_tokens: None,
             tasks: Vec::new(),
+            artifacts: Vec::new(),
+            prompt_suggestion: None,
             ..self.meta.clone()
         };
         *self = Self {
@@ -454,6 +477,14 @@ impl Transcript {
     /// turn starting at once.
     pub fn set_busy(&mut self) {
         self.meta.busy = true;
+        self.meta.prompt_suggestion = None;
+    }
+
+    /// The line's uuid; lines without one get a position-based id.
+    fn event_id(&self, obj: &Value) -> String {
+        str_at(obj, "uuid")
+            .map(String::from)
+            .unwrap_or_else(|| format!("event-{}", self.items.len()))
     }
 
     /// The mode just requested with `set_permission_mode`.
@@ -862,6 +893,14 @@ impl Transcript {
             self.skill_bodies_due.push_back(tool_id.to_string());
         }
         let text = tool_output_text(block.get("content"));
+        if name == "Artifact" && !is_error {
+            if let Some(found) = result.and_then(|r| events::artifact(tool_id, r, text.as_deref()))
+            {
+                let list = &mut self.meta.artifacts;
+                list.retain(|a| a.tool_use_id != tool_id);
+                list.push(found);
+            }
+        }
         self.set_tool_output(i, tool_id, text);
         changed.push(i);
     }

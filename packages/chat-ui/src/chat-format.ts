@@ -1,4 +1,5 @@
 import type { ElicitationItem } from './elicitation-form';
+import { isArtifactTool } from './artifacts';
 import { contextUsage } from './usage-format';
 import type {
 	AgentKind,
@@ -73,7 +74,12 @@ export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
 function stepTools(block: StepBlock): ToolItem[] | null {
 	if (block.kind === 'quiet') return block.tools;
 	if (block.item.kind === 'thinking') return [];
-	return block.item.kind === 'tool' && block.item.status === 'ok' ? [block.item] : null;
+	// An artifact card carries a link, so it stays in view.
+	return block.item.kind === 'tool' &&
+		block.item.status === 'ok' &&
+		!isArtifactTool(block.item.name)
+		? [block.item]
+		: null;
 }
 
 /** Runs with two or more finished calls fold; running and failed calls stay in view. */

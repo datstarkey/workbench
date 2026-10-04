@@ -205,6 +205,11 @@ describe('groupBlocks', () => {
 		expect(stepNames(steps.tools)).toBe('Read, Bash, Edit');
 	});
 
+	it('never folds an artifact card away', () => {
+		const blocks = groupBlocks([tool('b1', 'Bash'), tool('a1', 'Artifact'), tool('b2', 'Bash')]);
+		expect(blocks.map((b) => b.kind)).toEqual(['item', 'item', 'item']);
+	});
+
 	it('keeps a failed read as its own card', () => {
 		const failed = { ...tool('r1', 'Read'), status: 'error' as const };
 		expect(groupBlocks([failed])).toEqual([{ kind: 'item', item: failed }]);

@@ -627,7 +627,28 @@ export type TranscriptItem =
 			/** What an accepted form sent. */
 			content?: Record<string, unknown>;
 	  }
-	| { kind: 'notice'; id: string; text: string };
+	| { kind: 'notice'; id: string; text: string }
+	/** Something around the conversation: a denied tool, a hook that failed or blocked, recalled memories, a refusal. */
+	| {
+			kind: 'event';
+			id: string;
+			event: TranscriptEventKind;
+			title: string;
+			detail?: string;
+			/** Memory files (paths or URLs) for `memory`. */
+			files?: string[];
+	  };
+
+export type TranscriptEventKind = 'permissionDenied' | 'hook' | 'memory' | 'refusal';
+
+/** An artifact on claude.ai an `Artifact` call published or opened (mirror of core `ArtifactInfo`). */
+export interface ArtifactInfo {
+	toolUseId: string;
+	url: string;
+	title?: string;
+	action: 'created' | 'updated' | 'opened' | 'published';
+	version?: string;
+}
 
 export type ElicitationAction = 'accept' | 'decline' | 'cancel';
 
@@ -707,6 +728,10 @@ export interface TranscriptMeta {
 	contextWindow?: number;
 	/** Codex only: plan limits as the stream reports them (Claude's come from `GET /agent/usage`). */
 	usageLimits?: UsageLimit[];
+	/** Claude only: artifacts this conversation's `Artifact` calls touched, in call order. */
+	artifacts?: ArtifactInfo[];
+	/** Claude only: a likely next prompt, until the next turn starts. */
+	promptSuggestion?: string;
 }
 
 export type AgentServerMsg =

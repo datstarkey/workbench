@@ -9,10 +9,13 @@
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
 	import ChatElicitation from './ChatElicitation.svelte';
+	import ChatArtifactCard from './ChatArtifactCard.svelte';
+	import ChatEvent from './ChatEvent.svelte';
 	import ChatMarkdown from './ChatMarkdown.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
 	import ChatRewind from './ChatRewind.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
+	import { artifactFor } from './artifacts';
 	import {
 		activity,
 		agentName,
@@ -79,12 +82,17 @@
 			</details>
 		{/if}
 	{:else if block.item.kind === 'tool'}
-		<ChatToolCard
-			tool={block.item}
-			{cwd}
-			startedAt={chat.seenAt[block.item.id]}
-			fetchFullOutput={(id) => chat.fullOutput(id)}
-		/>
+		{@const artifact = artifactFor(chat.meta, block.item.id)}
+		{#if artifact}
+			<ChatArtifactCard {artifact} />
+		{:else}
+			<ChatToolCard
+				tool={block.item}
+				{cwd}
+				startedAt={chat.seenAt[block.item.id]}
+				fetchFullOutput={(id) => chat.fullOutput(id)}
+			/>
+		{/if}
 	{/if}
 {/snippet}
 
@@ -246,6 +254,8 @@
 					onAnswer={(action, content) => chat.elicit(elicitation.id, action, content)}
 				/>
 			{/if}
+		{:else if block.item.kind === 'event'}
+			<ChatEvent item={block.item} />
 		{:else}
 			<p class="text-center text-xs whitespace-pre-wrap text-wb-ink-soft">
 				{block.item.text}
