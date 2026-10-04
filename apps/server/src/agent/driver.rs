@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use workbench_core::claude_transcript::{ApprovalDecision, ChatView, Transcript};
 
 use super::codex::CodexDriver;
-use super::{claude, PromptImage};
+use super::{claude, PromptFile, PromptImage};
 
 // One per session, behind its mutex: the variants' sizes don't matter.
 #[allow(clippy::large_enum_variant)]
@@ -64,10 +64,15 @@ impl Driver {
         }
     }
 
-    pub fn prompt(&mut self, text: &str, images: &[PromptImage]) -> Result<Effects> {
+    pub fn prompt(
+        &mut self,
+        text: &str,
+        images: &[PromptImage],
+        files: &[PromptFile],
+    ) -> Result<Effects> {
         match self {
-            Self::Claude(t) => claude::prompt(t, text, images),
-            Self::Codex(c) => c.prompt(text, images),
+            Self::Claude(t) => claude::prompt(t, text, images, files),
+            Self::Codex(c) => c.prompt(text, images, files),
         }
     }
 

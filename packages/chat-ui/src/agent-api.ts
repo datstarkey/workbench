@@ -6,6 +6,8 @@ export interface AgentApi {
 	/** Resolves to the session's id: a new Codex thread only gets one here. */
 	start(body: StartAgentBody): Promise<string>;
 	socketUrl(sessionId: string): Promise<string>;
+	/** The chat cwd's files for `@` mentions; absent leaves the menu out. */
+	files?(where: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]>;
 }
 
 export interface AgentServer {
@@ -54,6 +56,16 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		async socketUrl(sessionId: string): Promise<string> {
 			const { baseUrl, token } = await server();
 			return agentWsUrl(baseUrl, sessionId, token ?? undefined);
+		},
+		async files({
+			projectPath,
+			worktreePath
+		}: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]> {
+			const query = new URLSearchParams({
+				projectPath,
+				...(worktreePath ? { worktreePath } : {})
+			}).toString();
+			return (await call<string[]>('GET', `/agent/files?${query}`)) ?? [];
 		},
 		/** Stop a session's process, e.g. before a terminal takes it over. */
 		async stop(sessionId: string): Promise<void> {

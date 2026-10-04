@@ -69,6 +69,15 @@ pub(crate) fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
+/// Titles of the document blocks (attached PDFs and text files) in a message.
+pub(super) fn document_names(blocks: &[Value]) -> Vec<String> {
+    blocks
+        .iter()
+        .filter(|b| str_at(b, "type") == Some("document"))
+        .map(|b| str_at(b, "title").unwrap_or("Document").to_string())
+        .collect()
+}
+
 pub(super) fn tool_output_text(content: Option<&Value>) -> Option<String> {
     match content? {
         Value::String(s) => Some(s.clone()),

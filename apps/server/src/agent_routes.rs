@@ -18,6 +18,8 @@
 //! Ids are global, so the stop/message/WS routes of either kind reach any session.
 //! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
 //!   usage (`claude -p /usage`), cached by [`crate::usage::UsageCache`].
+//! - `GET /agent/files?projectPath=[&worktreePath=]` lists a chat cwd's files
+//!   (git-tracked and untracked, not ignored) for the composer's `@` mentions.
 
 use std::sync::Arc;
 
@@ -33,7 +35,8 @@ use workbench_core::claude_accounts::{self, UsageLimit};
 use workbench_core::claude_transcript::ApprovalDecision;
 
 use crate::agent::{
-    AgentKind, AgentSession, AgentSummary, Launch, PromptImage, StartAgent, MAX_IMAGES,
+    AgentKind, AgentSession, AgentSummary, Launch, PromptFile, PromptImage, StartAgent, MAX_FILES,
+    MAX_IMAGES,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
@@ -249,15 +252,16 @@ pub async fn agent_attach(
     crate::auth::authorize_ws(&headers, auth.token.as_deref(), &state)?;
     let session = find(&state, &id)?;
     let revoked = state.revoked.clone();
-    // A prompt can carry 10 images of up to ~6.7 MB base64 each; the default
-    // 16 MiB frame limit would drop the socket instead of the prompt.
+    // A prompt can carry 10 images of up to ~6.7 MB base64 each and 5 PDFs of
+    // ~13.4 MB; the default 16 MiB frame limit would drop the socket instead
+    // of the prompt.
     Ok(ws
         .max_frame_size(MAX_PROMPT_BYTES)
         .max_message_size(MAX_PROMPT_BYTES)
         .on_upgrade(move |socket| stream(socket, session, revoked)))
 }
 
-const MAX_PROMPT_BYTES: usize = 80 * 1024 * 1024;
+const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
@@ -267,6 +271,8 @@ enum ClientMsg {
         text: String,
         #[serde(default)]
         images: Vec<PromptImage>,
+        #[serde(default)]
+        files: Vec<PromptFile>,
     },
     #[serde(rename_all = "camelCase")]
     Approve {
@@ -313,13 +319,25 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
                 json!({"t": "output", "toolId": tool_id, "text": text}),
             ));
         }
-        ClientMsg::Prompt { text, images } if text.trim().is_empty() && images.is_empty() => Ok(()),
-        ClientMsg::Prompt { text, images } => {
+        ClientMsg::Prompt {
+            text,
+            images,
+            files,
+        } if text.trim().is_empty() && images.is_empty() && files.is_empty() => Ok(()),
+        ClientMsg::Prompt {
+            text,
+            images,
+            files,
+        } => {
             if images.len() > MAX_IMAGES {
                 anyhow::bail!("attach at most {MAX_IMAGES} images per message");
             }
+            if files.len() > MAX_FILES {
+                anyhow::bail!("attach at most {MAX_FILES} files per message");
+            }
             images.iter().try_for_each(PromptImage::validate)?;
-            session.prompt(&text, &images)
+            files.iter().try_for_each(PromptFile::validate)?;
+            session.prompt(&text, &images, &files)
         }
         ClientMsg::Approve {
             request_id,
@@ -396,4 +414,21 @@ async fn stream(
             }
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesQuery {
+    project_path: String,
+    worktree_path: Option<String>,
+}
+
+/// Same cwd allowlist as starting a chat: a registered project or its worktree.
+pub async fn agent_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<Vec<String>>> {
+    crate::routes::blocking(move || {
+        let cwd = resolve_cwd(&q.project_path, q.worktree_path.as_deref())?;
+        workbench_core::project_files::list(&cwd, workbench_core::project_files::MAX_LISTED)
+    })
+    .await
+    .map(Json)
 }

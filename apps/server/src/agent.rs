@@ -15,13 +15,13 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
 
+mod attachment;
 mod claude;
 mod codex;
 mod driver;
-mod image;
 mod session;
 
-pub use image::{PromptImage, MAX_IMAGES};
+pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
 pub use session::AgentSession;
 
 const DEFAULT_MAX_AGENTS: usize = 16;

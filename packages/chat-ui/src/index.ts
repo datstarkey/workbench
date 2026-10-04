@@ -9,7 +9,8 @@ export { PlanUsage, usePlanUsage, type LoadUsage } from './plan-usage.svelte.ts'
 export { getChatPlatform, setChatPlatform, type ChatPlatform } from './platform.ts';
 export * from './chat-format.ts';
 export * from './usage-format.ts';
-export * from './image-intake.ts';
+export * from './attachment-intake.ts';
+export * from './file-mentions.ts';
 export { default as ChatActivity } from './ChatActivity.svelte';
 export { default as ChatApproval } from './ChatApproval.svelte';
 export { default as ChatComposer } from './ChatComposer.svelte';

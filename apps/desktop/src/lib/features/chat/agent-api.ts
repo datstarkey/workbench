@@ -12,7 +12,8 @@ export const loopbackAgentApi: AgentApi = {
 		const hookSocket = body.hookSocket ?? (await terminalHookSocket().catch(() => null));
 		return loopback.start({ ...body, hookSocket: hookSocket ?? undefined });
 	},
-	socketUrl: loopback.socketUrl
+	socketUrl: loopback.socketUrl,
+	files: loopback.files
 };
 
 /** A Claude account's plan limits, cached by the loopback server. */

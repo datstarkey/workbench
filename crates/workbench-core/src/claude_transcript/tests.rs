@@ -369,8 +369,10 @@ fn skill_body_becomes_its_cards_output() {
         "m",
         json!({"type":"tool_use","id":"toolu_b","name":"Bash","input":{"command":"ls"}}),
     ));
-    t.apply(&json!({"type":"user","uuid":"m1","isMeta":true,"sourceToolUseID":"toolu_s",
-        "message":{"content":[{"type":"text","text":body}]}}));
+    t.apply(
+        &json!({"type":"user","uuid":"m1","isMeta":true,"sourceToolUseID":"toolu_s",
+        "message":{"content":[{"type":"text","text":body}]}}),
+    );
     t.apply(&json!({"type":"user","uuid":"m2","isSynthetic":true,
         "message":{"content":[{"type":"text","text":"Base directory for this skill: /other"}]}}));
     t.apply(&json!({"type":"user","uuid":"m3","isSynthetic":true,
@@ -412,14 +414,23 @@ fn stream_skill_bodies_go_to_launched_calls_in_order() {
     t.apply(&result("c", "ok"));
     t.apply(&body("/a"));
     t.apply(&body("/b"));
-    assert_eq!(skill_output(&t, 0).as_deref(), Some("Base directory for this skill: /a"));
-    assert_eq!(skill_output(&t, 1).as_deref(), Some("Base directory for this skill: /b"));
+    assert_eq!(
+        skill_output(&t, 0).as_deref(),
+        Some("Base directory for this skill: /a")
+    );
+    assert_eq!(
+        skill_output(&t, 1).as_deref(),
+        Some("Base directory for this skill: /b")
+    );
     assert_eq!(skill_output(&t, 2).as_deref(), Some("ok"));
 
     // A later `/release` loads a skill with no card: it touches no earlier one.
     t.apply(&user("cmd", json!("<command-name>/release</command-name>")));
     t.apply(&body("/release"));
-    assert_eq!(skill_output(&t, 1).as_deref(), Some("Base directory for this skill: /b"));
+    assert_eq!(
+        skill_output(&t, 1).as_deref(),
+        Some("Base directory for this skill: /b")
+    );
 }
 
 #[test]
@@ -430,10 +441,18 @@ fn injected_messages_still_settle_tools_and_interrupts() {
         "m",
         json!({"type":"tool_use","id":"toolu_x","name":"Bash","input":{}}),
     ));
-    t.apply(&json!({"type":"user","uuid":"s","isSynthetic":true,"message":{"content":[
+    t.apply(
+        &json!({"type":"user","uuid":"s","isSynthetic":true,"message":{"content":[
         {"type":"tool_result","tool_use_id":"toolu_x","content":"cancelled","is_error":true},
-        {"type":"text","text":"[Request interrupted by user]"}]}}));
-    assert!(matches!(&t.items()[0], TranscriptItem::Tool { status: ToolStatus::Error, .. }));
+        {"type":"text","text":"[Request interrupted by user]"}]}}),
+    );
+    assert!(matches!(
+        &t.items()[0],
+        TranscriptItem::Tool {
+            status: ToolStatus::Error,
+            ..
+        }
+    ));
     assert!(matches!(&t.items()[1], TranscriptItem::Notice { text, .. } if text == "Interrupted"));
 }
 
@@ -777,6 +796,38 @@ fn long_tool_output_keeps_a_preview_and_the_whole_text() {
     assert!(preview.len() <= MAX_TEXT_BYTES + 3);
     assert_eq!(*bytes, long.len());
     assert_eq!(t.full_output("toolu_l"), Some(long.as_str()));
+}
+
+#[test]
+fn attached_documents_are_named_on_the_message() {
+    let mut t = Transcript::default();
+    let pdf = json!({"type":"document","title":"report.pdf",
+        "source":{"type":"base64","media_type":"application/pdf","data":"JVBERg=="}});
+    let text = json!({"type":"document","title":"main.rs",
+        "source":{"type":"text","media_type":"text/plain","data":"fn main() {}"}});
+    t.apply(&user(
+        "u1",
+        json!([pdf.clone(), text, {"type":"text","text":"summarise"}]),
+    ));
+    t.apply(&user("u2", json!([pdf.clone()])));
+    t.apply(&json!({"type":"attachment","uuid":"q1","attachment":{
+        "type":"queued_command","commandMode":"prompt","timestamp":"t","prompt":[pdf]}}));
+    let files = |i: usize| match &t.items()[i] {
+        TranscriptItem::User { text, files, .. } => (text.clone(), files.clone()),
+        other => panic!("expected a user item, got {other:?}"),
+    };
+    assert_eq!(
+        files(0),
+        (
+            "summarise".into(),
+            vec!["report.pdf".into(), "main.rs".into()]
+        )
+    );
+    assert_eq!(files(1), (String::new(), vec!["report.pdf".into()]));
+    assert_eq!(files(2), (String::new(), vec!["report.pdf".into()]));
+    let json = serde_json::to_value(&t.items()[1]).unwrap();
+    assert_eq!(json["files"], json!(["report.pdf"]));
+    assert!(json.get("images").is_none());
 }
 
 #[test]

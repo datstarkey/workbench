@@ -3,6 +3,7 @@ import type {
 	AgentKind,
 	AgentServerMsg,
 	ApprovalDecision,
+	ChatFile,
 	ChatImage,
 	CodexMode,
 	EffortLevel,
@@ -14,7 +15,7 @@ import type {
 } from '@workbench/types';
 import type { AgentApi } from './agent-api';
 import { agentName, applyChanges } from './chat-format';
-import { previewUrl } from './image-intake';
+import { previewUrl } from './attachment-intake';
 
 /**
  * - `starting`: launching or resuming the `claude` / `codex` process.
@@ -31,11 +32,15 @@ export interface PendingPrompt {
 	text: string;
 	/** Data URLs of attached images, shown in the bubble. */
 	previews: string[];
+	/** Names of attached PDFs and text files. */
+	files: string[];
 	/** User items already in the chat when it was sent; only later ones can echo it. */
 	after: number;
 }
 
 const RECONNECT_MS = 1500;
+/** How long the `@` menu's file list is reused before it's fetched again. */
+const FILES_TTL_MS = 30_000;
 
 export interface TaskOutput {
 	text: string;
@@ -86,6 +91,7 @@ export class AgentChat {
 	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
+	private fileList: { at: number; files: Promise<string[]> } | null = null;
 
 	constructor(body: StartAgentBody, api: AgentApi) {
 		this.body = body;
@@ -300,12 +306,13 @@ export class AgentChat {
 		return true;
 	}
 
-	prompt(text: string, images: ChatImage[] = []): boolean {
+	prompt(text: string, images: ChatImage[] = [], files: ChatFile[] = []): boolean {
 		const trimmed = text.trim();
-		if (!trimmed && images.length === 0) return false;
+		if (!trimmed && images.length === 0 && files.length === 0) return false;
 		const payload = images.map(({ mediaType, data }) => ({ mediaType, data }));
 		const msg: AgentClientMsg = { t: 'prompt', text: trimmed };
 		if (payload.length > 0) msg.images = payload;
+		if (files.length > 0) msg.files = files;
 		if (!this.send(msg)) return false;
 		this.pending = [
 			...this.pending,
@@ -313,11 +320,26 @@ export class AgentChat {
 				id: crypto.randomUUID(),
 				text: trimmed,
 				previews: images.map(previewUrl),
+				files: files.map((f) => f.name),
 				after: this.userTexts().length
 			}
 		];
 		this.busySince ??= Date.now();
 		return true;
+	}
+
+	/**
+	 * The session cwd's files for the composer's `@` menu, fetched at most
+	 * every 30s; empty when the server can't list them.
+	 */
+	listFiles(): Promise<string[]> {
+		const now = Date.now();
+		if (!this.fileList || now - this.fileList.at > FILES_TTL_MS) {
+			const { projectPath, worktreePath } = this.body;
+			const files = this.api.files?.({ projectPath, worktreePath }) ?? Promise.resolve([]);
+			this.fileList = { at: now, files: files.catch(() => []) };
+		}
+		return this.fileList.files;
 	}
 
 	approve(requestId: string, decision: ApprovalDecision, answers?: Record<string, string>): void {

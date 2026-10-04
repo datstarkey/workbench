@@ -172,6 +172,31 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('sends attached files whole and shows their names while pending', async () => {
+		const { chat, ws } = await connected();
+		const pdf = { mediaType: 'application/pdf' as const, data: 'JVBERg==', name: 'report.pdf' };
+		expect(chat.prompt('summarise', [], [pdf])).toBe(true);
+		expect(ws.sent).toEqual([{ t: 'prompt', text: 'summarise', files: [pdf] }]);
+		expect(chat.pending[0].files).toEqual(['report.pdf']);
+		chat.dispose();
+	});
+
+	it('lists the cwd for @ mentions, reusing the list for a while', async () => {
+		const files = vi.fn<NonNullable<AgentApi['files']>>(async () => ['src/main.rs']);
+		const chat = new AgentChat({ ...body, worktreePath: '/repo-wt' }, { ...fakeApi(), files });
+		expect(await chat.listFiles()).toEqual(['src/main.rs']);
+		await chat.listFiles();
+		expect(files).toHaveBeenCalledTimes(1);
+		expect(files).toHaveBeenCalledWith({ projectPath: '/repo', worktreePath: '/repo-wt' });
+		vi.advanceTimersByTime(31_000);
+		files.mockRejectedValueOnce(new Error('not a git repository'));
+		expect(await chat.listFiles()).toEqual([]);
+		chat.dispose();
+		const old = new AgentChat(body, fakeApi());
+		expect(await old.listFiles()).toEqual([]);
+		old.dispose();
+	});
+
 	it('sends approvals, interrupts and mode changes', async () => {
 		const { chat, ws } = await connected();
 		chat.approve('req-1', 'alwaysAllow');

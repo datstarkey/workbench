@@ -1,6 +1,7 @@
 <script lang="ts">
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
 	import type { AgentChat } from './agent-chat.svelte';
@@ -182,6 +183,7 @@
 						{block.item.images === 1 ? '1 image' : `${block.item.images} images`}
 					</span>
 				{/if}
+				{@render attachedFiles(block.item.files ?? [])}
 				{#if block.item.text}
 					<div class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap">
 						{block.item.text}
@@ -233,6 +235,7 @@
 					{/each}
 				</div>
 			{/if}
+			{@render attachedFiles(prompt.files)}
 			{#if prompt.text}
 				<div class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap">
 					{prompt.text}
@@ -256,6 +259,21 @@
 		</div>
 	{/if}
 </div>
+
+{#snippet attachedFiles(names: string[])}
+	{#if names.length > 0}
+		<ul class="flex flex-wrap justify-end gap-1.5" aria-label="Attached files">
+			{#each names as name, i (i)}
+				<li
+					class="flex max-w-56 items-center gap-1 rounded-md border border-wb-hair px-2 py-0.5 text-[11px] text-wb-ink-mute"
+				>
+					<PaperclipIcon class="size-3 shrink-0" aria-hidden="true" />
+					<span class="min-w-0 truncate">{name}</span>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+{/snippet}
 
 <style>
 	/* WebKit ignores list-style on summary; the chevron replaces the marker. */

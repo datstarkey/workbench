@@ -28,7 +28,7 @@
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
-	import type { ChatImage, TranscriptItem } from '@workbench/types';
+	import type { ChatFile, ChatImage, TranscriptItem } from '@workbench/types';
 	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
 	import type { ChatRef } from './types.ts';
 	import Sheet from './Sheet.svelte';
@@ -110,7 +110,7 @@
 	let reviewOpen = $state<'history' | 'changes' | null>(null);
 	useBack(() => client.closeChat());
 	watch(
-		() => [draft.text, draft.images],
+		() => [draft.text, draft.images, draft.files],
 		() => drafts.save(ref, draft)
 	);
 	watch(
@@ -146,9 +146,9 @@
 		void client.showAsTerminal({ ...ref, sessionId: chat.sessionId }, chat.hasHistory);
 	}
 
-	function send(text: string, images: ChatImage[]): boolean {
+	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean {
 		stickToBottom = true;
-		return chat.prompt(text, images);
+		return chat.prompt(text, images, files);
 	}
 
 	const followLatest: Attachment<HTMLDivElement> = (node) => {
@@ -328,6 +328,7 @@
 			agent={chat.agent}
 			bind:draft={draft.text}
 			bind:images={draft.images}
+			bind:files={draft.files}
 			mode={chat.meta?.permissionMode ?? null}
 			busy={Boolean(chat.meta?.busy) && live}
 			{disabledReason}
@@ -339,6 +340,7 @@
 				reviewOpen = 'history';
 				return true;
 			}}
+			loadFiles={() => chat.listFiles()}
 			onMode={(mode) => chat.setMode(mode)}
 		>
 			{#snippet controls()}

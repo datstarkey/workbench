@@ -111,6 +111,7 @@ impl CodexTranscript {
             text,
             timestamp,
             images,
+            files: Vec::new(),
         };
         self.upsert(item, changed);
     }

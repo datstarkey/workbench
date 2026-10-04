@@ -18,7 +18,7 @@ use workbench_core::codex_transcript::{self, CodexTranscript, CODEX_MODES};
 
 use super::driver::{Driver, Effects, Launch};
 use super::session::SNAPSHOT_ITEMS;
-use super::{PromptImage, StartAgent};
+use super::{PromptFile, PromptImage, StartAgent};
 
 pub(super) fn validate(thread_id: Option<&str>, mode: Option<&str>) -> Result<()> {
     if thread_id.is_some_and(|id| !workbench_core::claude_transcript::is_uuid(id)) {
@@ -386,9 +386,18 @@ impl CodexDriver {
         fx.send.extend(self.submit(input));
     }
 
-    pub fn prompt(&mut self, text: &str, images: &[PromptImage]) -> Result<Effects> {
+    pub fn prompt(
+        &mut self,
+        text: &str,
+        images: &[PromptImage],
+        files: &[PromptFile],
+    ) -> Result<Effects> {
         if self.thread_id.is_none() {
             bail!("Codex is still starting");
+        }
+        // app-server input has no document kind (0.160: text, image, audio, skill, mention).
+        if !files.is_empty() {
+            bail!("Codex can't read attached files. Mention them with @ instead.");
         }
         let mut input = Vec::new();
         if !text.trim().is_empty() {
@@ -534,7 +543,7 @@ mod tests {
     #[test]
     fn stop_while_the_turn_is_starting_interrupts_it_once_it_has_an_id() {
         let mut d = driver();
-        let start = d.prompt("hi", &[]).unwrap();
+        let start = d.prompt("hi", &[], &[]).unwrap();
         assert_eq!(start.send[0]["method"], "turn/start");
         let start_id = start.send[0]["id"].as_u64().unwrap();
 
@@ -564,7 +573,7 @@ mod tests {
         assert!(fx.commands);
         assert_eq!(d.t.commands().len(), 1);
         assert_eq!(d.t.commands()[0].name, "review");
-        let fx = d.prompt("/review my changes", &[]).unwrap();
+        let fx = d.prompt("/review my changes", &[], &[]).unwrap();
         assert_eq!(
             fx.send[0]["params"]["input"][0],
             json!({"type": "skill", "name": "review", "path": "/skills/review/SKILL.md"})
@@ -586,7 +595,7 @@ mod tests {
         let fx = d.apply_line(&json!({"id": old["id"], "result": {"data": [{"skills": [{"name": "old", "path": "/old"}]}]}}).to_string());
         assert!(!fx.commands);
         assert!(d.t.commands().is_empty());
-        let fx = d.prompt("/unknown plain text", &[]).unwrap();
+        let fx = d.prompt("/unknown plain text", &[], &[]).unwrap();
         assert_eq!(
             fx.send[0]["params"]["input"][0]["text"],
             "/unknown plain text"

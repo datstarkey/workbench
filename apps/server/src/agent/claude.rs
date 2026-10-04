@@ -7,12 +7,13 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
+use workbench_core::chat_attachment::PDF_TYPE;
 use workbench_core::claude_accounts;
 use workbench_core::claude_launch::PERMISSION_MODES;
 use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript};
 
 use super::driver::{Driver, Effects, Launch};
-use super::{PromptImage, StartAgent};
+use super::{PromptFile, PromptImage, StartAgent};
 
 /// Effort levels `effortLevel` accepts.
 const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -102,18 +103,33 @@ pub(super) fn apply_line(t: &mut Transcript, line: &str) -> Effects {
     }
 }
 
-pub(super) fn prompt(t: &mut Transcript, text: &str, images: &[PromptImage]) -> Result<Effects> {
-    let content = if images.is_empty() {
+pub(super) fn prompt(
+    t: &mut Transcript,
+    text: &str,
+    images: &[PromptImage],
+    files: &[PromptFile],
+) -> Result<Effects> {
+    let content = if images.is_empty() && files.is_empty() {
         json!(text)
     } else {
-        let mut blocks: Vec<Value> = images
-            .iter()
-            .map(|img| {
-                json!({"type": "image", "source": {
-                    "type": "base64", "media_type": img.media_type, "data": img.data,
-                }})
-            })
-            .collect();
+        let images = images.iter().map(|img| {
+            json!({"type": "image", "source": {
+                "type": "base64", "media_type": img.media_type, "data": img.data,
+            }})
+        });
+        // Verified with CLI 2.1.286: document blocks pass through stream-json
+        // input, base64 for PDFs and a text source for text files.
+        let files = files.iter().map(|f| {
+            let kind = if f.media_type == PDF_TYPE {
+                "base64"
+            } else {
+                "text"
+            };
+            json!({"type": "document", "title": f.name, "source": {
+                "type": kind, "media_type": f.media_type, "data": f.data,
+            }})
+        });
+        let mut blocks: Vec<Value> = files.chain(images).collect();
         if !text.trim().is_empty() {
             blocks.push(json!({"type": "text", "text": text}));
         }
@@ -198,5 +214,43 @@ fn changed_meta(msg: Value) -> Effects {
         send: vec![msg],
         meta: true,
         ..Effects::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachments_go_before_the_text_as_content_blocks() {
+        let mut t = Transcript::default();
+        let image = PromptImage {
+            media_type: "image/png".into(),
+            data: "iVBORw==".into(),
+        };
+        let files = [
+            PromptFile {
+                name: "report.pdf".into(),
+                media_type: PDF_TYPE.into(),
+                data: "JVBERg==".into(),
+            },
+            PromptFile {
+                name: "main.rs".into(),
+                media_type: "text/plain".into(),
+                data: "fn main() {}".into(),
+            },
+        ];
+        let fx = prompt(&mut t, "look", &[image], &files).unwrap();
+        let content = &fx.send[0]["message"]["content"];
+        assert_eq!(content[0]["type"], "document");
+        assert_eq!(content[0]["title"], "report.pdf");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["type"], "text");
+        assert_eq!(content[1]["source"]["data"], "fn main() {}");
+        assert_eq!(content[2]["type"], "image");
+        assert_eq!(content[3], json!({"type": "text", "text": "look"}));
+
+        let plain = prompt(&mut t, "hi", &[], &[]).unwrap();
+        assert_eq!(plain.send[0]["message"]["content"], "hi");
     }
 }

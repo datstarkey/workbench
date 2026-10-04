@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-shell';
 import type { ChatPlatform } from '@workbench/chat-ui';
-import type { ChatImage } from '$types/workbench';
+import type { ChatAttachment } from '$types/workbench';
 
 export const desktopChatPlatform: ChatPlatform = {
 	openLink(href) {
@@ -10,7 +10,7 @@ export const desktopChatPlatform: ChatPlatform = {
 	},
 
 	/** Tauri takes OS file drops before the page sees them; keep the ones over `node`. */
-	watchImageDrops(node, on) {
+	watchDrops(node, on) {
 		const inside = (x: number, y: number) => {
 			const r = node.getBoundingClientRect();
 			const px = x / window.devicePixelRatio;
@@ -28,7 +28,7 @@ export const desktopChatPlatform: ChatPlatform = {
 				on.hover(false);
 				if (!over) return;
 				const results = await Promise.allSettled(
-					p.paths.map((path) => invoke<ChatImage>('read_chat_image', { path }))
+					p.paths.map((path) => invoke<ChatAttachment>('read_chat_attachment', { path }))
 				);
 				const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
 				on.drop(
