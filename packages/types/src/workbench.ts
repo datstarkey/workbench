@@ -665,6 +665,9 @@ export interface ModelOption {
 	resolvedModel: string | null;
 	/** Effort levels it accepts; empty when it has no effort setting. */
 	effortLevels: EffortLevel[];
+	defaultEffort?: EffortLevel;
+	inputModalities?: string[];
+	serviceTiers?: { id: string; name: string; description: string }[];
 }
 
 /** `none`/`minimal` are Codex-only, `max` Claude-only. */
@@ -707,9 +710,78 @@ export interface TranscriptMeta {
 	contextWindow?: number;
 	/** Codex only: plan limits as the stream reports them (Claude's come from `GET /agent/usage`). */
 	usageLimits?: UsageLimit[];
+	codex?: CodexState;
 }
 
+export type CodexAction =
+	| 'compact'
+	| 'review'
+	| 'fork'
+	| 'rename'
+	| 'archive'
+	| 'unarchive'
+	| 'threads'
+	| 'history'
+	| 'collaboration'
+	| 'serviceTier'
+	| 'goal'
+	| 'clearGoal'
+	| 'queueAdd'
+	| 'queueUpdate'
+	| 'queueDelete'
+	| 'queueReorder'
+	| 'queueSend'
+	| 'queuePause'
+	| 'inspect'
+	| 'login'
+	| 'cancelLogin'
+	| 'mcpLogin'
+	| 'remoteEnable'
+	| 'remoteDisable'
+	| 'remotePair'
+	| 'remoteRevoke'
+	| 'backgroundTerminate'
+	| 'backgroundClean'
+	| 'attachmentAdd'
+	| 'attachmentRemove'
+	| 'realtimeStart'
+	| 'realtimeStop'
+	| 'realtimeAudio'
+	| 'realtimeText'
+	| 'elicitation';
+export interface CodexState {
+	approvalPolicy: unknown | null;
+	sandbox: Record<string, unknown> | null;
+	capabilities: string[];
+	collaborationModes: {
+		name: string;
+		mode: string | null;
+		model: string | null;
+		reasoning_effort: string | null;
+	}[];
+	collaborationMode: string | null;
+	serviceTier: string | null;
+	goal: {
+		objective: string;
+		status: string;
+		tokenBudget: number | null;
+		tokensUsed?: number;
+		[key: string]: unknown;
+	} | null;
+	queue: { id: string; text: string; images: number }[];
+	queuePaused?: boolean;
+	hasOlderHistory: boolean;
+	realtime: boolean;
+}
+export interface ChatArtifact {
+	type: 'image';
+	mimeType: string;
+	data: string;
+}
 export type AgentServerMsg =
+	| { t: 'codexResult'; requestId: string; result?: unknown; error?: string }
+	| { t: 'codexEvent'; method: string; params: Record<string, unknown> }
+	| { t: 'artifacts'; id: string; content: ChatArtifact[] }
 	| {
 			t: 'snapshot';
 			sessionId: string;
@@ -753,6 +825,8 @@ export interface ChatFile {
 export type ChatAttachment = ({ kind: 'image' } & ChatImage) | ({ kind: 'file' } & ChatFile);
 
 export type AgentClientMsg =
+	| { t: 'codex'; requestId: string; action: CodexAction; params?: Record<string, unknown> }
+	| { t: 'artifacts'; id: string }
 	| { t: 'prompt'; text: string; images?: Omit<ChatImage, 'name'>[]; files?: ChatFile[] }
 	| {
 			t: 'approve';
@@ -786,6 +860,8 @@ export interface StartAgentBody {
 	permissionMode?: PermissionMode;
 	/** Codex: the preset to start in; absent leaves `~/.codex/config.toml` in charge. */
 	codexMode?: CodexMode;
+	codexApprovalPolicy?: Exclude<CodexApprovalPolicy, 'default'>;
+	codexSandboxMode?: Exclude<CodexSandboxMode, 'default'>;
 	paneId?: string;
 	hookSocket?: string;
 	/** The pane's Claude account; absent is the default login. */

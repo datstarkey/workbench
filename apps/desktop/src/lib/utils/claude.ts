@@ -63,16 +63,23 @@ function codexOverride(key: string, value: string | undefined, allowed: readonly
 
 function codexBinary(opts?: LaunchOptions): string {
 	return (
-		`${CODEX_NEW_SESSION_COMMAND} ${CODEX_INLINE_FLAG}` +
+		`${CODEX_NEW_SESSION_COMMAND}${opts?.codexNoDaemon ? ' --no-daemon' : ''} ${CODEX_INLINE_FLAG}` +
 		codexOverride('approval_policy', opts?.codexApprovalPolicy, CODEX_APPROVAL_POLICIES) +
 		codexOverride('sandbox_mode', opts?.codexSandboxMode, CODEX_SANDBOX_MODES)
 	);
 }
 
 /**
- * The chat preset matching the Codex launch settings, or undefined when they
- * aren't one of its presets (chat then leaves `~/.codex/config.toml` in charge).
+ * Preserve approval and sandbox overrides independently for native chat.
+ * Omitted values retain the CLI's own configuration.
  */
+export function codexChatSettings(approval: CodexApprovalPolicy, sandbox: CodexSandboxMode) {
+	return {
+		...(approval !== 'default' ? { codexApprovalPolicy: approval } : {}),
+		...(sandbox !== 'default' ? { codexSandboxMode: sandbox } : {})
+	};
+}
+/** Friendly preset for a recognized pair; independent overrides remain valid. */
 export function codexChatMode(
 	approval: CodexApprovalPolicy,
 	sandbox: CodexSandboxMode
@@ -85,6 +92,8 @@ export function codexChatMode(
 
 /** How Claude and Codex sessions should be launched. */
 export interface LaunchOptions {
+	/** Supported Workbench terminals own their process instead of a shared daemon. */
+	codexNoDaemon?: boolean;
 	permissionMode?: ClaudePermissionMode;
 	codexApprovalPolicy?: CodexApprovalPolicy;
 	codexSandboxMode?: CodexSandboxMode;
@@ -289,7 +298,7 @@ export function extractPromptArg(
 
 	let rest = trimmed.slice(binary.length + 1).trimStart();
 	if (type === 'codex') {
-		rest = rest.replace(CODEX_OVERRIDES_RE, '');
+		rest = rest.replace(/^--no-daemon[ \t]*/, '').replace(CODEX_OVERRIDES_RE, '');
 	} else {
 		const flag = /^--permission-mode[ \t]+(\S+)[ \t]*/.exec(rest);
 		// An unknown mode means we did not write this command; normalise it away.

@@ -47,8 +47,8 @@ function fakeApi(
 	return { start, socketUrl: async (id) => `ws://test/agent/claude/${id}/ws` };
 }
 
-async function connected(api = fakeApi()) {
-	const chat = new AgentChat(body, api);
+async function connected(api = fakeApi(), startBody = body) {
+	const chat = new AgentChat(startBody, api);
 	await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
 	const ws = FakeSocket.last!;
 	ws.emit({
@@ -503,6 +503,125 @@ describe('AgentChat', () => {
 		const chat = new AgentChat(body, fakeApi());
 		expect(chat.agent).toBe('claude');
 		expect(chat.sessionId).toBe('sid');
+		chat.dispose();
+	});
+	it('correlates native action replies across clients and settles timeouts', async () => {
+		const { chat, ws } = await connected(fakeApi(), { ...body, agent: 'codex' });
+		const first = chat.codexAction('compact');
+		const second = chat.codexAction('inspect', { section: 'account' });
+		const messages = ws.sent as { requestId: string }[];
+		ws.emit({ t: 'codexResult', requestId: messages[1].requestId, result: { account: 'user' } });
+		ws.emit({ t: 'codexResult', requestId: messages[0].requestId, result: {} });
+		await expect(first).resolves.toEqual({});
+		await expect(second).resolves.toEqual({ account: 'user' });
+		const timeout = chat.codexAction('review');
+		const rejected = expect(timeout).rejects.toThrow('timed out');
+		await vi.advanceTimersByTimeAsync(35000);
+		await rejected;
+		chat.dispose();
+	});
+	it('disposal releases outstanding native actions and optional questions do not block', async () => {
+		const { chat, ws } = await connected();
+		const needs = vi.fn();
+		chat.onNeedsYou = needs;
+		ws.emit({
+			t: 'update',
+			changes: [
+				[
+					0,
+					{
+						kind: 'approval',
+						id: 'q',
+						tool: 'AskUserQuestion',
+						input: { isBlocking: false, questions: [] },
+						canAlwaysAllow: false,
+						expired: false
+					}
+				]
+			],
+			meta: meta(true)
+		});
+		expect(needs).not.toHaveBeenCalled();
+		const action = chat.codexAction('inspect', { section: 'account' });
+		const rejected = expect(action).rejects.toThrow('Chat closed');
+		chat.dispose();
+		await rejected;
+	});
+	it('queue delivery sends an explicit action and attachments wait for a prompt', async () => {
+		const { chat, ws } = await connected(fakeApi(), { ...body, agent: 'codex' });
+		chat.files = [{ name: 'README.md', text: 'Project context' }];
+		expect(ws.sent).toEqual([]);
+		chat.receive({ t: 'update', changes: [], meta: meta(true) });
+		chat.delivery = 'queue';
+		expect(chat.prompt('Use this file')).toBe(true);
+		const sent = ws.sent[0] as {
+			t: string;
+			action: string;
+			params: { text: string };
+			requestId: string;
+		};
+		expect(sent.t).toBe('codex');
+		expect(sent.action).toBe('queueAdd');
+		expect(sent.params.text).toBe('File: README.md\n\nProject context\n\nUse this file');
+		ws.emit({ t: 'codexResult', requestId: sent.requestId, result: {} });
+		await Promise.resolve();
+		chat.dispose();
+	});
+	it('older history follows a client cursor and resets on a different session', async () => {
+		const { chat, ws } = await connected(fakeApi(), { ...body, agent: 'codex' });
+		const first = chat.loadOlder();
+		const request = ws.sent.at(-1) as { requestId: string };
+		ws.emit({
+			t: 'codexResult',
+			requestId: request.requestId,
+			result: { items: [{ kind: 'text', id: 'old', text: 'Earlier' }], nextCursor: 'next' }
+		});
+		await first;
+		const second = chat.loadOlder();
+		expect(ws.sent.at(-1)).toMatchObject({ params: { cursor: 'next' } });
+		ws.emit({
+			t: 'codexResult',
+			requestId: (ws.sent.at(-1) as { requestId: string }).requestId,
+			result: { items: [], nextCursor: null }
+		});
+		await second;
+		expect(chat.hasOlderHistory).toBe(false);
+		expect(chat.hasHistory).toBe(true);
+		ws.emit({
+			t: 'snapshot',
+			sessionId: 'different',
+			start: 0,
+			items: [],
+			commands: [],
+			meta: meta(),
+			exited: false
+		});
+		expect(chat.historyItems).toEqual([]);
+		expect(chat.hasHistory).toBe(false);
+		chat.dispose();
+	});
+	it('identical pending messages require separate echoes', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('same');
+		chat.prompt('same');
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'a', text: 'same', timestamp: '' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toHaveLength(1);
+		ws.emit({
+			t: 'update',
+			changes: [[1, { kind: 'text', id: 'text', text: 'Working' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toHaveLength(1);
+		ws.emit({
+			t: 'update',
+			changes: [[2, { kind: 'user', id: 'b', text: 'same', timestamp: '' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toHaveLength(0);
 		chat.dispose();
 	});
 });

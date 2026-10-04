@@ -9,6 +9,7 @@
 		activity,
 		agentName,
 		ChatComposer,
+		CodexControls,
 		ChatContext,
 		ChatModelPicker,
 		ChatPlan,
@@ -38,7 +39,7 @@
 		getWorkspaceStore
 	} from '$stores/context';
 	import PRStatusBadge from '$features/projects/PRStatusBadge.svelte';
-	import { codexChatMode } from '$lib/utils/claude';
+	import { codexChatSettings } from '$lib/utils/claude';
 	import { openUrl } from '$lib/utils/open-url';
 	import { planUsage } from './agent-api';
 	import { acquireChat } from './chat-registry';
@@ -80,7 +81,7 @@
 	const githubStore = getGitHubStore();
 	// svelte-ignore state_referenced_locally
 	const agentLabel = agentName(agent);
-	const codexMode = codexChatMode(
+	const codexSettings = codexChatSettings(
 		settingsStore.codexApprovalPolicy,
 		settingsStore.codexSandboxMode
 	);
@@ -93,7 +94,7 @@
 		paneId,
 		// The same launch settings terminal sessions get from Settings.
 		...(agent === 'codex'
-			? codexMode && { codexMode }
+			? codexSettings
 			: {
 					...(claudeAccountId ? { claudeAccountId } : {}),
 					...(settingsStore.claudePermissionMode !== 'default'
@@ -331,6 +332,13 @@
 				{#if todos.length > 0}
 					<ChatPlan steps={todos} />
 				{/if}
+				<CodexControls
+					{chat}
+					onThread={(id, label) => {
+						if (workspace)
+							workspaceStore.resumeAISession(workspace.id, id, label, 'codex', undefined, 'chat');
+					}}
+				/>
 				<ChatComposer
 					id="chat-draft-{paneId}"
 					{agent}

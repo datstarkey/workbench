@@ -14,6 +14,7 @@ export * from './file-mentions.ts';
 export * from './elicitation-form.ts';
 export { default as ChatActivity } from './ChatActivity.svelte';
 export { default as ChatApproval } from './ChatApproval.svelte';
+export { default as CodexControls } from './CodexControls.svelte';
 export { default as ChatComposer } from './ChatComposer.svelte';
 export { default as ChatElicitation } from './ChatElicitation.svelte';
 export { default as ChatMarkdown } from './ChatMarkdown.svelte';

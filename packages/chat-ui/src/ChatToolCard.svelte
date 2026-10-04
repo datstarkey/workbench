@@ -17,16 +17,19 @@
 		tool,
 		cwd,
 		startedAt,
-		fetchFullOutput
+		fetchFullOutput,
+		fetchArtifacts
 	}: {
 		tool: ToolItem;
 		cwd?: string;
 		/** When the call was first seen running, for its timer. */
 		startedAt?: number;
 		fetchFullOutput: (toolId: string) => Promise<string | null>;
+		fetchArtifacts?: (id: string) => Promise<import('@workbench/types').ChatArtifact[]>;
 	} = $props();
 
 	let open = $state(false);
+	let images = $state<import('@workbench/types').ChatArtifact[]>([]);
 	/** The whole output, once fetched. */
 	let fullOutput = $state<string | null>(null);
 	let loadingFull = $state(false);
@@ -39,7 +42,7 @@
 
 	const detail = $derived(toolDetail(tool, cwd));
 	const stats = $derived(patchStats(tool.patch));
-	const expandable = $derived(Boolean(tool.patch?.length || tool.output));
+	const expandable = $derived(Boolean(tool.patch?.length || tool.output || tool.input?.artifacts));
 	const running = $derived(tool.status === 'running');
 	const shown = $derived(fullOutput ?? tool.output ?? '');
 	const markdown = $derived(outputMarkdown(tool, shown));
@@ -89,6 +92,17 @@
 		<div
 			class="scrollbar-thin max-h-80 overflow-auto border-t border-wb-hair py-1 font-mono text-[11px] leading-relaxed"
 		>
+			{#if tool.input?.artifacts && fetchArtifacts}
+				<button
+					class="m-2 rounded border border-wb-hair px-3 py-1"
+					onclick={async () => (images = await fetchArtifacts!(tool.id))}>Load images</button
+				>
+				{#each images as image, i (i)}<img
+						class="max-h-80 max-w-full object-contain"
+						src={`data:${image.mimeType};base64,${image.data}`}
+						alt="Image returned by {tool.name}"
+					/>{/each}
+			{/if}
 			{#if tool.patch?.length}
 				{#each tool.patch as hunk, h (h)}
 					{#if h > 0}<div class="px-2.5 text-wb-ink-soft">⋯</div>{/if}

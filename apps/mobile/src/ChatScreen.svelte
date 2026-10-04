@@ -12,6 +12,7 @@
 		awaitsAnswer,
 		ChatApproval,
 		ChatComposer,
+		CodexControls,
 		ChatContext,
 		ChatElicitation,
 		ChatModelPicker,
@@ -320,6 +321,10 @@
 		{#if todos.length > 0}
 			<ChatPlan steps={todos} />
 		{/if}
+		<CodexControls
+			{chat}
+			onThread={(sessionId, name) => client.openChat({ ...ref, sessionId, name, agent: 'codex' })}
+		/>
 		<ChatComposer
 			id="chat-draft-{ref.sessionId}"
 			agent={chat.agent}

@@ -841,7 +841,8 @@ export class WorkspaceStore {
 		sessionId: string,
 		label: string,
 		type: SessionType = 'claude',
-		accountId?: string
+		accountId?: string,
+		view?: 'chat' | 'terminal'
 	) {
 		this.updateWorkspace(workspaceId, (w) => {
 			const newTab = this.createAITab(
@@ -851,7 +852,7 @@ export class WorkspaceStore {
 				type,
 				accountId
 			);
-			if (type === 'claude' && this.opensAsChat) newTab.panes[0].view = 'chat';
+			if (view === 'chat' || (type === 'claude' && this.opensAsChat)) newTab.panes[0].view = 'chat';
 			return {
 				...w,
 				terminalTabs: [...w.terminalTabs, newTab],

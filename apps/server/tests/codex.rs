@@ -39,6 +39,18 @@ while IFS= read -r line; do
     *'"method":"thread/items/list"'*)
       echo "{\"id\":$id,\"result\":{\"data\":[{\"item\":{\"type\":\"agentMessage\",\"id\":\"m0\",\"text\":\"earlier answer\"}},{\"item\":{\"type\":\"userMessage\",\"id\":\"u0\",\"content\":[{\"type\":\"text\",\"text\":\"earlier question\"}]}}],\"nextCursor\":null}}"
       ;;
+    *'"method":"thread/compact/start"'*)
+      echo "{\"id\":$id,\"result\":{}}"
+      ;;
+    *'"method":"thread/fork"'*)
+      echo "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"01a0f8c4-0000-7000-8000-000000000002\",\"name\":\"Fork\"}}}"
+      ;;
+    *'"method":"remoteControl/enable"'*)
+      echo "{\"id\":$id,\"error\":{\"code\":-32601,\"message\":\"Unsupported\"}}"
+      ;;
+    *'"method":"thread/unsubscribe"'*)
+      echo "{\"id\":$id,\"result\":{\"status\":\"unsubscribed\"}}"
+      ;;
     *'"method":"model/list"'*)
       echo "{\"id\":$id,\"result\":{\"data\":[{\"id\":\"fake-model\",\"model\":\"fake-model\",\"displayName\":\"Fake\",\"description\":\"\",\"hidden\":false,\"supportedReasoningEfforts\":[{\"reasoningEffort\":\"low\"},{\"reasoningEffort\":\"high\"}]}]}}"
       ;;
@@ -246,6 +258,37 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         }
     }
     assert!(saw_output, "the command finishes with its output");
+
+    // Explicit native actions are correlated on the socket; forking keeps this
+    // session's identity, and unavailable optional APIs report an action error.
+    for (request, action) in [
+        ("compact", "compact"),
+        ("fork", "fork"),
+        ("remote", "remoteEnable"),
+    ] {
+        ws.send(Message::Text(
+            json!({"t":"codex","requestId":request,"action":action})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        loop {
+            let frame = next_json(&mut ws).await;
+            if frame["t"] != "codexResult" || frame["requestId"] != request {
+                continue;
+            }
+            if action == "remoteEnable" {
+                assert_eq!(frame["error"], "Unsupported");
+            } else if action == "fork" {
+                assert_eq!(frame["result"]["thread"]["name"], "Fork");
+            } else {
+                assert!(frame.get("error").is_none());
+            }
+            break;
+        }
+    }
+    assert_eq!(list("/agent/codex").await[0]["sessionId"], NEW_THREAD);
 
     let received = std::fs::read_to_string(&log).unwrap();
     let sent: Vec<Value> = received

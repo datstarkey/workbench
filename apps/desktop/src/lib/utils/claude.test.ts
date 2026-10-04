@@ -5,6 +5,7 @@ import {
 	claudeNewSessionWithIdCommand,
 	claudeResumeCommand,
 	codexChatMode,
+	codexChatSettings,
 	codexResumeCommand,
 	extractPromptArg,
 	newSessionCommandWithPrompt,
@@ -545,5 +546,27 @@ describe('codexChatMode', () => {
 		expect(codexChatMode('default', 'default')).toBeUndefined();
 		expect(codexChatMode('never', 'read-only')).toBeUndefined();
 		expect(codexChatMode('on-request', 'default')).toBeUndefined();
+	});
+});
+
+describe('Codex launch contracts', () => {
+	it('keeps independent and partial permission choices in chat', () => {
+		expect(codexChatSettings('never', 'read-only')).toEqual({
+			codexApprovalPolicy: 'never',
+			codexSandboxMode: 'read-only'
+		});
+		expect(codexChatSettings('default', 'workspace-write')).toEqual({
+			codexSandboxMode: 'workspace-write'
+		});
+		expect(codexChatSettings('on-request', 'default')).toEqual({
+			codexApprovalPolicy: 'on-request'
+		});
+		expect(codexChatSettings('default', 'default')).toEqual({});
+	});
+	it('opts supported terminals out of the daemon and recovers persisted prompts', () => {
+		const command = newSessionCommand('codex', { codexNoDaemon: true });
+		expect(command).toContain(' --no-daemon ');
+		expect(extractPromptArg('codex', `${command} 'do work'`)).toBe("'do work'");
+		expect(newSessionCommand('codex')).not.toContain('--no-daemon');
 	});
 });

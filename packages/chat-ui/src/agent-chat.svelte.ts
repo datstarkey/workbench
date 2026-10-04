@@ -1,5 +1,7 @@
 import type {
 	AgentClientMsg,
+	CodexAction,
+	ChatArtifact,
 	AgentKind,
 	AgentServerMsg,
 	ApprovalDecision,
@@ -76,6 +78,22 @@ export class AgentChat {
 	imagePreviews = $state.raw<Record<string, string[]>>({});
 	/** When each task or running tool was first seen (client clock), for timers. */
 	seenAt = $state.raw<Record<string, number>>({});
+	delivery = $state<'steer' | 'queue'>('steer');
+	files = $state.raw<{ name: string; text: string }[]>([]);
+	historyItems = $state.raw<TranscriptItem[]>([]);
+	private historyCursor = $state<string | null | undefined>(undefined);
+	private loadingHistory = false;
+	codexEvents = $state.raw<{ method: string; params: Record<string, unknown> }[]>([]);
+	onCodexEvent: ((method: string, params: Record<string, unknown>) => void) | null = null;
+	private controls = new Map<
+		string,
+		{
+			resolve: (v: unknown) => void;
+			reject: (e: Error) => void;
+			timer: ReturnType<typeof setTimeout>;
+		}
+	>();
+	private artifactWaiters = new Map<string, (v: ChatArtifact[]) => void>();
 
 	private body: StartAgentBody;
 	private readonly api: AgentApi;
@@ -90,6 +108,7 @@ export class AgentChat {
 	/** An `attachOnly` chat that ended was restarted here: this device now owns it. */
 	onTakeOver: (() => void) | null = null;
 	private waitingOnYou = false;
+	private echoedUsers = new Set<string>();
 	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
@@ -172,6 +191,7 @@ export class AgentChat {
 		ws.onclose = () => {
 			if (this.ws !== ws) return; // replaced by a Restart
 			this.ws = null;
+			this.rejectControls('Connection lost');
 			if (this.status !== 'exited' && this.status !== 'failed') this.scheduleReconnect();
 		};
 	}
@@ -185,10 +205,35 @@ export class AgentChat {
 
 	receive(msg: AgentServerMsg): void {
 		switch (msg.t) {
+			case 'codexResult': {
+				const pending = this.controls.get(msg.requestId);
+				if (!pending) break;
+				clearTimeout(pending.timer);
+				this.controls.delete(msg.requestId);
+				if (msg.error) {
+					this.notice = msg.error;
+					pending.reject(new Error(msg.error));
+				} else pending.resolve(msg.result);
+				break;
+			}
+			case 'codexEvent':
+				this.codexEvents = [
+					...this.codexEvents.slice(-19),
+					{ method: msg.method, params: msg.params }
+				];
+				this.onCodexEvent?.(msg.method, msg.params);
+				break;
+			case 'artifacts':
+				this.artifactWaiters.get(msg.id)?.(msg.content);
+				this.artifactWaiters.delete(msg.id);
+				break;
 			case 'snapshot':
 				// `/clear` re-keys to a new, empty transcript. The CLI never echoes
 				// the `/clear` itself; prompts queued after it echo in the new one.
 				if (msg.sessionId !== this.sessionId) {
+					this.historyItems = [];
+					this.historyCursor = undefined;
+					this.echoedUsers.clear();
 					const clear = this.pending.findIndex((p) => /^\/clear(\s|$)/.test(p.text));
 					this.pending = this.pending.slice(clear + 1).map((p) => ({ ...p, after: 0 }));
 				}
@@ -214,6 +259,7 @@ export class AgentChat {
 				this.reportWaiting();
 				break;
 			case 'exit':
+				this.rejectControls('The Codex session ended');
 				this.status = 'exited';
 				this.error = msg.message;
 				this.pending = [];
@@ -242,6 +288,7 @@ export class AgentChat {
 				delete this.taskWaiters[msg.taskId];
 				break;
 			case 'revoked':
+				this.rejectControls('The connection was revoked');
 				this.status = 'exited';
 				this.error = 'The connection to Workbench was closed.';
 				this.ws?.close();
@@ -277,8 +324,14 @@ export class AgentChat {
 		// The CLI collapses runs of spaces in a slash command's echo.
 		const same = (a: string, b: string) => a.replace(/\s+/g, ' ') === b.replace(/\s+/g, ' ');
 		const previews: Record<string, string[]> = {};
+		const matched = this.echoedUsers;
+		const available = new Set(users.map((user) => user.id));
+		for (const id of matched) if (!available.has(id)) matched.delete(id);
 		this.pending = this.pending.filter((p) => {
-			const echo = users.slice(p.after).find((u) => u.kind === 'user' && same(u.text, p.text));
+			const echo = users
+				.slice(p.after)
+				.find((u) => u.kind === 'user' && !matched.has(u.id) && same(u.text, p.text));
+			if (echo) matched.add(echo.id);
 			if (echo && p.previews.length > 0) previews[echo.id] = p.previews;
 			return !echo;
 		});
@@ -292,7 +345,12 @@ export class AgentChat {
 	 * past item 0 left older history out, prompts included.
 	 */
 	get hasHistory(): boolean {
-		return this.start > 0 || this.items.some((i) => i.kind === 'user');
+		return (
+			this.start > 0 ||
+			this.hasOlderHistory ||
+			this.historyItems.length > 0 ||
+			this.items.some((i) => i.kind === 'user')
+		);
 	}
 
 	private userTexts(): string[] {
@@ -309,13 +367,52 @@ export class AgentChat {
 	}
 
 	prompt(text: string, images: ChatImage[] = [], files: ChatFile[] = []): boolean {
-		const trimmed = text.trim();
+		if (this.agent === 'codex' && files.length) {
+			this.notice =
+				'Codex cannot read document attachments. Mention project files with @ or attach inline text in Codex controls.';
+			return false;
+		}
+		const model = this.meta?.models.find(
+			(m) =>
+				m.value === (this.meta?.modelChoice ?? this.meta?.model) ||
+				m.resolvedModel === this.meta?.model
+		);
+		if (
+			this.agent === 'codex' &&
+			images.length &&
+			model?.inputModalities?.length &&
+			!model.inputModalities.includes('image')
+		) {
+			this.notice =
+				'The selected Codex model does not accept images. Choose a model with image support.';
+			return false;
+		}
+		const trimmed = [...this.files.map((file) => `File: ${file.name}\n\n${file.text}`), text.trim()]
+			.filter(Boolean)
+			.join('\n\n');
 		if (!trimmed && images.length === 0 && files.length === 0) return false;
+		if (
+			this.agent === 'codex' &&
+			this.delivery === 'queue' &&
+			(this.meta?.busy || this.meta?.codex?.queuePaused)
+		) {
+			void this.codexAction('queueAdd', {
+				text: trimmed,
+				images: images.map(({ mediaType, data }) => ({ mediaType, data }))
+			})
+				.then(() => (this.files = []))
+				.catch(() => {
+					// Retain a recoverable copy if the composer already cleared its draft.
+					this.files = [...this.files, { name: 'Unsent queued message', text: text.trim() }];
+				});
+			return true;
+		}
 		const payload = images.map(({ mediaType, data }) => ({ mediaType, data }));
 		const msg: AgentClientMsg = { t: 'prompt', text: trimmed };
 		if (payload.length > 0) msg.images = payload;
 		if (files.length > 0) msg.files = files;
 		if (!this.send(msg)) return false;
+		this.files = [];
 		this.pending = [
 			...this.pending,
 			{
@@ -353,8 +450,16 @@ export class AgentChat {
 		requestId: string,
 		action: ElicitationAction,
 		content?: Record<string, ElicitationValue>
-	): void {
-		this.send({ t: 'elicit', requestId, action, ...(content ? { content } : {}) });
+	): Promise<void> {
+		if (this.agent === 'codex')
+			return this.codexAction('elicitation', {
+				id: requestId,
+				choice: action,
+				...(content ? { content } : {})
+			}).then(() => {});
+		if (!this.send({ t: 'elicit', requestId, action, ...(content ? { content } : {}) }))
+			return Promise.reject(new Error(this.notice ?? 'Disconnected'));
+		return Promise.resolve();
 	}
 
 	interrupt(): void {
@@ -373,6 +478,84 @@ export class AgentChat {
 		this.send({ t: 'effort', effort });
 	}
 
+	codexAction(action: CodexAction, params: Record<string, unknown> = {}): Promise<unknown> {
+		const requestId = crypto.randomUUID();
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.controls.delete(requestId);
+				const error = new Error('Codex action timed out');
+				this.notice = error.message;
+				reject(error);
+			}, 35000);
+			this.controls.set(requestId, { resolve, reject, timer });
+			if (!this.send({ t: 'codex', requestId, action, params })) {
+				clearTimeout(timer);
+				this.controls.delete(requestId);
+				reject(new Error(this.notice ?? 'Disconnected'));
+			}
+		});
+	}
+	get hasOlderHistory(): boolean {
+		return this.historyCursor === undefined
+			? !!this.meta?.codex?.hasOlderHistory
+			: this.historyCursor !== null;
+	}
+	async loadOlder(): Promise<void> {
+		if (this.loadingHistory) return;
+		if (
+			this.historyItems.length >= 2000 ||
+			JSON.stringify(this.historyItems).length >= 16 * 1024 * 1024
+		) {
+			throw new Error(
+				'Earlier history display limit reached. Open this thread in the Codex terminal to read more.'
+			);
+		}
+		this.loadingHistory = true;
+		const sessionId = this.sessionId;
+		try {
+			const result = (await this.codexAction(
+				'history',
+				this.historyCursor === undefined ? {} : { cursor: this.historyCursor }
+			)) as { items: TranscriptItem[]; nextCursor: string | null };
+			if (sessionId !== this.sessionId) return;
+			this.historyItems = [...result.items, ...this.historyItems];
+			this.historyCursor = result.nextCursor ?? null;
+		} finally {
+			this.loadingHistory = false;
+		}
+	}
+
+	artifacts(id: string): Promise<ChatArtifact[]> {
+		return new Promise((resolve) => {
+			const timer = setTimeout(() => {
+				this.artifactWaiters.delete(id);
+				resolve([]);
+			}, 30000);
+			this.artifactWaiters.set(id, (v) => {
+				clearTimeout(timer);
+				resolve(v);
+			});
+			if (!this.send({ t: 'artifacts', id })) {
+				clearTimeout(timer);
+				this.artifactWaiters.delete(id);
+				resolve([]);
+			}
+		});
+	}
+	private rejectControls(message: string): void {
+		for (const pending of this.controls.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error(message));
+		}
+		this.controls.clear();
+		for (const waiter of this.artifactWaiters.values()) waiter([]);
+		this.artifactWaiters.clear();
+		Object.values(this.outputWaiters).forEach((v) => v(null));
+		this.outputWaiters = {};
+		Object.values(this.taskWaiters).forEach((v) => v(null));
+		this.taskWaiters = {};
+	}
+
 	/** The whole output of a tool shown as a preview; null if it's gone. */
 	fullOutput(toolId: string): Promise<string | null> {
 		return new Promise((resolve) => {
@@ -383,6 +566,29 @@ export class AgentChat {
 
 	/** The end of a background task's live output; null until the CLI writes it. */
 	taskOutput(taskId: string): Promise<TaskOutput | null> {
+		if (this.agent === 'codex')
+			return this.codexAction('inspect', { section: 'task', threadId: taskId })
+				.then((result) => {
+					const entries = (
+						result as {
+							data: {
+								item: { text?: string; aggregatedOutput?: string; content?: { text?: string }[] };
+							}[];
+						}
+					).data;
+					const text = [...(entries ?? [])]
+						.reverse()
+						.flatMap(({ item }) =>
+							item.text
+								? [item.text]
+								: item.aggregatedOutput
+									? [item.aggregatedOutput]
+									: (item.content ?? []).flatMap((c) => (c.text ? [c.text] : []))
+						)
+						.join('\n\n');
+					return { text: text.slice(-65536), bytes: new TextEncoder().encode(text).length };
+				})
+				.catch(() => null);
 		return new Promise((resolve) => {
 			if (!this.send({ t: 'taskOutput', taskId })) return resolve(null);
 			this.taskWaiters[taskId] = chain(this.taskWaiters[taskId], resolve);
@@ -407,6 +613,7 @@ export class AgentChat {
 	}
 
 	dispose(): void {
+		this.rejectControls('Chat closed');
 		if (this.waitingOnYou) this.onNeedsYou?.(false);
 		this.disposed = true;
 		if (this.retryTimer) clearTimeout(this.retryTimer);

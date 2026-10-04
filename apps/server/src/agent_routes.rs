@@ -107,6 +107,8 @@ pub struct CodexStartBody {
     pub session_id: Option<String>,
     /// `read-only` | `auto` | `full-access`; absent leaves `~/.codex/config.toml` in charge.
     pub codex_mode: Option<String>,
+    #[serde(flatten)]
+    pub options: workbench_core::codex_controls::LaunchOptions,
     pub pane_id: Option<String>,
     pub hook_socket: Option<String>,
     #[serde(default)]
@@ -138,6 +140,7 @@ pub async fn codex_start(
             launch: Launch::Codex {
                 thread_id: body.session_id,
                 mode: body.codex_mode,
+                options: body.options,
             },
         })?;
         Ok(json!({"sessionId": session.id()}))
@@ -266,6 +269,16 @@ const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
 enum ClientMsg {
+    Artifacts {
+        id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Codex {
+        request_id: String,
+        action: workbench_core::codex_controls::Action,
+        #[serde(default)]
+        params: Value,
+    },
     Prompt {
         #[serde(default)]
         text: String,
@@ -315,6 +328,35 @@ enum ClientMsg {
 /// Apply a client message; `Some` is a reply for that client alone.
 fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
     let reply = match serde_json::from_str::<ClientMsg>(text)? {
+        ClientMsg::Artifacts { id } => {
+            return Ok(Some(
+                json!({"t":"artifacts","id":id,"content":session.artifacts(&id).unwrap_or_default()}),
+            ))
+        }
+        ClientMsg::Codex {
+            request_id,
+            action,
+            params,
+        } => {
+            if request_id.len() > 128
+                || params.to_string().len()
+                    > if matches!(action, workbench_core::codex_controls::Action::QueueAdd) {
+                        32 * 1024 * 1024
+                    } else {
+                        2 * 1024 * 1024
+                    }
+            {
+                return Ok(Some(
+                    json!({"t":"codexResult","requestId":request_id,"error":"Codex control exceeds its size limit"}),
+                ));
+            }
+            if let Err(e) = session.codex_action(&request_id, action, &params) {
+                return Ok(Some(
+                    json!({"t":"codexResult", "requestId":request_id,"error":e.to_string()}),
+                ));
+            }
+            Ok(())
+        }
         ClientMsg::TaskOutput { task_id } => {
             let (text, bytes) = session.task_output(&task_id).unzip();
             return Ok(Some(

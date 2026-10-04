@@ -26,11 +26,14 @@ pub fn claude_user_dir() -> PathBuf {
 }
 
 pub fn codex_sessions_dir() -> PathBuf {
-    home_dir().join(".codex").join("sessions")
+    codex_config_dir().join("sessions")
 }
 
 pub fn codex_config_dir() -> PathBuf {
-    home_dir().join(".codex")
+    std::env::var_os("CODEX_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".codex"))
 }
 
 /// Build a PATH that includes common CLI tool locations.

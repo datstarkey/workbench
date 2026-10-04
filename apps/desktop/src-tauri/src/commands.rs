@@ -447,6 +447,13 @@ pub fn check_claude_integration() -> IntegrationStatus {
 }
 
 #[tauri::command]
+pub async fn codex_supports_no_daemon() -> bool {
+    tauri::async_runtime::spawn_blocking(codex_config::supports_no_daemon)
+        .await
+        .unwrap_or(false)
+}
+
+#[tauri::command]
 pub fn check_codex_integration() -> IntegrationStatus {
     codex_config::check_codex_config_status()
 }

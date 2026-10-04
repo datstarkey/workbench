@@ -17,6 +17,7 @@ getrandom = "0.4"
 if-addrs = "0.15"
 base64 = "0.22"
 open = { version = "5.3", features = ["shellexecute-on-windows"] }
+toml_edit = "0.20"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

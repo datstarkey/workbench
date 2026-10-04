@@ -72,6 +72,7 @@ pub enum Launch {
         thread_id: Option<String>,
         /// A `CodexMode`; `None` leaves `~/.codex/config.toml` in charge.
         mode: Option<String>,
+        options: workbench_core::codex_controls::LaunchOptions,
     },
 }
 
@@ -140,8 +141,13 @@ impl AgentManager {
                 permission_mode,
                 ..
             } => claude::validate(session_id, permission_mode.as_deref())?,
-            Launch::Codex { thread_id, mode } => {
-                codex::validate(thread_id.as_deref(), mode.as_deref())?
+            Launch::Codex {
+                thread_id,
+                mode,
+                options,
+            } => {
+                codex::validate(thread_id.as_deref(), mode.as_deref())?;
+                options.validate()?;
             }
         }
         let known_id = req.launch.known_id().map(String::from);
@@ -171,9 +177,16 @@ impl AgentManager {
                             permission_mode.as_deref(),
                             config_dir.as_deref(),
                         ),
-                        Launch::Codex { thread_id, mode } => {
-                            codex::launch(&req, thread_id.as_deref(), mode.as_deref())
-                        }
+                        Launch::Codex {
+                            thread_id,
+                            mode,
+                            options,
+                        } => codex::launch(
+                            &req,
+                            thread_id.as_deref(),
+                            mode.as_deref(),
+                            options.clone(),
+                        ),
                     };
                     AgentSession::spawn(req, launch, self.inner.clone())?
                 }

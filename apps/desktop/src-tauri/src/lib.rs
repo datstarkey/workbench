@@ -90,6 +90,7 @@ macro_rules! build_invoke_handler {
             commands::open_url,
             commands::check_claude_integration,
             commands::check_codex_integration,
+            commands::codex_supports_no_daemon,
             commands::apply_claude_integration,
             commands::apply_codex_integration,
             commands::get_hook_logs,
