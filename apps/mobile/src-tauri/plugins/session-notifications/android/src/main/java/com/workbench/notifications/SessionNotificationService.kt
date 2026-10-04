@@ -36,7 +36,6 @@ class SessionNotificationService : Service() {
     val url = intent?.getStringExtra("url") ?: run { stopSelf(); return START_NOT_STICKY }
     val token = intent.getStringExtra("token") ?: run { stopSelf(); return START_NOT_STICKY }
     val machineId = intent.getStringExtra("machineId") ?: run { stopSelf(); return START_NOT_STICKY }
-    val watchedId = intent.getStringExtra("sessionId") ?: run { stopSelf(); return START_NOT_STICKY }
     val name = intent.getStringExtra("name") ?: "Workbench"
     generation++
     val current = generation
@@ -51,7 +50,7 @@ class SessionNotificationService : Service() {
     val stop = PendingIntent.getService(this, 0, Intent(this, javaClass).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     val notification = NotificationCompat.Builder(this, "monitor")
       .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Workbench · $name")
-      .setContentText("Watching the open chat for approvals and completed turns").setOngoing(true)
+      .setContentText("Watching sessions for approvals and completed turns").setOngoing(true)
       .setContentIntent(open(null, 0)).addAction(0, "Stop", stop).build()
     if (Build.VERSION.SDK_INT >= 34) startForeground(monitorId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
     else startForeground(monitorId, notification)
@@ -68,13 +67,7 @@ class SessionNotificationService : Service() {
           if (code != 200) return@scheduleWithFixedDelay
           val body = connection.inputStream.use { it.readBytes() }
           if (body.size > 2 * 1024 * 1024) return@scheduleWithFixedDelay
-          val all = JSONArray(String(body, Charsets.UTF_8))
-          val list = JSONArray()
-          for (i in 0 until all.length()) {
-            val s = all.getJSONObject(i)
-            val aliases = s.optJSONArray("previousIds") ?: JSONArray()
-            if (s.optString("sessionId") == watchedId || (0 until aliases.length()).any { aliases.optString(it) == watchedId }) list.put(s)
-          }
+          val list = JSONArray(String(body, Charsets.UTF_8))
           main.post {
             if (generation != current) return@post
             for (alert in tracker.update(list)) {

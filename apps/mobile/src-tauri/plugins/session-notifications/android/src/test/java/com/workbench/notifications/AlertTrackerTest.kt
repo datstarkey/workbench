@@ -6,20 +6,46 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AlertTrackerTest {
-  private fun session(id: String = "s", busy: Boolean = false, waiting: String? = null, aliases: List<String> = emptyList(), exited: Boolean = false): JSONArray {
+  private fun summary(id: String = "s", busy: Boolean = false, waiting: String? = null, aliases: List<String> = emptyList(), exited: Boolean = false, turnEnded: Long? = null): JSONObject {
     val s = JSONObject().put("sessionId", id).put("busy", busy).put("updatedAt", 1).put("exited", exited).put("previousIds", JSONArray(aliases))
     if (waiting != null) s.put("waiting", JSONObject().put("id", waiting))
-    return JSONArray().put(s)
+    if (turnEnded != null) s.put("turnEndedAt", turnEnded)
+    return s
   }
-  @Test fun completionRequiresAnObservedBusyTurn() {
+  private fun session(id: String = "s", busy: Boolean = false, waiting: String? = null, aliases: List<String> = emptyList(), exited: Boolean = false, turnEnded: Long? = null) =
+    JSONArray().put(summary(id, busy, waiting, aliases, exited, turnEnded))
+
+  @Test fun theFirstListOnlySeeds() {
+    val tracker = AlertTracker()
+    assertTrue(tracker.update(session(waiting = "a", turnEnded = 5)).isEmpty())
+    assertTrue(tracker.update(session(waiting = "a", turnEnded = 5)).isEmpty())
+    assertEquals("Approval or answer needed", tracker.update(session(waiting = "b", turnEnded = 5))[0].message)
+  }
+  @Test fun completionFromAnObservedBusyTurnOnOlderServers() {
     val tracker = AlertTracker()
     assertTrue(tracker.update(session()).isEmpty())
     assertTrue(tracker.update(session(busy = true)).isEmpty())
     assertEquals("Turn complete", tracker.update(session())[0].message)
     assertTrue(tracker.update(session()).isEmpty())
   }
+  @Test fun aTurnBetweenTwoPollsStillCompletes() {
+    val tracker = AlertTracker()
+    tracker.update(session(turnEnded = 5))
+    assertTrue(tracker.update(session(turnEnded = 5)).isEmpty())
+    assertEquals("Turn complete", tracker.update(session(turnEnded = 9))[0].message)
+    assertTrue(tracker.update(session(turnEnded = 9)).isEmpty())
+  }
+  @Test fun everySessionIsWatchedAndNewOnesSeedSilently() {
+    val tracker = AlertTracker()
+    tracker.update(session(id = "a"))
+    val both = JSONArray().put(summary(id = "a", turnEnded = 3)).put(summary(id = "b", turnEnded = 3))
+    assertEquals(listOf("a"), tracker.update(both).map { it.session.getString("sessionId") })
+    val approval = JSONArray().put(summary(id = "a", turnEnded = 3)).put(summary(id = "b", turnEnded = 3)).put(summary(id = "c", waiting = "x"))
+    assertEquals(listOf("c"), tracker.update(approval).map { it.session.getString("sessionId") })
+  }
   @Test fun approvalsAreDeduplicatedAndFollowClearAliases() {
     val tracker = AlertTracker()
+    tracker.update(JSONArray())
     assertEquals(1, tracker.update(session(waiting = "a")).size)
     assertTrue(tracker.update(session(waiting = "a")).isEmpty())
     assertTrue(tracker.update(session(id = "new", waiting = "a", aliases = listOf("s"))).isEmpty())
@@ -28,6 +54,6 @@ class AlertTrackerTest {
   @Test fun exitsDoNotPretendToBeSuccessfulCompletions() {
     val tracker = AlertTracker()
     tracker.update(session(busy = true))
-    assertTrue(tracker.update(session(exited = true)).isEmpty())
+    assertTrue(tracker.update(session(exited = true, turnEnded = 4)).isEmpty())
   }
 }

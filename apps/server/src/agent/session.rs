@@ -47,6 +47,8 @@ pub struct AgentSession {
     /// Unix ms; both are written under the driver lock.
     busy_since: Mutex<Option<u64>>,
     updated_at: AtomicU64,
+    /// When the last turn went idle, so a poller catches turns shorter than its interval.
+    turn_ended_at: Mutex<Option<u64>>,
     tx: broadcast::Sender<String>,
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Child>,
@@ -120,6 +122,7 @@ impl AgentSession {
             driver: Mutex::new(driver),
             busy_since: Mutex::new(None),
             updated_at: AtomicU64::new(now_ms()),
+            turn_ended_at: Mutex::new(None),
             tx,
             stdin: Mutex::new(Some(stdin)),
             child: Mutex::new(child),
@@ -228,6 +231,7 @@ impl AgentSession {
             exited: self.has_exited(),
             busy_since: *lock(&self.busy_since),
             updated_at: self.updated_at.load(Ordering::SeqCst),
+            turn_ended_at: *lock(&self.turn_ended_at),
             waiting: view.waiting_on().and_then(TranscriptItem::waiting_summary),
             running: view
                 .running_tool()
@@ -386,8 +390,12 @@ impl AgentSession {
     fn touch(&self, t: &dyn ChatView) {
         let now = now_ms();
         self.updated_at.store(now, Ordering::SeqCst);
+        let busy = t.meta().busy;
         let mut since = lock(&self.busy_since);
-        *since = t.meta().busy.then(|| since.unwrap_or(now));
+        if since.is_some() && !busy {
+            *lock(&self.turn_ended_at) = Some(now);
+        }
+        *since = busy.then(|| since.unwrap_or(now));
     }
 
     fn finish(&self) {

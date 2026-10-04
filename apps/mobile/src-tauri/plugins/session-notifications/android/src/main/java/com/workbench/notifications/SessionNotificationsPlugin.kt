@@ -23,7 +23,6 @@ class StartArgs {
   lateinit var token: String
   lateinit var machineId: String
   lateinit var name: String
-  lateinit var sessionId: String
 }
 
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications")])
@@ -55,7 +54,7 @@ class SessionNotificationsPlugin(private val activity: Activity) : Plugin(activi
       require(args.token.length >= 32 && !args.token.contains('\n') && !args.token.contains('\r')) { "Invalid server token" }
       val service = Intent(activity, SessionNotificationService::class.java)
         .putExtra("url", args.url.trimEnd('/')).putExtra("token", args.token)
-        .putExtra("machineId", args.machineId).putExtra("name", args.name).putExtra("sessionId", args.sessionId)
+        .putExtra("machineId", args.machineId).putExtra("name", args.name)
       ContextCompat.startForegroundService(activity, service)
       invoke.resolve()
     } catch (e: Exception) { invoke.reject(e.message ?: "Couldn't start notifications") }

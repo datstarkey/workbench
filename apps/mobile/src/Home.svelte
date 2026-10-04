@@ -481,8 +481,8 @@
 					Approval and completion notifications
 				</label>
 				<p class="text-xs text-wb-ink-mute">
-					Monitor the open chat while the app is in the background. Returning Home stops monitoring.
-					Android shows an ongoing notification while monitoring is active.
+					Watch every session on the connected machine while the app is in the background. Android
+					shows an ongoing notification while monitoring is active.
 				</p>
 				{#if client.notifications.error}<p role="alert" class="text-xs text-wb-err">
 						{client.notifications.error}

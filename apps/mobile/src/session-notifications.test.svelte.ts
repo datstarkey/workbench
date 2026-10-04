@@ -8,8 +8,7 @@ const connection = {
 	url: 'http://mac',
 	token: 'token',
 	machineId: 'mac',
-	name: 'Mac',
-	sessionId: 'chat-1'
+	name: 'Mac'
 };
 function api(): NotificationApi {
 	return {
@@ -40,6 +39,11 @@ it('is opt-in and reconfigures to the latest machine after an in-flight start', 
 	await first;
 	await last;
 	expect(vi.mocked(native.start).mock.calls.map(([c]) => c.machineId)).toEqual(['mac', 'pc']);
+	expect(native.start).toHaveBeenLastCalledWith({
+		...connection,
+		machineId: 'pc',
+		url: 'http://pc'
+	});
 	await notifications.configure(null);
 	expect(native.stop).toHaveBeenCalledTimes(2);
 });
