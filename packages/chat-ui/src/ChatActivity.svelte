@@ -22,6 +22,8 @@
 				if (activity.approval.tool === 'AskUserQuestion') return 'Waiting for your answer';
 				if (activity.approval.tool === 'ExitPlanMode') return 'Waiting for you to review the plan';
 				return 'Waiting for your approval';
+			case 'elicitation':
+				return `Waiting for your input to ${activity.elicitation.server}`;
 			case 'retrying':
 				return 'Retrying';
 			case 'tool':
@@ -39,7 +41,8 @@
 		const why = error ? ` · ${error.replace(/_/g, ' ')}` : '';
 		return `attempt ${attempt} of ${maxRetries}${why}`;
 	});
-	const waiting = $derived(activity.kind === 'approval' || activity.kind === 'retrying');
+	const asking = $derived(activity.kind === 'approval' || activity.kind === 'elicitation');
+	const waiting = $derived(asking || activity.kind === 'retrying');
 </script>
 
 <div
@@ -54,11 +57,11 @@
 	{#if detail}
 		<span class="min-w-0 truncate font-mono text-[11px] text-wb-ink-mute">{detail}</span>
 	{/if}
-	{#if since !== null && activity.kind !== 'approval'}
+	{#if since !== null && !asking}
 		<span class="shrink-0 text-[11px] text-wb-ink-soft"><Elapsed {since} /></span>
 	{/if}
 	<span class="flex-1"></span>
-	{#if activity.kind !== 'approval'}
+	{#if !asking}
 		<button
 			type="button"
 			class="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"

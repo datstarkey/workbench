@@ -9,7 +9,7 @@
 //! - `DELETE /agent/:kind/:id` stops it; `DELETE /agent/:kind?paneId=` stops
 //!   whatever a closed pane owned.
 //! - `WS /agent/:kind/:id/ws` streams `snapshot` then `update`/`exit` frames and
-//!   takes `prompt` / `approve` / `interrupt` / `mode` messages. Any number of
+//!   takes `prompt` / `approve` / `elicit` / `interrupt` / `mode` messages. Any number of
 //!   clients may attach; the first answer to an approval wins.
 //! - `POST /agent/:kind/:id/message` applies one of those messages without a
 //!   socket (an approval from the phone's home screen): 200 with the reply
@@ -32,7 +32,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 use workbench_core::claude_accounts::{self, UsageLimit};
-use workbench_core::claude_transcript::ApprovalDecision;
+use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
     AgentKind, AgentSession, AgentSummary, Launch, PromptFile, PromptImage, StartAgent, MAX_FILES,
@@ -282,6 +282,14 @@ enum ClientMsg {
         #[serde(default)]
         answers: Option<serde_json::Map<String, Value>>,
     },
+    /// Answer an MCP elicitation; `content` is the filled-in form.
+    #[serde(rename_all = "camelCase")]
+    Elicit {
+        request_id: String,
+        action: ElicitationAction,
+        #[serde(default)]
+        content: Option<serde_json::Map<String, Value>>,
+    },
     Interrupt,
     Mode {
         mode: String,
@@ -344,6 +352,11 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
             decision,
             answers,
         } => session.approve(&request_id, decision, answers.as_ref()),
+        ClientMsg::Elicit {
+            request_id,
+            action,
+            content,
+        } => session.elicit(&request_id, action, content.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
         ClientMsg::Mode { mode } => session.set_mode(&mode),
         ClientMsg::Model { model } => session.set_model(&model),

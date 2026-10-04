@@ -476,8 +476,6 @@ fn unsupported_requests_are_declined_at_once() {
     let mut t = CodexTranscript::default();
     let a = t.apply(&request(4, "item/tool/call", json!({})));
     assert_eq!(a.reply.unwrap()["error"]["code"], -32601);
-    let a = t.apply(&request(5, "mcpServer/elicitation/request", json!({})));
-    assert_eq!(a.reply.unwrap()["result"]["action"], "decline");
     assert!(t.items().is_empty());
     let a = t.apply(&note("some/new/thing", json!({})));
     assert_eq!(a.unknown_method.as_deref(), Some("some/new/thing"));

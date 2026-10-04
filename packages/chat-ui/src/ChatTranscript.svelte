@@ -7,6 +7,7 @@
 	import type { AgentChat } from './agent-chat.svelte';
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
+	import ChatElicitation from './ChatElicitation.svelte';
 	import ChatMarkdown from './ChatMarkdown.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
@@ -214,6 +215,15 @@
 						onDecide={(decision) => chat.approve(approval.id, decision)}
 					/>
 				{/if}
+			{/if}
+		{:else if block.item.kind === 'elicitation'}
+			{@const elicitation = block.item}
+			{#if inlineApprovals || elicitation.action || elicitation.expired}
+				<ChatElicitation
+					{elicitation}
+					agent={chat.agent}
+					onAnswer={(action, content) => chat.elicit(elicitation.id, action, content)}
+				/>
 			{/if}
 		{:else}
 			<p class="text-center text-xs whitespace-pre-wrap text-wb-ink-soft">

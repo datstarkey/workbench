@@ -36,5 +36,7 @@ describe('waiting on you', () => {
 		expect(answerableFromHome(approval('Bash'))).toBe(true);
 		expect(answerableFromHome(approval('AskUserQuestion'))).toBe(false);
 		expect(answerableFromHome(approval('ExitPlanMode'))).toBe(false);
+		expect(answerableFromHome(approval('Elicitation'))).toBe(false);
+		expect(waitingLabel(approval('Elicitation'))).toBe('Needs your input');
 	});
 });

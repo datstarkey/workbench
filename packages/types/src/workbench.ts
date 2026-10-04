@@ -606,7 +606,30 @@ export type TranscriptItem =
 			/** `AskUserQuestion` answers: question text → chosen label(s) or own words. */
 			answers?: Record<string, string>;
 	  }
+	| {
+			/** An MCP server asks the person for input (MCP elicitation). `id` is the request id. */
+			kind: 'elicitation';
+			id: string;
+			server: string;
+			message: string;
+			/** `form`: fill in `schema`; `url`: open `url` (sign-in, payment). */
+			mode: 'form' | 'url';
+			url?: string;
+			/** The MCP `requestedSchema`: `{ type: 'object', properties, required? }` of primitive fields. */
+			schema?: Record<string, unknown>;
+			title?: string;
+			description?: string;
+			/** The agent withdrew the request (turn interrupted, timed out). */
+			expired: boolean;
+			/** URL mode: the server reported the flow finished. */
+			completed: boolean;
+			action?: ElicitationAction;
+			/** What an accepted form sent. */
+			content?: Record<string, unknown>;
+	  }
 	| { kind: 'notice'; id: string; text: string };
+
+export type ElicitationAction = 'accept' | 'decline' | 'cancel';
 
 /** A subagent or background job Claude started (mirror of core `TaskInfo`). */
 export interface TaskInfo {
@@ -737,6 +760,12 @@ export type AgentClientMsg =
 			decision: ApprovalDecision;
 			answers?: Record<string, string>;
 	  }
+	| {
+			t: 'elicit';
+			requestId: string;
+			action: ElicitationAction;
+			content?: Record<string, string | number | boolean | string[]>;
+	  }
 	| { t: 'interrupt' }
 	| { t: 'mode'; mode: PermissionMode | CodexMode }
 	| { t: 'model'; model: string }
@@ -784,7 +813,7 @@ export interface AgentSummary {
 	updatedAt: number;
 	/** Unix ms when the last turn went idle; null before one ends, absent from older servers. */
 	turnEndedAt?: number | null;
-	/** The oldest unanswered approval or question, if Claude is waiting on you. */
+	/** The oldest unanswered approval, question or MCP elicitation (`tool: 'Elicitation'`). */
 	waiting: { id: string; tool: string; preview: string } | null;
 	/** The newest tool call still running in this turn. */
 	running: { name: string; detail: string } | null;

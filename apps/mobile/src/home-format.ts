@@ -23,6 +23,8 @@ export function waitingLabel(item: Waiting): string {
 			return 'Has a question';
 		case 'ExitPlanMode':
 			return 'Plan ready for review';
+		case 'Elicitation':
+			return 'Needs your input';
 		case 'Bash':
 			return 'Wants to run a command';
 		case 'Edit':
@@ -35,7 +37,7 @@ export function waitingLabel(item: Waiting): string {
 	}
 }
 
-/** Questions and plans need the full view to answer; plain permissions can be answered from home. */
+/** Questions, plans and MCP forms need the full view to answer; plain permissions can be answered from home. */
 export function answerableFromHome(item: Waiting): boolean {
-	return item.tool !== 'AskUserQuestion' && item.tool !== 'ExitPlanMode';
+	return !['AskUserQuestion', 'ExitPlanMode', 'Elicitation'].includes(item.tool);
 }

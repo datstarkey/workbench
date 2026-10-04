@@ -32,6 +32,7 @@ const HANDLED: &[&str] = &[
     "system:api_retry",
     "rate_limit_event",
     "system:commands_changed",
+    "system:elicitation_complete",
     // JSONL only
     "attachment",
     "ai-title",
@@ -60,7 +61,6 @@ const IGNORED: &[&str] = &[
     "system:notification",
     "system:files_persisted",
     "system:memory_recall",
-    "system:elicitation_complete",
     "system:permission_denied",
     "system:mirror_error",
     "system:informational",

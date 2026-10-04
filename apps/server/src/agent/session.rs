@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
-use workbench_core::claude_transcript::{ApprovalDecision, ChatView, TranscriptItem};
+use workbench_core::claude_transcript::{
+    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem,
+};
 
 use super::driver::{Driver, Effects, Launch};
 use super::{lock, now_ms, AgentKind, AgentSummary, PromptFile, PromptImage, StartAgent};
@@ -276,6 +278,15 @@ impl AgentSession {
         answers: Option<&Map<String, Value>>,
     ) -> Result<()> {
         self.run(|d| d.approve(request_id, decision, answers))
+    }
+
+    pub fn elicit(
+        &self,
+        request_id: &str,
+        action: ElicitationAction,
+        content: Option<&Map<String, Value>>,
+    ) -> Result<()> {
+        self.run(|d| Ok(d.elicit(request_id, action, content)))
     }
 
     pub fn interrupt(&self) -> Result<()> {

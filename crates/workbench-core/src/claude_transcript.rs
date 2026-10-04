@@ -9,7 +9,9 @@
 //! Tool results update the call they answer; with `--include-partial-messages`
 //! text streams into an item before the final block replaces it in place; a
 //! `can_use_tool` control request becomes an approval item whose answer
-//! [`Transcript::resolve_approval`] turns back into a control response.
+//! [`Transcript::resolve_approval`] turns back into a control response, and
+//! an MCP `elicitation` request an item [`Transcript::resolve_elicitation`]
+//! answers.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -18,11 +20,14 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+mod elicitation;
 mod items;
 mod parse;
 mod protocol;
 mod summary;
 
+pub use elicitation::ElicitationAction;
+pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use summary::{RunningSummary, WaitingSummary};
 
 pub use items::{
@@ -77,7 +82,10 @@ impl ChatView for Transcript {
         self.full_outputs.get(tool_id).map(String::as_str)
     }
     fn waiting_on(&self) -> Option<&TranscriptItem> {
-        let first = self.approvals.values().map(|p| p.item).min()?;
+        let approvals = self.approvals.values().map(|p| p.item);
+        let first = approvals
+            .chain(self.elicitations.values().map(|p| p.item))
+            .min()?;
         self.items.get(first)
     }
 }
@@ -118,6 +126,7 @@ pub struct Transcript {
     /// Streamed text/thinking items, in block order, awaiting their final block.
     stream_slots: HashMap<String, VecDeque<usize>>,
     approvals: HashMap<String, PendingApproval>,
+    elicitations: HashMap<String, PendingElicitation>,
     unknown_seen: std::collections::HashSet<String>,
     /// Whole outputs of tools whose item only carries a preview.
     full_outputs: HashMap<String, String>,
@@ -227,6 +236,15 @@ impl Transcript {
                 }
                 Some("commands_changed") => {
                     applied.commands = self.read_commands(obj.get("commands"));
+                }
+                // A URL-mode elicitation's flow finished in the browser.
+                Some("elicitation_complete") => {
+                    if let (Some(server), Some(id)) = (
+                        str_at(obj, "mcp_server_name"),
+                        str_at(obj, "elicitation_id"),
+                    ) {
+                        changed.extend(elicitation::complete(&mut self.items, server, id));
+                    }
                 }
                 Some("compact_boundary") => {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
@@ -403,8 +421,15 @@ impl Transcript {
     }
 
     fn expire_approval(&mut self, obj: &Value, changed: &mut Vec<usize>) {
-        let Some(pending) = str_at(obj, "request_id").and_then(|id| self.approvals.remove(id))
-        else {
+        let Some(id) = str_at(obj, "request_id") else {
+            return;
+        };
+        if let Some(pending) = self.elicitations.remove(id) {
+            elicitation::expire(&mut self.items, pending.item);
+            changed.push(pending.item);
+            return;
+        }
+        let Some(pending) = self.approvals.remove(id) else {
             return;
         };
         if let TranscriptItem::Approval { expired, .. } = &mut self.items[pending.item] {
@@ -534,16 +559,60 @@ impl Transcript {
         ))
     }
 
+    /// Record the answer to an MCP elicitation and build the `control_response`.
+    /// `None` if the request is unknown or already answered.
+    pub fn resolve_elicitation(
+        &mut self,
+        request_id: &str,
+        action: ElicitationAction,
+        content: Option<&serde_json::Map<String, Value>>,
+    ) -> Option<(usize, Value)> {
+        let pending = self.elicitations.remove(request_id)?;
+        let item = pending.item;
+        let response = pending.answer(&mut self.items, action, content);
+        Some((
+            item,
+            json!({
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": request_id, "response": response},
+            }),
+        ))
+    }
+
     /// Request ids still waiting for an answer.
     pub fn pending_approval_ids(&self) -> Vec<String> {
         self.approvals.keys().cloned().collect()
     }
 
-    /// Permission prompts become approval items; anything else the CLI asks of
-    /// its host (MCP elicitation, hook callbacks, dialogs) gets an error reply.
+    fn apply_elicitation(&mut self, request_id: &str, req: &Value, changed: &mut Vec<usize>) {
+        let (item, schema) = ElicitationRequest {
+            id: request_id.to_string(),
+            server: str_at(req, "mcp_server_name").unwrap_or("MCP server"),
+            message: str_at(req, "message").unwrap_or_default(),
+            mode: str_at(req, "mode"),
+            url: str_at(req, "url"),
+            elicitation_id: str_at(req, "elicitation_id"),
+            schema: req.get("requested_schema"),
+            title: str_at(req, "title"),
+            description: str_at(req, "description"),
+        }
+        .into_item();
+        self.upsert(item, changed);
+        let pending = PendingElicitation::new(self.index[request_id], schema);
+        self.elicitations.insert(request_id.to_string(), pending);
+    }
+
+    /// Permission prompts become approval items and MCP elicitations their own
+    /// items; anything else gets an error reply. `hook_callback` only comes for
+    /// SDK hooks registered in `initialize`, and `request_user_dialog` only for
+    /// the `supportedDialogKinds` it declared: the `initialize` sent has neither.
     fn apply_control_request(&mut self, obj: &Value, changed: &mut Vec<usize>) -> Option<Value> {
         let request_id = str_at(obj, "request_id")?;
         let req = obj.get("request")?;
+        if str_at(req, "subtype") == Some("elicitation") {
+            self.apply_elicitation(request_id, req, changed);
+            return None;
+        }
         if str_at(req, "subtype") != Some("can_use_tool") {
             let subtype = str_at(req, "subtype").unwrap_or("unknown");
             return Some(json!({
@@ -1031,7 +1100,9 @@ impl Transcript {
                 // A replayed tool call or approval must not wipe its result.
                 if matches!(
                     self.items[i],
-                    TranscriptItem::Tool { .. } | TranscriptItem::Approval { .. }
+                    TranscriptItem::Tool { .. }
+                        | TranscriptItem::Approval { .. }
+                        | TranscriptItem::Elicitation { .. }
                 ) {
                     return;
                 }

@@ -34,7 +34,21 @@ pub struct RunningSummary {
 
 impl TranscriptItem {
     /// An approval's request id, tool and what it would act on.
+    /// An MCP elicitation is `tool: "Elicitation"` with its message.
     pub fn waiting_summary(&self) -> Option<WaitingSummary> {
+        if let Self::Elicitation {
+            id,
+            server,
+            message,
+            ..
+        } = self
+        {
+            return Some(WaitingSummary {
+                id: id.clone(),
+                tool: "Elicitation".into(),
+                preview: truncate_chars(&format!("{server}: {message}"), MAX_CHARS),
+            });
+        }
         let Self::Approval {
             id, tool, input, ..
         } = self
