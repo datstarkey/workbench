@@ -1,0 +1,7 @@
+{
+	"name": "workbench",
+	"version": "0.1.0",
+	"description": "Reports Claude Code session activity to the Workbench desktop app",
+	"author": { "name": "datstarkey" },
+	"homepage": "https://github.com/datstarkey/workbench"
+}

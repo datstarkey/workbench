@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { getWorkbenchSettingsStore } from '$stores/context';
-	import { applyClaudeIntegration } from '$lib/utils/terminal';
 	import { IS_WINDOWS } from '$lib/utils/claude';
 	import type { ClaudePermissionMode, PaneView } from '$types/workbench';
 	import EditableStringList from './EditableStringList.svelte';
@@ -39,11 +38,6 @@
 		},
 		{ title: 'Unreadable', body: '~/.ssh ~/.aws ~/.gnupg ~/.netrc ~/.config/gh ~/.docker ~/.kube' }
 	];
-
-	async function toggleHooks(checked: boolean) {
-		if (checked) await applyClaudeIntegration();
-		await store.setApproval('claude', checked);
-	}
 </script>
 
 {#snippet permissionModeDescription()}
@@ -130,12 +124,3 @@
 		{/if}
 	</SettingsSection>
 {/if}
-
-<SettingsSection title="Integration">
-	<SettingsToggle
-		label="Session hooks"
-		description="Tracking hooks in each Claude account's settings.json. Activity status needs them."
-		checked={store.claudeHooksApproved === true}
-		onCheckedChange={toggleHooks}
-	/>
-</SettingsSection>

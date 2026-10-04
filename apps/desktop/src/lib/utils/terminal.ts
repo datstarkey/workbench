@@ -42,16 +42,8 @@ export async function onSessionTerminalExit(
 
 // ── Integration checks / apply ─────────────────────────────────────────────
 
-export async function checkClaudeIntegration(): Promise<IntegrationStatus> {
-	return invoke<IntegrationStatus>('check_claude_integration');
-}
-
 export async function checkCodexIntegration(): Promise<IntegrationStatus> {
 	return invoke<IntegrationStatus>('check_codex_integration');
-}
-
-export async function applyClaudeIntegration(): Promise<boolean> {
-	return invoke<boolean>('apply_claude_integration');
 }
 
 export async function applyCodexIntegration(): Promise<boolean> {

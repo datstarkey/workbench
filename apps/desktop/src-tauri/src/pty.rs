@@ -226,6 +226,9 @@ impl PtyManager {
         cmd.env("WORKBENCH_PANE_ID", session_id.clone());
         if let Some(socket_path) = hook_socket_path {
             cmd.env("WORKBENCH_HOOK_SOCKET", socket_path);
+            if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
+                cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
+            }
         }
 
         // Shell integration (OSC 133) — inject ZDOTDIR for zsh

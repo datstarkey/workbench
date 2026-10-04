@@ -89,13 +89,16 @@ pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgen
     }
     cmd.env("PATH", workbench_core::paths::enriched_path());
     cmd.env_remove("WORKBENCH_TOKEN");
-    // Hooks (Claude) and the notify bridge (Codex) keep driving the desktop's
+    // The Workbench plugin (Claude) and the notify bridge (Codex) keep driving the desktop's
     // activity tracking, as for terminal panes.
     if let Some(id) = &req.pane_id {
         cmd.env("WORKBENCH_PANE_ID", id);
     }
     if let Some(sock) = &req.hook_socket {
         cmd.env("WORKBENCH_HOOK_SOCKET", sock);
+        if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
+            cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
+        }
     }
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);

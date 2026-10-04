@@ -187,7 +187,7 @@ pub fn settings_path() -> PathBuf {
 /// [`write_settings`].
 ///
 /// `hook_socket` is the `host:port` of the Workbench hook bridge, which the
-/// Claude hook script dials over loopback. It changes on every app launch, so
+/// `workbench` Claude Code plugin (and Codex's notify script) dials over loopback. It changes on every app launch, so
 /// the file has to be regenerated after the bridge binds.
 pub fn build_config(
     settings: &WorkbenchSettings,

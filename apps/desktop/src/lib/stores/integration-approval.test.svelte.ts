@@ -5,35 +5,23 @@ import type { WorkbenchSettingsStore } from './workbench-settings.svelte';
 
 // Mock terminal utils
 vi.mock('$lib/utils/terminal', () => ({
-	checkClaudeIntegration: vi.fn(),
 	checkCodexIntegration: vi.fn(),
-	applyClaudeIntegration: vi.fn(),
 	applyCodexIntegration: vi.fn()
 }));
 
-import {
-	checkClaudeIntegration,
-	checkCodexIntegration,
-	applyClaudeIntegration,
-	applyCodexIntegration
-} from '$lib/utils/terminal';
+import { checkCodexIntegration, applyCodexIntegration } from '$lib/utils/terminal';
 
-const mockCheckClaude = vi.mocked(checkClaudeIntegration);
 const mockCheckCodex = vi.mocked(checkCodexIntegration);
-const mockApplyClaude = vi.mocked(applyClaudeIntegration);
 const mockApplyCodex = vi.mocked(applyCodexIntegration);
 
 function createMockSettingsStore(
 	overrides: Partial<{
-		claudeHooksApproved: boolean | null;
 		codexConfigApproved: boolean | null;
 	}> = {}
 ) {
 	return {
-		claudeHooksApproved: overrides.claudeHooksApproved ?? null,
 		codexConfigApproved: overrides.codexConfigApproved ?? null,
 		getApproval: vi.fn((type: string) => {
-			if (type === 'claude') return overrides.claudeHooksApproved ?? null;
 			if (type === 'codex') return overrides.codexConfigApproved ?? null;
 			return true;
 		}),
@@ -54,9 +42,7 @@ describe('IntegrationApprovalStore', () => {
 	beforeEach(() => {
 		mockSettingsStore = createMockSettingsStore();
 		store = new IntegrationApprovalStore();
-		mockCheckClaude.mockReset();
 		mockCheckCodex.mockReset();
-		mockApplyClaude.mockReset();
 		mockApplyCodex.mockReset();
 	});
 
@@ -70,92 +56,86 @@ describe('IntegrationApprovalStore', () => {
 	}
 
 	describe('ensureIntegration', () => {
-		it('returns true immediately for shell type', async () => {
-			const result = await store.ensureIntegration('shell');
+		it.each(['shell', 'claude'] as const)(
+			'returns true immediately for %s without checking',
+			async (type) => {
+				const result = await store.ensureIntegration(type);
 
-			expect(result).toBe(true);
-			expect(mockCheckClaude).not.toHaveBeenCalled();
-			expect(mockCheckCodex).not.toHaveBeenCalled();
-		});
+				expect(result).toBe(true);
+				expect(store.open).toBe(false);
+				expect(mockCheckCodex).not.toHaveBeenCalled();
+				expect(mockApplyCodex).not.toHaveBeenCalled();
+			}
+		);
 
 		it('returns true without dialog when already approved', async () => {
-			mockSettingsStore = createMockSettingsStore({ claudeHooksApproved: true });
+			mockSettingsStore = createMockSettingsStore({ codexConfigApproved: true });
 			store = new IntegrationApprovalStore();
-			mockApplyClaude.mockResolvedValue(true);
+			mockApplyCodex.mockResolvedValue(true);
 
-			const result = await store.ensureIntegration('claude');
+			const result = await store.ensureIntegration('codex');
 
 			expect(result).toBe(true);
 			expect(store.open).toBe(false);
-			expect(mockApplyClaude).toHaveBeenCalled();
+			expect(mockApplyCodex).toHaveBeenCalled();
 		});
 
 		it('returns true without dialog when previously skipped', async () => {
-			mockSettingsStore = createMockSettingsStore({ claudeHooksApproved: false });
+			mockSettingsStore = createMockSettingsStore({ codexConfigApproved: false });
 			store = new IntegrationApprovalStore();
 
-			const result = await store.ensureIntegration('claude');
+			const result = await store.ensureIntegration('codex');
 
 			expect(result).toBe(true);
 			expect(store.open).toBe(false);
-			expect(mockApplyClaude).not.toHaveBeenCalled();
+			expect(mockApplyCodex).not.toHaveBeenCalled();
 		});
 
 		it('auto-approves when no changes needed', async () => {
-			mockCheckClaude.mockResolvedValue({ needsChanges: false, description: '' });
+			mockCheckCodex.mockResolvedValue({ needsChanges: false, description: '' });
 
-			const result = await store.ensureIntegration('claude');
+			const result = await store.ensureIntegration('codex');
 
 			expect(result).toBe(true);
 			expect(store.open).toBe(false);
 			expect(mockSettingsStore.setApproval as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-				'claude',
+				'codex',
 				true
 			);
 		});
 
 		it('shows dialog when changes are needed and never asked', async () => {
-			mockCheckClaude.mockResolvedValue({
+			mockCheckCodex.mockResolvedValue({
 				needsChanges: true,
 				description: 'Need to install hooks'
 			});
 
 			// Start ensureIntegration but don't await — it waits for user
-			const promise = store.ensureIntegration('claude');
+			const promise = store.ensureIntegration('codex');
 			await flushMicrotasks();
 
 			// Dialog should be open
 			expect(store.open).toBe(true);
 			expect(store.description).toBe('Need to install hooks');
-			expect(store.sessionType).toBe('claude');
 
 			// Resolve by approving
-			mockApplyClaude.mockResolvedValue(true);
+			mockApplyCodex.mockResolvedValue(true);
 			await store.approve();
 			const result = await promise;
 
 			expect(result).toBe(true);
 		});
-
-		it('uses codex check for codex type', async () => {
-			mockCheckCodex.mockResolvedValue({ needsChanges: false, description: '' });
-
-			await store.ensureIntegration('codex');
-
-			expect(mockCheckCodex).toHaveBeenCalled();
-			expect(mockCheckClaude).not.toHaveBeenCalled();
-		});
 	});
 
 	describe('approve', () => {
 		it('resolves promise with true, closes dialog, persists approval', async () => {
-			mockCheckClaude.mockResolvedValue({
+			mockCheckCodex.mockResolvedValue({
 				needsChanges: true,
 				description: 'Changes needed'
 			});
-			mockApplyClaude.mockResolvedValue(true);
+			mockApplyCodex.mockResolvedValue(true);
 
-			const promise = store.ensureIntegration('claude');
+			const promise = store.ensureIntegration('codex');
 			await flushMicrotasks();
 			expect(store.open).toBe(true);
 
@@ -163,9 +143,9 @@ describe('IntegrationApprovalStore', () => {
 
 			expect(store.open).toBe(false);
 			expect(store.error).toBe('');
-			expect(mockApplyClaude).toHaveBeenCalled();
+			expect(mockApplyCodex).toHaveBeenCalled();
 			expect(mockSettingsStore.setApproval as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-				'claude',
+				'codex',
 				true
 			);
 
@@ -174,13 +154,13 @@ describe('IntegrationApprovalStore', () => {
 		});
 
 		it('sets error when apply fails', async () => {
-			mockCheckClaude.mockResolvedValue({
+			mockCheckCodex.mockResolvedValue({
 				needsChanges: true,
 				description: 'Changes needed'
 			});
-			mockApplyClaude.mockRejectedValue(new Error('Permission denied'));
+			mockApplyCodex.mockRejectedValue(new Error('Permission denied'));
 
-			const promise = store.ensureIntegration('claude');
+			const promise = store.ensureIntegration('codex');
 			await flushMicrotasks();
 			expect(store.open).toBe(true);
 
@@ -198,12 +178,12 @@ describe('IntegrationApprovalStore', () => {
 
 	describe('skip', () => {
 		it('resolves promise with true and persists skip', async () => {
-			mockCheckClaude.mockResolvedValue({
+			mockCheckCodex.mockResolvedValue({
 				needsChanges: true,
 				description: 'Changes needed'
 			});
 
-			const promise = store.ensureIntegration('claude');
+			const promise = store.ensureIntegration('codex');
 			await flushMicrotasks();
 			expect(store.open).toBe(true);
 
@@ -212,7 +192,7 @@ describe('IntegrationApprovalStore', () => {
 			expect(store.open).toBe(false);
 			expect(store.error).toBe('');
 			expect(mockSettingsStore.setApproval as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-				'claude',
+				'codex',
 				false
 			);
 
@@ -223,12 +203,12 @@ describe('IntegrationApprovalStore', () => {
 
 	describe('dismiss', () => {
 		it('resolves with false, closes dialog without persisting', async () => {
-			mockCheckClaude.mockResolvedValue({
+			mockCheckCodex.mockResolvedValue({
 				needsChanges: true,
 				description: 'Changes needed'
 			});
 
-			const promise = store.ensureIntegration('claude');
+			const promise = store.ensureIntegration('codex');
 			await flushMicrotasks();
 			expect(store.open).toBe(true);
 

@@ -33,11 +33,7 @@ import { rotateServerToken } from '$lib/server-mode';
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<
 	WorkbenchSettings,
-	| 'agentActions'
-	| 'claudeHooksApproved'
-	| 'codexConfigApproved'
-	| 'claudeAccounts'
-	| 'activeClaudeAccount'
+	'agentActions' | 'codexConfigApproved' | 'claudeAccounts' | 'activeClaudeAccount'
 >;
 
 /** `CLAUDE_CONFIG_DIR` must be absolute; Claude Code rejects a relative one. */
@@ -56,7 +52,6 @@ export class WorkbenchSettingsStore {
 	terminalTelemetryEnabled = $state(false);
 	terminalRenderer: TerminalRenderer = $state<TerminalRenderer>('xterm');
 	agentActions: AgentAction[] = $state([]);
-	claudeHooksApproved: boolean | null = $state(null);
 	codexConfigApproved: boolean | null = $state(null);
 	claudePermissionMode: ClaudePermissionMode = $state<ClaudePermissionMode>('default');
 	codexApprovalPolicy: CodexApprovalPolicy = $state<CodexApprovalPolicy>('default');
@@ -131,7 +126,6 @@ export class WorkbenchSettingsStore {
 		this.terminalTelemetryEnabled = settings.terminalTelemetryEnabled ?? false;
 		this.terminalRenderer = settings.terminalRenderer ?? 'xterm';
 		this.agentActions = this.normalizeAgentActions(settings.agentActions);
-		this.claudeHooksApproved = settings.claudeHooksApproved ?? null;
 		this.codexConfigApproved = settings.codexConfigApproved ?? null;
 		this.claudePermissionMode = isClaudePermissionMode(settings.claudePermissionMode)
 			? settings.claudePermissionMode
@@ -246,14 +240,12 @@ export class WorkbenchSettingsStore {
 	}
 
 	getApproval(type: SessionType): boolean | null {
-		if (type === 'claude') return this.claudeHooksApproved;
 		if (type === 'codex') return this.codexConfigApproved;
 		return true;
 	}
 
 	async setApproval(type: SessionType, approved: boolean) {
-		if (type === 'claude') this.claudeHooksApproved = approved;
-		else if (type === 'codex') this.codexConfigApproved = approved;
+		if (type === 'codex') this.codexConfigApproved = approved;
 		await invoke('save_workbench_settings', { settings: this.toSettings() });
 	}
 
@@ -300,7 +292,6 @@ export class WorkbenchSettingsStore {
 			terminalTelemetryEnabled: this.terminalTelemetryEnabled,
 			terminalRenderer: this.terminalRenderer,
 			agentActions: this.agentActions,
-			claudeHooksApproved: this.claudeHooksApproved,
 			codexConfigApproved: this.codexConfigApproved,
 			claudePermissionMode: this.claudePermissionMode,
 			codexApprovalPolicy: this.codexApprovalPolicy,
