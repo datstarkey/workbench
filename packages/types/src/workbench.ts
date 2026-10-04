@@ -458,7 +458,6 @@ export interface WorkbenchSettings {
 	terminalTelemetryEnabled: boolean;
 	terminalRenderer: TerminalRenderer;
 	agentActions: AgentAction[];
-	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
 	claudePermissionMode: ClaudePermissionMode;
 	codexApprovalPolicy: CodexApprovalPolicy;
