@@ -64,6 +64,14 @@
 			? `${baseName(ref.projectPath)} · ${baseName(ref.worktreePath)}`
 			: baseName(ref.projectPath)
 	);
+	// The line under the title already names the folder, so an untitled chat falls back to its prompt.
+	const title = $derived(
+		chat.meta?.title ||
+			chat.items.find(
+				(i): i is Extract<TranscriptItem, { kind: 'user' }> => i.kind === 'user' && i.text !== ''
+			)?.text ||
+			name
+	);
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
 	const tasks = $derived(chat.meta?.tasks ?? []);
@@ -190,7 +198,7 @@
 			<ChevronLeftIcon class="size-5" />
 		</button>
 		<div class="flex min-w-0 flex-1 flex-col">
-			<span class="truncate text-[14px] font-semibold">{chat.meta?.title ?? ref.name}</span>
+			<span class="truncate text-[14px] font-semibold">{title}</span>
 			<span class="flex items-center gap-1.5 truncate font-mono text-[10.5px] text-wb-ink-soft">
 				<span
 					class={cn(
