@@ -1,3 +1,4 @@
+import type { ElicitationItem } from './elicitation-form';
 import { contextUsage } from './usage-format';
 import type {
 	AgentKind,
@@ -275,15 +276,24 @@ export type Activity =
 	| { kind: 'idle' }
 	| { kind: 'retrying'; retry: RetryInfo }
 	| { kind: 'approval'; approval: ApprovalItem }
+	| { kind: 'elicitation'; elicitation: ElicitationItem }
 	| { kind: 'tool'; tool: ToolItem }
 	| { kind: 'writing' }
 	| { kind: 'thinking' };
 
+/** An approval, question or MCP elicitation still waiting on the person. */
+export function awaitsAnswer(item: TranscriptItem): item is ApprovalItem | ElicitationItem {
+	if (item.kind === 'approval') return !item.decision && !item.expired;
+	return item.kind === 'elicitation' && !item.action && !item.expired;
+}
+
 export function activity(items: TranscriptItem[], meta: TranscriptMeta | null): Activity {
 	for (let i = items.length - 1; i >= 0; i--) {
 		const item = items[i];
-		if (item.kind === 'approval' && !item.decision && !item.expired) {
-			return { kind: 'approval', approval: item };
+		if (awaitsAnswer(item)) {
+			return item.kind === 'approval'
+				? { kind: 'approval', approval: item }
+				: { kind: 'elicitation', elicitation: item };
 		}
 	}
 	if (!meta?.busy) return { kind: 'idle' };

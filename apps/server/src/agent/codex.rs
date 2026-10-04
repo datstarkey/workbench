@@ -12,7 +12,9 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
-use workbench_core::claude_transcript::{ApprovalDecision, ChatView, SlashCommand};
+use workbench_core::claude_transcript::{
+    ApprovalDecision, ChatView, ElicitationAction, SlashCommand,
+};
 use workbench_core::codex_config;
 use workbench_core::codex_transcript::{self, CodexTranscript, CODEX_MODES};
 
@@ -439,6 +441,15 @@ impl CodexDriver {
             },
             None => Effects::default(),
         }
+    }
+
+    pub fn resolve_elicitation(
+        &mut self,
+        request_id: &str,
+        action: ElicitationAction,
+        content: Option<&Map<String, Value>>,
+    ) -> Option<(usize, Value)> {
+        self.t.resolve_elicitation(request_id, action, content)
     }
 
     /// Withdraw open approvals, then stop the turn — once it has an id, if

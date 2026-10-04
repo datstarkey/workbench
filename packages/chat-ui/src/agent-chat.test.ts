@@ -364,6 +364,31 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('sends elicitation answers and counts them as waiting on you', async () => {
+		const { chat, ws } = await connected();
+		const calls: boolean[] = [];
+		chat.onNeedsYou = (waiting) => calls.push(waiting);
+		const item = {
+			kind: 'elicitation',
+			id: 'e1',
+			server: 'deploy',
+			message: 'Which environment?',
+			mode: 'form',
+			expired: false,
+			completed: false
+		} as const;
+		ws.emit({ t: 'update', changes: [[0, item]], meta: meta(true) });
+		chat.elicit('e1', 'accept', { env: 'prod' });
+		chat.elicit('e2', 'decline');
+		expect(ws.sent).toEqual([
+			{ t: 'elicit', requestId: 'e1', action: 'accept', content: { env: 'prod' } },
+			{ t: 'elicit', requestId: 'e2', action: 'decline' }
+		]);
+		ws.emit({ t: 'update', changes: [[0, { ...item, action: 'accept' }]], meta: meta(true) });
+		expect(calls).toEqual([true, false]);
+		chat.dispose();
+	});
+
 	it('stops flagging the pane when the process ends mid-approval', async () => {
 		const { chat, ws } = await connected();
 		const calls: boolean[] = [];

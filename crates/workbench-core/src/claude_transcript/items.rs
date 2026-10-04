@@ -79,6 +79,35 @@ pub enum TranscriptItem {
         #[serde(skip_serializing_if = "Option::is_none")]
         answers: Option<Value>,
     },
+    /// An MCP server asks the person for input. `id` is the request id.
+    #[serde(rename_all = "camelCase")]
+    Elicitation {
+        id: String,
+        server: String,
+        message: String,
+        /// `form` (fill in `schema`) or `url` (open `url`).
+        mode: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        /// Matches a URL-mode request to the server's completion notice.
+        #[serde(skip_serializing)]
+        elicitation_id: Option<String>,
+        /// The MCP `requestedSchema`: an object of primitive fields.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        schema: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        expired: bool,
+        /// URL mode: the server reported the flow finished.
+        completed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<super::ElicitationAction>,
+        /// What an accepted form sent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<Value>,
+    },
     Notice {
         id: String,
         text: String,
@@ -93,6 +122,7 @@ impl TranscriptItem {
             | Self::Thinking { id, .. }
             | Self::Tool { id, .. }
             | Self::Approval { id, .. }
+            | Self::Elicitation { id, .. }
             | Self::Notice { id, .. } => id,
         }
     }

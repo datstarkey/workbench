@@ -194,9 +194,10 @@
 			case 'failed':
 				return 'Restart the session to send messages';
 			default:
-				return now.kind === 'approval' ? `Answer ${agentLabel} above first` : null;
+				return asking ? `Answer ${agentLabel} above first` : null;
 		}
 	});
+	const asking = $derived(now.kind === 'approval' || now.kind === 'elicitation');
 
 	/**
 	 * Keep the newest message in view, unless the reader has scrolled up.
@@ -224,7 +225,7 @@
 	}
 
 	function onKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape' && chat.meta?.busy && now.kind !== 'approval') {
+		if (event.key === 'Escape' && chat.meta?.busy && !asking) {
 			event.preventDefault();
 			chat.interrupt();
 		}

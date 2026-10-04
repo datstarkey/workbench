@@ -7,7 +7,9 @@ use std::process::Command;
 
 use anyhow::Result;
 use serde_json::{Map, Value};
-use workbench_core::claude_transcript::{ApprovalDecision, ChatView, Transcript};
+use workbench_core::claude_transcript::{
+    ApprovalDecision, ChatView, ElicitationAction, Transcript,
+};
 
 use super::codex::CodexDriver;
 use super::{claude, PromptFile, PromptImage};
@@ -86,6 +88,26 @@ impl Driver {
             Self::Claude(t) => claude::approve(t, request_id, decision, answers),
             Self::Codex(c) => Ok(c.approve(request_id, decision, answers)),
         }
+    }
+
+    pub fn elicit(
+        &mut self,
+        request_id: &str,
+        action: ElicitationAction,
+        content: Option<&Map<String, Value>>,
+    ) -> Effects {
+        let resolved = match self {
+            Self::Claude(t) => t.resolve_elicitation(request_id, action, content),
+            Self::Codex(c) => c.resolve_elicitation(request_id, action, content),
+        };
+        // `None`: already answered (another device, or twice).
+        resolved
+            .map(|(i, response)| Effects {
+                send: vec![response],
+                items: vec![i],
+                ..Effects::default()
+            })
+            .unwrap_or_default()
     }
 
     pub fn interrupt(&mut self) -> Result<Effects> {

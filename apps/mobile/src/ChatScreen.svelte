@@ -9,9 +9,11 @@
 		activity,
 		AgentChat,
 		agentName,
+		awaitsAnswer,
 		ChatApproval,
 		ChatComposer,
 		ChatContext,
+		ChatElicitation,
 		ChatModelPicker,
 		ChatPlan,
 		ChatQuestion,
@@ -93,12 +95,7 @@
 			)
 		: null;
 	const usageChips = $derived(planUsage ? planUsage.chips : metaUsageChips(chat.meta));
-	const waiting = $derived(
-		chat.items.find(
-			(i): i is Extract<TranscriptItem, { kind: 'approval' }> =>
-				i.kind === 'approval' && !i.decision && !i.expired
-		) ?? null
-	);
+	const waiting = $derived(chat.items.find(awaitsAnswer) ?? null);
 	/** The sheet can be lowered to read the chat behind it; a new request raises it again. */
 	let sheetHiddenFor = $state<string | null>(null);
 	const sheetOpen = $derived(waiting !== null && sheetHiddenFor !== waiting.id && live);
@@ -357,7 +354,13 @@
 
 {#if sheetOpen && waiting}
 	<Sheet label="{name} is waiting on you" onClose={() => (sheetHiddenFor = waiting.id)}>
-		{#if waiting.tool === 'AskUserQuestion'}
+		{#if waiting.kind === 'elicitation'}
+			<ChatElicitation
+				elicitation={waiting}
+				agent={chat.agent}
+				onAnswer={(action, content) => chat.elicit(waiting.id, action, content)}
+			/>
+		{:else if waiting.tool === 'AskUserQuestion'}
 			<ChatQuestion
 				approval={waiting}
 				agent={chat.agent}

@@ -7,6 +7,7 @@ import type {
 	ChatImage,
 	CodexMode,
 	EffortLevel,
+	ElicitationAction,
 	PermissionMode,
 	SlashCommand,
 	StartAgentBody,
@@ -14,7 +15,8 @@ import type {
 	TranscriptMeta
 } from '@workbench/types';
 import type { AgentApi } from './agent-api';
-import { agentName, applyChanges } from './chat-format';
+import { agentName, applyChanges, awaitsAnswer } from './chat-format';
+import type { ElicitationValue } from './elicitation-form';
 import { previewUrl } from './attachment-intake';
 
 /**
@@ -262,7 +264,7 @@ export class AgentChat {
 	}
 
 	private reportWaiting(): void {
-		const waiting = this.items.some((i) => i.kind === 'approval' && !i.decision && !i.expired);
+		const waiting = this.items.some(awaitsAnswer);
 		if (waiting === this.waitingOnYou) return;
 		this.waitingOnYou = waiting;
 		this.onNeedsYou?.(waiting);
@@ -344,6 +346,15 @@ export class AgentChat {
 
 	approve(requestId: string, decision: ApprovalDecision, answers?: Record<string, string>): void {
 		this.send({ t: 'approve', requestId, decision, ...(answers ? { answers } : {}) });
+	}
+
+	/** Answer an MCP elicitation; `content` only with `accept` on a form. */
+	elicit(
+		requestId: string,
+		action: ElicitationAction,
+		content?: Record<string, ElicitationValue>
+	): void {
+		this.send({ t: 'elicit', requestId, action, ...(content ? { content } : {}) });
 	}
 
 	interrupt(): void {

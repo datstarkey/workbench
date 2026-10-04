@@ -1,11 +1,15 @@
 //! Codex's server→client requests: approvals and questions become approval
-//! items; anything chat can't serve is declined on the spot.
+//! items, MCP elicitations elicitation items; anything chat can't serve is
+//! declined on the spot.
 
 use serde_json::{json, Map, Value};
 
 use super::items::{file_change_call, strip_shell};
 use super::CodexTranscript;
-use crate::claude_transcript::{clip_value, str_at, ApprovalDecision, TranscriptItem};
+use crate::claude_transcript::{
+    clip_value, str_at, ApprovalDecision, ElicitationAction, ElicitationRequest,
+    PendingElicitation, TranscriptItem,
+};
 
 /// An approval item waiting for an answer.
 #[derive(Debug)]
@@ -29,6 +33,10 @@ enum Kind {
     /// Question text → question id, in order.
     Questions {
         ids: Vec<(String, String)>,
+    },
+    /// An MCP elicitation and its whole form schema.
+    Elicitation {
+        schema: Option<Value>,
     },
 }
 
@@ -140,10 +148,8 @@ impl CodexTranscript {
                 )
             }
             "mcpServer/elicitation/request" => {
-                return Some(response(
-                    rpc_id,
-                    json!({"action": "decline", "content": null, "_meta": null}),
-                ));
+                self.apply_elicitation(rpc_id, params, changed);
+                return None;
             }
             _ => {
                 if self.unknown_seen.insert(method.to_string()) {
@@ -183,6 +189,54 @@ impl CodexTranscript {
         None
     }
 
+    fn apply_elicitation(&mut self, rpc_id: &Value, params: &Value, changed: &mut Vec<usize>) {
+        let id = approval_id(rpc_id);
+        let (item, schema) = ElicitationRequest {
+            id: id.clone(),
+            server: str_at(params, "serverName").unwrap_or("MCP server"),
+            message: str_at(params, "message").unwrap_or_default(),
+            mode: str_at(params, "mode"),
+            url: str_at(params, "url"),
+            elicitation_id: str_at(params, "elicitationId"),
+            schema: params.get("requestedSchema"),
+            title: None,
+            description: None,
+        }
+        .into_item();
+        let item = self.upsert(item, changed);
+        let kind = Kind::Elicitation { schema };
+        let rpc_id = rpc_id.clone();
+        self.approvals.insert(id, Pending { item, rpc_id, kind });
+    }
+
+    /// Record the answer to an MCP elicitation and build codex's response.
+    /// `None` if it's unknown or already answered.
+    pub fn resolve_elicitation(
+        &mut self,
+        request_id: &str,
+        action: ElicitationAction,
+        content: Option<&Map<String, Value>>,
+    ) -> Option<(usize, Value)> {
+        if !self.is_elicitation(request_id)? {
+            return None;
+        }
+        let pending = self.approvals.remove(request_id)?;
+        let Kind::Elicitation { schema } = pending.kind else {
+            return None;
+        };
+        let mut result =
+            PendingElicitation::new(pending.item, schema).answer(&mut self.items, action, content);
+        // Both are required (nullable) in codex's response type.
+        result["content"] = result.get("content").cloned().unwrap_or(Value::Null);
+        result["_meta"] = Value::Null;
+        Some((pending.item, response(&pending.rpc_id, result)))
+    }
+
+    fn is_elicitation(&self, request_id: &str) -> Option<bool> {
+        let kind = &self.approvals.get(request_id)?.kind;
+        Some(matches!(kind, Kind::Elicitation { .. }))
+    }
+
     /// Record the answer to an approval and build codex's response. `None` if
     /// it's unknown or already answered (another device got there first).
     ///
@@ -194,6 +248,9 @@ impl CodexTranscript {
         decision: ApprovalDecision,
         answers: Option<&Map<String, Value>>,
     ) -> Option<(usize, Value)> {
+        if self.is_elicitation(approval_id)? {
+            return None;
+        }
         let pending = self.approvals.remove(approval_id)?;
         let deny = decision == ApprovalDecision::Deny;
         let answers: Option<Map<String, Value>> = answers.filter(|_| !deny).map(|a| {
@@ -247,6 +304,7 @@ impl CodexTranscript {
                     .collect();
                 json!({ "answers": picked })
             }
+            Kind::Elicitation { .. } => elicitation_cancel(),
         };
         Some((pending.item, response(&pending.rpc_id, result)))
     }
@@ -261,6 +319,7 @@ impl CodexTranscript {
                 Kind::Command { .. } | Kind::FileChange => json!({"decision": "cancel"}),
                 Kind::Permissions { .. } => json!({"permissions": {}, "scope": "turn"}),
                 Kind::Questions { .. } => json!({"answers": {}}),
+                Kind::Elicitation { .. } => elicitation_cancel(),
             };
             replies.push(response(&pending.rpc_id, result));
             self.mark_expired(pending.item, &mut changed);
@@ -283,11 +342,17 @@ impl CodexTranscript {
     }
 
     fn mark_expired(&mut self, i: usize, changed: &mut Vec<usize>) {
-        if let TranscriptItem::Approval { expired, .. } = &mut self.items[i] {
+        if let TranscriptItem::Approval { expired, .. }
+        | TranscriptItem::Elicitation { expired, .. } = &mut self.items[i]
+        {
             *expired = true;
             changed.push(i);
         }
     }
+}
+
+fn elicitation_cancel() -> Value {
+    json!({"action": "cancel", "content": null, "_meta": null})
 }
 
 /// The requested permissions as a grant: the same profile without its null parts.
@@ -302,4 +367,59 @@ fn granted(requested: &Value) -> Value {
         })
         .unwrap_or_default();
     Value::Object(kept)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claude_transcript::ChatView;
+
+    fn request(id: u64, params: Value) -> Value {
+        json!({"method": "mcpServer/elicitation/request", "id": id, "params": params})
+    }
+
+    #[test]
+    fn mcp_elicitations_become_items_answered_in_codex_shape() {
+        let mut t = CodexTranscript::default();
+        let a = t.apply(&request(
+            9,
+            json!({
+            "threadId":"th","turnId":"t1","serverName":"tickets","mode":"form","_meta":null,
+            "message":"Pick a priority","requestedSchema":{"type":"object",
+                "properties":{"priority":{"type":"string","enum":["low","high"]}}}}),
+        ));
+        assert!(a.reply.is_none());
+        assert_eq!(t.waiting_on().map(TranscriptItem::id), Some("request:9"));
+        assert!(
+            t.resolve_approval("request:9", ApprovalDecision::Allow, None)
+                .is_none(),
+            "not an approval"
+        );
+        let content = json!({"priority":"high","nope":1});
+        let (_, reply) = t
+            .resolve_elicitation("request:9", ElicitationAction::Accept, content.as_object())
+            .unwrap();
+        assert_eq!(
+            reply,
+            json!({"jsonrpc":"2.0","id":9,"result":{"action":"accept","content":{"priority":"high"},"_meta":null}})
+        );
+
+        t.apply(&request(
+            10,
+            json!({
+            "threadId":"th","turnId":"t1","serverName":"gh","mode":"url","_meta":null,
+            "message":"Sign in","url":"https://example.com","elicitationId":"e1"}),
+        ));
+        let (items, replies) = t.cancel_approvals();
+        assert_eq!(
+            replies,
+            vec![
+                json!({"jsonrpc":"2.0","id":10,"result":{"action":"cancel","content":null,"_meta":null}})
+            ]
+        );
+        assert!(matches!(
+            &t.items()[items[0]],
+            TranscriptItem::Elicitation { expired: true, .. }
+        ));
+    }
 }

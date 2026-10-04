@@ -629,7 +629,7 @@ fn a_withdrawn_approval_expires_and_cannot_be_answered() {
 #[test]
 fn unsupported_host_requests_get_an_error_reply() {
     let mut t = Transcript::default();
-    let a = t.apply(&json!({"type":"control_request","request_id":"e1","request":{"subtype":"elicitation","message":"Sign in?"}}));
+    let a = t.apply(&json!({"type":"control_request","request_id":"e1","request":{"subtype":"hook_callback","callback_id":"c1","input":{}}}));
     let reply = a.reply.expect("the CLI must not be left waiting");
     assert_eq!(reply["response"]["subtype"], "error");
     assert_eq!(reply["response"]["request_id"], "e1");
