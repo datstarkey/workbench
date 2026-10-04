@@ -11,9 +11,9 @@ export interface ChatArtifact {
 	toolUseId: string;
 }
 
-/** `Artifact`, and its siblings (`ArtifactComments`, `ArtifactData`, …). */
+/** The tool that publishes and opens artifacts (not its comment/data siblings). */
 export function isArtifactTool(name: string): boolean {
-	return name.startsWith('Artifact');
+	return name === 'Artifact';
 }
 
 /** The link if it is http(s); anything else is never opened. */

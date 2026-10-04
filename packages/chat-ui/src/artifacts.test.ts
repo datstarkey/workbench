@@ -71,7 +71,7 @@ describe('artifact helpers', () => {
 
 	it('recognises the artifact tools', () => {
 		expect(isArtifactTool('Artifact')).toBe(true);
-		expect(isArtifactTool('ArtifactComments')).toBe(true);
+		expect(isArtifactTool('ArtifactComments')).toBe(false);
 		expect(isArtifactTool('Read')).toBe(false);
 	});
 

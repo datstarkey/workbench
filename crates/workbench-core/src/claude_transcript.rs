@@ -893,7 +893,7 @@ impl Transcript {
             self.skill_bodies_due.push_back(tool_id.to_string());
         }
         let text = tool_output_text(block.get("content"));
-        if name.starts_with("Artifact") && !is_error {
+        if name == "Artifact" && !is_error {
             if let Some(found) = result.and_then(|r| events::artifact(tool_id, r, text.as_deref()))
             {
                 let list = &mut self.meta.artifacts;
