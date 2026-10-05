@@ -40,7 +40,8 @@ export function adoptableChats(
 /**
  * The xterm workspace a terminal running in `cwd` belongs to: a worktree
  * workspace first, then the project's main one. Native-renderer workspaces
- * can't host server terminals, and no workspace is ever created for adoption.
+ * can't host server terminals. A terminal with no host isn't adopted; a chat
+ * gets a background workspace (`WorkspaceStore.adoptServerChat`).
  */
 export function adoptionWorkspace(
 	workspaces: ProjectWorkspace[],
