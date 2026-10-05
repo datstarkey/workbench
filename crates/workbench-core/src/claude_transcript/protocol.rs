@@ -42,6 +42,7 @@ const HANDLED: &[&str] = &[
     // JSONL only
     "attachment",
     "ai-title",
+    "custom-title",
     "permission-mode",
     "system:turn_duration",
     "system:stop_hook_summary",

@@ -26,12 +26,14 @@ mod items;
 mod parse;
 mod protocol;
 mod summary;
+mod title;
 
 pub use branch::fork_point;
 pub use cache::KEEPALIVE_PROMPT;
 pub use elicitation::ElicitationAction;
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use summary::{RunningSummary, WaitingSummary};
+pub(crate) use title::SavedTitle;
 
 pub use items::{
     ApprovalDecision, ArtifactInfo, EventKind, ModelOption, RateLimitInfo, RetryInfo, SlashCommand,
@@ -130,6 +132,7 @@ pub struct Transcript {
     items: Vec<TranscriptItem>,
     index: HashMap<String, usize>,
     meta: TranscriptMeta,
+    saved_title: SavedTitle,
     /// Message id of the assistant message currently streaming.
     streaming_message: Option<String>,
     /// Streamed text/thinking items, in block order, awaiting their final block.
@@ -228,7 +231,12 @@ impl Transcript {
             }
             Some("result") => self.apply_result(obj, &mut changed),
             Some("rate_limit_event") => self.apply_rate_limit(obj),
-            Some("ai-title") => self.meta.title = str_at(obj, "aiTitle").map(String::from),
+            Some("ai-title" | "custom-title") => {
+                self.saved_title.apply(obj);
+                if let Some(title) = self.saved_title.get() {
+                    self.meta.title = Some(title.to_string());
+                }
+            }
             Some("permission-mode") => {
                 self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from)
             }
@@ -816,6 +824,9 @@ impl Transcript {
             Some(UserText::Prompt(text)) => {
                 self.meta.busy = true;
                 self.keepalive = false;
+                if self.meta.title.is_none() && !text.is_empty() {
+                    self.meta.title = Some(crate::session_utils::truncate_label(&text));
+                }
                 text
             }
             Some(UserText::Command(text)) => text,
@@ -872,6 +883,9 @@ impl Transcript {
         }
         // A prompt sent during a keep-alive turn joins it: its reply must show.
         self.keepalive = false;
+        if self.meta.title.is_none() && !text.is_empty() {
+            self.meta.title = Some(crate::session_utils::truncate_label(&text));
+        }
         let item = TranscriptItem::User {
             id: str_at(obj, "uuid").unwrap_or_default().to_string(),
             text,

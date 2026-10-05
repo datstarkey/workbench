@@ -1551,6 +1551,92 @@ async fn concurrent_chat_starts_share_one_process() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn chat_resume_lists_the_title_before_a_client_opens_the_chat() {
+    use futures_util::StreamExt;
+
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = register_project(&env, tmp.path());
+    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    env.set("FAKE_CLAUDE_LOG", tmp.path().join("received.jsonl"));
+    let account_dir = tmp.path().join("claude-work");
+    let sessions = account_dir.join("projects/-project");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(
+        cfg.path().join("settings.json"),
+        json!({"claudeAccounts":[{"id":"work","name":"Work","configDir":account_dir}]}).to_string(),
+    )
+    .unwrap();
+    let id = "6d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let path = sessions.join(format!("{id}.jsonl"));
+    let mut history =
+        json!({"type":"user","uuid":"u","message":{"content":"Fix the login bug"}}).to_string();
+    let (handle, base) = start().await;
+    for (entry, expected) in [
+        (None, "Fix the login bug"),
+        (
+            Some(json!({"type":"ai-title","aiTitle":"Repair login validation","sessionId":id})),
+            "Repair login validation",
+        ),
+        (
+            Some(json!({"type":"custom-title","customTitle":"Login hotfix","sessionId":id})),
+            "Login hotfix",
+        ),
+    ] {
+        if let Some(entry) = entry {
+            history.push_str(&format!("\n{entry}"));
+        }
+        std::fs::write(&path, &history).unwrap();
+        let res = client()
+            .post(format!("{base}/agent/claude"))
+            .json(&json!({"projectPath":tmp.path(),"sessionId":id,"claudeAccountId":"work"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+
+        // The mobile home screen only polls the list; no websocket has attached.
+        let summaries: Vec<Value> = client()
+            .get(format!("{base}/agent"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0]["title"], expected);
+        assert_eq!(summaries[0]["claudeAccountId"], "work");
+
+        // Opening chat on either desktop or mobile receives the same restored name.
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+            "ws://{}/agent/claude/{id}/ws?token={TOKEN}",
+            handle.addr()
+        ))
+        .await
+        .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let snapshot: Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(snapshot["t"], "snapshot");
+        assert_eq!(snapshot["meta"]["title"], expected);
+        let res = client()
+            .delete(format!("{base}/agent/claude/{id}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 204);
+    }
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn chat_sessions_are_listed_and_take_messages_over_http() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
@@ -1615,6 +1701,11 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
     assert_eq!(summary["running"], Value::Null);
     assert!(summary["updatedAt"].as_u64().unwrap() > 0);
     assert_eq!(summary["turnEndedAt"], Value::Null);
+    assert_eq!(
+        summary["title"],
+        Value::Null,
+        "a new chat has no prompt yet"
+    );
 
     let res = message(json!({"t":"prompt","text":"hello"})).await.unwrap();
     assert_eq!(res.status(), 204);
@@ -1625,6 +1716,10 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
         "the list carries a preview, not the whole approval item"
     );
     assert_eq!(summary["busy"], true);
+    assert_eq!(
+        summary["title"], "hello",
+        "the mobile list has a name before opening the chat"
+    );
     assert_eq!(summary["model"], "fake-model");
     let since = summary["busySince"].as_u64().expect("busySince while busy");
     assert!(summary["updatedAt"].as_u64().unwrap() >= since);
