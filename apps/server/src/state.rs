@@ -39,6 +39,9 @@ pub struct AppState {
     /// listener's graceful shutdown (they run in detached tasks), so each attach
     /// watches this and disconnects — otherwise a revoked token keeps typing.
     pub revoked: watch::Receiver<bool>,
+    /// The port this listener is bound to, so a terminal's plugin can reach
+    /// it on loopback (`mod_routes`). `None` in tests that build state by hand.
+    pub local_port: Option<u16>,
 }
 
 impl AppState {
@@ -50,7 +53,13 @@ impl AppState {
             usage: managers.usage,
             token,
             revoked,
+            local_port: None,
         }
+    }
+
+    pub fn with_local_port(mut self, port: u16) -> Self {
+        self.local_port = Some(port);
+        self
     }
 }
 

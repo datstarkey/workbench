@@ -1,4 +1,5 @@
 import type { AnyEventHook, Register } from 'claude-code';
+import { register as registerChat } from './chat';
 
 const REFRESH_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
 
@@ -20,7 +21,8 @@ const forward: AnyEventHook = async ($, e, next) => {
 	return next(e);
 };
 
-export const register: Register = (on) => {
+export const register: Register = (on, options) => {
+	registerChat(on, options);
 	on('classic.SessionStart', forward);
 	on('classic.UserPromptSubmit', forward);
 	on('classic.Stop', forward);

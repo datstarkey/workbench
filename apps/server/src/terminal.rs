@@ -150,6 +150,7 @@ impl TerminalManager {
         hook_socket: Option<String>,
         shell: Option<String>,
         claude_config_dir: Option<&std::path::Path>,
+        extra_env: &[(&str, String)],
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -187,6 +188,9 @@ impl TerminalManager {
             if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
                 cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
             }
+        }
+        for (key, val) in extra_env {
+            cmd.env(key, val);
         }
         // Set on the shell, so every `claude` run in this pane uses that login.
         if let Some(dir) = claude_config_dir {
@@ -443,6 +447,8 @@ pub async fn terminal_create(
         ));
     }
     let terminals = state.terminals.clone();
+    let agents = state.agents.clone();
+    let local_port = state.local_port;
     // openpty + fork/exec and the project-allowlist load are blocking — run them off
     // the async executor so a slow spawn doesn't stall a tokio worker thread.
     crate::routes::blocking(move || {
@@ -466,6 +472,24 @@ pub async fn terminal_create(
             )?),
             None => body.command,
         };
+        // The Workbench plugin in this pane's `claude` runs the session as a
+        // chat through `mod_routes`, with a token good for this terminal only.
+        let mod_env = match local_port {
+            Some(port) => {
+                let token = agents.grant_mod(crate::agent::ModGrant {
+                    pane_id: body.pane_id.clone(),
+                    project_path: body.project_path.clone(),
+                    worktree_path: body.worktree_path.clone(),
+                    claude_account_id: body.claude_account_id.clone(),
+                    cwd: cwd.clone(),
+                })?;
+                vec![
+                    ("WORKBENCH_MOD_URL", format!("http://127.0.0.1:{port}")),
+                    ("WORKBENCH_MOD_TOKEN", token),
+                ]
+            }
+            None => Vec::new(),
+        };
         terminals.create(
             cwd,
             body.name,
@@ -476,6 +500,7 @@ pub async fn terminal_create(
             body.hook_socket,
             body.shell,
             claude_config_dir.as_deref(),
+            &mod_env,
         )
     })
     .await

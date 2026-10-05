@@ -54,6 +54,16 @@ fn chrome_enabled(config_dir: Option<&Path>) -> bool {
         .unwrap_or(false)
 }
 
+/// A driver holding the session's history, for a terminal's `claude` the
+/// plugin feeds (no process is started).
+pub(super) fn history_driver(config_dir: Option<&Path>, session_id: &str) -> Driver {
+    let transcript = history(config_dir, session_id)
+        .as_deref()
+        .map(|path| Transcript::load_at(path, None))
+        .unwrap_or_default();
+    Driver::Claude(transcript)
+}
+
 /// `resume_at`: continue the conversation from this entry, dropping what
 /// came after it (a rewind).
 pub(super) fn launch(

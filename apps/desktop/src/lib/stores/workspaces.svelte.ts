@@ -26,7 +26,7 @@ import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { visibleSplit } from '$features/terminal/split-view';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
-import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
+import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
 import { paneAgent, terminalAfterChat } from '$features/chat/pane-handoff';
 import {
 	chatHasHistory,
@@ -233,7 +233,7 @@ export class WorkspaceStore {
 		try {
 			const snapshot = await invoke<WorkspaceSnapshot>('load_workspaces');
 			if (snapshot.workspaces.length > 0) {
-				this.workspaces = snapshot.workspaces;
+				this.workspaces = snapshot.workspaces.map(withoutLiveTerminalViews);
 				this.selectedId = snapshot.selectedId;
 				this.serverTerminalIds = snapshot.serverTerminalIds ?? {};
 			}
@@ -268,6 +268,13 @@ export class WorkspaceStore {
 	/** Shows another device's terminal (mounts detached) or chat (attaches only). */
 	isAdoptedPane(paneId: string): boolean {
 		return this.adoption.isAdopted(paneId);
+	}
+
+	/** The pane's chat view is its terminal's own `claude` (attach, never start one). */
+	isLiveTerminalPane(paneId: string): boolean {
+		return this.workspaces.some((w) =>
+			w.terminalTabs.some((t) => t.panes.some((p) => p.id === paneId && p.liveTerminal))
+		);
 	}
 
 	/** An adopted chat that ended was restarted here: the pane now owns its session. */
@@ -666,6 +673,18 @@ export class WorkspaceStore {
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
 		if (!pane || (pane.view ?? 'terminal') === view) return;
+		if (view === 'terminal' && pane.liveTerminal) {
+			releaseChat(paneId);
+			this.patchPane(paneId, { view, liveTerminal: undefined });
+			return;
+		}
+		// The terminal's own `claude` is already a chat through the Workbench plugin:
+		// show it, no restart (and no sandbox concern: the terminal is what srt wraps).
+		const live = view === 'chat' && paneAgent(pane) === 'claude' ? await liveChatFor(paneId) : null;
+		if (live) {
+			this.patchPane(paneId, { view, liveTerminal: true, claudeSessionId: live });
+			return;
+		}
 		// Claude chat can't run inside the sandbox runtime (which never wraps Codex):
 		// refuse before killing the terminal.
 		if (view === 'chat' && paneAgent(pane) === 'claude' && this.settingsStore.sandboxRuntimeEnabled)
@@ -1033,4 +1052,25 @@ export class WorkspaceStore {
 			this.workspaces = normalized;
 		}
 	}
+}
+
+/** The session id of the chat the pane's terminal `claude` runs as, if it's live. */
+async function liveChatFor(paneId: string): Promise<string | null> {
+	const agents = await listAgents().catch(() => null);
+	return (
+		agents?.find((a) => a.paneId === paneId && a.agent === 'claude' && !a.exited)?.sessionId ?? null
+	);
+}
+
+/** A live terminal's chat view can't outlive the app: reopen those panes as terminals. */
+function withoutLiveTerminalViews(w: ProjectWorkspace): ProjectWorkspace {
+	return {
+		...w,
+		terminalTabs: w.terminalTabs.map((t) => ({
+			...t,
+			panes: t.panes.map((p) =>
+				p.liveTerminal ? { ...p, view: 'terminal' as const, liveTerminal: undefined } : p
+			)
+		}))
+	};
 }

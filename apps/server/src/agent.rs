@@ -7,6 +7,7 @@
 //! attaching and messaging work by id whatever runs behind it. What differs
 //! per CLI lives in a driver (`claude`, `codex`); the plumbing in `session`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,10 +22,12 @@ mod cache;
 mod claude;
 mod codex;
 mod driver;
+mod modlink;
 mod session;
 
 pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
 pub use cache::CachePolicy;
+pub use modlink::{ModGrant, ModLink};
 pub use session::AgentSession;
 
 const DEFAULT_MAX_AGENTS: usize = 16;
@@ -133,6 +136,8 @@ pub struct AgentManager {
     cache_policies: Arc<cache::PolicyStore>,
     /// The cache upkeep thread, started with the first session.
     upkeep: Arc<OnceLock<()>>,
+    /// Terminal tokens a pane's plugin attaches its `claude` with, by token.
+    mod_grants: Arc<Mutex<HashMap<String, ModGrant>>>,
 }
 
 impl AgentManager {
@@ -274,6 +279,75 @@ impl AgentManager {
         Ok(session)
     }
 
+    /// A token for one terminal's plugin to attach its interactive `claude` with.
+    pub fn grant_mod(&self, grant: ModGrant) -> Result<String> {
+        let token = workbench_core::token::generate()?;
+        lock(&self.mod_grants).insert(token.clone(), grant);
+        Ok(token)
+    }
+
+    /// Attach (or re-attach) a terminal's `claude` session as a chat, its
+    /// history loaded from disk. Refused while a `claude -p` runs that id.
+    pub fn attach_mod(&self, token: &str, session_id: &str) -> Result<Arc<AgentSession>> {
+        claude::validate(session_id, None)?;
+        let Some(grant) = lock(&self.mod_grants).get(token).cloned() else {
+            bail!("unknown terminal token");
+        };
+        let _lifecycle = lock(&self.lifecycle);
+        if let Some(existing) = self.get(session_id) {
+            match existing.mod_link() {
+                Some(link) if link.token == token => {
+                    link.touch();
+                    return Ok(existing);
+                }
+                Some(_) => {
+                    self.forget(&existing);
+                    existing.shutdown();
+                }
+                None => bail!("a chat process already runs {session_id}"),
+            }
+        }
+        let config_dir =
+            workbench_core::claude_accounts::resolve_saved(grant.claude_account_id.as_deref())?;
+        let driver = claude::history_driver(config_dir.as_deref(), session_id);
+        let req = StartAgent {
+            cwd: grant.cwd,
+            project_path: grant.project_path,
+            worktree_path: grant.worktree_path,
+            pane_id: grant.pane_id,
+            hook_socket: None,
+            claude_account_id: grant.claude_account_id,
+            launch: Launch::Claude {
+                session_id: session_id.to_string(),
+                permission_mode: None,
+                config_dir,
+            },
+        };
+        let link = Arc::new(ModLink::new(token.to_string()));
+        let session = AgentSession::attach_mod(req, driver, link, &self.cache_policies);
+        lock(&self.inner).insert(session_id.to_string(), session.clone());
+        self.start_upkeep();
+        Ok(session)
+    }
+
+    /// The mod session `session_id`, if `token` is the one it attached with.
+    pub fn mod_session(&self, token: &str, session_id: &str) -> Option<Arc<AgentSession>> {
+        self.get(session_id)
+            .filter(|s| s.mod_link().is_some_and(|l| l.token == token))
+    }
+
+    /// Fold lines a terminal's plugin posted into its session.
+    pub fn feed_mod(&self, session: &Arc<AgentSession>, lines: &[serde_json::Value]) {
+        if let Some(link) = session.mod_link() {
+            link.touch();
+        }
+        for line in lines {
+            session.feed(&line.to_string(), |new_id| {
+                lock(&self.inner).insert(new_id.to_string(), session.clone());
+            });
+        }
+    }
+
     /// Set a chat's cache policy, saved under its id.
     pub fn set_cache_policy(&self, session: &AgentSession, policy: CachePolicy) -> Result<()> {
         if policy
@@ -288,10 +362,10 @@ impl AgentManager {
     /// Check every session's cache policy each tick, until the manager is gone.
     fn start_upkeep(&self) {
         self.upkeep.get_or_init(|| {
-            let registry = Arc::downgrade(&self.inner);
+            let weak = Arc::downgrade(&self.inner);
             std::thread::spawn(move || loop {
                 std::thread::sleep(cache::TICK);
-                let Some(registry) = registry.upgrade() else {
+                let Some(registry) = weak.upgrade() else {
                     break;
                 };
                 let mut sessions: Vec<_> = lock(&registry).values().cloned().collect();
@@ -300,6 +374,14 @@ impl AgentManager {
                 sessions.dedup_by(|a, b| Arc::ptr_eq(a, b));
                 let now = now_ms();
                 for session in sessions {
+                    // The terminal's `claude` quit (or the pane closed) without saying so.
+                    if session.mod_link().is_some_and(|l| l.is_stale()) {
+                        if let Some(registry) = weak.upgrade() {
+                            lock(&registry).retain(|_, s| !Arc::ptr_eq(s, &session));
+                        }
+                        session.shutdown();
+                        continue;
+                    }
                     session.upkeep(now);
                 }
             });

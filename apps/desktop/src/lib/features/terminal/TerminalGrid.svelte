@@ -76,18 +76,22 @@
 						/>
 					{/key}
 				{/if}
-			{:else}
-				<TerminalPane
-					sessionId={pane.id}
-					{project}
-					{active}
-					{cwd}
-					startupCommand={pane.startupCommand}
-					claudeAccountId={pane.claudeAccountId}
-					existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
-					onServerTerminalIdChange={(paneId, serverTerminalId) =>
-						workspaceStore.setServerTerminalId(paneId, serverTerminalId)}
-				/>
+			{/if}
+			<!-- A live terminal's chat is the same `claude`: keep its xterm attached underneath. -->
+			{#if !(inChat && agent) || pane.liveTerminal}
+				<div class={['h-full', inChat && 'hidden']}>
+					<TerminalPane
+						sessionId={pane.id}
+						{project}
+						active={active && !inChat}
+						{cwd}
+						startupCommand={pane.startupCommand}
+						claudeAccountId={pane.claudeAccountId}
+						existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
+						onServerTerminalIdChange={(paneId, serverTerminalId) =>
+							workspaceStore.setServerTerminalId(paneId, serverTerminalId)}
+					/>
+				</div>
 			{/if}
 			{#if target}
 				<div

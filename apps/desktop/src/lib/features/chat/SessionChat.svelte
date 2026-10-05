@@ -107,8 +107,11 @@
 						? { permissionMode: settingsStore.claudePermissionMode }
 						: {})
 				}),
-		// Another device's chat: join its process, never start one behind its back.
-		...(workspaceStore.isAdoptedPane(paneId) ? { attachOnly: true } : {})
+		// Another device's chat, or this pane's own terminal `claude`: join its
+		// process, never start one behind its back.
+		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)
+			? { attachOnly: true }
+			: {})
 	});
 	const workspace = $derived(
 		cwd && cwd !== project.path

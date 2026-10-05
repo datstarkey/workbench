@@ -167,6 +167,11 @@ export interface TerminalPaneState {
 	serverTerminalId?: string;
 	/** Claude panes can show their session as chat; the terminal keeps running underneath. */
 	view?: PaneView;
+	/**
+	 * The chat view is the terminal's own `claude`, bridged by the Workbench
+	 * plugin: switching views keeps the one process. Never restored on load.
+	 */
+	liveTerminal?: boolean;
 	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
 	claudeAccountId?: string;
 }

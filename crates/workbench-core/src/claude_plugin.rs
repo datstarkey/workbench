@@ -27,6 +27,10 @@ const FILES: &[(&str, &str)] = &[
         "hooks/register.ts",
         include_str!("../../../plugins/workbench/hooks/register.ts"),
     ),
+    (
+        "hooks/chat.ts",
+        include_str!("../../../plugins/workbench/hooks/chat.ts"),
+    ),
 ];
 
 fn ensure_in(dir: &Path) -> Result<()> {

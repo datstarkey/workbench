@@ -19,6 +19,7 @@ use workbench_core::claude_transcript::{
 
 use super::cache::{self, CachePolicy, PolicyStore, Upkeep};
 use super::driver::{Driver, Effects, Launch};
+use super::modlink::ModLink;
 use super::{lock, now_ms, AgentKind, AgentSummary, PromptFile, PromptImage, StartAgent};
 
 /// Items in an attach snapshot; older history stays on disk.
@@ -57,10 +58,12 @@ pub struct AgentSession {
     /// When the last turn went idle, so a poller catches turns shorter than its interval.
     turn_ended_at: Mutex<Option<u64>>,
     tx: broadcast::Sender<String>,
-    stdin: Mutex<Option<ChildStdin>>,
-    child: Mutex<Child>,
+    stdin: Mutex<Option<Sink>>,
+    /// `None` for a session fed by a terminal's plugin: there is no process of ours.
+    child: Mutex<Option<Child>>,
     /// Kept apart from `child` so a stop never waits on the reaping lock.
-    pid: u32,
+    pid: Option<u32>,
+    link: Option<Arc<ModLink>>,
     exited: AtomicBool,
     task_files: Mutex<HashMap<String, PathBuf>>,
     stderr_tail: Mutex<String>,
@@ -86,6 +89,12 @@ pub struct AgentSession {
 /// The command every chat process starts from: cwd, pipes, the inherited
 /// environment without the server's token, the pane's hook wiring, and its
 /// own process group so stopping it also ends the shells it started.
+/// Where a session's input lines go.
+enum Sink {
+    Pipe(ChildStdin),
+    Mod(Arc<ModLink>),
+}
+
 pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgent) -> Command {
     let mut cmd = workbench_core::shell::command(program);
     cmd.current_dir(&req.cwd)
@@ -139,52 +148,28 @@ impl AgentSession {
         let stdin = child.stdin.take().context("stdin")?;
         let pid = child.id();
         let known_id = req.launch.known_id().map(String::from);
-        let kind = req.launch.kind();
-        let cache_policy = match &known_id {
-            Some(id) if kind == AgentKind::Claude => cache_policies.get(id),
-            _ => CachePolicy::default(),
-        };
-
-        let (tx, _) = broadcast::channel(256);
-        let session = Arc::new(Self {
-            kind,
-            session_id: Mutex::new(known_id.clone().unwrap_or_default()),
-            pane_id: req.pane_id,
-            project_path: req.project_path,
-            worktree_path: req.worktree_path,
-            claude_account_id: req.claude_account_id,
-            driver: Mutex::new(driver),
-            busy_since: Mutex::new(None),
-            updated_at: AtomicU64::new(now_ms()),
-            turn_ended_at: Mutex::new(None),
-            tx,
-            stdin: Mutex::new(Some(stdin)),
-            child: Mutex::new(child),
-            pid,
-            exited: AtomicBool::new(false),
-            task_files: Mutex::new(HashMap::new()),
-            stderr_tail: Mutex::new(String::new()),
-            program,
-            ready: Mutex::new(ready.map(Ok)),
-            ready_cv: Condvar::new(),
+        let session = Self::build(
+            req,
             relaunch,
-            waiters: Mutex::new(HashMap::new()),
-            replaced: AtomicBool::new(false),
-            ended: AtomicBool::new(false),
-            cache_policy: Mutex::new(cache_policy),
-            cache_policies,
-            upkept_for: Mutex::new(None),
-        });
+            driver,
+            Sink::Pipe(stdin),
+            Some(child),
+            program,
+            ready,
+            &cache_policies,
+        );
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
         lock(&registry).insert(key, session.clone());
         if let Err(e) = hello.iter().try_for_each(|line| session.send(line)) {
             lock(&registry).retain(|_, s| !Arc::ptr_eq(s, &session));
             // No reader thread yet to reap it.
-            let mut child = lock(&session.child);
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Some(child) = lock(&session.child).as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             return Err(e);
         }
+        debug_assert_eq!(session.pid, Some(pid));
 
         let reader = session.clone();
         std::thread::spawn(move || {
@@ -205,6 +190,96 @@ impl AgentSession {
             lock(&registry).retain(|_, s| !Arc::ptr_eq(s, &reader));
         });
         Ok(session)
+    }
+
+    /// A session fed by a terminal's plugin (see [`super::modlink`]); no process is started.
+    pub(super) fn attach_mod(
+        req: StartAgent,
+        driver: Driver,
+        link: Arc<ModLink>,
+        cache_policies: &Arc<PolicyStore>,
+    ) -> Arc<Self> {
+        let ready = req.launch.known_id().map(String::from);
+        let relaunch = req.clone();
+        Self::build(
+            req,
+            relaunch,
+            driver,
+            Sink::Mod(link),
+            None,
+            "claude",
+            ready,
+            cache_policies,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        req: StartAgent,
+        relaunch: StartAgent,
+        driver: Driver,
+        sink: Sink,
+        child: Option<Child>,
+        program: &'static str,
+        ready: Option<String>,
+        cache_policies: &Arc<PolicyStore>,
+    ) -> Arc<Self> {
+        let known_id = req.launch.known_id().map(String::from);
+        let kind = req.launch.kind();
+        let cache_policy = match &known_id {
+            Some(id) if kind == AgentKind::Claude => cache_policies.get(id),
+            _ => CachePolicy::default(),
+        };
+        let link = match &sink {
+            Sink::Mod(link) => Some(link.clone()),
+            Sink::Pipe(_) => None,
+        };
+        let (tx, _) = broadcast::channel(256);
+        Arc::new(Self {
+            kind,
+            session_id: Mutex::new(known_id.unwrap_or_default()),
+            pane_id: req.pane_id,
+            project_path: req.project_path,
+            worktree_path: req.worktree_path,
+            claude_account_id: req.claude_account_id,
+            driver: Mutex::new(driver),
+            busy_since: Mutex::new(None),
+            updated_at: AtomicU64::new(now_ms()),
+            turn_ended_at: Mutex::new(None),
+            tx,
+            stdin: Mutex::new(Some(sink)),
+            pid: child.as_ref().map(Child::id),
+            child: Mutex::new(child),
+            link,
+            exited: AtomicBool::new(false),
+            task_files: Mutex::new(HashMap::new()),
+            stderr_tail: Mutex::new(String::new()),
+            program,
+            ready: Mutex::new(ready.map(Ok)),
+            ready_cv: Condvar::new(),
+            relaunch,
+            waiters: Mutex::new(HashMap::new()),
+            replaced: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
+            cache_policy: Mutex::new(cache_policy),
+            cache_policies: cache_policies.clone(),
+            upkept_for: Mutex::new(None),
+        })
+    }
+
+    /// The plugin link of a session fed by a terminal's `claude`.
+    pub fn mod_link(&self) -> Option<&Arc<ModLink>> {
+        self.link.as_ref()
+    }
+
+    /// Whether any client (desktop chat pane, phone) is attached.
+    pub fn has_viewers(&self) -> bool {
+        self.tx.receiver_count() > 0
+    }
+
+    /// Apply a line the plugin posted, as the reader thread does for a process's stdout.
+    pub(super) fn feed(&self, line: &str, alias: impl FnOnce(&str)) {
+        self.apply_line(line, alias);
     }
 
     pub fn has_exited(&self) -> bool {
@@ -283,12 +358,18 @@ impl AgentSession {
 
     fn send(&self, msg: &Value) -> Result<()> {
         let mut stdin = lock(&self.stdin);
-        let Some(pipe) = stdin.as_mut() else {
-            bail!("the session has stopped");
-        };
-        writeln!(pipe, "{msg}").with_context(|| format!("write to {}", self.program))?;
-        pipe.flush()
-            .with_context(|| format!("flush to {}", self.program))
+        match stdin.as_mut() {
+            None => bail!("the session has stopped"),
+            Some(Sink::Mod(link)) => {
+                link.push(msg.clone());
+                Ok(())
+            }
+            Some(Sink::Pipe(pipe)) => {
+                writeln!(pipe, "{msg}").with_context(|| format!("write to {}", self.program))?;
+                pipe.flush()
+                    .with_context(|| format!("flush to {}", self.program))
+            }
+        }
     }
 
     /// Apply a client message through the driver. Its lines are written
@@ -574,10 +655,15 @@ impl AgentSession {
         // group: end the background shells it started, which would otherwise
         // outlive it holding ports and files.
         #[cfg(unix)]
-        unsafe {
-            libc::killpg(self.pid as libc::pid_t, libc::SIGTERM);
+        if let Some(pid) = self.pid {
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGTERM);
+            }
         }
-        let code = lock(&self.child).wait().ok().and_then(|s| s.code());
+        let code = lock(&self.child)
+            .as_mut()
+            .and_then(|c| c.wait().ok())
+            .and_then(|s| s.code());
         self.exited.store(true, Ordering::SeqCst);
         let tail = lock(&self.stderr_tail).clone();
         self.set_ready(Err(format!(
@@ -598,6 +684,11 @@ impl AgentSession {
     /// Interrupt, close stdin, and kill the process (and its group) if it
     /// lingers. The reader thread's `finish` reaps it and ends the group.
     pub(super) fn shutdown(&self) {
+        // The terminal's `claude` is the person's: stopping the chat only detaches it.
+        let Some(pid) = self.pid else {
+            self.finish();
+            return;
+        };
         let _ = self.interrupt();
         // Windows has no process groups: `taskkill /T` walks the tree, which it
         // can only do while the process is still alive to be its root.
@@ -605,7 +696,7 @@ impl AgentSession {
         {
             std::thread::sleep(Duration::from_millis(500));
             let _ = workbench_core::shell::command("taskkill")
-                .args(["/T", "/F", "/PID", &self.pid.to_string()])
+                .args(["/T", "/F", "/PID", &pid.to_string()])
                 .output();
         }
         lock(&self.stdin).take();
@@ -616,10 +707,12 @@ impl AgentSession {
         if !self.exited.load(Ordering::SeqCst) {
             #[cfg(unix)]
             unsafe {
-                libc::killpg(self.pid as libc::pid_t, libc::SIGKILL);
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
             }
             #[cfg(windows)]
-            let _ = lock(&self.child).kill();
+            if let Some(child) = lock(&self.child).as_mut() {
+                let _ = child.kill();
+            }
         }
     }
 }
