@@ -39,6 +39,21 @@ pub(super) fn history(config_dir: Option<&Path>, session_id: &str) -> Option<Pat
     claude_transcript::find_transcript(&projects, session_id)
 }
 
+/// Whether the account turned Claude in Chrome on by default. An interactive
+/// `claude` honours `claudeInChromeDefaultEnabled`; `-p` ignores it and only
+/// loads the extension's MCP server with `--chrome` (verified on 2.1.286).
+fn chrome_enabled(config_dir: Option<&Path>) -> bool {
+    let path = config_dir.map_or_else(
+        || workbench_core::paths::home_dir().join(".claude.json"),
+        |dir| dir.join(".claude.json"),
+    );
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|v| v.get("claudeInChromeDefaultEnabled")?.as_bool())
+        .unwrap_or(false)
+}
+
 /// `resume_at`: continue the conversation from this entry, dropping what
 /// came after it (a rewind).
 pub(super) fn launch(
@@ -73,6 +88,9 @@ pub(super) fn launch(
     ]);
     if let Some(mode) = permission_mode {
         cmd.args(["--permission-mode", mode]);
+    }
+    if chrome_enabled(config_dir) {
+        cmd.arg("--chrome");
     }
     let id_flag = if history.is_some() {
         "--resume"
@@ -278,6 +296,17 @@ fn changed_meta(msg: Value) -> Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chrome_follows_the_accounts_default() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!chrome_enabled(Some(dir.path())));
+        let json = dir.path().join(".claude.json");
+        std::fs::write(&json, r#"{"claudeInChromeDefaultEnabled":true}"#).unwrap();
+        assert!(chrome_enabled(Some(dir.path())));
+        std::fs::write(&json, r#"{"claudeInChromeDefaultEnabled":false}"#).unwrap();
+        assert!(!chrome_enabled(Some(dir.path())));
+    }
 
     #[test]
     fn attachments_go_before_the_text_as_content_blocks() {
