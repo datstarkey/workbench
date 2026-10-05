@@ -1,11 +1,13 @@
 import './app.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
+import { initSentry } from './sentry';
 
 // Dark mode forced on, same as desktop.
 document.documentElement.classList.add('dark');
 
 async function boot() {
+	initSentry();
 	// Forward console.* to the Rust log plugin (→ logcat on Android). Best-effort:
 	// never let logging setup block the app from mounting.
 	try {

@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.os.Build
+import android.webkit.WebView
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
@@ -28,6 +29,8 @@ class StartArgs {
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications")])
 class SessionNotificationsPlugin(private val activity: Activity) : Plugin(activity) {
   private var pending: String? = null
+
+  override fun load(webView: WebView) { Telemetry.init(activity) }
 
   @Command
   fun start(invoke: Invoke) {

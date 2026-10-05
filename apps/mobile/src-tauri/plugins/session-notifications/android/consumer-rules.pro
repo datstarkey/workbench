@@ -1,0 +1,2 @@
+-keep class com.workbench.notifications.** { *; }
+-keepattributes SourceFile,LineNumberTable
