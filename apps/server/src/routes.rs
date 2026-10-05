@@ -49,7 +49,7 @@ pub fn router(state: AppState) -> Router {
         .route("/mod/hello", post(crate::mod_routes::hello))
         .route("/mod/out", post(crate::mod_routes::out))
         .route("/mod/in", get(crate::mod_routes::poll))
-        .route("/mod/route", get(crate::mod_routes::route))
+        .route("/mod/ask", post(crate::mod_routes::ask))
         .route("/mod/bye", post(crate::mod_routes::bye))
         .route("/agent", get(crate::agent_routes::agent_list))
         .route(

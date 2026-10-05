@@ -96,14 +96,61 @@ pub async fn poll(
     Ok(Json(link.take(POLL_WAIT).await))
 }
 
-/// Whether a chat view is open on the session, so approvals go to it rather than the TUI.
-pub async fn route(
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskBody {
+    session_id: String,
+    request_id: String,
+    /// The `can_use_tool` request, on the first call; later calls keep waiting.
+    line: Option<Value>,
+}
+
+/// How long one `/mod/ask` call waits before answering `pending`.
+const ASK_WAIT: Duration = Duration::from_secs(20);
+
+/// An approval the terminal's `claude` asks in chat. Answers `{answer}` once a
+/// client answers, `{fallback: true}` when no chat is open (the TUI asks
+/// instead; the card is withdrawn), or `{pending: true}` to be called again.
+/// A held request is how the plugin waits without spending its hook budget.
+pub async fn ask(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<SessionRef>,
+    Json(body): Json<AskBody>,
 ) -> ApiResult<Json<Value>> {
-    let session = session(&state, &headers, &q.session_id)?;
-    Ok(Json(json!({ "chat": session.has_viewers() })))
+    let session = session(&state, &headers, &body.session_id)?;
+    let link = session
+        .mod_link()
+        .cloned()
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such terminal session"))?;
+    let feed = |line: Value| {
+        let agents = state.agents.clone();
+        let session = session.clone();
+        crate::routes::blocking(move || {
+            agents.feed_mod(&session, &[line]);
+            Ok(())
+        })
+    };
+    if let Some(line) = body.line {
+        link.expect_answer(&body.request_id);
+        feed(line).await?;
+    }
+    let deadline = tokio::time::Instant::now() + ASK_WAIT;
+    loop {
+        if let Some(answer) = link
+            .wait_answer(&body.request_id, Duration::from_secs(1))
+            .await
+        {
+            return Ok(Json(json!({ "answer": answer })));
+        }
+        if !session.has_viewers() {
+            link.drop_ask(&body.request_id);
+            feed(json!({"type": "control_cancel_request", "request_id": body.request_id})).await?;
+            return Ok(Json(json!({ "fallback": true })));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(Json(json!({ "pending": true })));
+        }
+    }
 }
 
 pub async fn bye(

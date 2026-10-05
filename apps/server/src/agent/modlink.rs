@@ -42,6 +42,10 @@ pub struct ModLink {
     queue: Mutex<VecDeque<Value>>,
     notify: Notify,
     last_seen: Mutex<Instant>,
+    /// Approvals the plugin waits on (`/mod/ask`), by request id, with the
+    /// answer once a client gives it.
+    asks: Mutex<std::collections::HashMap<String, Option<Value>>>,
+    answered: Notify,
 }
 
 impl ModLink {
@@ -52,7 +56,55 @@ impl ModLink {
             queue: Mutex::new(VecDeque::new()),
             notify: Notify::new(),
             last_seen: Mutex::new(Instant::now()),
+            asks: Mutex::new(std::collections::HashMap::new()),
+            answered: Notify::new(),
         }
+    }
+
+    /// The plugin asked for approval `request_id`: answers go to `/mod/ask`, not `/mod/in`.
+    pub fn expect_answer(&self, request_id: &str) {
+        lock(&self.asks)
+            .entry(request_id.to_string())
+            .or_insert(None);
+    }
+
+    /// Take a client's answer to an approval the plugin waits on; `false` when
+    /// nobody waits on it (it goes to `/mod/in` like any line).
+    pub fn answer(&self, line: &Value) -> bool {
+        let id = line.pointer("/response/request_id").and_then(Value::as_str);
+        let mut asks = lock(&self.asks);
+        match id.and_then(|id| asks.get_mut(id)) {
+            Some(slot) => {
+                *slot = Some(line.clone());
+                self.answered.notify_waiters();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Wait up to `wait` for the answer to `request_id`; `None` when there is none yet.
+    pub async fn wait_answer(&self, request_id: &str, wait: Duration) -> Option<Value> {
+        self.touch();
+        let answered = self.answered.notified();
+        if let Some(answer) = self.take_answer(request_id) {
+            return Some(answer);
+        }
+        let _ = tokio::time::timeout(wait, answered).await;
+        self.touch();
+        self.take_answer(request_id)
+    }
+
+    fn take_answer(&self, request_id: &str) -> Option<Value> {
+        let mut asks = lock(&self.asks);
+        let answer = asks.get_mut(request_id)?.take()?;
+        asks.remove(request_id);
+        Some(answer)
+    }
+
+    /// Stop waiting on `request_id` (it fell back to the terminal).
+    pub fn drop_ask(&self, request_id: &str) {
+        lock(&self.asks).remove(request_id);
     }
 
     pub fn push(&self, line: Value) {
@@ -80,6 +132,11 @@ impl ModLink {
     }
 }
 
+/// Where a session's attachments are saved; removed when the session ends.
+pub fn attachment_dir(session_id: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join("workbench-chat").join(session_id)
+}
+
 /// A terminal `claude` takes a prompt as text, so attachments are saved to a
 /// temp folder and mentioned as `@path`, which Claude Code reads (images
 /// included). Returns the prompt with the mentions appended.
@@ -92,11 +149,16 @@ pub fn attachments_as_mentions(
     if images.is_empty() && files.is_empty() {
         return Ok(text.to_string());
     }
-    let dir = std::env::temp_dir()
-        .join("workbench-chat")
-        .join(session_id)
-        .join(uuid::Uuid::new_v4().to_string());
+    let dir = attachment_dir(session_id).join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    // Other local users can read a world-readable temp dir.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for d in [dir.parent().unwrap_or(&dir), &dir] {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
     let b64 = base64::engine::general_purpose::STANDARD;
     let mut paths = Vec::new();
     for (i, image) in images.iter().enumerate() {
@@ -105,13 +167,13 @@ pub fn attachments_as_mentions(
         std::fs::write(&path, b64.decode(&image.data).context("decode image")?)?;
         paths.push(path);
     }
-    for file in files {
+    for (i, file) in files.iter().enumerate() {
         let name: String = std::path::Path::new(&file.name)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
-        let path = dir.join(name);
+        let path = dir.join(format!("{}-{name}", i + 1));
         let bytes = if file.media_type == PDF_TYPE {
             b64.decode(&file.data).context("decode PDF")?
         } else {

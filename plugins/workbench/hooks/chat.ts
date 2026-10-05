@@ -24,11 +24,11 @@ let messageSeq = 0;
 let currentMessage = '';
 const startedBlocks = new Set<number>();
 let askSeq = 0;
-const pendingAsks = new Map<string, (answer: Answer) => void>();
+// The server lost this session (it restarted, or a stop detached it): say hello again.
+let needsHello = false;
+let lastHello = 0;
 // Effort picked in chat; applied to each main-thread model request.
 let effort: TurnStepInput['effort'];
-// Model picked in chat for this session only (saving as default goes through `/config`).
-let sessionModel: string | undefined;
 // The running main-thread turn, for an interrupt from chat.
 let runningTurn: string | undefined;
 // The last request's token counts, stamped on its assistant rows (context
@@ -110,26 +110,30 @@ function promptText(content: unknown): string {
 		.join('\n');
 }
 
-function askInChat(tool: string, input: unknown, toolUseId: string | undefined): Promise<Answer> {
-	const requestId = `wbmod-ask-${++askSeq}`;
-	const answer = new Promise<Answer>((resolve) => pendingAsks.set(requestId, resolve));
-	emit({
+function askLine(requestId: string, tool: string, input: unknown, toolUseId?: string): Line {
+	return {
 		type: 'control_request',
 		request_id: requestId,
 		request: { subtype: 'can_use_tool', tool_name: tool, input, tool_use_id: toolUseId }
-	});
-	return answer;
+	};
 }
 
-function settleAsk(line: Line) {
-	const response = line.response as
-		| { request_id?: string; response?: Answer; error?: string }
-		| undefined;
-	const id = response?.request_id;
-	const settle = id ? pendingAsks.get(id) : undefined;
-	if (!id || !settle) return;
-	pendingAsks.delete(id);
-	settle(response?.response ?? { behavior: 'deny', message: response?.error });
+/**
+ * One `/mod/ask` reply: the answer, `null` to fall back to the terminal (no
+ * chat open, or the server is unreachable), or `undefined` to keep waiting.
+ */
+function askAnswer(text: string | undefined): Answer | null | undefined {
+	if (text === undefined) return null;
+	const reply = JSON.parse(text) as {
+		answer?: { response?: { subtype?: string; response?: Answer; error?: string } };
+		fallback?: boolean;
+	};
+	if (reply.fallback) return null;
+	const response = reply.answer?.response;
+	if (!response) return undefined;
+	return response.subtype === 'error'
+		? { behavior: 'deny', message: response.error }
+		: (response.response ?? { behavior: 'deny' });
 }
 
 /** Report background jobs that finished; called from the Stop hook with its job list. */
@@ -176,6 +180,9 @@ export const register: Register = (on) => {
 			flushing = true;
 			$.http
 				.fetch(`${link.url}/mod/out`, init('POST', takeOutbox()))
+				.then((res) => {
+					if (res.status === 404) needsHello = true;
+				})
 				.catch(() => {})
 				.finally(() => (flushing = false));
 		});
@@ -184,29 +191,40 @@ export const register: Register = (on) => {
 			if (polling || !link) return;
 			polling = true;
 			if (clearPending) {
-				clearPending = false;
+				// The server finds the session by token until the reset re-keys it.
 				void $.session.id().then((id) => {
 					if (!link || id === link.sessionId) return;
+					clearPending = false;
 					emit({ type: 'conversation_reset', new_conversation_id: id, session_id: link.sessionId });
 					link = { ...link, sessionId: id };
 				});
 			}
+			if (needsHello && Date.now() - lastHello > 5000) {
+				needsHello = false;
+				lastHello = Date.now();
+				void $.http
+					.fetch(`${link.url}/mod/hello`, init('POST', { sessionId: link.sessionId }))
+					.then((res) => {
+						if (!res.ok) needsHello = true;
+					})
+					.catch(() => (needsHello = true));
+			}
 			$.http
 				.fetch(`${link.url}/mod/in?${sessionQuery()}`, init('GET'))
 				.then(async (res) => {
+					if (res.status === 404) needsHello = true;
 					if (!res.ok) return;
 					for (const line of JSON.parse(res.text || '[]') as Line[]) {
-						if (line.type === 'control_response') {
-							settleAsk(line);
-						} else if (line.type === 'user') {
+						if (line.type === 'user') {
 							const message = line.message as { content?: unknown } | undefined;
 							const text = promptText(message?.content);
-							if (text) await $.prompt.submit({ text, asUser: true });
+							// Not awaited: it resolves when its turn starts, and polling
+							// must go on meanwhile (approval answers, interrupts).
+							if (text) void $.prompt.submit({ text, asUser: true });
 						} else if (line.type === 'control_request') {
 							const sub = (line.request as { subtype?: string } | undefined)?.subtype;
 							const req = (line.request ?? {}) as {
 								model?: string;
-								persist?: boolean;
 								mode?: string;
 								settings?: { effortLevel?: string };
 							};
@@ -223,10 +241,9 @@ export const register: Register = (on) => {
 								}));
 								reply(line.request_id, undefined, { models, commands });
 							} else if (sub === 'set_model' && req.model) {
-								sessionModel = req.model === 'default' ? undefined : req.model;
-								const set = req.persist
-									? await $.config.set({ key: 'model', value: req.model })
-									: undefined;
+								// As the TUI's `/config` does (aliases resolve there; a plugin can't
+								// switch a session to an alias on its own).
+								const set = await $.config.set({ key: 'model', value: req.model });
 								reply(line.request_id, denial(set, 'Model'));
 							} else if (sub === 'set_permission_mode' && req.mode) {
 								const set = await $.config
@@ -271,11 +288,7 @@ export const register: Register = (on) => {
 	on('turn.step', async function* ($, e, next) {
 		if (!link || e.agentId) return yield* next(e);
 		runningTurn = e.turnId;
-		const stream = next({
-			...e,
-			...(sessionModel ? { model: sessionModel } : {}),
-			...(effort ? { effort } : {})
-		});
+		const stream = next(effort ? { ...e, effort } : e);
 		currentMessage = `wbmod-${link.sessionId.slice(0, 8)}-${++messageSeq}`;
 		startedBlocks.clear();
 		model = e.model || model;
@@ -375,12 +388,22 @@ export const register: Register = (on) => {
 		if (!link) return next(e);
 		const id = e.tool_use_id;
 		if (ASKED_IN_CALL.has(e.tool) && !e.agentId && id) {
-			const route = await $.http
-				.fetch(`${link.url}/mod/route?${sessionQuery()}`, init('GET'))
-				.catch(() => null);
-			if (route?.ok && (JSON.parse(route.text) as { chat?: boolean }).chat) {
-				const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
-				const answer = await askInChat(e.tool, input, id);
+			const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
+			const requestId = `wbmod-ask-${++askSeq}`;
+			let line: Line | undefined = askLine(requestId, e.tool, input, id);
+			let answer: Answer | null | undefined;
+			while (answer === undefined && link && !next.signal.aborted) {
+				const res = await $.http
+					.fetch(
+						`${link.url}/mod/ask`,
+						init('POST', { sessionId: link.sessionId, requestId, line })
+					)
+					.catch(() => null);
+				line = undefined;
+				answer = askAnswer(res?.ok ? res.text : undefined);
+			}
+			if (next.signal.aborted) emit({ type: 'control_cancel_request', request_id: requestId });
+			if (answer) {
 				if (answer.behavior !== 'allow')
 					return { deny: answer.message || 'Declined in Workbench chat' };
 				answeredInChat.add(id);
@@ -447,13 +470,23 @@ export const register: Register = (on) => {
 		const verdict = await next(e);
 		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
 		if (verdict.decision !== 'ask' || !link || ASKED_IN_CALL.has(e.tool)) return verdict;
-		const route = await $.http
-			.fetch(`${link.url}/mod/route?${sessionQuery()}`, init('GET'))
-			.catch(() => null);
-		if (!route?.ok || !(JSON.parse(route.text) as { chat?: boolean }).chat) return verdict;
-		const { behavior, message } = await askInChat(e.tool, e.input, e.tool_use_id);
-		return behavior === 'allow'
+		// Asked in chat while one is open; the server answers `fallback` when none is
+		// (or it closes), and the terminal asks instead. A held request in flight
+		// doesn't spend the hook's time budget, however long the person takes.
+		const requestId = `wbmod-ask-${++askSeq}`;
+		let line: Line | undefined = askLine(requestId, e.tool, e.input, e.tool_use_id);
+		let answer: Answer | null | undefined;
+		while (answer === undefined && link && !next.signal.aborted) {
+			const res = await $.http
+				.fetch(`${link.url}/mod/ask`, init('POST', { sessionId: link.sessionId, requestId, line }))
+				.catch(() => null);
+			line = undefined;
+			answer = askAnswer(res?.ok ? res.text : undefined);
+		}
+		if (next.signal.aborted) emit({ type: 'control_cancel_request', request_id: requestId });
+		if (!answer) return verdict;
+		return answer.behavior === 'allow'
 			? { decision: 'allow' }
-			: { decision: 'deny', reason: message || 'Denied in Workbench chat' };
+			: { decision: 'deny', reason: answer.message || 'Denied in Workbench chat' };
 	});
 };

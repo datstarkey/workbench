@@ -182,9 +182,7 @@ pub(super) fn set_mode(t: &mut Transcript, mode: &str) -> Result<Effects> {
     )))
 }
 
-/// `persist`: also make it the default (a terminal session's `/config`), not
-/// just this session's.
-pub(super) fn set_model(t: &mut Transcript, model: &str, persist: bool) -> Result<Effects> {
+pub(super) fn set_model(t: &mut Transcript, model: &str) -> Result<Effects> {
     let valid = !model.is_empty()
         && model.len() <= 80
         && model
@@ -195,7 +193,7 @@ pub(super) fn set_model(t: &mut Transcript, model: &str, persist: bool) -> Resul
     }
     t.set_model_choice(model);
     Ok(changed_meta(control(
-        json!({"subtype": "set_model", "model": model, "persist": persist}),
+        json!({"subtype": "set_model", "model": model}),
     )))
 }
 

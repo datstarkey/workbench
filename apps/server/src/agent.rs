@@ -133,6 +133,26 @@ pub fn claude_history_exists(config_dir: Option<&std::path::Path>, session_id: &
     claude::history(config_dir, session_id).is_some()
 }
 
+type Terminals = OnceLock<(crate::terminal::TerminalManager, u16)>;
+
+fn terminal_alive(terminals: &Terminals, terminal_id: &str) -> bool {
+    terminals.get().is_none_or(|(terminals, _)| {
+        terminals
+            .list()
+            .iter()
+            .any(|t| t.id == terminal_id && t.alive)
+    })
+}
+
+/// Drop the grants of terminals that are gone.
+fn prune_grants(grants: &Mutex<HashMap<String, ModGrant>>, terminals: &Terminals) {
+    lock(grants).retain(|_, g| {
+        g.terminal_id
+            .as_deref()
+            .is_none_or(|t| terminal_alive(terminals, t))
+    });
+}
+
 #[derive(Clone, Default)]
 pub struct AgentManager {
     inner: session::Registry,
@@ -145,10 +165,13 @@ pub struct AgentManager {
     upkeep: Arc<OnceLock<()>>,
     /// Terminal tokens a pane's plugin attaches its `claude` with, by token.
     mod_grants: Arc<Mutex<HashMap<String, ModGrant>>>,
-    /// Held across a Claude start (terminal opened, plugin attached), so two
-    /// starts of one id can't open two terminals. Apart from `lifecycle`,
-    /// which the attach it waits for takes.
-    starting: Arc<Mutex<()>>,
+    /// One lock per Claude session id, held across its start (terminal opened,
+    /// plugin attached) so two starts of one id can't open two terminals.
+    /// Apart from `lifecycle`, which the attach it waits for takes.
+    starting: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// The terminals grants are issued for (to drop a dead one's grant) and
+    /// the loopback port their plugins reach: set by the first listener.
+    terminals: Arc<Terminals>,
 }
 
 impl AgentManager {
@@ -222,9 +245,22 @@ impl AgentManager {
         Ok(session)
     }
 
-    /// Serializes Claude starts (see `starting`).
-    pub fn start_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+    /// The terminals and loopback port terminal plugins use; the first listener wins.
+    pub fn bind_terminals(&self, terminals: crate::terminal::TerminalManager, port: u16) {
+        self.terminals.get_or_init(|| (terminals, port));
+    }
+
+    /// The port a terminal's plugin reaches the server on (the first listener's).
+    pub fn mod_port(&self) -> Option<u16> {
+        self.terminals.get().map(|(_, port)| *port)
+    }
+
+    /// The lock serializing starts of one Claude session id (see `starting`).
+    pub fn start_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
         lock(&self.starting)
+            .entry(session_id.to_string())
+            .or_default()
+            .clone()
     }
 
     /// A token for one terminal's plugin to attach its interactive `claude` with.
@@ -241,13 +277,31 @@ impl AgentManager {
         }
     }
 
+    /// Withdraw a terminal's token: its plugin can no longer attach or post.
+    pub fn revoke_grant(&self, token: &str) {
+        lock(&self.mod_grants).remove(token);
+    }
+
+    fn terminal_alive(&self, terminal_id: &str) -> bool {
+        terminal_alive(&self.terminals, terminal_id)
+    }
+
     /// Attach (or re-attach) a terminal's `claude` session as a chat, its
-    /// history loaded from disk. Refused while a `claude -p` runs that id.
+    /// history loaded from disk. Another terminal's live session is only taken
+    /// over once its link went stale.
     pub fn attach_mod(&self, token: &str, session_id: &str) -> Result<Arc<AgentSession>> {
         claude::validate(session_id, None)?;
         let Some(grant) = lock(&self.mod_grants).get(token).cloned() else {
             bail!("unknown terminal token");
         };
+        if grant
+            .terminal_id
+            .as_deref()
+            .is_some_and(|t| !self.terminal_alive(t))
+        {
+            self.revoke_grant(token);
+            bail!("unknown terminal token");
+        }
         let _lifecycle = lock(&self.lifecycle);
         if let Some(existing) = self.get(session_id) {
             match existing.mod_link() {
@@ -255,13 +309,12 @@ impl AgentManager {
                     link.touch();
                     return Ok(existing);
                 }
-                // The terminal restarted (a rewind) or a new one took the session:
-                // attached clients re-attach to the new one.
-                Some(_) => {
+                // The old terminal's `claude` went without saying so.
+                Some(link) if link.is_stale() => {
                     self.forget(&existing);
                     existing.replace();
-                    existing.shutdown();
                 }
+                Some(_) => bail!("another terminal runs {session_id}"),
                 None => bail!("a chat process already runs {session_id}"),
             }
         }
@@ -299,8 +352,7 @@ impl AgentManager {
     pub fn rewind_terminal(
         &self,
         terminals: &crate::terminal::TerminalManager,
-        local_port: Option<u16>,
-        session: &AgentSession,
+        session: &Arc<AgentSession>,
         message_id: &str,
     ) -> Result<()> {
         let link = session
@@ -320,6 +372,14 @@ impl AgentManager {
         let history = claude::history(config_dir.as_deref(), &session_id)
             .ok_or_else(|| anyhow::anyhow!("the session has no history to rewind"))?;
         let fork = workbench_core::claude_transcript::fork_point(&history, message_id)?;
+        // Hand over before the old `claude` goes: clients re-attach (`replaced`)
+        // rather than see it end, and its exit (`bye`) finds nothing to stop.
+        {
+            let _lifecycle = lock(&self.lifecycle);
+            self.forget(session);
+            session.replace();
+        }
+        self.revoke_grant(&link.token);
         // One `claude` per session file: the old one goes before the new one starts.
         if let Some(old) = &link.terminal_id {
             terminals.kill_and_wait(old);
@@ -327,7 +387,6 @@ impl AgentManager {
         crate::terminal::create_from_body(
             terminals,
             self,
-            local_port,
             crate::terminal::CreateTerminalBody {
                 project_path: req.project_path,
                 worktree_path: req.worktree_path,
@@ -348,11 +407,7 @@ impl AgentManager {
         )?;
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
-            let reattached = self
-                .get(&session_id)
-                .and_then(|s| s.mod_link().map(|l| l.token != link.token))
-                .unwrap_or(false);
-            if reattached {
+            if self.get(&session_id).is_some() {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -360,10 +415,13 @@ impl AgentManager {
         bail!("Claude didn't come back in its terminal after the rewind")
     }
 
-    /// The mod session `session_id`, if `token` is the one it attached with.
+    /// The mod session `session_id` attached with `token`, or else the one the
+    /// token attached under any id (`/clear` re-keyed it).
     pub fn mod_session(&self, token: &str, session_id: &str) -> Option<Arc<AgentSession>> {
+        let owned = |s: &Arc<AgentSession>| s.mod_link().is_some_and(|l| l.token == token);
         self.get(session_id)
-            .filter(|s| s.mod_link().is_some_and(|l| l.token == token))
+            .filter(owned)
+            .or_else(|| lock(&self.inner).values().find(|s| owned(s)).cloned())
     }
 
     /// Fold lines a terminal's plugin posted into its session.
@@ -393,6 +451,8 @@ impl AgentManager {
     fn start_upkeep(&self) {
         self.upkeep.get_or_init(|| {
             let weak = Arc::downgrade(&self.inner);
+            let grants = Arc::downgrade(&self.mod_grants);
+            let terminals = self.terminals.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(cache::TICK);
                 let Some(registry) = weak.upgrade() else {
@@ -403,6 +463,9 @@ impl AgentManager {
                 sessions.sort_by_key(|s| Arc::as_ptr(s) as usize);
                 sessions.dedup_by(|a, b| Arc::ptr_eq(a, b));
                 let now = now_ms();
+                if let Some(grants) = grants.upgrade() {
+                    prune_grants(&grants, &terminals);
+                }
                 for session in sessions {
                     // The terminal's `claude` quit (or the pane closed) without saying so.
                     if session.mod_link().is_some_and(|l| l.is_stale()) {

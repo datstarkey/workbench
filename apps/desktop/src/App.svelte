@@ -193,7 +193,9 @@
 		adoptionRound({
 			list: async () => {
 				const [terminals, chats] = await Promise.all([listServerTerminals(), listAgents()]);
-				chatTerminalIds = new Set(chats?.flatMap((c) => (c.terminalId ? [c.terminalId] : [])));
+				// A failed listing keeps the last set rather than adopting chats' terminals.
+				if (chats)
+					chatTerminalIds = new Set(chats.flatMap((c) => (c.terminalId ? [c.terminalId] : [])));
 				return terminals;
 			},
 			adoptable: (list) =>

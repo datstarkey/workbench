@@ -66,9 +66,10 @@ pub fn terminal_command(
     }
     let flag = if resume { "--resume" } else { "--session-id" };
     cmd.push_str(&format!(" {flag} {session_id}"));
-    // An entry id from the session file: quoted, it can't break out of the shell.
-    if let Some(at) = resume_at.filter(|_| resume) {
-        cmd.push_str(&format!(" --resume-session-at={}", shell_quote(at)));
+    // An entry id from the session file; only a UUID reaches the shell, unquoted
+    // (cmd.exe keeps single quotes in the argument).
+    if let Some(at) = resume_at.filter(|at| resume && is_uuid(at)) {
+        cmd.push_str(&format!(" --resume-session-at={at}"));
     }
     Ok(cmd)
 }
@@ -155,7 +156,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_rewind_resumes_at_its_fork_point() {
         let at = "5e5e5e5e-0000-4000-8000-000000000001";
@@ -167,7 +167,7 @@ mod tests {
             Path::new("/x"),
         )
         .unwrap();
-        assert!(cmd.ends_with(&format!("--resume {SID} --resume-session-at='{at}'")));
+        assert!(cmd.ends_with(&format!("--resume {SID} --resume-session-at={at}")));
         let cmd = terminal_command(
             SID,
             true,
@@ -176,9 +176,13 @@ mod tests {
             Path::new("/x"),
         )
         .unwrap();
-        assert!(cmd.ends_with("--resume-session-at='x; rm -rf /'"), "{cmd}");
+        assert!(
+            !cmd.contains("resume-session-at"),
+            "only a UUID reaches the shell: {cmd}"
+        );
     }
 
+    #[cfg(unix)]
     #[test]
     fn sandbox_without_its_settings_file_fails_closed() {
         let dir = tempfile::tempdir().unwrap();

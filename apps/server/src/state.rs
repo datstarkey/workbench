@@ -59,6 +59,9 @@ impl AppState {
 
     pub fn with_local_port(mut self, port: u16) -> Self {
         self.local_port = Some(port);
+        // Terminal plugins reach the first listener (the desktop's loopback one),
+        // which outlives a LAN listener that server mode turns off.
+        self.agents.bind_terminals(self.terminals.clone(), port);
         self
     }
 }

@@ -451,10 +451,9 @@ pub async fn terminal_create(
     }
     let terminals = state.terminals.clone();
     let agents = state.agents.clone();
-    let local_port = state.local_port;
     // openpty + fork/exec and the project-allowlist load are blocking — run them off
     // the async executor so a slow spawn doesn't stall a tokio worker thread.
-    crate::routes::blocking(move || create_from_body(&terminals, &agents, local_port, body))
+    crate::routes::blocking(move || create_from_body(&terminals, &agents, body))
         .await
         .map(Json)
 }
@@ -465,9 +464,9 @@ pub async fn terminal_create(
 pub fn create_from_body(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
-    local_port: Option<u16>,
     body: CreateTerminalBody,
 ) -> anyhow::Result<TerminalMeta> {
+    let local_port = agents.mod_port();
     let registered: Vec<String> = workbench_core::config::load_projects()?
         .into_iter()
         .map(|p| p.path)
@@ -526,7 +525,7 @@ pub fn create_from_body(
             ));
         }
     }
-    let meta = terminals.create(
+    let created = terminals.create(
         cwd,
         body.name,
         command,
@@ -537,11 +536,13 @@ pub fn create_from_body(
         body.shell,
         claude_config_dir.as_deref(),
         &mod_env,
-    )?;
-    if let Some(token) = &token {
-        agents.set_grant_terminal(token, &meta.id);
+    );
+    match (&created, &token) {
+        (Ok(meta), Some(token)) => agents.set_grant_terminal(token, &meta.id),
+        (Err(_), Some(token)) => agents.revoke_grant(token),
+        _ => {}
     }
-    Ok(meta)
+    created
 }
 
 pub async fn terminal_kill(

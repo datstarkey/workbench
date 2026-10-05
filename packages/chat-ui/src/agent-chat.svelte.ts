@@ -417,9 +417,8 @@ export class AgentChat {
 		this.send({ t: 'mode', mode });
 	}
 
-	/** `persist`: also make it the default, as `/model` does when asked to remember. */
-	setModel(model: string, persist = false): void {
-		this.send(persist ? { t: 'model', model, persist } : { t: 'model', model });
+	setModel(model: string): void {
+		this.send({ t: 'model', model });
 	}
 
 	setEffort(effort: EffortLevel): void {

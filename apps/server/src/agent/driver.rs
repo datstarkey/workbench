@@ -126,9 +126,9 @@ impl Driver {
         }
     }
 
-    pub fn set_model(&mut self, model: &str, persist: bool) -> Result<Effects> {
+    pub fn set_model(&mut self, model: &str) -> Result<Effects> {
         match self {
-            Self::Claude(t) => claude::set_model(t, model, persist),
+            Self::Claude(t) => claude::set_model(t, model),
             Self::Codex(c) => c.set_model(model),
         }
     }

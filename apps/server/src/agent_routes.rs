@@ -70,8 +70,7 @@ pub async fn agent_start(
     }
     let agents = state.agents.clone();
     let terminals = state.terminals.clone();
-    let local_port = state.local_port;
-    crate::routes::blocking(move || claude_start(&agents, &terminals, local_port, body))
+    crate::routes::blocking(move || claude_start(&agents, &terminals, body))
         .await
         .map(Json)
 }
@@ -85,11 +84,11 @@ const TERMINAL_START: std::time::Duration = std::time::Duration::from_secs(30);
 fn claude_start(
     agents: &AgentManager,
     terminals: &crate::terminal::TerminalManager,
-    local_port: Option<u16>,
     body: StartBody,
 ) -> anyhow::Result<Value> {
     claude_validate(&body.session_id, body.permission_mode.as_deref())?;
-    let _starting = agents.start_guard();
+    let starting = agents.start_lock(&body.session_id);
+    let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = agents.get(&body.session_id) {
         return Ok(start_reply(&existing));
     }
@@ -99,7 +98,6 @@ fn claude_start(
     let terminal = crate::terminal::create_from_body(
         terminals,
         agents,
-        local_port,
         crate::terminal::CreateTerminalBody {
             project_path: body.project_path,
             worktree_path: body.worktree_path,
@@ -262,11 +260,8 @@ pub async fn agent_stop(
     let agents = state.agents.clone();
     let terminals = state.terminals.clone();
     crate::routes::blocking(move || {
-        // Ending a chat ends its terminal `claude` too; a plain stop only detaches.
-        let terminal = q
-            .end
-            .then(|| agents.get(&id).and_then(|s| s.summary().terminal_id))
-            .flatten();
+        // A Claude chat's process is its terminal `claude`: stopping it ends that.
+        let terminal = agents.get(&id).and_then(|s| s.summary().terminal_id);
         let stopped = agents.stop(&id, q.end);
         if let Some(terminal) = terminal {
             terminals.kill(&terminal);
@@ -288,7 +283,21 @@ pub async fn agent_stop_pane(
     Query(q): Query<PaneQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop_pane(&q.pane_id))).await?;
+    let terminals = state.terminals.clone();
+    crate::routes::blocking(move || {
+        let owned: Vec<String> = agents
+            .summaries(None)
+            .into_iter()
+            .filter(|s| s.pane_id.as_deref() == Some(q.pane_id.as_str()))
+            .filter_map(|s| s.terminal_id)
+            .collect();
+        let stopped = agents.stop_pane(&q.pane_id);
+        for terminal in owned {
+            terminals.kill(&terminal);
+        }
+        Ok(stopped)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -366,9 +375,6 @@ enum ClientMsg {
     },
     Model {
         model: String,
-        /// Also save it as the default, not just this session's.
-        #[serde(default)]
-        persist: bool,
     },
     Effort {
         effort: String,
@@ -405,7 +411,11 @@ enum ClientMsg {
 }
 
 /// Apply a client message; `Some` is a reply for that client alone.
-fn handle(state: &AppState, session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
+fn handle(
+    state: &AppState,
+    session: &Arc<AgentSession>,
+    text: &str,
+) -> anyhow::Result<Option<Value>> {
     let reply = match serde_json::from_str::<ClientMsg>(text)? {
         ClientMsg::Rewind {
             message_id,
@@ -467,7 +477,7 @@ fn handle(state: &AppState, session: &AgentSession, text: &str) -> anyhow::Resul
         } => session.elicit(&request_id, action, content.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
         ClientMsg::Mode { mode } => session.set_mode(&mode),
-        ClientMsg::Model { model, persist } => session.set_model(&model, persist),
+        ClientMsg::Model { model } => session.set_model(&model),
         ClientMsg::Effort { effort } => session.set_effort(&effort),
         ClientMsg::CachePing => session.keep_cache_warm(),
         ClientMsg::CachePolicy { policy } => state.agents.set_cache_policy(session, policy),
@@ -479,7 +489,7 @@ fn handle(state: &AppState, session: &AgentSession, text: &str) -> anyhow::Resul
 /// restore that fails leaves the conversation alone.
 fn rewind(
     state: &AppState,
-    session: &AgentSession,
+    session: &Arc<AgentSession>,
     message_id: &str,
     code: bool,
     conversation: bool,
@@ -504,7 +514,7 @@ fn rewind(
     if conversation {
         state
             .agents
-            .rewind_terminal(&state.terminals, state.local_port, session, message_id)?;
+            .rewind_terminal(&state.terminals, session, message_id)?;
     }
     Ok(files)
 }

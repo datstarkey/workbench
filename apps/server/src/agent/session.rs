@@ -367,7 +367,10 @@ impl AgentSession {
         match stdin.as_mut() {
             None => bail!("the session has stopped"),
             Some(Sink::Mod(link)) => {
-                link.push(msg.clone());
+                // An answer the plugin waits on in `/mod/ask` goes there.
+                if !link.answer(msg) {
+                    link.push(msg.clone());
+                }
                 Ok(())
             }
             Some(Sink::Pipe(pipe)) => {
@@ -427,8 +430,8 @@ impl AgentSession {
         self.run(|d| d.set_mode(mode))
     }
 
-    pub fn set_model(&self, model: &str, persist: bool) -> Result<()> {
-        self.run(|d| d.set_model(model, persist))
+    pub fn set_model(&self, model: &str) -> Result<()> {
+        self.run(|d| d.set_model(model))
     }
 
     pub fn set_effort(&self, level: &str) -> Result<()> {
@@ -661,6 +664,9 @@ impl AgentSession {
 
     fn finish(&self) {
         lock(&self.stdin).take();
+        if self.link.is_some() {
+            let _ = std::fs::remove_dir_all(super::modlink::attachment_dir(&self.id()));
+        }
         // Until the leader is reaped below its pid still names its process
         // group: end the background shells it started, which would otherwise
         // outlive it holding ports and files.
