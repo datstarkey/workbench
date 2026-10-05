@@ -15,6 +15,7 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.9.0")
     implementation(project(":tauri-android"))
+    implementation("io.sentry:sentry-android-core:8.59.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
