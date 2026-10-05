@@ -23,20 +23,25 @@ pub struct ModGrant {
     pub worktree_path: Option<String>,
     pub claude_account_id: Option<String>,
     pub cwd: String,
+    /// The terminal the token was issued to, once created.
+    pub terminal_id: Option<String>,
 }
 
 pub struct ModLink {
     /// The terminal token the plugin attached with; every request must carry it.
     pub token: String,
+    /// The server terminal whose `claude` this is, when known.
+    pub terminal_id: Option<String>,
     queue: Mutex<VecDeque<Value>>,
     notify: Notify,
     last_seen: Mutex<Instant>,
 }
 
 impl ModLink {
-    pub fn new(token: String) -> Self {
+    pub fn new(token: String, terminal_id: Option<String>) -> Self {
         Self {
             token,
+            terminal_id,
             queue: Mutex::new(VecDeque::new()),
             notify: Notify::new(),
             last_seen: Mutex::new(Instant::now()),
@@ -75,7 +80,7 @@ mod tests {
 
     #[tokio::test]
     async fn take_returns_queued_lines_or_times_out_empty() {
-        let link = ModLink::new("t".into());
+        let link = ModLink::new("t".into(), None);
         assert!(link.take(Duration::from_millis(20)).await.is_empty());
         link.push(json!({"a": 1}));
         link.push(json!({"b": 2}));
@@ -84,7 +89,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_waiting_take_wakes_on_push() {
-        let link = std::sync::Arc::new(ModLink::new("t".into()));
+        let link = std::sync::Arc::new(ModLink::new("t".into(), None));
         let waiter = link.clone();
         let task = tokio::spawn(async move { waiter.take(Duration::from_secs(5)).await });
         tokio::time::sleep(Duration::from_millis(20)).await;

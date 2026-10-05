@@ -124,6 +124,7 @@
 	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
 	chat.onEnded = () => workspaceStore.closeEndedChat(paneId);
+	chat.onTerminal = (terminalId) => workspaceStore.linkLiveTerminal(paneId, terminalId);
 
 	watch(
 		() => chat.sessionId,

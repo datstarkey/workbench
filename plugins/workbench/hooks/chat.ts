@@ -1,4 +1,4 @@
-import type { EngineInterface, Register } from 'claude-code';
+import type { Register, TurnStepInput } from 'claude-code';
 
 // Runs this interactive `claude` as a Workbench chat too: what `claude -p`
 // would print as stream-json is posted to the server (`/mod/out`), and what it
@@ -25,6 +25,18 @@ let currentMessage = '';
 const startedBlocks = new Set<number>();
 let askSeq = 0;
 const pendingAsks = new Map<string, (answer: Answer) => void>();
+// Effort picked in chat; applied to each main-thread model request.
+let effort: TurnStepInput['effort'];
+// The running main-thread turn, for an interrupt from chat.
+let runningTurn: string | undefined;
+// The last request's token counts, stamped on its assistant rows (context
+// size and the prompt-cache timer read them).
+let lastUsage: unknown;
+// Tool results the transcript row doesn't carry (an Artifact's link), by call id.
+const toolResults = new Map<string, unknown>();
+const toolRows = new Map<string, Line>();
+// Agent tool calls still running, for the tasks panel.
+const runningAgents: string[] = [];
 
 // Questions and plans are answered by editing the tool's input, which a
 // permission decision can't carry: the TUI keeps those.
@@ -54,13 +66,17 @@ function takeOutbox() {
 	return { sessionId: link?.sessionId, lines };
 }
 
-function reply(requestId: unknown, error?: string) {
+function reply(requestId: unknown, error?: string, response: Line = {}) {
 	emit({
 		type: 'control_response',
 		response: error
 			? { subtype: 'error', request_id: requestId, error }
-			: { subtype: 'success', request_id: requestId, response: {} }
+			: { subtype: 'success', request_id: requestId, response }
 	});
+}
+
+function denial(result: { deny?: string } | undefined, what: string): string | undefined {
+	return result?.deny ? `${what}: ${result.deny}` : undefined;
 }
 
 function promptText(content: unknown): { text: string; hasFiles: boolean } {
@@ -102,7 +118,9 @@ export const register: Register = (on) => {
 			link = null;
 			return result;
 		}
-		emit({ type: 'system', subtype: 'init', session_id: sessionId, model });
+		const rows = await $.config.list();
+		const permissionMode = rows.find((r) => r.key === 'permissionMode')?.value;
+		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
 
 		$.clock.every(50, () => {
 			if (flushing || outbox.length === 0 || !link) return;
@@ -137,10 +155,32 @@ export const register: Register = (on) => {
 							if (text) await $.prompt.submit({ text, asUser: true });
 						} else if (line.type === 'control_request') {
 							const sub = (line.request as { subtype?: string } | undefined)?.subtype;
+							const req = (line.request ?? {}) as {
+								model?: string;
+								mode?: string;
+								settings?: { effortLevel?: string };
+							};
 							if (sub === 'interrupt') {
-								await $.session.abort({});
+								if (runningTurn) await $.turn.abort({ turnId: runningTurn }).catch(() => {});
 								reply(line.request_id);
 							} else if (sub === 'initialize') {
+								// The chat's model picker lists what `/config` offers.
+								const row = (await $.config.list()).find((r) => r.key === 'model');
+								const models = (row?.options ?? []).map((value) => ({
+									value,
+									displayName: value
+								}));
+								reply(line.request_id, undefined, { models });
+							} else if (sub === 'set_model' && req.model) {
+								const set = await $.config.set({ key: 'model', value: req.model });
+								reply(line.request_id, denial(set, 'Model'));
+							} else if (sub === 'set_permission_mode' && req.mode) {
+								const set = await $.config
+									.set({ key: 'permissionMode', value: req.mode })
+									.catch((err: unknown) => ({ deny: String(err) }));
+								reply(line.request_id, denial(set, 'Mode'));
+							} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
+								effort = req.settings.effortLevel as TurnStepInput['effort'];
 								reply(line.request_id);
 							} else {
 								reply(
@@ -171,8 +211,9 @@ export const register: Register = (on) => {
 	});
 
 	on('turn.step', async function* ($, e, next) {
-		const stream = next(e);
-		if (!link || e.agentId) return yield* stream;
+		if (!link || e.agentId) return yield* next(e);
+		runningTurn = e.turnId;
+		const stream = next(effort ? { ...e, effort } : e);
 		currentMessage = `wbmod-${link.sessionId.slice(0, 8)}-${++messageSeq}`;
 		startedBlocks.clear();
 		model = e.model || model;
@@ -214,6 +255,8 @@ export const register: Register = (on) => {
 						content_block: { type: 'tool_use', id: chunk.id, name: chunk.name, input: {} }
 					}
 				});
+			} else if (chunk.kind === 'stop') {
+				lastUsage = chunk.usage ?? undefined;
 			}
 			yield chunk;
 		}
@@ -228,10 +271,23 @@ export const register: Register = (on) => {
 					type: 'assistant',
 					uuid: e.uuid,
 					session_id: link.sessionId,
-					message: { ...m, id: currentMessage || `wbmod-${e.uuid}`, model }
+					message: {
+						...m,
+						id: currentMessage || `wbmod-${e.uuid}`,
+						model,
+						...(lastUsage ? { usage: lastUsage } : {})
+					}
 				});
-			} else if (m.type === 'user' && (e.door === 'prompt' || e.door === 'tool-result')) {
+			} else if (m.type === 'user' && e.door === 'prompt') {
 				emit({ type: 'user', uuid: e.uuid, session_id: link.sessionId, message: m });
+			} else if (m.type === 'user' && e.door === 'tool-result') {
+				const row: Line = { type: 'user', uuid: e.uuid, session_id: link.sessionId, message: m };
+				const id = (m.content as { tool_use_id?: string }[] | undefined)?.find(
+					(b) => b.tool_use_id
+				)?.tool_use_id;
+				if (id) toolRows.set(id, row);
+				const result = id ? toolResults.get(id) : undefined;
+				emit(result === undefined ? row : { ...row, tool_use_result: result });
 			}
 		}
 		return next(e);
@@ -239,9 +295,56 @@ export const register: Register = (on) => {
 
 	on('turn.complete', ($, e, next) => {
 		if (link && !('agentId' in e && e.agentId)) {
+			runningTurn = undefined;
 			emit({ type: 'result', subtype: 'success', is_error: e.reason === 'error' });
 		}
 		return next(e);
+	});
+
+	// Structured results (an Artifact's link) and subagents for the tasks panel.
+	on('tool.call', async ($, e, next) => {
+		if (!link) return next(e);
+		const id = e.tool_use_id;
+		const input = e as unknown as { description?: string; subagent_type?: string };
+		const isAgent = !e.agentId && e.tool === 'Agent';
+		if (isAgent && id) {
+			runningAgents.push(id);
+			emit({
+				type: 'system',
+				subtype: 'task_started',
+				task_id: id,
+				tool_use_id: id,
+				description: input.description ?? 'Agent',
+				subagent_type: input.subagent_type,
+				task_type: 'local_agent',
+				uuid: `wbmod-task-${id}`
+			});
+		} else if (e.agentId && runningAgents.length === 1) {
+			emit({
+				type: 'system',
+				subtype: 'task_progress',
+				task_id: runningAgents[0],
+				last_tool_name: e.tool,
+				uuid: `wbmod-progress-${++askSeq}`
+			});
+		}
+		const result = await next(e);
+		if (isAgent && id) {
+			runningAgents.splice(runningAgents.indexOf(id), 1);
+			emit({
+				type: 'system',
+				subtype: 'task_notification',
+				task_id: id,
+				status: result.deny || result.isError ? 'failed' : 'completed',
+				uuid: `wbmod-done-${id}`
+			});
+		}
+		if (id && !e.agentId && result.result !== undefined) {
+			toolResults.set(id, result.result);
+			const row = toolRows.get(id);
+			if (row) emit({ ...row, tool_use_result: result.result });
+		}
+		return result;
 	});
 
 	on('tool.check', async ($, e, next) => {

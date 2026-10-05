@@ -169,7 +169,8 @@ export interface TerminalPaneState {
 	view?: PaneView;
 	/**
 	 * The chat view is the terminal's own `claude`, bridged by the Workbench
-	 * plugin: switching views keeps the one process. Never restored on load.
+	 * plugin: switching views keeps the one process. Cleared on load (the
+	 * terminal died with the app; the chat starts a new one, resumed).
 	 */
 	liveTerminal?: boolean;
 	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
@@ -891,4 +892,6 @@ export interface AgentSummary {
 	running: { name: string; detail: string } | null;
 	/** Ids it ran under before a `/clear`, so a client holding one follows the re-key. */
 	previousIds: string[];
+	/** The server terminal whose interactive `claude` this chat is. */
+	terminalId?: string;
 }

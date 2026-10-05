@@ -112,6 +112,8 @@ export class AgentChat {
 	onTakeOver: (() => void) | null = null;
 	/** The session was ended (e.g. End on another device), so its view can close. */
 	onEnded: (() => void) | null = null;
+	/** The server terminal this Claude chat's `claude` runs in, once started. */
+	onTerminal: ((terminalId: string) => void) | null = null;
 	private waitingOnYou = false;
 	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
@@ -174,6 +176,8 @@ export class AgentChat {
 				: await this.startThread();
 			if (stale()) return;
 			this.sessionId = sessionId;
+			const terminal = this.api.terminalId?.(sessionId);
+			if (terminal) this.onTerminal?.(terminal);
 			url = await this.api.socketUrl(sessionId);
 		} catch (e) {
 			if (stale()) return;

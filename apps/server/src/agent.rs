@@ -124,6 +124,14 @@ pub struct AgentSummary {
     pub running: Option<RunningSummary>,
     /// Ids it ran under before a `/clear`, so a client holding one follows the re-key.
     pub previous_ids: Vec<String>,
+    /// The server terminal whose interactive `claude` this chat is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<String>,
+}
+
+/// Whether a Claude session has a transcript to `--resume` (else `--session-id` starts it).
+pub fn claude_history_exists(config_dir: Option<&std::path::Path>, session_id: &str) -> bool {
+    claude::history(config_dir, session_id).is_some()
 }
 
 #[derive(Clone, Default)]
@@ -286,6 +294,13 @@ impl AgentManager {
         Ok(token)
     }
 
+    /// Record which terminal a token was issued to.
+    pub fn set_grant_terminal(&self, token: &str, terminal_id: &str) {
+        if let Some(grant) = lock(&self.mod_grants).get_mut(token) {
+            grant.terminal_id = Some(terminal_id.to_string());
+        }
+    }
+
     /// Attach (or re-attach) a terminal's `claude` session as a chat, its
     /// history loaded from disk. Refused while a `claude -p` runs that id.
     pub fn attach_mod(&self, token: &str, session_id: &str) -> Result<Arc<AgentSession>> {
@@ -323,8 +338,9 @@ impl AgentManager {
                 config_dir,
             },
         };
-        let link = Arc::new(ModLink::new(token.to_string()));
+        let link = Arc::new(ModLink::new(token.to_string(), grant.terminal_id));
         let session = AgentSession::attach_mod(req, driver, link, &self.cache_policies);
+        session.queue(&claude::hello())?;
         lock(&self.inner).insert(session_id.to_string(), session.clone());
         self.start_upkeep();
         Ok(session)

@@ -68,34 +68,81 @@ pub async fn agent_start(
         return attach_only(&state, &body.session_id);
     }
     let agents = state.agents.clone();
-    crate::routes::blocking(move || {
-        // Sandboxed Claude runs through srt's launcher; chat mode spawns the CLI
-        // directly, so refuse rather than silently run it unsandboxed.
-        if workbench_core::config::load_workbench_settings()?.sandbox_runtime_enabled {
-            anyhow::bail!(
-                "Chat mode doesn't run inside the sandbox runtime yet. Use the terminal, or turn the sandbox off in Settings."
-            );
-        }
-        let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
-        let config_dir =
-            workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
-        let session = agents.start(StartAgent {
-            cwd,
+    let terminals = state.terminals.clone();
+    let local_port = state.local_port;
+    crate::routes::blocking(move || claude_start(&agents, &terminals, local_port, body))
+        .await
+        .map(Json)
+}
+
+/// How long a new terminal's `claude` gets to start and attach through the plugin.
+const TERMINAL_START: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A Claude chat is always an interactive `claude` in a server terminal, run
+/// as a chat by the Workbench plugin (`mod_routes`): the terminal and the chat
+/// are one process. Blocking: waits for the plugin to attach.
+fn claude_start(
+    agents: &AgentManager,
+    terminals: &crate::terminal::TerminalManager,
+    local_port: Option<u16>,
+    body: StartBody,
+) -> anyhow::Result<Value> {
+    claude_validate(&body.session_id, body.permission_mode.as_deref())?;
+    if let Some(existing) = agents.get(&body.session_id) {
+        return Ok(start_reply(&existing));
+    }
+    let config_dir =
+        workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    let resume = crate::agent::claude_history_exists(config_dir.as_deref(), &body.session_id);
+    let terminal = crate::terminal::create_from_body(
+        terminals,
+        agents,
+        local_port,
+        crate::terminal::CreateTerminalBody {
             project_path: body.project_path,
             worktree_path: body.worktree_path,
+            name: None,
+            command: None,
+            claude_session: Some(crate::terminal::ClaudeSessionLaunch {
+                id: body.session_id.clone(),
+                resume,
+            }),
+            cols: 120,
+            rows: 40,
             pane_id: body.pane_id,
             hook_socket: body.hook_socket,
+            shell: None,
             claude_account_id: body.claude_account_id,
-            launch: Launch::Claude {
-                session_id: body.session_id,
-                permission_mode: body.permission_mode,
-                config_dir,
-            },
-        })?;
-        Ok(json!({"sessionId": session.id()}))
-    })
-    .await
-    .map(Json)
+        },
+    )?;
+    let deadline = std::time::Instant::now() + TERMINAL_START;
+    while std::time::Instant::now() < deadline {
+        if let Some(session) = agents.get(&body.session_id) {
+            return Ok(start_reply(&session));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    terminals.kill(&terminal.id);
+    anyhow::bail!(
+        "Claude didn't start in its terminal within {}s. Open it as a terminal to see why (a folder trust prompt, a login).",
+        TERMINAL_START.as_secs()
+    )
+}
+
+fn claude_validate(session_id: &str, permission_mode: Option<&str>) -> anyhow::Result<()> {
+    if !workbench_core::claude_transcript::is_uuid(session_id) {
+        anyhow::bail!("session id must be a UUID");
+    }
+    if let Some(mode) = permission_mode {
+        if !workbench_core::claude_launch::PERMISSION_MODES.contains(&mode) {
+            anyhow::bail!("unknown permission mode: {mode}");
+        }
+    }
+    Ok(())
+}
+
+fn start_reply(session: &AgentSession) -> Value {
+    json!({"sessionId": session.id(), "terminalId": session.summary().terminal_id})
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,7 +199,7 @@ fn attach_only(state: &AppState, id: &str) -> ApiResult<Json<Value>> {
         status: StatusCode::NOT_FOUND,
         message: "This chat ended on the other device.".into(),
     })?;
-    Ok(Json(json!({"sessionId": session.id()})))
+    Ok(Json(start_reply(&session)))
 }
 
 /// The cwd a chat may run in: a registered project or one of its worktrees.
@@ -211,7 +258,20 @@ pub async fn agent_stop(
     Query(q): Query<StopQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop(&id, q.end))).await?;
+    let terminals = state.terminals.clone();
+    crate::routes::blocking(move || {
+        // Ending a chat ends its terminal `claude` too; a plain stop only detaches.
+        let terminal = q
+            .end
+            .then(|| agents.get(&id).and_then(|s| s.summary().terminal_id))
+            .flatten();
+        let stopped = agents.stop(&id, q.end);
+        if let Some(terminal) = terminal {
+            terminals.kill(&terminal);
+        }
+        Ok(stopped)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

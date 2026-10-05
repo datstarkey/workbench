@@ -146,6 +146,11 @@ pub(super) fn carry_over(launch: &mut Launch, meta: &TranscriptMeta) {
         .extend(model.into_iter().chain(effort).flat_map(|e| e.send));
 }
 
+/// The SDK handshake; its reply lists the models the chat's picker offers.
+pub(super) fn hello() -> Value {
+    control(json!({"subtype": "initialize", "promptSuggestions": true}))
+}
+
 fn control(request: Value) -> Value {
     json!({
         "type": "control_request",

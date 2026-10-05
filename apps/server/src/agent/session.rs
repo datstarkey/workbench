@@ -277,6 +277,11 @@ impl AgentSession {
         self.tx.receiver_count() > 0
     }
 
+    /// Queue a line for the plugin, as `send` writes one to a process's stdin.
+    pub(super) fn queue(&self, line: &Value) -> Result<()> {
+        self.send(line)
+    }
+
     /// Apply a line the plugin posted, as the reader thread does for a process's stdout.
     pub(super) fn feed(&self, line: &str, alias: impl FnOnce(&str)) {
         self.apply_line(line, alias);
@@ -353,6 +358,7 @@ impl AgentSession {
                 .running_tool()
                 .and_then(TranscriptItem::running_summary),
             previous_ids: Vec::new(),
+            terminal_id: self.link.as_ref().and_then(|l| l.terminal_id.clone()),
         }
     }
 

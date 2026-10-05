@@ -233,9 +233,17 @@ export class WorkspaceStore {
 		try {
 			const snapshot = await invoke<WorkspaceSnapshot>('load_workspaces');
 			if (snapshot.workspaces.length > 0) {
+				const live = new Set(
+					snapshot.workspaces.flatMap((w) =>
+						w.terminalTabs.flatMap((t) => t.panes.filter((p) => p.liveTerminal).map((p) => p.id))
+					)
+				);
 				this.workspaces = snapshot.workspaces.map(withoutLiveTerminalViews);
 				this.selectedId = snapshot.selectedId;
-				this.serverTerminalIds = snapshot.serverTerminalIds ?? {};
+				// Their terminals died with the app: the chat starts a fresh one, resumed.
+				this.serverTerminalIds = Object.fromEntries(
+					Object.entries(snapshot.serverTerminalIds ?? {}).filter(([pane]) => !live.has(pane))
+				);
 			}
 		} catch (e) {
 			console.warn('[WorkspaceStore] No saved workspaces:', e);
@@ -268,6 +276,13 @@ export class WorkspaceStore {
 	/** Shows another device's terminal (mounts detached) or chat (attaches only). */
 	isAdoptedPane(paneId: string): boolean {
 		return this.adoption.isAdopted(paneId);
+	}
+
+	/** A Claude chat started in its own server terminal: keep that xterm attached underneath. */
+	linkLiveTerminal(paneId: string, terminalId: string): void {
+		if (this.adoption.isAdopted(paneId)) return;
+		this.setServerTerminalId(paneId, terminalId);
+		if (!this.isLiveTerminalPane(paneId)) this.patchPane(paneId, { liveTerminal: true });
 	}
 
 	/** The pane's chat view is its terminal's own `claude` (attach, never start one). */
@@ -1062,15 +1077,13 @@ async function liveChatFor(paneId: string): Promise<string | null> {
 	);
 }
 
-/** A live terminal's chat view can't outlive the app: reopen those panes as terminals. */
+/** A live terminal can't outlive the app: its chat view starts a new one on load. */
 function withoutLiveTerminalViews(w: ProjectWorkspace): ProjectWorkspace {
 	return {
 		...w,
 		terminalTabs: w.terminalTabs.map((t) => ({
 			...t,
-			panes: t.panes.map((p) =>
-				p.liveTerminal ? { ...p, view: 'terminal' as const, liveTerminal: undefined } : p
-			)
+			panes: t.panes.map((p) => (p.liveTerminal ? { ...p, liveTerminal: undefined } : p))
 		}))
 	};
 }
