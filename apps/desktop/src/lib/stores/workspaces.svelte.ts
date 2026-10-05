@@ -332,18 +332,55 @@ export class WorkspaceStore {
 		for (const { paneId, sessionId, type } of this.adoption.rekeys(this.workspaces, list)) {
 			this.updateAISessionByPaneId(paneId, sessionId, type);
 		}
+		for (const { paneId, label, type } of this.adoption.relabels(this.workspaces, list)) {
+			this.updateAITabLabelByPaneId(paneId, label, type);
+		}
 		return this.adoption.adoptableChats(this.workspaces, list, isChatClaimed);
 	}
 
 	/**
 	 * Add a background chat tab for a session started on another device. Its
-	 * chat attaches only, never starting a process of its own. Returns false
-	 * when no open workspace runs in its cwd.
+	 * chat attaches only, never starting a process of its own. With no
+	 * workspace open in its cwd, one is opened in the background for it (left
+	 * unselected, unsaved while it only hosts adopted chats, closed once empty).
+	 * Returns false for a project this window doesn't know.
 	 */
-	adoptServerChat(chat: AgentSummary): boolean {
-		const adopted = this.adoption.chatTab(this.workspaces, chat);
+	adoptServerChat(chat: AgentSummary, project: ProjectConfig | undefined): boolean {
+		let adopted = this.adoption.chatTab(this.workspaces, chat);
+		if (!adopted && project) {
+			this.workspaces = [
+				...this.workspaces,
+				this.adoptionHost(project, chat.worktreePath ?? undefined)
+			];
+			adopted = this.adoption.chatTab(this.workspaces, chat);
+		}
 		if (adopted) this.addBackgroundTab(adopted);
 		return adopted !== null;
+	}
+
+	/** A background workspace for an adopted chat (server terminals need xterm). */
+	private adoptionHost(project: ProjectConfig, worktreePath?: string): ProjectWorkspace {
+		const worktree = worktreePath && worktreePath !== project.path ? worktreePath : undefined;
+		const branch = worktree
+			? this.gitStore.worktreesByProject[project.path]?.find((w) => w.path === worktree)?.branch
+			: undefined;
+		const ws: ProjectWorkspace = {
+			id: uid(),
+			projectPath: project.path,
+			projectName: project.name,
+			terminalTabs: [],
+			activeTerminalTabId: '',
+			renderer: 'xterm',
+			...(worktree && { worktreePath: worktree, ...(branch && { branch }) })
+		};
+		this.adoption.markCreated(ws.id);
+		return ws;
+	}
+
+	/** Close a workspace opened for adoption once its last tab is gone. */
+	private dropIfAbandoned(workspaceId: string): void {
+		const ws = this.workspaces.find((w) => w.id === workspaceId);
+		if (ws && this.adoption.isAbandoned(ws)) this.close(workspaceId);
 	}
 
 	private addBackgroundTab({ workspaceId, tab }: AdoptedTab): void {
@@ -512,6 +549,7 @@ export class WorkspaceStore {
 				splitView: w.splitView?.tabIds.includes(tabId) ? undefined : w.splitView
 			};
 		});
+		this.dropIfAbandoned(workspaceId);
 	}
 
 	setActiveTab(workspaceId: string, tabId: string) {

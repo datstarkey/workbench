@@ -210,7 +210,7 @@
 		adoptionRound({
 			list: listAgents,
 			adoptable: (list) => workspaceStore.adoptableServerChats(list),
-			adopt: (c) => workspaceStore.adoptServerChat(c),
+			adopt: (c) => workspaceStore.adoptServerChat(c, projectStore.getByPath(c.projectPath)),
 			onAdopted: (c) => toast.info(`Chat opened on another device: ${c.title ?? 'chat'}`)
 		})
 	]);
