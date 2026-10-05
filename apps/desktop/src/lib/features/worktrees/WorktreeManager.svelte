@@ -14,6 +14,7 @@
 	branches={manager.dialogBranches}
 	projectPath={manager.dialogProjectPath}
 	error={manager.dialogError}
+	pending={manager.creating}
 	suggestedBranch={manager._suggestedBranch}
 	onSave={(branch, newBranch, path, copyOptions) =>
 		manager.create(branch, newBranch, path, copyOptions)}
@@ -24,6 +25,8 @@
 	title="Remove Worktree"
 	description="Remove this git worktree from disk and close its workspace?"
 	confirmLabel={manager.removal.error ? 'Force Remove' : 'Remove'}
+	busyLabel="Removing…"
+	busy={manager.removal.busy}
 	error={manager.removal.error}
 	destructive
 	onConfirm={() => manager.confirmRemove(!!manager.removal.error)}
@@ -32,6 +35,7 @@
 		<label class="flex items-center gap-2 text-sm">
 			<Checkbox
 				checked={manager.deleteBranchOnRemove}
+				disabled={manager.removal.busy}
 				onCheckedChange={(v) => (manager.deleteBranchOnRemove = v === true)}
 			/>
 			<span class="text-muted-foreground">

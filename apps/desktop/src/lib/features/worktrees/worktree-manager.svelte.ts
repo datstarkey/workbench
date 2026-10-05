@@ -15,7 +15,8 @@ interface WorktreeRemoval {
 }
 
 export class WorktreeManagerStore {
-	dialogOpen = $state(false);
+	creating = $state(false);
+	#dialogOpen = $state(false);
 	dialogProjectPath = $state('');
 	dialogBranches: BranchInfo[] = $state([]);
 	dialogError = $state('');
@@ -30,6 +31,15 @@ export class WorktreeManagerStore {
 	private gitStore: GitStore;
 	private githubStore: GitHubStore;
 	private workbenchSettings: WorkbenchSettingsStore;
+
+	/** Closing the dialog is ignored while a worktree is being created. */
+	get dialogOpen() {
+		return this.#dialogOpen;
+	}
+
+	set dialogOpen(value: boolean) {
+		if (!this.creating) this.#dialogOpen = value;
+	}
 
 	constructor(
 		projectStore: ProjectStore,
@@ -49,6 +59,7 @@ export class WorktreeManagerStore {
 		projectPath: string,
 		options?: { suggestedBranch?: string; cardId?: string; boardId?: string }
 	) {
+		if (this.creating) return;
 		this.dialogProjectPath = projectPath;
 		this.dialogError = '';
 		this.dialogBranches = [];
@@ -80,6 +91,9 @@ export class WorktreeManagerStore {
 	}
 
 	async create(branch: string, newBranch: boolean, path: string, copyOptions: WorktreeCopyOptions) {
+		if (this.creating) return;
+		this.creating = true;
+		this.dialogError = '';
 		try {
 			const createdPath = await invoke<string>('create_worktree', {
 				request: {
@@ -95,7 +109,7 @@ export class WorktreeManagerStore {
 						: undefined
 				}
 			});
-			this.dialogOpen = false;
+			this.#dialogOpen = false;
 			await this.gitStore.refreshGitState(this.dialogProjectPath);
 
 			const project = this.projectStore.getByPath(this.dialogProjectPath);
@@ -117,6 +131,8 @@ export class WorktreeManagerStore {
 			}
 		} catch (e) {
 			this.dialogError = String(e);
+		} finally {
+			this.creating = false;
 		}
 	}
 
@@ -127,6 +143,7 @@ export class WorktreeManagerStore {
 	}
 
 	remove(projectPath: string, worktreePath: string, branch: string) {
+		if (this.removal.busy) return;
 		const prs = this.githubStore.prsByProject[projectPath] ?? [];
 		const branchHasMergedPr = prs.some((p) => p.headRefName === branch && p.state === 'MERGED');
 		this.deleteBranchOnRemove = branchHasMergedPr;

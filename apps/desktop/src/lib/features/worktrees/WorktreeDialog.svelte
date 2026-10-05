@@ -1,4 +1,5 @@
 <script lang="ts">
+	import LoaderIcon from '@lucide/svelte/icons/loader';
 	import * as Dialog from '@workbench/ui/dialog';
 	import { Input } from '@workbench/ui/input';
 	import { Label } from '@workbench/ui/label';
@@ -15,6 +16,7 @@
 		branches,
 		projectPath,
 		error,
+		pending = false,
 		suggestedBranch = '',
 		onSave
 	}: {
@@ -22,6 +24,7 @@
 		branches: BranchInfo[];
 		projectPath: string;
 		error: string;
+		pending?: boolean;
 		suggestedBranch?: string;
 		onSave: (
 			branch: string,
@@ -57,7 +60,7 @@
 	let localBranches = $derived(branches.filter((b) => !b.isRemote && !b.isCurrent));
 
 	function handleSave() {
-		if (!branchName) return;
+		if (!branchName || pending) return;
 		onSave(branchName, mode === 'new', worktreePath, {
 			aiConfig: copyAiConfig,
 			envFiles: copyEnvFiles
@@ -83,7 +86,12 @@
 		}
 	}}
 >
-	<Dialog.Content class="border-wb-hair bg-wb-panel text-wb-ink shadow-2xl sm:max-w-lg">
+	<Dialog.Content
+		class="border-wb-hair bg-wb-panel text-wb-ink shadow-2xl sm:max-w-lg"
+		showCloseButton={!pending}
+		escapeKeydownBehavior={pending ? 'ignore' : 'close'}
+		interactOutsideBehavior={pending ? 'ignore' : 'close'}
+	>
 		<Dialog.Header class="border-b border-wb-hair pb-3">
 			<Dialog.Title class="text-[14px] font-semibold text-wb-ink">Create Worktree</Dialog.Title>
 			<Dialog.Description class="text-[12px] text-wb-ink-soft">
@@ -220,17 +228,23 @@
 			<button
 				type="button"
 				onclick={() => (open = false)}
-				class="rounded-md border border-wb-hair px-3 py-1.5 text-[12px] font-medium text-wb-ink transition-colors hover:bg-wb-panel2"
+				disabled={pending}
+				class="rounded-md border border-wb-hair px-3 py-1.5 text-[12px] font-medium text-wb-ink transition-colors hover:bg-wb-panel2 disabled:cursor-not-allowed disabled:opacity-40"
 			>
 				Cancel
 			</button>
 			<button
 				type="button"
 				onclick={handleSave}
-				disabled={!branchName}
-				class="rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+				disabled={!branchName || pending}
+				class="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
 			>
-				Create Worktree
+				{#if pending}
+					<LoaderIcon class="size-3 animate-spin" />
+					Creating…
+				{:else}
+					Create Worktree
+				{/if}
 			</button>
 		</Dialog.Footer>
 	</Dialog.Content>
