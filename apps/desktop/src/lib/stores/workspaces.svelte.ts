@@ -275,6 +275,17 @@ export class WorkspaceStore {
 		if (this.adoption.takeOver(paneId)) this.persist();
 	}
 
+	/** The pane's chat was ended elsewhere (End on the phone): close it here too. */
+	closeEndedChat(paneId: string): void {
+		const at = this.findPaneLocation(paneId);
+		if (!at) return;
+		const tab = this.workspaces
+			.find((w) => w.id === at.workspaceId)
+			?.terminalTabs.find((t) => t.id === at.tabId);
+		if (tab && tab.panes.length > 1) this.removePane(at.workspaceId, paneId);
+		else this.closeTerminalTab(at.workspaceId, at.tabId);
+	}
+
 	/** Readable server-side name for a pane, e.g. `app [feat] · Claude 1`. */
 	paneDisplayName(paneId: string): string | undefined {
 		return paneDisplayName(this.workspaces, paneId);

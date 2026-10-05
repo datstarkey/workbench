@@ -73,6 +73,8 @@ pub struct AgentSession {
     waiters: Mutex<HashMap<String, Waiter>>,
     /// Stopped to make way for a relaunch: clients re-attach, not end.
     replaced: AtomicBool,
+    /// Ended on purpose (End session), not by a crash, `/exit` or a handoff.
+    ended: AtomicBool,
 }
 
 /// The command every chat process starts from: cwd, pipes, the inherited
@@ -152,6 +154,7 @@ impl AgentSession {
             relaunch,
             waiters: Mutex::new(HashMap::new()),
             replaced: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
         });
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
         lock(&registry).insert(key, session.clone());
@@ -364,6 +367,12 @@ impl AgentSession {
         self.shutdown();
     }
 
+    /// Stop the process because the person ended the chat; its exit frame says so.
+    pub(super) fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        self.shutdown();
+    }
+
     /// The end of a background task's live output and its total size. The
     /// file's path is cached once found. Claude only.
     pub fn task_output(&self, task_id: &str) -> Option<(String, u64)> {
@@ -494,7 +503,8 @@ impl AgentSession {
             json!({"t": "replaced"})
         } else {
             let message = (code != Some(0) && !tail.is_empty()).then_some(tail);
-            json!({"t": "exit", "code": code, "message": message})
+            let ended = self.ended.load(Ordering::SeqCst);
+            json!({"t": "exit", "code": code, "message": message, "ended": ended})
         };
         let _ = self.tx.send(frame.to_string());
     }

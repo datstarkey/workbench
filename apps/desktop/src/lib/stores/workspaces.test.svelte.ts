@@ -614,6 +614,36 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
+	describe('closeEndedChat', () => {
+		it('closes the tab of a single-pane chat', () => {
+			const tab1 = makeTab({ id: 'tab-1', panes: [{ id: 'chat' }] });
+			const tab2 = makeTab({ id: 'tab-2' });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab1, tab2] })];
+
+			store.closeEndedChat('chat');
+
+			expect(store.workspaces[0].terminalTabs.map((t) => t.id)).toEqual(['tab-2']);
+		});
+
+		it('removes only the pane from a split', () => {
+			const tab = makeTab({ id: 'tab-1', panes: [{ id: 'chat' }, { id: 'shell' }] });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab] })];
+
+			store.closeEndedChat('chat');
+
+			expect(store.workspaces[0].terminalTabs[0].panes.map((p) => p.id)).toEqual(['shell']);
+		});
+
+		it('ignores a pane that is already gone', () => {
+			const tab = makeTab({ id: 'tab-1' });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab] })];
+
+			store.closeEndedChat('missing');
+
+			expect(store.workspaces[0].terminalTabs).toHaveLength(1);
+		});
+	});
+
 	describe('setActiveTab', () => {
 		it('updates the active terminal tab id', () => {
 			const tab1 = makeTab({ id: 'tab-1' });

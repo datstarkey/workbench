@@ -199,12 +199,19 @@ fn find(state: &AppState, id: &str) -> Result<Arc<AgentSession>, ApiError> {
     })
 }
 
+#[derive(Debug, Deserialize)]
+pub struct StopQuery {
+    #[serde(default)]
+    end: bool,
+}
+
 pub async fn agent_stop(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<StopQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop(&id))).await?;
+    crate::routes::blocking(move || Ok(agents.stop(&id, q.end))).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

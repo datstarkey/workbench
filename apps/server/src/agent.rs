@@ -259,14 +259,20 @@ impl AgentManager {
         Ok(())
     }
 
-    /// Stop a session's process (any of its ids). Blocking (waits out the grace period).
-    pub fn stop(&self, session_id: &str) -> bool {
+    /// Stop a session's process (any of its ids). `end`: the person ended the
+    /// chat, so other viewers close it, vs a handoff to a terminal. Blocking
+    /// (waits out the grace period).
+    pub fn stop(&self, session_id: &str, end: bool) -> bool {
         let _lifecycle = lock(&self.lifecycle);
         let Some(session) = self.get(session_id) else {
             return false;
         };
         self.forget(&session);
-        session.shutdown();
+        if end {
+            session.end();
+        } else {
+            session.shutdown();
+        }
         true
     }
 

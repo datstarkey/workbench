@@ -67,9 +67,12 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 			}).toString();
 			return (await call<string[]>('GET', `/agent/files?${query}`)) ?? [];
 		},
-		/** Stop a session's process, e.g. before a terminal takes it over. */
-		async stop(sessionId: string): Promise<void> {
-			await call('DELETE', path(sessionId));
+		/**
+		 * Stop a session's process, e.g. before a terminal takes it over. `end`:
+		 * the person ended the chat, so other devices close it too.
+		 */
+		async stop(sessionId: string, opts?: { end?: boolean }): Promise<void> {
+			await call('DELETE', `${path(sessionId)}${opts?.end ? '?end=true' : ''}`);
 		},
 		/** Stop whatever chat session a closed pane owned. */
 		async stopPane(paneId: string): Promise<void> {
