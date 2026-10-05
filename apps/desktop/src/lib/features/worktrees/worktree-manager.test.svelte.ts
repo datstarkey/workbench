@@ -149,6 +149,45 @@ describe('WorktreeManagerStore', () => {
 			expect(manager.dialogOpen).toBe(true);
 		});
 
+		it('sets creating while in flight, ignores re-entry and keeps the dialog open', async () => {
+			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
+			let finish!: (path: string) => void;
+			mockInvoke('create_worktree', () => new Promise<string>((res) => (finish = res)));
+			manager.dialogProjectPath = '/projects/repo';
+			manager.dialogOpen = true;
+			const opts = { aiConfig: false, envFiles: false };
+
+			const first = manager.create('feature', true, '/projects/repo-wt', opts);
+			expect(manager.creating).toBe(true);
+
+			await manager.create('feature', true, '/projects/repo-wt', opts);
+			manager.dialogOpen = false;
+			await manager.add('/projects/other');
+			expect(invokeSpy.mock.calls.filter(([cmd]) => cmd === 'create_worktree')).toHaveLength(1);
+			expect(invokeSpy).not.toHaveBeenCalledWith('list_branches', expect.anything());
+			expect(manager.dialogOpen).toBe(true);
+
+			finish('/projects/repo-wt');
+			await first;
+			expect(manager.creating).toBe(false);
+			expect(manager.dialogOpen).toBe(false);
+		});
+
+		it('clears creating after failure so the user can retry', async () => {
+			mockInvoke('create_worktree', () => Promise.reject(new Error('boom')));
+			manager.dialogProjectPath = '/projects/repo';
+			manager.dialogOpen = true;
+
+			await manager.create('feature', true, '/projects/repo-wt', {
+				aiConfig: false,
+				envFiles: false
+			});
+
+			expect(manager.creating).toBe(false);
+			expect(manager.dialogOpen).toBe(true);
+			expect(manager.dialogError).toBe('Error: boom');
+		});
+
 		it('does not open workspace if project not found', async () => {
 			vi.mocked(mocks.projectStore.getByPath).mockReturnValue(undefined);
 			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
@@ -287,6 +326,37 @@ describe('WorktreeManagerStore', () => {
 			await manager.confirmRemove();
 
 			expect(invokeSpy).not.toHaveBeenCalled();
+		});
+
+		it('confirmRemove() is busy while in flight and ignores repeated presses', async () => {
+			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
+			let finish!: () => void;
+			mockInvoke('remove_worktree', () => new Promise<void>((res) => (finish = res)));
+
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
+			const first = manager.confirmRemove();
+			expect(manager.removal.busy).toBe(true);
+
+			await manager.confirmRemove();
+			manager.remove('/projects/repo', '/projects/other-wt', 'other');
+			expect(invokeSpy.mock.calls.filter(([cmd]) => cmd === 'remove_worktree')).toHaveLength(1);
+			expect(manager.removal.pendingValue?.worktreePath).toBe('/projects/repo-wt');
+
+			finish();
+			await first;
+			expect(manager.removal.busy).toBe(false);
+			expect(manager.removal.open).toBe(false);
+		});
+
+		it('confirmRemove() clears busy after failure so Force Remove can retry', async () => {
+			mockInvoke('remove_worktree', () => Promise.reject(new Error('dirty')));
+
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
+			await manager.confirmRemove();
+
+			expect(manager.removal.busy).toBe(false);
+			expect(manager.removal.open).toBe(true);
+			expect(manager.removal.error).toBe('Error: dirty');
 		});
 
 		it('confirmRemove() sets error on failure', async () => {
