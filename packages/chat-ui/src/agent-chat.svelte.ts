@@ -105,6 +105,8 @@ export class AgentChat {
 	onNeedsYou: ((waiting: boolean) => void) | null = null;
 	/** An `attachOnly` chat that ended was restarted here: this device now owns it. */
 	onTakeOver: (() => void) | null = null;
+	/** The session was ended (e.g. End on another device), so its view can close. */
+	onEnded: (() => void) | null = null;
 	private waitingOnYou = false;
 	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
@@ -242,6 +244,7 @@ export class AgentChat {
 					this.onNeedsYou?.(false);
 				}
 				this.ws?.close();
+				if (msg.ended) this.onEnded?.();
 				break;
 			case 'error':
 				this.notice = msg.message;

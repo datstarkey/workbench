@@ -390,7 +390,7 @@ export class MobileClient {
 		// A Codex chat that never got a thread id has nothing running to stop.
 		this.notice = null;
 		try {
-			if (sessionId) await this.agents.stop(sessionId);
+			if (sessionId) await this.agents.stop(sessionId, { end: true });
 		} catch (e) {
 			if (live()) this.notice = `Couldn't end the session: ${errorText(e)}`;
 			return;

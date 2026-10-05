@@ -266,6 +266,17 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('reports an End, but not a crash, as ended', async () => {
+		const { chat, ws } = await connected();
+		const onEnded = vi.fn();
+		chat.onEnded = onEnded;
+		ws.emit({ t: 'exit', code: 1, message: 'boom' });
+		expect(onEnded).not.toHaveBeenCalled();
+		ws.emit({ t: 'exit', code: null, message: null, ended: true });
+		expect(onEnded).toHaveBeenCalledOnce();
+		chat.dispose();
+	});
+
 	it('reconnects after a dropped socket, starting the session again', async () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));

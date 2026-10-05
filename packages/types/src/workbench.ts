@@ -746,7 +746,8 @@ export type AgentServerMsg =
 	  }
 	/** `[index, item]` pairs that were added or changed. */
 	| { t: 'update'; changes: [number, TranscriptItem][]; meta: TranscriptMeta }
-	| { t: 'exit'; code: number | null; message: string | null }
+	/** `ended`: the person ended it (End session), not a crash, `/exit` or a handoff. */
+	| { t: 'exit'; code: number | null; message: string | null; ended?: boolean }
 	| { t: 'error'; message: string }
 	/** The slash command list changed (sent apart from meta: it's large). */
 	| { t: 'commands'; commands: SlashCommand[] }

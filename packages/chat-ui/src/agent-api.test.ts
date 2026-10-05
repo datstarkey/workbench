@@ -32,6 +32,16 @@ describe('agentClient', () => {
 		expect(fetch.mock.calls[0][0]).toBe('http://box/agent');
 	});
 
+	it('asks other devices to close the chat only for an End', async () => {
+		const fetch = stubFetch(null);
+		await api.stop('sid');
+		await api.stop('sid', { end: true });
+		expect(fetch.mock.calls.map((c) => c[0])).toEqual([
+			'http://box/agent/claude/sid',
+			'http://box/agent/claude/sid?end=true'
+		]);
+	});
+
 	it('falls back to the Claude list on a server older than Codex chat', async () => {
 		const fetch = vi.fn(async (url: string) =>
 			url.endsWith('/agent')

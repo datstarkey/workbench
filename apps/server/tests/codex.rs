@@ -313,18 +313,23 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         .unwrap();
     assert_eq!(res.status(), 204);
     loop {
-        if next_json(&mut ws).await["t"] == "exit" {
+        let frame = next_json(&mut ws).await;
+        if frame["t"] == "exit" {
+            // Only an End tells other viewers to close the chat.
+            assert_eq!(frame["ended"], false);
             break;
         }
     }
     let res = client()
-        .delete(format!("{base}/agent/codex/{OLD_THREAD}"))
+        .delete(format!("{base}/agent/codex/{OLD_THREAD}?end=true"))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 204);
     loop {
-        if next_json(&mut old_ws).await["t"] == "exit" {
+        let frame = next_json(&mut old_ws).await;
+        if frame["t"] == "exit" {
+            assert_eq!(frame["ended"], true);
             break;
         }
     }
