@@ -233,16 +233,14 @@ export class WorkspaceStore {
 		try {
 			const snapshot = await invoke<WorkspaceSnapshot>('load_workspaces');
 			if (snapshot.workspaces.length > 0) {
-				const live = new Set(
-					snapshot.workspaces.flatMap((w) =>
-						w.terminalTabs.flatMap((t) => t.panes.filter((p) => p.liveTerminal).map((p) => p.id))
-					)
+				const live = snapshot.workspaces.flatMap((w) =>
+					w.terminalTabs.flatMap((t) => t.panes.filter((p) => p.liveTerminal).map((p) => p.id))
 				);
 				this.workspaces = snapshot.workspaces.map(withoutLiveTerminalViews);
 				this.selectedId = snapshot.selectedId;
 				// Their terminals died with the app: the chat starts a fresh one, resumed.
 				this.serverTerminalIds = Object.fromEntries(
-					Object.entries(snapshot.serverTerminalIds ?? {}).filter(([pane]) => !live.has(pane))
+					Object.entries(snapshot.serverTerminalIds ?? {}).filter(([pane]) => !live.includes(pane))
 				);
 			}
 		} catch (e) {
