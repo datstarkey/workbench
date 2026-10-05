@@ -693,17 +693,12 @@ export class WorkspaceStore {
 			this.patchPane(paneId, { view, liveTerminal: undefined });
 			return;
 		}
-		// The terminal's own `claude` is already a chat through the Workbench plugin:
-		// show it, no restart (and no sandbox concern: the terminal is what srt wraps).
+		// The terminal's own `claude` is already a chat through the Workbench plugin: show it, no restart.
 		const live = view === 'chat' && paneAgent(pane) === 'claude' ? await liveChatFor(paneId) : null;
 		if (live) {
 			this.patchPane(paneId, { view, liveTerminal: true, claudeSessionId: live });
 			return;
 		}
-		// Claude chat can't run inside the sandbox runtime (which never wraps Codex):
-		// refuse before killing the terminal.
-		if (view === 'chat' && paneAgent(pane) === 'claude' && this.settingsStore.sandboxRuntimeEnabled)
-			return;
 		this.adoption.takeOver(paneId);
 		let patch: Partial<TerminalPaneState> = { view };
 		if (view === 'chat') {
@@ -739,11 +734,9 @@ export class WorkspaceStore {
 		}));
 	}
 
-	/** New Claude tabs open as chat: the setting, and never inside the sandbox runtime. */
+	/** New Claude tabs open as chat (the setting). */
 	private get opensAsChat(): boolean {
-		return (
-			this.settingsStore.defaultClaudeView === 'chat' && !this.settingsStore.sandboxRuntimeEnabled
-		);
+		return this.settingsStore.defaultClaudeView === 'chat';
 	}
 
 	/**
@@ -863,9 +856,8 @@ export class WorkspaceStore {
 				type,
 				tab.panes[0]?.claudeAccountId
 			);
-			// Codex chat needs no id (a new thread) and never runs inside the sandbox runtime.
-			const chatAllowed =
-				type === 'codex' || (sessionId && !this.settingsStore.sandboxRuntimeEnabled);
+			// Codex chat needs no id (a new thread).
+			const chatAllowed = type === 'codex' || Boolean(sessionId);
 			if (tab.panes[0]?.view === 'chat' && chatAllowed) newTab.panes[0].view = 'chat';
 			const splitView = w.splitView && {
 				...w.splitView,

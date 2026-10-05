@@ -1,6 +1,6 @@
-//! Chat-mode sessions: one CLI process per session — `claude -p` over
-//! stream-json, or `codex app-server` over JSON-RPC — whose events fold into
-//! the same chat items. Every change is broadcast to attached clients
+//! Chat-mode sessions — an interactive `claude` in a server terminal, run as
+//! a chat by the Workbench plugin (`modlink`), or a `codex app-server` over
+//! JSON-RPC — whose events fold into the same chat items. Every change is broadcast to attached clients
 //! (desktop chat pane, phone) as an `update` frame.
 //!
 //! One [`AgentManager`] holds both kinds, so ids are global: stopping,
@@ -14,7 +14,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use workbench_core::claude_launch::PERMISSION_MODES;
 use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
 
 mod attachment;
@@ -157,20 +156,15 @@ impl AgentManager {
         lock(&self.inner).get(session_id).cloned()
     }
 
-    /// Start a session, or return the one already running for this id. A
-    /// new Codex thread is registered once codex has given it an id.
+    /// Start a Codex session, or return the one already running for this id;
+    /// a new thread is registered once codex has given it an id. (A Claude
+    /// chat starts in a terminal: see `agent_routes::claude_start`.)
     pub fn start(&self, req: StartAgent) -> Result<Arc<AgentSession>> {
         let kind = req.launch.kind();
-        match &req.launch {
-            Launch::Claude {
-                session_id,
-                permission_mode,
-                ..
-            } => claude::validate(session_id, permission_mode.as_deref())?,
-            Launch::Codex { thread_id, mode } => {
-                codex::validate(thread_id.as_deref(), mode.as_deref())?
-            }
-        }
+        let Launch::Codex { thread_id, mode } = &req.launch else {
+            bail!("Claude chats start in a terminal");
+        };
+        codex::validate(thread_id.as_deref(), mode.as_deref())?;
         let known_id = req.launch.known_id().map(String::from);
         let session = {
             let _lifecycle = lock(&self.lifecycle);
@@ -187,22 +181,7 @@ impl AgentManager {
                     if self.live_count() >= max {
                         bail!("chat session limit reached ({max})");
                     }
-                    let launch = match &req.launch {
-                        Launch::Claude {
-                            session_id,
-                            permission_mode,
-                            config_dir,
-                        } => claude::launch(
-                            &req,
-                            session_id,
-                            permission_mode.as_deref(),
-                            config_dir.as_deref(),
-                            None,
-                        ),
-                        Launch::Codex { thread_id, mode } => {
-                            codex::launch(&req, thread_id.as_deref(), mode.as_deref())
-                        }
-                    };
+                    let launch = codex::launch(&req, thread_id.as_deref(), mode.as_deref());
                     self.spawn(req, launch)?
                 }
             }
@@ -233,54 +212,6 @@ impl AgentManager {
                 Err(e)
             }
         }
-    }
-
-    /// Continue a Claude conversation from just before the prompt
-    /// `message_id`: the process restarts resumed at that prompt's parent, so
-    /// the prompt and everything after it drop out. Same id; attached clients
-    /// get `replaced` and re-attach. Blocking.
-    pub fn rewind_conversation(&self, session_id: &str, message_id: &str) -> Result<()> {
-        let _lifecycle = lock(&self.lifecycle);
-        let session = self
-            .get(session_id)
-            .filter(|s| !s.has_exited())
-            .ok_or_else(|| anyhow::anyhow!("the chat isn't running"))?;
-        let mut req = session.relaunch();
-        let Launch::Claude {
-            session_id,
-            permission_mode,
-            config_dir,
-        } = req.launch.clone()
-        else {
-            bail!("Codex chats can't rewind");
-        };
-        let meta = session.idle_meta()?;
-        let history = claude::history(config_dir.as_deref(), &session_id)
-            .ok_or_else(|| anyhow::anyhow!("the session has no history to rewind"))?;
-        let fork = workbench_core::claude_transcript::fork_point(&history, message_id)?;
-        // The mode picked in chat, not the one the session started in.
-        let permission_mode = meta
-            .permission_mode
-            .clone()
-            .filter(|m| PERMISSION_MODES.contains(&m.as_str()))
-            .or(permission_mode);
-        req.launch = Launch::Claude {
-            session_id: session_id.clone(),
-            permission_mode: permission_mode.clone(),
-            config_dir: config_dir.clone(),
-        };
-        let mut launch = claude::launch(
-            &req,
-            &session_id,
-            permission_mode.as_deref(),
-            config_dir.as_deref(),
-            Some(&fork),
-        );
-        claude::carry_over(&mut launch, &meta);
-        self.forget(&session);
-        session.replace();
-        self.spawn(req, launch)?;
-        Ok(())
     }
 
     /// Spawn a session (with the cache policy its id had) and make sure upkeep runs.

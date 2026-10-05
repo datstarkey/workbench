@@ -5,7 +5,7 @@
 	import SessionChat from '$features/chat/SessionChat.svelte';
 	import { paneAgent } from '$features/chat/pane-handoff';
 	import TerminalPane from '$features/terminal/TerminalPane.svelte';
-	import { getWorkbenchSettingsStore, getWorkspaceStore } from '$stores/context';
+	import { getWorkspaceStore } from '$stores/context';
 	import {
 		isAISessionType,
 		type PaneView,
@@ -15,7 +15,6 @@
 	} from '$types/workbench';
 
 	const workspaceStore = getWorkspaceStore();
-	const settingsStore = getWorkbenchSettingsStore();
 
 	let {
 		workspaceId,
@@ -108,9 +107,8 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Claude chat can't run inside the sandbox runtime (it never wraps Codex), so no way into it
-			     while that's on. A Codex pane can chat before it has a thread: chat starts one. -->
-			{#if canChat && (inChat || agent === 'codex' || !settingsStore.sandboxRuntimeEnabled)}
+			<!-- A Codex pane can chat before it has a thread: chat starts one. -->
+			{#if canChat}
 				<div
 					class="absolute top-1.5 right-10 z-20 flex overflow-hidden rounded-md border border-wb-hair bg-wb-panel/90 text-[11px] backdrop-blur-sm"
 					role="group"

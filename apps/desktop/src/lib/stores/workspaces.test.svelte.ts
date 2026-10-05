@@ -904,14 +904,13 @@ describe('WorkspaceStore', () => {
 			expect(pane.startupCommand).toBe(`claude --session-id ${pane.claudeSessionId}`);
 		});
 
-		it('keeps terminals while the sandbox runtime is on, and for explicit commands', () => {
+		it('opens chat even with the sandbox runtime on (the terminal is what srt wraps), not for explicit commands', () => {
 			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
 			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.addAISession('ws-a', 'claude');
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
 
-			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = false;
 			store.addAISession('ws-a', 'claude', { startupCommand: 'claude "fix the build"' });
 			expect(store.workspaces[0].terminalTabs[1].panes[0].view).toBeUndefined();
 		});
@@ -1034,16 +1033,16 @@ describe('WorkspaceStore', () => {
 	describe('chat view guards', () => {
 		const id = '32345678-1234-1234-1234-123456789abc';
 
-		it('refuses to move a pane to chat while the sandbox runtime is on', async () => {
+		it('moves a pane to chat with the sandbox runtime on', async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
 			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
 			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
 			await store.setPaneView(paneId, 'chat');
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
 		});
 
-		it('keeps a restarted chat tab in chat, unless the sandbox runtime is on', async () => {
+		it('keeps a restarted chat tab in chat, sandbox runtime or not', async () => {
 			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
@@ -1055,7 +1054,7 @@ describe('WorkspaceStore', () => {
 
 			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
 			await store.restartAISession('ws-a', restarted.id);
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
 		});
 	});
 

@@ -3,7 +3,8 @@
 //!   newest change first; `GET /agent/:kind` only that kind's (older phone
 //!   builds read `/agent/claude`).
 //! - `POST /agent/claude` starts (or returns) the session for a Claude session
-//!   id; `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
+//!   id: a server terminal running `claude`, answered once the plugin attaches
+//!   (`{sessionId, terminalId}`); `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
 //!   resumes one, and answers once codex has its id. With `attachOnly` either
 //!   only returns a running session (404 otherwise).
 //! - `DELETE /agent/:kind/:id` stops it; `DELETE /agent/:kind?paneId=` stops
@@ -500,14 +501,10 @@ fn rewind(
             anyhow::bail!("{why}");
         }
     }
-    if conversation && session.mod_link().is_some() {
+    if conversation {
         state
             .agents
             .rewind_terminal(&state.terminals, state.local_port, session, message_id)?;
-    } else if conversation {
-        state
-            .agents
-            .rewind_conversation(&session.id(), message_id)?;
     }
     Ok(files)
 }
