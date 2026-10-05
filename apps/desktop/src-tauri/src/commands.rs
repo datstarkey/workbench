@@ -160,7 +160,8 @@ pub fn save_workspaces(
     Ok(true)
 }
 
-#[tauri::command]
+// Async: it reads every session file of every account, off the main thread.
+#[tauri::command(async)]
 pub fn discover_claude_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {

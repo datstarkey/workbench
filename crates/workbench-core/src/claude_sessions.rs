@@ -27,6 +27,11 @@ pub(crate) fn parse_session_jsonl(
             Ok(l) => l,
             Err(_) => break,
         };
+        // Once the label and timestamp are known only a title can change the
+        // result: skip parsing the rest (a long session is megabytes of JSON).
+        if !label.is_empty() && !timestamp.is_empty() && !is_title_line(&line) {
+            continue;
+        }
         let obj: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
@@ -81,6 +86,11 @@ pub(crate) fn parse_session_jsonl(
         last_message_role: None,
         account_id: None,
     })
+}
+
+/// Cheap pre-check for an `ai-title` / `custom-title` entry, before parsing.
+fn is_title_line(line: &str) -> bool {
+    line.contains("\"ai-title\"") || line.contains("\"custom-title\"")
 }
 
 /// Discover Claude CLI sessions in `<config dir>/projects/<encoded-path>/*.jsonl`
