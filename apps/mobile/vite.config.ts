@@ -1,6 +1,7 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
+import tauriConf from './src-tauri/tauri.conf.json';
 
 // Tauri mobile injects the dev host (device-reachable LAN/tailscale address).
 // For plain web testing we bind 0.0.0.0 so a phone on the same tailnet/LAN can load it.
@@ -19,6 +20,9 @@ function stripCrossorigin() {
 }
 
 export default defineConfig({
+	define: {
+		__APP_VERSION__: JSON.stringify(tauriConf.version)
+	},
 	plugins: [tailwindcss(), svelte(), stripCrossorigin()],
 	clearScreen: false,
 	server: {
