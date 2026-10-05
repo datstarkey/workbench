@@ -5,7 +5,11 @@ plugins {
 android {
     namespace = "com.workbench.notifications"
     compileSdk = 35
-    defaultConfig { minSdk = 24 }
+    defaultConfig {
+        minSdk = 24
+        // Release APKs are minified with no mapping upload: keep this plugin's frames readable in Sentry.
+        consumerProguardFiles("consumer-rules.pro")
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8

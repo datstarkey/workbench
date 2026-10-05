@@ -13,6 +13,8 @@ export function initSentry(): void {
 		dsn: DSN,
 		release: `workbench-mobile@${__APP_VERSION__}`,
 		environment: 'production',
-		tracesSampleRate: 0
+		tracesSampleRate: 0,
+		// Request URLs and console lines can carry server addresses and pairing links.
+		integrations: [Sentry.breadcrumbsIntegration({ console: false, fetch: false, xhr: false })]
 	});
 }

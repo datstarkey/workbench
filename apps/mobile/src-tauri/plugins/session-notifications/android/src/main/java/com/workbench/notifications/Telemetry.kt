@@ -41,8 +41,9 @@ object Telemetry {
     }
   }
 
+  /** The class and stack only: messages can quote the server's reply (session titles). */
   fun exceptionOnce(e: Throwable) {
     synchronized(reported) { if (!reported.add(e.javaClass.name)) return }
-    Sentry.captureException(e)
+    Sentry.captureException(RuntimeException(e.javaClass.name).apply { stackTrace = e.stackTrace })
   }
 }
