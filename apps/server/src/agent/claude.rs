@@ -1,19 +1,19 @@
-//! The Claude driver: `claude -p` speaking stream-json, events folded by
-//! [`Transcript`]. The session id is the Claude session id, so the same
-//! conversation can move between chat and a terminal running
-//! `claude --resume <id>` — one process at a time.
+//! The Claude driver: the stream-json a Claude session speaks, folded by
+//! [`Transcript`]. The process is an interactive `claude` in a server
+//! terminal; the Workbench plugin translates it to and from stream-json
+//! (`modlink`), so the chat and the terminal are one process. The session id
+//! is the Claude session id.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
 use workbench_core::chat_attachment::PDF_TYPE;
-use workbench_core::claude_accounts;
 use workbench_core::claude_launch::PERMISSION_MODES;
-use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript, TranscriptMeta};
+use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript};
 
-use super::driver::{Driver, Effects, Launch};
-use super::{PromptFile, PromptImage, StartAgent};
+use super::driver::{Driver, Effects};
+use super::{PromptFile, PromptImage};
 
 /// Effort levels `effortLevel` accepts.
 const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -39,101 +39,23 @@ pub(super) fn history(config_dir: Option<&Path>, session_id: &str) -> Option<Pat
     claude_transcript::find_transcript(&projects, session_id)
 }
 
-/// Whether the account turned Claude in Chrome on by default. An interactive
-/// `claude` honours `claudeInChromeDefaultEnabled`; `-p` ignores it and only
-/// loads the extension's MCP server with `--chrome` (verified on 2.1.286).
-fn chrome_enabled(config_dir: Option<&Path>) -> bool {
-    let path = config_dir.map_or_else(
-        || workbench_core::paths::home_dir().join(".claude.json"),
-        |dir| dir.join(".claude.json"),
-    );
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|v| v.get("claudeInChromeDefaultEnabled")?.as_bool())
-        .unwrap_or(false)
-}
-
-/// `resume_at`: continue the conversation from this entry, dropping what
-/// came after it (a rewind).
-pub(super) fn launch(
-    req: &StartAgent,
-    session_id: &str,
-    permission_mode: Option<&str>,
+/// A driver holding the session's history, for a terminal's `claude` the
+/// plugin feeds (no process is started).
+pub(super) fn history_driver(
     config_dir: Option<&Path>,
+    session_id: &str,
     resume_at: Option<&str>,
-) -> Launch {
-    let history = history(config_dir, session_id);
-    let transcript = history
+) -> Driver {
+    let transcript = history(config_dir, session_id)
         .as_deref()
         .map(|path| Transcript::load_at(path, resume_at))
         .unwrap_or_default();
-
-    let mut cmd = super::session::base_command(claude_accounts::claude_binary(), req);
-    cmd.args([
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-        // Failed and blocking hooks become chat notices (successful ones are dropped).
-        "--include-hook-events",
-        "--replay-user-messages",
-        // Undocumented but what the Agent SDK passes: permission prompts
-        // arrive as `can_use_tool` control requests on stdout.
-        "--permission-prompt-tool",
-        "stdio",
-    ]);
-    if let Some(mode) = permission_mode {
-        cmd.args(["--permission-mode", mode]);
-    }
-    if chrome_enabled(config_dir) {
-        cmd.arg("--chrome");
-    }
-    let id_flag = if history.is_some() {
-        "--resume"
-    } else {
-        "--session-id"
-    };
-    cmd.args([id_flag, session_id]);
-    if let Some(at) = resume_at.filter(|_| history.is_some()) {
-        cmd.arg(format!("--resume-session-at={at}"));
-    }
-    // What the Agent SDK sets for `enableFileCheckpointing`: edits are backed
-    // up per prompt, so `rewind_files` can restore them.
-    cmd.env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true");
-    if let Some(dir) = config_dir {
-        cmd.env(claude_accounts::CONFIG_DIR_ENV, dir);
-    }
-    Launch {
-        cmd,
-        driver: Driver::Claude(transcript),
-        // The SDK handshake: without it the CLI won't route permission prompts here.
-        // `promptSuggestions`: a likely next prompt after each turn, shown as a chip.
-        hello: vec![control(
-            json!({"subtype": "initialize", "promptSuggestions": true}),
-        )],
-        ready: Some(session_id.to_string()),
-        program: "claude",
-    }
+    Driver::Claude(transcript)
 }
 
-/// Keep the model and effort picked in chat across a relaunch: the new
-/// process asks for them right after the handshake.
-pub(super) fn carry_over(launch: &mut Launch, meta: &TranscriptMeta) {
-    let Driver::Claude(t) = &mut launch.driver else {
-        return;
-    };
-    let model = meta
-        .model_choice
-        .as_deref()
-        .and_then(|m| set_model(t, m).ok());
-    let effort = meta.effort.as_deref().and_then(|e| set_effort(t, e).ok());
-    launch
-        .hello
-        .extend(model.into_iter().chain(effort).flat_map(|e| e.send));
+/// The SDK handshake; its reply lists the models the chat's picker offers.
+pub(super) fn hello() -> Value {
+    control(json!({"subtype": "initialize", "promptSuggestions": true}))
 }
 
 fn control(request: Value) -> Value {
@@ -298,17 +220,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chrome_follows_the_accounts_default() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!chrome_enabled(Some(dir.path())));
-        let json = dir.path().join(".claude.json");
-        std::fs::write(&json, r#"{"claudeInChromeDefaultEnabled":true}"#).unwrap();
-        assert!(chrome_enabled(Some(dir.path())));
-        std::fs::write(&json, r#"{"claudeInChromeDefaultEnabled":false}"#).unwrap();
-        assert!(!chrome_enabled(Some(dir.path())));
-    }
-
-    #[test]
     fn attachments_go_before_the_text_as_content_blocks() {
         let mut t = Transcript::default();
         let image = PromptImage {
@@ -363,28 +274,5 @@ mod tests {
         let effects = prompt(&mut Transcript::default(), "hi", &[], &[]).unwrap();
         let id = effects.send[0]["uuid"].as_str().unwrap();
         assert!(claude_transcript::is_uuid(id));
-    }
-
-    #[test]
-    fn a_relaunch_keeps_the_chosen_model_and_effort() {
-        let mut launch = Launch {
-            cmd: std::process::Command::new("true"),
-            driver: Driver::Claude(Transcript::default()),
-            hello: vec![],
-            ready: None,
-            program: "claude",
-        };
-        let meta = TranscriptMeta {
-            model_choice: Some("opus".into()),
-            effort: Some("high".into()),
-            ..TranscriptMeta::default()
-        };
-        carry_over(&mut launch, &meta);
-        let subtypes: Vec<_> = launch
-            .hello
-            .iter()
-            .map(|m| m["request"]["subtype"].clone())
-            .collect();
-        assert_eq!(subtypes, [json!("set_model"), json!("apply_flag_settings")]);
     }
 }

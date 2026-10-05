@@ -4,6 +4,8 @@
 //! prompt. Its own test binary because it points `HOME` at a temp dir.
 #![cfg(unix)]
 
+mod support;
+
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -51,7 +53,8 @@ async fn cache_policy_is_shared_saved_and_a_ping_reaches_claude() {
     .unwrap();
     let log = tmp.path().join("received.jsonl");
     std::env::set_var("HOME", tmp.path());
-    std::env::set_var("WORKBENCH_CLAUDE_BIN", &fake);
+    std::env::set_var("WORKBENCH_FAKE_CLAUDE", &fake);
+    std::env::set_var("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
     std::env::set_var("FAKE_CLAUDE_LOG", &log);
 

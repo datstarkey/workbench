@@ -6,6 +6,7 @@ pub mod agent_routes;
 pub mod auth;
 pub mod cli;
 pub mod error;
+pub mod mod_routes;
 pub mod routes;
 pub mod spawn;
 pub mod state;
@@ -51,11 +52,12 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let (revoke, revoked) = watch::channel(false);
-    let app = app(AppState::new(Managers::default(), token, revoked));
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
+    let local = listener.local_addr().context("failed to read local addr")?;
+    let app = app(AppState::new(Managers::default(), token, revoked).with_local_port(local.port()));
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown.await;
@@ -111,12 +113,12 @@ pub async fn spawn_embedded(
         workbench_core::token::MIN_TOKEN_LEN
     );
     let (revoke, revoked) = watch::channel(false);
-    let app = app(AppState::new(managers, Some(token), revoked));
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
     let local_addr = listener.local_addr().context("failed to read local addr")?;
+    let app = app(AppState::new(managers, Some(token), revoked).with_local_port(local_addr.port()));
 
     let (tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {

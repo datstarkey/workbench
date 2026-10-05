@@ -13,6 +13,7 @@ export const loopbackAgentApi: AgentApi = {
 		return loopback.start({ ...body, hookSocket: hookSocket ?? undefined });
 	},
 	socketUrl: loopback.socketUrl,
+	terminalId: loopback.terminalId,
 	files: loopback.files
 };
 

@@ -150,6 +150,7 @@ impl TerminalManager {
         hook_socket: Option<String>,
         shell: Option<String>,
         claude_config_dir: Option<&std::path::Path>,
+        extra_env: &[(&str, String)],
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -187,6 +188,9 @@ impl TerminalManager {
             if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
                 cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
             }
+        }
+        for (key, val) in extra_env {
+            cmd.env(key, val);
         }
         // Set on the shell, so every `claude` run in this pane uses that login.
         if let Some(dir) = claude_config_dir {
@@ -421,6 +425,9 @@ pub struct ClaudeSessionLaunch {
     pub id: String,
     /// `--resume` an existing conversation, else `--session-id` starts one.
     pub resume: bool,
+    /// With `resume`: continue from this entry, dropping what came after (a rewind).
+    #[serde(default)]
+    pub resume_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -443,43 +450,99 @@ pub async fn terminal_create(
         ));
     }
     let terminals = state.terminals.clone();
+    let agents = state.agents.clone();
     // openpty + fork/exec and the project-allowlist load are blocking — run them off
     // the async executor so a slow spawn doesn't stall a tokio worker thread.
-    crate::routes::blocking(move || {
-        let registered: Vec<String> = workbench_core::config::load_projects()?
-            .into_iter()
-            .map(|p| p.path)
-            .collect();
-        let cwd = RemoteControlManager::resolve_cwd(
-            &body.project_path,
-            body.worktree_path.as_deref(),
-            &registered,
-        )?;
-        let claude_config_dir =
-            workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
-        let command = match &body.claude_session {
-            Some(session) => Some(workbench_core::claude_launch::terminal_command(
-                &session.id,
-                session.resume,
-                &workbench_core::config::load_workbench_settings()?,
-                &workbench_core::sandbox_runtime::settings_path(),
-            )?),
-            None => body.command,
-        };
-        terminals.create(
-            cwd,
-            body.name,
-            command,
-            body.cols,
-            body.rows,
-            body.pane_id,
-            body.hook_socket,
-            body.shell,
-            claude_config_dir.as_deref(),
-        )
-    })
-    .await
-    .map(Json)
+    crate::routes::blocking(move || create_from_body(&terminals, &agents, body))
+        .await
+        .map(Json)
+}
+
+/// Create a terminal as `POST /remote/terminals` does (also how a Claude chat
+/// starts: its terminal runs `claude` and the plugin makes it the chat).
+/// Blocking.
+pub fn create_from_body(
+    terminals: &TerminalManager,
+    agents: &crate::agent::AgentManager,
+    body: CreateTerminalBody,
+) -> anyhow::Result<TerminalMeta> {
+    let local_port = agents.mod_port();
+    let registered: Vec<String> = workbench_core::config::load_projects()?
+        .into_iter()
+        .map(|p| p.path)
+        .collect();
+    let cwd = RemoteControlManager::resolve_cwd(
+        &body.project_path,
+        body.worktree_path.as_deref(),
+        &registered,
+    )?;
+    let claude_config_dir =
+        workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    let command = match &body.claude_session {
+        Some(session) => Some(workbench_core::claude_launch::terminal_command(
+            &session.id,
+            session.resume,
+            session.resume_at.as_deref(),
+            &workbench_core::config::load_workbench_settings()?,
+            &workbench_core::sandbox_runtime::settings_path(),
+        )?),
+        None => body.command,
+    };
+    // The Workbench plugin in this pane's `claude` runs the session as a
+    // chat through `mod_routes`, with a token good for this terminal only.
+    let token = match local_port {
+        Some(_) => Some(
+            agents.grant_mod(crate::agent::ModGrant {
+                pane_id: body.pane_id.clone(),
+                project_path: body.project_path.clone(),
+                worktree_path: body.worktree_path.clone(),
+                claude_account_id: body.claude_account_id.clone(),
+                cwd: cwd.clone(),
+                hook_socket: body.hook_socket.clone(),
+                resume_at: body
+                    .claude_session
+                    .as_ref()
+                    .and_then(|s| s.resume_at.clone()),
+                terminal_id: None,
+            })?,
+        ),
+        None => None,
+    };
+    let mut mod_env = match (&token, local_port) {
+        (Some(token), Some(port)) => vec![
+            ("WORKBENCH_MOD_URL", format!("http://127.0.0.1:{port}")),
+            ("WORKBENCH_MOD_TOKEN", token.clone()),
+        ],
+        _ => Vec::new(),
+    };
+    // The plugin is what makes the terminal a chat; a phone sends no hook
+    // socket, which is otherwise what loads it.
+    if !mod_env.is_empty() && body.hook_socket.is_none() {
+        if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
+            mod_env.push((
+                workbench_core::claude_plugin::PLUGIN_DIRS_ENV,
+                dirs.to_string_lossy().into_owned(),
+            ));
+        }
+    }
+    let created = terminals.create(
+        cwd,
+        body.name,
+        command,
+        body.cols,
+        body.rows,
+        body.pane_id,
+        body.hook_socket,
+        body.shell,
+        claude_config_dir.as_deref(),
+        &mod_env,
+    );
+    match (&created, &token) {
+        (Ok(meta), Some(token)) => agents.set_grant_terminal(token, &meta.id),
+        (Err(_), Some(token)) => agents.revoke_grant(token),
+        _ => {}
+    }
+    created
 }
 
 pub async fn terminal_kill(

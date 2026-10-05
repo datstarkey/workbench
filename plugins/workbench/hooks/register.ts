@@ -1,4 +1,5 @@
 import type { AnyEventHook, Register } from 'claude-code';
+import { noteBackgroundTasks, register as registerChat } from './chat';
 
 const REFRESH_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
 
@@ -20,10 +21,14 @@ const forward: AnyEventHook = async ($, e, next) => {
 	return next(e);
 };
 
-export const register: Register = (on) => {
+export const register: Register = (on, options) => {
+	registerChat(on, options);
 	on('classic.SessionStart', forward);
 	on('classic.UserPromptSubmit', forward);
-	on('classic.Stop', forward);
+	on('classic.Stop', ($, e, next) => {
+		noteBackgroundTasks(e.background_tasks);
+		return forward($, e, next);
+	});
 	on('classic.Notification', forward);
 	// The bridge only needs the tool and a Bash command; a Write's input and any
 	// tool's response can be whole files.

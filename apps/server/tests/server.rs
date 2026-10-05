@@ -8,6 +8,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use workbench_server::{spawn_embedded, Managers, ServerHandle};
 
+mod support;
+
 /// Embedded listeners always require a token of at least 32 characters.
 const TOKEN: &str = "e2e-token-0123456789abcdef0123456789";
 
@@ -1311,7 +1313,11 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
-    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    env.set(
+        "WORKBENCH_FAKE_CLAUDE",
+        write_fake_stream_claude(tmp.path()),
+    );
+    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     let log = tmp.path().join("received.jsonl");
     env.set("FAKE_CLAUDE_LOG", &log);
 
@@ -1515,7 +1521,11 @@ async fn concurrent_chat_starts_share_one_process() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
-    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    env.set(
+        "WORKBENCH_FAKE_CLAUDE",
+        write_fake_stream_claude(tmp.path()),
+    );
+    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     let log = tmp.path().join("received.jsonl");
     env.set("FAKE_CLAUDE_LOG", &log);
 
@@ -1557,7 +1567,11 @@ async fn chat_resume_lists_the_title_before_a_client_opens_the_chat() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let cfg = register_project(&env, tmp.path());
-    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    env.set(
+        "WORKBENCH_FAKE_CLAUDE",
+        write_fake_stream_claude(tmp.path()),
+    );
+    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     env.set("FAKE_CLAUDE_LOG", tmp.path().join("received.jsonl"));
     let account_dir = tmp.path().join("claude-work");
     let sessions = account_dir.join("projects/-project");
@@ -1641,7 +1655,11 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
-    env.set("WORKBENCH_CLAUDE_BIN", write_fake_stream_claude(tmp.path()));
+    env.set(
+        "WORKBENCH_FAKE_CLAUDE",
+        write_fake_stream_claude(tmp.path()),
+    );
+    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     env.set("FAKE_CLAUDE_LOG", tmp.path().join("received.jsonl"));
 
     let (handle, base) = start().await;

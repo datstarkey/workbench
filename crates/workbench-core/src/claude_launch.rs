@@ -27,9 +27,11 @@ pub const SANDBOX_RUNTIME_PACKAGE: &str = "@anthropic-ai/sandbox-runtime@0.0.76"
 /// `claude --resume <id>` (or `--session-id <id>` for a new session), carrying
 /// the configured permission mode and, when the sandbox is on, srt's wrapper
 /// pointing at `sandbox_settings`.
+/// `resume_at`: continue from this entry, dropping what came after it (a rewind).
 pub fn terminal_command(
     session_id: &str,
     resume: bool,
+    resume_at: Option<&str>,
     settings: &WorkbenchSettings,
     sandbox_settings: &Path,
 ) -> Result<String> {
@@ -53,13 +55,22 @@ pub fn terminal_command(
             shell_quote(path)
         ));
     }
-    cmd.push_str("claude");
+    // Tests point it at a fake (`WORKBENCH_CLAUDE_BIN`, as for remote-control).
+    match std::env::var("WORKBENCH_CLAUDE_BIN") {
+        Ok(bin) if !bin.is_empty() => cmd.push_str(&shell_quote(&bin)),
+        _ => cmd.push_str("claude"),
+    }
     let mode = settings.claude_permission_mode.as_str();
     if mode != "default" && PERMISSION_MODES.contains(&mode) {
         cmd.push_str(&format!(" --permission-mode {mode}"));
     }
     let flag = if resume { "--resume" } else { "--session-id" };
     cmd.push_str(&format!(" {flag} {session_id}"));
+    // An entry id from the session file; only a UUID reaches the shell, unquoted
+    // (cmd.exe keeps single quotes in the argument).
+    if let Some(at) = resume_at.filter(|at| resume && is_uuid(at)) {
+        cmd.push_str(&format!(" --resume-session-at={at}"));
+    }
     Ok(cmd)
 }
 
@@ -83,27 +94,50 @@ mod tests {
 
     #[test]
     fn default_mode_adds_no_flag() {
-        let cmd = terminal_command(SID, true, &settings("default", false), Path::new("/x"));
+        let cmd = terminal_command(
+            SID,
+            true,
+            None,
+            &settings("default", false),
+            Path::new("/x"),
+        );
         assert_eq!(cmd.unwrap(), format!("claude --resume {SID}"));
     }
 
     #[test]
     fn known_modes_are_passed_and_unknown_ones_dropped() {
-        let cmd = terminal_command(SID, false, &settings("acceptEdits", false), Path::new("/x"));
+        let cmd = terminal_command(
+            SID,
+            false,
+            None,
+            &settings("acceptEdits", false),
+            Path::new("/x"),
+        );
         assert_eq!(
             cmd.unwrap(),
             format!("claude --permission-mode acceptEdits --session-id {SID}")
         );
-        let cmd = terminal_command(SID, true, &settings("rm -rf /", false), Path::new("/x"));
+        let cmd = terminal_command(
+            SID,
+            true,
+            None,
+            &settings("rm -rf /", false),
+            Path::new("/x"),
+        );
         assert_eq!(cmd.unwrap(), format!("claude --resume {SID}"));
     }
 
     #[test]
     fn rejects_a_non_uuid_id() {
         let bad = format!("{SID}; rm -rf ~");
-        assert!(
-            terminal_command(&bad, true, &settings("default", false), Path::new("/x")).is_err()
-        );
+        assert!(terminal_command(
+            &bad,
+            true,
+            None,
+            &settings("default", false),
+            Path::new("/x")
+        )
+        .is_err());
     }
 
     #[cfg(unix)]
@@ -112,13 +146,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("it's.json");
         std::fs::write(&file, "{}").unwrap();
-        let cmd = terminal_command(SID, true, &settings("plan", true), &file).unwrap();
+        let cmd = terminal_command(SID, true, None, &settings("plan", true), &file).unwrap();
         let quoted = file.to_str().unwrap().replace('\'', r#"'"'"'"#);
         assert_eq!(
             cmd,
             format!(
                 "npx --yes {SANDBOX_RUNTIME_PACKAGE} --settings '{quoted}' -- claude --permission-mode plan --resume {SID}"
             )
+        );
+    }
+
+    #[test]
+    fn a_rewind_resumes_at_its_fork_point() {
+        let at = "5e5e5e5e-0000-4000-8000-000000000001";
+        let cmd = terminal_command(
+            SID,
+            true,
+            Some(at),
+            &settings("default", false),
+            Path::new("/x"),
+        )
+        .unwrap();
+        assert!(cmd.ends_with(&format!("--resume {SID} --resume-session-at={at}")));
+        let cmd = terminal_command(
+            SID,
+            true,
+            Some("x; rm -rf /"),
+            &settings("default", false),
+            Path::new("/x"),
+        )
+        .unwrap();
+        assert!(
+            !cmd.contains("resume-session-at"),
+            "only a UUID reaches the shell: {cmd}"
         );
     }
 
@@ -129,6 +189,7 @@ mod tests {
         let err = terminal_command(
             SID,
             true,
+            None,
             &settings("default", true),
             &dir.path().join("no.json"),
         )

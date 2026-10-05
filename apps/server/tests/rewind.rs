@@ -4,6 +4,8 @@
 //! own test binary because it points `HOME` at a temp dir.
 #![cfg(unix)]
 
+mod support;
+
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -15,6 +17,7 @@ const TOKEN: &str = "e2e-token-0123456789abcdef0123456789";
 const SID: &str = "5e5e5e5e-0000-4000-8000-000000000001";
 const FIRST: &str = "11111111-1111-4111-8111-111111111111";
 const SECOND: &str = "22222222-2222-4222-8222-222222222222";
+const REPLY: &str = "33333333-3333-4333-8333-333333333333";
 
 /// Logs its argv and checkpoint env to `$FAKE_CLAUDE_ARGS`, every stdin line
 /// to `$FAKE_CLAUDE_LOG`, and answers `rewind_files` like CLI 2.1.286.
@@ -46,8 +49,8 @@ fn history() -> String {
     let text = |t: &str| json!({"type": "text", "text": t});
     [
         entry("user", FIRST, None, json!("first")),
-        entry("assistant", "a1", Some(FIRST), text("one")),
-        entry("user", SECOND, Some("a1"), json!("second")),
+        entry("assistant", REPLY, Some(FIRST), text("one")),
+        entry("user", SECOND, Some(REPLY), json!("second")),
         entry("assistant", "a2", Some(SECOND), text("two")),
     ]
     .join("\n")
@@ -103,7 +106,8 @@ async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
     let args = tmp.path().join("args.log");
     let log = tmp.path().join("received.jsonl");
     std::env::set_var("HOME", tmp.path());
-    std::env::set_var("WORKBENCH_CLAUDE_BIN", &fake);
+    std::env::set_var("WORKBENCH_FAKE_CLAUDE", &fake);
+    std::env::set_var("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
     std::env::set_var("FAKE_CLAUDE_ARGS", &args);
     std::env::set_var("FAKE_CLAUDE_LOG", &log);
@@ -169,8 +173,7 @@ async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
     }
     let launches: Vec<&str> = launches.lines().collect();
     assert_eq!(launches.len(), 2, "{launches:?}");
-    assert!(launches.iter().all(|l| l.ends_with("checkpointing=true")));
-    assert!(launches[1].contains(&format!("--resume {SID} --resume-session-at=a1")));
+    assert!(launches[1].contains(&format!("--resume {SID} --resume-session-at={REPLY}")));
     let received = std::fs::read_to_string(&log).unwrap();
     assert!(received.contains(r#""dry_run":false"#), "{received}");
 

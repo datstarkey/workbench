@@ -23,7 +23,9 @@ pub async fn require_bearer(
     // exempt here because a browser WebSocket can't send an Authorization header —
     // each upgrade handler calls `authorize_ws` on its `?token=` query param.
     let path = request.uri().path();
-    if path == "/" || path == "/health" || is_ws_path(path) {
+    // The plugin in a terminal's `claude` presents that terminal's own token,
+    // checked by each `/mod/` handler.
+    if path == "/" || path == "/health" || is_ws_path(path) || path.starts_with("/mod/") {
         return Ok(next.run(request).await);
     }
 

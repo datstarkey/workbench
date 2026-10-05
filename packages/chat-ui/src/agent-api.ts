@@ -6,6 +6,8 @@ export interface AgentApi {
 	/** Resolves to the session's id: a new Codex thread only gets one here. */
 	start(body: StartAgentBody): Promise<string>;
 	socketUrl(sessionId: string): Promise<string>;
+	/** The server terminal a started Claude chat runs in (its interactive `claude`). */
+	terminalId?(sessionId: string): string | undefined;
 	/** The chat cwd's files for `@` mentions; absent leaves the menu out. */
 	files?(where: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]>;
 }
@@ -42,17 +44,20 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		return resp.status === 204 ? null : ((await resp.json()) as T);
 	}
 	const path = (id: string) => `/agent/claude/${encodeURIComponent(id)}`;
+	const terminals = new Map<string, string>();
 
 	return {
 		async start(body: StartAgentBody): Promise<string> {
-			const res = await call<{ sessionId: string }>(
+			const res = await call<{ sessionId: string; terminalId?: string | null }>(
 				'POST',
 				`/agent/${body.agent ?? 'claude'}`,
 				body
 			);
 			if (!res?.sessionId) throw new Error('The server did not return a session id');
+			if (res.terminalId) terminals.set(res.sessionId, res.terminalId);
 			return res.sessionId;
 		},
+		terminalId: (sessionId: string) => terminals.get(sessionId),
 		async socketUrl(sessionId: string): Promise<string> {
 			const { baseUrl, token } = await server();
 			return agentWsUrl(baseUrl, sessionId, token ?? undefined);

@@ -107,8 +107,11 @@
 						? { permissionMode: settingsStore.claudePermissionMode }
 						: {})
 				}),
-		// Another device's chat: join its process, never start one behind its back.
-		...(workspaceStore.isAdoptedPane(paneId) ? { attachOnly: true } : {})
+		// Another device's chat, or this pane's own terminal `claude`: join its
+		// process, never start one behind its back.
+		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)
+			? { attachOnly: true }
+			: {})
 	});
 	const workspace = $derived(
 		cwd && cwd !== project.path
@@ -121,6 +124,7 @@
 	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
 	chat.onEnded = () => workspaceStore.closeEndedChat(paneId);
+	chat.onTerminal = (terminalId) => workspaceStore.linkLiveTerminal(paneId, terminalId);
 
 	watch(
 		() => chat.sessionId,
