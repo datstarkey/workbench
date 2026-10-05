@@ -110,6 +110,56 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('matches a slash command alias echoed under its hyphenated name', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('/design consent');
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'u1', text: '/design-consent', timestamp: '' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toEqual([]);
+		chat.dispose();
+	});
+
+	it('drops a slash command the CLI only answers with a notice', async () => {
+		const { chat, ws } = await connected();
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'notice', id: 'n0', text: 'Conversation compacted' }]],
+			meta: meta()
+		});
+		chat.prompt('/design-login');
+		chat.prompt('fix the build');
+		ws.emit({ t: 'update', changes: [], meta: meta() });
+		expect(chat.pending.map((p) => p.text)).toEqual(['/design-login', 'fix the build']);
+
+		ws.emit({
+			t: 'update',
+			changes: [
+				[
+					1,
+					{ kind: 'notice', id: 'n1', text: "/design-login isn't available in this environment." }
+				]
+			],
+			meta: meta()
+		});
+		expect(chat.pending.map((p) => p.text)).toEqual(['fix the build']);
+		chat.dispose();
+	});
+
+	it('keeps a slash command queued behind a busy turn until the turn ends', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('/design-login');
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'notice', id: 'n1', text: 'Interrupted' }]],
+			meta: meta(true)
+		});
+		expect(chat.pending.map((p) => p.text)).toEqual(['/design-login']);
+		chat.dispose();
+	});
+
 	it('shows a prompt at once and drops it when Claude echoes it', async () => {
 		const { chat, ws } = await connected();
 		expect(chat.prompt('  fix the build  ')).toBe(true);
