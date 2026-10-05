@@ -394,6 +394,10 @@ impl AgentSession {
     }
 
     pub fn prompt(&self, text: &str, images: &[PromptImage], files: &[PromptFile]) -> Result<()> {
+        if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
+            let text = super::modlink::attachments_as_mentions(&self.id(), text, images, files)?;
+            return self.run(|d| d.prompt(&text, &[], &[]));
+        }
         self.run(|d| d.prompt(text, images, files))
     }
 
@@ -423,8 +427,8 @@ impl AgentSession {
         self.run(|d| d.set_mode(mode))
     }
 
-    pub fn set_model(&self, model: &str) -> Result<()> {
-        self.run(|d| d.set_model(model))
+    pub fn set_model(&self, model: &str, persist: bool) -> Result<()> {
+        self.run(|d| d.set_model(model, persist))
     }
 
     pub fn set_effort(&self, level: &str) -> Result<()> {

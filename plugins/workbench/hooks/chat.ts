@@ -7,7 +7,7 @@ import type { Register, TurnStepInput } from 'claude-code';
 // outside Workbench the module does nothing.
 
 type Line = Record<string, unknown>;
-type Answer = { behavior?: string; message?: string };
+type Answer = { behavior?: string; message?: string; updatedInput?: Record<string, unknown> };
 
 interface Link {
 	url: string;
@@ -27,6 +27,8 @@ let askSeq = 0;
 const pendingAsks = new Map<string, (answer: Answer) => void>();
 // Effort picked in chat; applied to each main-thread model request.
 let effort: TurnStepInput['effort'];
+// Model picked in chat for this session only (saving as default goes through `/config`).
+let sessionModel: string | undefined;
 // The running main-thread turn, for an interrupt from chat.
 let runningTurn: string | undefined;
 // The last request's token counts, stamped on its assistant rows (context
@@ -38,9 +40,14 @@ const toolRows = new Map<string, Line>();
 // Agent tool calls still running, for the tasks panel.
 const runningAgents: string[] = [];
 
-// Questions and plans are answered by editing the tool's input, which a
-// permission decision can't carry: the TUI keeps those.
-const TUI_ONLY = new Set(['AskUserQuestion', 'ExitPlanMode']);
+// Questions and plans are asked from `tool.call` (an answer edits the input);
+// `tool.check` then lets the answered call through.
+const ASKED_IN_CALL = new Set(['AskUserQuestion', 'ExitPlanMode']);
+const answeredInChat = new Set<string>();
+// Background jobs reported to the tasks panel, by id, with their last status.
+const backgroundJobs = new Map<string, string>();
+// `/clear` ends the session and the process carries on under a new id.
+let clearPending = false;
 
 function init(method: string, body?: unknown) {
 	return {
@@ -75,20 +82,43 @@ function reply(requestId: unknown, error?: string, response: Line = {}) {
 	});
 }
 
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/** A `/config` model value as the chat's picker shows it. */
+function modelOption(value: string) {
+	const wide = value.endsWith('[1m]');
+	const base = value.replace('[1m]', '');
+	const name = base === 'opusplan' ? 'Opus Plan' : base.charAt(0).toUpperCase() + base.slice(1);
+	return {
+		value,
+		displayName: wide ? `${name} (1M context)` : name,
+		...(base === 'haiku' ? {} : { supportedEffortLevels: EFFORT_LEVELS })
+	};
+}
+
 function denial(result: { deny?: string } | undefined, what: string): string | undefined {
 	return result?.deny ? `${what}: ${result.deny}` : undefined;
 }
 
-function promptText(content: unknown): { text: string; hasFiles: boolean } {
-	if (typeof content === 'string') return { text: content, hasFiles: false };
+// The server turns attachments into `@path` mentions, so a prompt is text.
+function promptText(content: unknown): string {
+	if (typeof content === 'string') return content;
 	const blocks = Array.isArray(content) ? (content as { type?: string; text?: string }[]) : [];
-	return {
-		text: blocks
-			.filter((b) => b.type === 'text')
-			.map((b) => b.text ?? '')
-			.join('\n'),
-		hasFiles: blocks.some((b) => b.type === 'image' || b.type === 'document')
-	};
+	return blocks
+		.filter((b) => b.type === 'text')
+		.map((b) => b.text ?? '')
+		.join('\n');
+}
+
+function askInChat(tool: string, input: unknown, toolUseId: string | undefined): Promise<Answer> {
+	const requestId = `wbmod-ask-${++askSeq}`;
+	const answer = new Promise<Answer>((resolve) => pendingAsks.set(requestId, resolve));
+	emit({
+		type: 'control_request',
+		request_id: requestId,
+		request: { subtype: 'can_use_tool', tool_name: tool, input, tool_use_id: toolUseId }
+	});
+	return answer;
 }
 
 function settleAsk(line: Line) {
@@ -100,6 +130,25 @@ function settleAsk(line: Line) {
 	if (!id || !settle) return;
 	pendingAsks.delete(id);
 	settle(response?.response ?? { behavior: 'deny', message: response?.error });
+}
+
+/** Report background jobs that finished; called from the Stop hook with its job list. */
+export function noteBackgroundTasks(tasks: readonly { id: string; status: string }[] = []) {
+	if (!link) return;
+	const live = new Map(tasks.map((t) => [t.id, t.status]));
+	for (const [job, status] of backgroundJobs) {
+		const now = live.get(job) ?? 'completed';
+		if (now === status) continue;
+		backgroundJobs.set(job, now);
+		if (now !== 'running')
+			emit({
+				type: 'system',
+				subtype: 'task_notification',
+				task_id: job,
+				status: now === 'failed' ? 'failed' : 'completed',
+				uuid: `wbmod-bg-done-${job}`
+			});
+	}
 }
 
 export const register: Register = (on) => {
@@ -134,6 +183,14 @@ export const register: Register = (on) => {
 		$.clock.every(300, () => {
 			if (polling || !link) return;
 			polling = true;
+			if (clearPending) {
+				clearPending = false;
+				void $.session.id().then((id) => {
+					if (!link || id === link.sessionId) return;
+					emit({ type: 'conversation_reset', new_conversation_id: id, session_id: link.sessionId });
+					link = { ...link, sessionId: id };
+				});
+			}
 			$.http
 				.fetch(`${link.url}/mod/in?${sessionQuery()}`, init('GET'))
 				.then(async (res) => {
@@ -143,20 +200,13 @@ export const register: Register = (on) => {
 							settleAsk(line);
 						} else if (line.type === 'user') {
 							const message = line.message as { content?: unknown } | undefined;
-							const { text, hasFiles } = promptText(message?.content);
-							if (hasFiles) {
-								emit({
-									type: 'system',
-									subtype: 'local_command_output',
-									content: 'Images and files can only be sent from the terminal for now.',
-									uuid: `wbmod-note-${++askSeq}`
-								});
-							}
+							const text = promptText(message?.content);
 							if (text) await $.prompt.submit({ text, asUser: true });
 						} else if (line.type === 'control_request') {
 							const sub = (line.request as { subtype?: string } | undefined)?.subtype;
 							const req = (line.request ?? {}) as {
 								model?: string;
+								persist?: boolean;
 								mode?: string;
 								settings?: { effortLevel?: string };
 							};
@@ -166,13 +216,17 @@ export const register: Register = (on) => {
 							} else if (sub === 'initialize') {
 								// The chat's model picker lists what `/config` offers.
 								const row = (await $.config.list()).find((r) => r.key === 'model');
-								const models = (row?.options ?? []).map((value) => ({
-									value,
-									displayName: value
+								const models = (row?.options ?? []).map(modelOption);
+								const commands = (await $.command.list()).map((c) => ({
+									name: c.name,
+									description: c.description
 								}));
-								reply(line.request_id, undefined, { models });
+								reply(line.request_id, undefined, { models, commands });
 							} else if (sub === 'set_model' && req.model) {
-								const set = await $.config.set({ key: 'model', value: req.model });
+								sessionModel = req.model === 'default' ? undefined : req.model;
+								const set = req.persist
+									? await $.config.set({ key: 'model', value: req.model })
+									: undefined;
 								reply(line.request_id, denial(set, 'Model'));
 							} else if (sub === 'set_permission_mode' && req.mode) {
 								const set = await $.config
@@ -198,6 +252,10 @@ export const register: Register = (on) => {
 	});
 
 	on('session.end', async ($, e, next) => {
+		if (link && e.reason === 'clear') {
+			clearPending = true;
+			return next(e);
+		}
 		if (link) {
 			const { url } = link;
 			if (outbox.length > 0)
@@ -213,7 +271,11 @@ export const register: Register = (on) => {
 	on('turn.step', async function* ($, e, next) {
 		if (!link || e.agentId) return yield* next(e);
 		runningTurn = e.turnId;
-		const stream = next(effort ? { ...e, effort } : e);
+		const stream = next({
+			...e,
+			...(sessionModel ? { model: sessionModel } : {}),
+			...(effort ? { effort } : {})
+		});
 		currentMessage = `wbmod-${link.sessionId.slice(0, 8)}-${++messageSeq}`;
 		startedBlocks.clear();
 		model = e.model || model;
@@ -257,6 +319,7 @@ export const register: Register = (on) => {
 				});
 			} else if (chunk.kind === 'stop') {
 				lastUsage = chunk.usage ?? undefined;
+				if (chunk.usage?.model) model = chunk.usage.model;
 			}
 			yield chunk;
 		}
@@ -293,6 +356,12 @@ export const register: Register = (on) => {
 		return next(e);
 	});
 
+	on('prompt.suggest', async ($, e, next) => {
+		const shown = await next(e);
+		if (link) emit({ type: 'prompt_suggestion', suggestion: e.text });
+		return shown;
+	});
+
 	on('turn.complete', ($, e, next) => {
 		if (link && !('agentId' in e && e.agentId)) {
 			runningTurn = undefined;
@@ -305,6 +374,19 @@ export const register: Register = (on) => {
 	on('tool.call', async ($, e, next) => {
 		if (!link) return next(e);
 		const id = e.tool_use_id;
+		if (ASKED_IN_CALL.has(e.tool) && !e.agentId && id) {
+			const route = await $.http
+				.fetch(`${link.url}/mod/route?${sessionQuery()}`, init('GET'))
+				.catch(() => null);
+			if (route?.ok && (JSON.parse(route.text) as { chat?: boolean }).chat) {
+				const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
+				const answer = await askInChat(e.tool, input, id);
+				if (answer.behavior !== 'allow')
+					return { deny: answer.message || 'Declined in Workbench chat' };
+				answeredInChat.add(id);
+				return next({ ...e, ...(answer.updatedInput ?? {}) } as typeof e);
+			}
+		}
 		const input = e as unknown as { description?: string; subagent_type?: string };
 		const isAgent = !e.agentId && e.tool === 'Agent';
 		if (isAgent && id) {
@@ -339,6 +421,20 @@ export const register: Register = (on) => {
 				uuid: `wbmod-done-${id}`
 			});
 		}
+		const bg = (result.result as { backgroundTaskId?: string } | undefined)?.backgroundTaskId;
+		if (e.tool === 'Bash' && bg && !backgroundJobs.has(bg)) {
+			backgroundJobs.set(bg, 'running');
+			emit({
+				type: 'system',
+				subtype: 'task_started',
+				task_id: bg,
+				tool_use_id: id,
+				description: (e as { command?: string }).command ?? 'Background command',
+				task_type: 'local_bash',
+				is_backgrounded: true,
+				uuid: `wbmod-bg-${bg}`
+			});
+		}
 		if (id && !e.agentId && result.result !== undefined) {
 			toolResults.set(id, result.result);
 			const row = toolRows.get(id);
@@ -349,28 +445,13 @@ export const register: Register = (on) => {
 
 	on('tool.check', async ($, e, next) => {
 		const verdict = await next(e);
-		if (verdict.decision !== 'ask' || !link || TUI_ONLY.has(e.tool)) return verdict;
+		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
+		if (verdict.decision !== 'ask' || !link || ASKED_IN_CALL.has(e.tool)) return verdict;
 		const route = await $.http
 			.fetch(`${link.url}/mod/route?${sessionQuery()}`, init('GET'))
 			.catch(() => null);
 		if (!route?.ok || !(JSON.parse(route.text) as { chat?: boolean }).chat) return verdict;
-		const requestId = `wbmod-ask-${++askSeq}`;
-		const answer = new Promise<Answer>((resolve) => pendingAsks.set(requestId, resolve));
-		emit({
-			type: 'control_request',
-			request_id: requestId,
-			request: {
-				subtype: 'can_use_tool',
-				tool_name: e.tool,
-				input: e.input,
-				tool_use_id: e.tool_use_id
-			}
-		});
-		next.signal.addEventListener('abort', () => {
-			pendingAsks.delete(requestId);
-			emit({ type: 'control_cancel_request', request_id: requestId });
-		});
-		const { behavior, message } = await answer;
+		const { behavior, message } = await askInChat(e.tool, e.input, e.tool_use_id);
 		return behavior === 'allow'
 			? { decision: 'allow' }
 			: { decision: 'deny', reason: message || 'Denied in Workbench chat' };

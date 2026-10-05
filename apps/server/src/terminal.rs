@@ -425,6 +425,9 @@ pub struct ClaudeSessionLaunch {
     pub id: String,
     /// `--resume` an existing conversation, else `--session-id` starts one.
     pub resume: bool,
+    /// With `resume`: continue from this entry, dropping what came after (a rewind).
+    #[serde(default)]
+    pub resume_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -480,6 +483,7 @@ pub fn create_from_body(
         Some(session) => Some(workbench_core::claude_launch::terminal_command(
             &session.id,
             session.resume,
+            session.resume_at.as_deref(),
             &workbench_core::config::load_workbench_settings()?,
             &workbench_core::sandbox_runtime::settings_path(),
         )?),
@@ -488,14 +492,21 @@ pub fn create_from_body(
     // The Workbench plugin in this pane's `claude` runs the session as a
     // chat through `mod_routes`, with a token good for this terminal only.
     let token = match local_port {
-        Some(_) => Some(agents.grant_mod(crate::agent::ModGrant {
-            pane_id: body.pane_id.clone(),
-            project_path: body.project_path.clone(),
-            worktree_path: body.worktree_path.clone(),
-            claude_account_id: body.claude_account_id.clone(),
-            cwd: cwd.clone(),
-            terminal_id: None,
-        })?),
+        Some(_) => Some(
+            agents.grant_mod(crate::agent::ModGrant {
+                pane_id: body.pane_id.clone(),
+                project_path: body.project_path.clone(),
+                worktree_path: body.worktree_path.clone(),
+                claude_account_id: body.claude_account_id.clone(),
+                cwd: cwd.clone(),
+                hook_socket: body.hook_socket.clone(),
+                resume_at: body
+                    .claude_session
+                    .as_ref()
+                    .and_then(|s| s.resume_at.clone()),
+                terminal_id: None,
+            })?,
+        ),
         None => None,
     };
     let mut mod_env = match (&token, local_port) {

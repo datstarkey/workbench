@@ -56,10 +56,14 @@ fn chrome_enabled(config_dir: Option<&Path>) -> bool {
 
 /// A driver holding the session's history, for a terminal's `claude` the
 /// plugin feeds (no process is started).
-pub(super) fn history_driver(config_dir: Option<&Path>, session_id: &str) -> Driver {
+pub(super) fn history_driver(
+    config_dir: Option<&Path>,
+    session_id: &str,
+    resume_at: Option<&str>,
+) -> Driver {
     let transcript = history(config_dir, session_id)
         .as_deref()
-        .map(|path| Transcript::load_at(path, None))
+        .map(|path| Transcript::load_at(path, resume_at))
         .unwrap_or_default();
     Driver::Claude(transcript)
 }
@@ -139,7 +143,7 @@ pub(super) fn carry_over(launch: &mut Launch, meta: &TranscriptMeta) {
     let model = meta
         .model_choice
         .as_deref()
-        .and_then(|m| set_model(t, m).ok());
+        .and_then(|m| set_model(t, m, false).ok());
     let effort = meta.effort.as_deref().and_then(|e| set_effort(t, e).ok());
     launch
         .hello
@@ -275,7 +279,9 @@ pub(super) fn set_mode(t: &mut Transcript, mode: &str) -> Result<Effects> {
     )))
 }
 
-pub(super) fn set_model(t: &mut Transcript, model: &str) -> Result<Effects> {
+/// `persist`: also make it the default (a terminal session's `/config`), not
+/// just this session's.
+pub(super) fn set_model(t: &mut Transcript, model: &str, persist: bool) -> Result<Effects> {
     let valid = !model.is_empty()
         && model.len() <= 80
         && model
@@ -286,7 +292,7 @@ pub(super) fn set_model(t: &mut Transcript, model: &str) -> Result<Effects> {
     }
     t.set_model_choice(model);
     Ok(changed_meta(control(
-        json!({"subtype": "set_model", "model": model}),
+        json!({"subtype": "set_model", "model": model, "persist": persist}),
     )))
 }
 

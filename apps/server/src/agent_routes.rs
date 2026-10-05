@@ -88,6 +88,7 @@ fn claude_start(
     body: StartBody,
 ) -> anyhow::Result<Value> {
     claude_validate(&body.session_id, body.permission_mode.as_deref())?;
+    let _starting = agents.start_guard();
     if let Some(existing) = agents.get(&body.session_id) {
         return Ok(start_reply(&existing));
     }
@@ -106,6 +107,7 @@ fn claude_start(
             claude_session: Some(crate::terminal::ClaudeSessionLaunch {
                 id: body.session_id.clone(),
                 resume,
+                resume_at: None,
             }),
             cols: 120,
             rows: 40,
@@ -229,8 +231,7 @@ pub async fn agent_message(
     body: String,
 ) -> Result<Response, ApiError> {
     let session = find(&state, &id)?;
-    let agents = state.agents.clone();
-    let reply = crate::routes::blocking(move || Ok(handle(&agents, &session, &body)))
+    let reply = crate::routes::blocking(move || Ok(handle(&state, &session, &body)))
         .await?
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(match reply {
@@ -320,14 +321,13 @@ pub async fn agent_attach(
     crate::auth::authorize_ws(&headers, auth.token.as_deref(), &state)?;
     let session = find(&state, &id)?;
     let revoked = state.revoked.clone();
-    let agents = state.agents.clone();
     // A prompt can carry 10 images of up to ~6.7 MB base64 each and 5 PDFs of
     // ~13.4 MB; the default 16 MiB frame limit would drop the socket instead
     // of the prompt.
     Ok(ws
         .max_frame_size(MAX_PROMPT_BYTES)
         .max_message_size(MAX_PROMPT_BYTES)
-        .on_upgrade(move |socket| stream(socket, agents, session, revoked)))
+        .on_upgrade(move |socket| stream(socket, state, session, revoked)))
 }
 
 const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
@@ -365,6 +365,9 @@ enum ClientMsg {
     },
     Model {
         model: String,
+        /// Also save it as the default, not just this session's.
+        #[serde(default)]
+        persist: bool,
     },
     Effort {
         effort: String,
@@ -401,11 +404,7 @@ enum ClientMsg {
 }
 
 /// Apply a client message; `Some` is a reply for that client alone.
-fn handle(
-    agents: &AgentManager,
-    session: &AgentSession,
-    text: &str,
-) -> anyhow::Result<Option<Value>> {
+fn handle(state: &AppState, session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
     let reply = match serde_json::from_str::<ClientMsg>(text)? {
         ClientMsg::Rewind {
             message_id,
@@ -413,7 +412,7 @@ fn handle(
             conversation,
             dry_run,
         } => {
-            let result = rewind(agents, session, &message_id, code, conversation, dry_run);
+            let result = rewind(state, session, &message_id, code, conversation, dry_run);
             let (files, error) = match result {
                 Ok(files) => (files, None),
                 Err(e) => (None, Some(e.to_string())),
@@ -467,10 +466,10 @@ fn handle(
         } => session.elicit(&request_id, action, content.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
         ClientMsg::Mode { mode } => session.set_mode(&mode),
-        ClientMsg::Model { model } => session.set_model(&model),
+        ClientMsg::Model { model, persist } => session.set_model(&model, persist),
         ClientMsg::Effort { effort } => session.set_effort(&effort),
         ClientMsg::CachePing => session.keep_cache_warm(),
-        ClientMsg::CachePolicy { policy } => agents.set_cache_policy(session, policy),
+        ClientMsg::CachePolicy { policy } => state.agents.set_cache_policy(session, policy),
     };
     reply.map(|()| None)
 }
@@ -478,7 +477,7 @@ fn handle(
 /// Files first, while the process that tracked them still runs; a file
 /// restore that fails leaves the conversation alone.
 fn rewind(
-    agents: &AgentManager,
+    state: &AppState,
     session: &AgentSession,
     message_id: &str,
     code: bool,
@@ -501,15 +500,21 @@ fn rewind(
             anyhow::bail!("{why}");
         }
     }
-    if conversation {
-        agents.rewind_conversation(&session.id(), message_id)?;
+    if conversation && session.mod_link().is_some() {
+        state
+            .agents
+            .rewind_terminal(&state.terminals, state.local_port, session, message_id)?;
+    } else if conversation {
+        state
+            .agents
+            .rewind_conversation(&session.id(), message_id)?;
     }
     Ok(files)
 }
 
 async fn stream(
     mut socket: WebSocket,
-    agents: AgentManager,
+    state: AppState,
     session: Arc<AgentSession>,
     mut revoked: watch::Receiver<bool>,
 ) {
@@ -548,9 +553,9 @@ async fn stream(
                     // Pipe writes (a prompt full of images) and the task-output
                     // directory walk block, so keep them off the async workers.
                     let worker = session.clone();
-                    let agents = agents.clone();
+                    let state = state.clone();
                     let result =
-                        tokio::task::spawn_blocking(move || handle(&agents, &worker, &text)).await;
+                        tokio::task::spawn_blocking(move || handle(&state, &worker, &text)).await;
                     let frame = match result {
                         Ok(Ok(reply)) => reply,
                         Ok(Err(e)) => Some(json!({"t": "error", "message": e.to_string()})),

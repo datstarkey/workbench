@@ -319,7 +319,9 @@ export class AgentChat {
 		// The CLI collapses runs of spaces in a slash command's echo, and echoes
 		// an alias like `/design consent` as `/design-consent`.
 		const norm = (s: string) => s.replace(/[\s-]+/g, ' ');
-		const same = (a: string, b: string) => norm(a) === norm(b);
+		// A terminal session's prompt comes back with its attachments as `@path` mentions.
+		const same = (echo: string, sent: string) =>
+			norm(echo) === norm(sent) || norm(echo).startsWith(`${norm(sent)} @`);
 		// A command the CLI can't run headless (`/design-login`) is never echoed,
 		// only answered with a notice.
 		const idle = !this.meta?.busy;
@@ -415,8 +417,9 @@ export class AgentChat {
 		this.send({ t: 'mode', mode });
 	}
 
-	setModel(model: string): void {
-		this.send({ t: 'model', model });
+	/** `persist`: also make it the default, as `/model` does when asked to remember. */
+	setModel(model: string, persist = false): void {
+		this.send(persist ? { t: 'model', model, persist } : { t: 'model', model });
 	}
 
 	setEffort(effort: EffortLevel): void {

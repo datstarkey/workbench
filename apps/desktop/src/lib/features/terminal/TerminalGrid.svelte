@@ -80,17 +80,20 @@
 			<!-- A live terminal's chat is the same `claude`: keep its xterm attached underneath. -->
 			{#if !(inChat && agent) || pane.liveTerminal}
 				<div class={['h-full', inChat && 'hidden']}>
-					<TerminalPane
-						sessionId={pane.id}
-						{project}
-						active={active && !inChat}
-						{cwd}
-						startupCommand={pane.startupCommand}
-						claudeAccountId={pane.claudeAccountId}
-						existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
-						onServerTerminalIdChange={(paneId, serverTerminalId) =>
-							workspaceStore.setServerTerminalId(paneId, serverTerminalId)}
-					/>
+					<!-- A rewind restarts a live chat's terminal: follow it to the new one. -->
+					{#key pane.liveTerminal ? workspaceStore.getServerTerminalId(pane.id) : pane.id}
+						<TerminalPane
+							sessionId={pane.id}
+							{project}
+							active={active && !inChat}
+							{cwd}
+							startupCommand={pane.startupCommand}
+							claudeAccountId={pane.claudeAccountId}
+							existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
+							onServerTerminalIdChange={(paneId, serverTerminalId) =>
+								workspaceStore.setServerTerminalId(paneId, serverTerminalId)}
+						/>
+					{/key}
 				</div>
 			{/if}
 			{#if target}

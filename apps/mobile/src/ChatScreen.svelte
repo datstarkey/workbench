@@ -367,7 +367,7 @@
 				<ChatModelPicker
 					meta={chat.meta}
 					disabled={disabledReason !== null}
-					onModel={(model) => chat.setModel(model)}
+					onModel={(model, persist) => chat.setModel(model, persist)}
 					onEffort={(effort) => chat.setEffort(effort)}
 				/>
 			{/snippet}

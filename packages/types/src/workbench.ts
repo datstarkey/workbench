@@ -833,7 +833,7 @@ export type AgentClientMsg =
 	  }
 	| { t: 'interrupt' }
 	| { t: 'mode'; mode: PermissionMode | CodexMode }
-	| { t: 'model'; model: string }
+	| { t: 'model'; model: string; persist?: boolean }
 	| { t: 'effort'; effort: EffortLevel }
 	| { t: 'output'; toolId: string }
 	| { t: 'taskOutput'; taskId: string }

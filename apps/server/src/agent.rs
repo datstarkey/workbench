@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use workbench_core::claude_launch::PERMISSION_MODES;
 use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
@@ -146,6 +146,10 @@ pub struct AgentManager {
     upkeep: Arc<OnceLock<()>>,
     /// Terminal tokens a pane's plugin attaches its `claude` with, by token.
     mod_grants: Arc<Mutex<HashMap<String, ModGrant>>>,
+    /// Held across a Claude start (terminal opened, plugin attached), so two
+    /// starts of one id can't open two terminals. Apart from `lifecycle`,
+    /// which the attach it waits for takes.
+    starting: Arc<Mutex<()>>,
 }
 
 impl AgentManager {
@@ -287,6 +291,11 @@ impl AgentManager {
         Ok(session)
     }
 
+    /// Serializes Claude starts (see `starting`).
+    pub fn start_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        lock(&self.starting)
+    }
+
     /// A token for one terminal's plugin to attach its interactive `claude` with.
     pub fn grant_mod(&self, grant: ModGrant) -> Result<String> {
         let token = workbench_core::token::generate()?;
@@ -315,8 +324,11 @@ impl AgentManager {
                     link.touch();
                     return Ok(existing);
                 }
+                // The terminal restarted (a rewind) or a new one took the session:
+                // attached clients re-attach to the new one.
                 Some(_) => {
                     self.forget(&existing);
+                    existing.replace();
                     existing.shutdown();
                 }
                 None => bail!("a chat process already runs {session_id}"),
@@ -324,13 +336,17 @@ impl AgentManager {
         }
         let config_dir =
             workbench_core::claude_accounts::resolve_saved(grant.claude_account_id.as_deref())?;
-        let driver = claude::history_driver(config_dir.as_deref(), session_id);
+        let driver = claude::history_driver(
+            config_dir.as_deref(),
+            session_id,
+            grant.resume_at.as_deref(),
+        );
         let req = StartAgent {
             cwd: grant.cwd,
             project_path: grant.project_path,
             worktree_path: grant.worktree_path,
             pane_id: grant.pane_id,
-            hook_socket: None,
+            hook_socket: grant.hook_socket,
             claude_account_id: grant.claude_account_id,
             launch: Launch::Claude {
                 session_id: session_id.to_string(),
@@ -344,6 +360,73 @@ impl AgentManager {
         lock(&self.inner).insert(session_id.to_string(), session.clone());
         self.start_upkeep();
         Ok(session)
+    }
+
+    /// Rewind a terminal session's conversation: its terminal restarts as
+    /// `claude --resume <id> --resume-session-at=<fork>` under the same id, and
+    /// clients re-attach (`replaced`). Blocking: waits for the new one to attach.
+    pub fn rewind_terminal(
+        &self,
+        terminals: &crate::terminal::TerminalManager,
+        local_port: Option<u16>,
+        session: &AgentSession,
+        message_id: &str,
+    ) -> Result<()> {
+        let link = session
+            .mod_link()
+            .context("not a terminal session")?
+            .clone();
+        session.idle_meta()?;
+        let req = session.relaunch();
+        let Launch::Claude {
+            session_id,
+            config_dir,
+            ..
+        } = req.launch
+        else {
+            bail!("Codex chats can't rewind");
+        };
+        let history = claude::history(config_dir.as_deref(), &session_id)
+            .ok_or_else(|| anyhow::anyhow!("the session has no history to rewind"))?;
+        let fork = workbench_core::claude_transcript::fork_point(&history, message_id)?;
+        // One `claude` per session file: the old one goes before the new one starts.
+        if let Some(old) = &link.terminal_id {
+            terminals.kill_and_wait(old);
+        }
+        crate::terminal::create_from_body(
+            terminals,
+            self,
+            local_port,
+            crate::terminal::CreateTerminalBody {
+                project_path: req.project_path,
+                worktree_path: req.worktree_path,
+                name: None,
+                command: None,
+                claude_session: Some(crate::terminal::ClaudeSessionLaunch {
+                    id: session_id.clone(),
+                    resume: true,
+                    resume_at: Some(fork),
+                }),
+                cols: 120,
+                rows: 40,
+                pane_id: req.pane_id,
+                hook_socket: req.hook_socket,
+                shell: None,
+                claude_account_id: req.claude_account_id,
+            },
+        )?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            let reattached = self
+                .get(&session_id)
+                .and_then(|s| s.mod_link().map(|l| l.token != link.token))
+                .unwrap_or(false);
+            if reattached {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        bail!("Claude didn't come back in its terminal after the rewind")
     }
 
     /// The mod session `session_id`, if `token` is the one it attached with.

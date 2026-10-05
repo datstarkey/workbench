@@ -12,11 +12,13 @@
 	}: {
 		meta: TranscriptMeta | null;
 		disabled: boolean;
-		onModel: (model: string) => void;
+		/** `persist`: save it as the default too, not just for this session. */
+		onModel: (model: string, persist: boolean) => void;
 		onEffort: (effort: EffortLevel) => void;
 	} = $props();
 
 	const model = $derived(currentModel(meta));
+	let persist = $state(false);
 	const levels = $derived(model?.effortLevels ?? []);
 	/** A picked level the new model doesn't take falls back to its default. */
 	const effort = $derived(meta?.effort && levels.includes(meta.effort) ? meta.effort : null);
@@ -36,7 +38,10 @@
 			{/snippet}
 		</DropdownMenu.Trigger>
 		<DropdownMenu.Content align="start" class="w-72">
-			<DropdownMenu.RadioGroup value={model?.value ?? ''} onValueChange={(value) => onModel(value)}>
+			<DropdownMenu.RadioGroup
+				value={model?.value ?? ''}
+				onValueChange={(value) => onModel(value, persist)}
+			>
 				{#each meta.models as option (option.value)}
 					<DropdownMenu.RadioItem value={option.value} class="flex-col items-start gap-0">
 						<span>{option.displayName}</span>
@@ -46,6 +51,10 @@
 					</DropdownMenu.RadioItem>
 				{/each}
 			</DropdownMenu.RadioGroup>
+			<DropdownMenu.Separator />
+			<DropdownMenu.CheckboxItem bind:checked={persist} closeOnSelect={false}>
+				Save as default
+			</DropdownMenu.CheckboxItem>
 		</DropdownMenu.Content>
 	</DropdownMenu.Root>
 

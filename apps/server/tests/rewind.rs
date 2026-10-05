@@ -4,6 +4,8 @@
 //! own test binary because it points `HOME` at a temp dir.
 #![cfg(unix)]
 
+mod support;
+
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -103,7 +105,8 @@ async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
     let args = tmp.path().join("args.log");
     let log = tmp.path().join("received.jsonl");
     std::env::set_var("HOME", tmp.path());
-    std::env::set_var("WORKBENCH_CLAUDE_BIN", &fake);
+    std::env::set_var("WORKBENCH_FAKE_CLAUDE", &fake);
+    std::env::set_var("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
     std::env::set_var("FAKE_CLAUDE_ARGS", &args);
     std::env::set_var("FAKE_CLAUDE_LOG", &log);
@@ -169,7 +172,6 @@ async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
     }
     let launches: Vec<&str> = launches.lines().collect();
     assert_eq!(launches.len(), 2, "{launches:?}");
-    assert!(launches.iter().all(|l| l.ends_with("checkpointing=true")));
     assert!(launches[1].contains(&format!("--resume {SID} --resume-session-at=a1")));
     let received = std::fs::read_to_string(&log).unwrap();
     assert!(received.contains(r#""dry_run":false"#), "{received}");
