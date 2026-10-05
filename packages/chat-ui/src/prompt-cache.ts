@@ -5,7 +5,7 @@ import type { TranscriptMeta } from '@workbench/types';
 export const KEEPALIVE_PROMPT = 'Workbench cache keep-alive. Reply with only "ok".';
 /** Below this a compact saves too little to be worth offering (the server's floor too). */
 export const MIN_COMPACT_TOKENS = 30_000;
-/** Under this much time left the cache shows as about to expire. */
+/** Under this much time left (or a fifth of a shorter lifetime) the cache shows as about to expire. */
 const LOW_MS = 5 * 60_000;
 /** How far ahead the cache can be kept warm, in hours. */
 export const KEEP_WARM_HOURS = [1, 2, 4, 8] as const;
@@ -32,7 +32,7 @@ export function cacheState(meta: TranscriptMeta | null, now: number): CacheState
 		ttlSecs,
 		remainingMs,
 		warm: remainingMs > 0,
-		low: remainingMs > 0 && remainingMs < LOW_MS,
+		low: remainingMs > 0 && remainingMs < Math.min(LOW_MS, (ttlSecs * 1000) / 5),
 		percent: Math.min(100, (remainingMs / (ttlSecs * 1000)) * 100)
 	};
 }

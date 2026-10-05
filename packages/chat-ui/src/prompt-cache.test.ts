@@ -24,6 +24,10 @@ describe('prompt cache', () => {
 		expect(cacheState(m, 3_400_000)).toMatchObject({ warm: true, low: true });
 		expect(cacheState(m, 3_600_000)).toMatchObject({ warm: false, remainingMs: 0, percent: 0 });
 		expect(cacheState(meta({}), 0)).toBeNull();
+		// A fresh 5-minute cache isn't flagged as running out.
+		const short = meta({ cacheExpiresAt: 300_000, cacheTtlSecs: 300 });
+		expect(cacheState(short, 0)?.low).toBe(false);
+		expect(cacheState(short, 250_000)?.low).toBe(true);
 	});
 
 	it('formats the time left', () => {

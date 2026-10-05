@@ -136,6 +136,14 @@ mod tests {
         assert!(t.meta().cache_expires_at.is_some());
         assert!(!t.meta().busy);
 
+        // A prompt queued into a keep-alive turn shows its reply.
+        let mut queued = Transcript::default();
+        queued.apply(&json!({"type":"user","uuid":"k","message":{"content":KEEPALIVE_PROMPT}}));
+        queued.apply(&json!({"type":"attachment","uuid":"q","attachment":{
+            "type":"queued_command","commandMode":"prompt","prompt":"real question"}}));
+        queued.apply(&call("2026-10-01T21:07:10Z", json!({})));
+        assert_eq!(queued.items().len(), 3);
+
         // The next real turn shows again.
         t.apply(&json!({"type":"user","uuid":"u","message":{"content":"next"}}));
         t.apply(&call("2026-10-01T21:08:10Z", json!({})));

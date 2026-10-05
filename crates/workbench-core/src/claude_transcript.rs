@@ -870,6 +870,8 @@ impl Transcript {
         if text.is_empty() && images == 0 && files.is_empty() {
             return;
         }
+        // A prompt sent during a keep-alive turn joins it: its reply must show.
+        self.keepalive = false;
         let item = TranscriptItem::User {
             id: str_at(obj, "uuid").unwrap_or_default().to_string(),
             text,

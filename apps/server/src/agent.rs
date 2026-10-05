@@ -266,13 +266,10 @@ impl AgentManager {
         Ok(())
     }
 
-    /// Spawn a session with the cache policy its id had.
+    /// Spawn a session (with the cache policy its id had) and make sure upkeep runs.
     fn spawn(&self, req: StartAgent, launch: driver::Launch) -> Result<Arc<AgentSession>> {
-        let session = AgentSession::spawn(req, launch, self.inner.clone())?;
-        if session.kind == AgentKind::Claude {
-            let policy = self.cache_policies.get(&session.id());
-            let _ = session.set_cache_policy(policy);
-        }
+        let session =
+            AgentSession::spawn(req, launch, self.inner.clone(), self.cache_policies.clone())?;
         self.start_upkeep();
         Ok(session)
     }
@@ -285,9 +282,7 @@ impl AgentManager {
         {
             bail!("A chat can be kept warm for at most 24 hours.");
         }
-        session.set_cache_policy(policy.clone())?;
-        self.cache_policies.set(&session.id(), &policy);
-        Ok(())
+        session.set_cache_policy(policy)
     }
 
     /// Check every session's cache policy each tick, until the manager is gone.

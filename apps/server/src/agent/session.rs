@@ -17,7 +17,7 @@ use workbench_core::claude_transcript::{
     ApprovalDecision, ChatView, ElicitationAction, TranscriptItem, TranscriptMeta, KEEPALIVE_PROMPT,
 };
 
-use super::cache::{self, CachePolicy, Upkeep};
+use super::cache::{self, CachePolicy, PolicyStore, Upkeep};
 use super::driver::{Driver, Effects, Launch};
 use super::{lock, now_ms, AgentKind, AgentSummary, PromptFile, PromptImage, StartAgent};
 
@@ -77,6 +77,8 @@ pub struct AgentSession {
     /// Ended on purpose (End session), not by a crash, `/exit` or a handoff.
     ended: AtomicBool,
     cache_policy: Mutex<CachePolicy>,
+    /// Where policies are saved, by session id.
+    cache_policies: Arc<PolicyStore>,
     /// The cache expiry upkeep last acted on, so it acts once per expiry.
     upkept_for: Mutex<Option<u64>>,
 }
@@ -115,7 +117,12 @@ impl AgentSession {
     /// Start the process and its reader threads, registered under its id (or a
     /// pending key) before the reader can see it exit. `registry` is also
     /// where aliases go when the id changes.
-    pub(super) fn spawn(req: StartAgent, launch: Launch, registry: Registry) -> Result<Arc<Self>> {
+    pub(super) fn spawn(
+        req: StartAgent,
+        launch: Launch,
+        registry: Registry,
+        cache_policies: Arc<PolicyStore>,
+    ) -> Result<Arc<Self>> {
         let relaunch = req.clone();
         let Launch {
             mut cmd,
@@ -132,10 +139,15 @@ impl AgentSession {
         let stdin = child.stdin.take().context("stdin")?;
         let pid = child.id();
         let known_id = req.launch.known_id().map(String::from);
+        let kind = req.launch.kind();
+        let cache_policy = match &known_id {
+            Some(id) if kind == AgentKind::Claude => cache_policies.get(id),
+            _ => CachePolicy::default(),
+        };
 
         let (tx, _) = broadcast::channel(256);
         let session = Arc::new(Self {
-            kind: req.launch.kind(),
+            kind,
             session_id: Mutex::new(known_id.clone().unwrap_or_default()),
             pane_id: req.pane_id,
             project_path: req.project_path,
@@ -159,7 +171,8 @@ impl AgentSession {
             waiters: Mutex::new(HashMap::new()),
             replaced: AtomicBool::new(false),
             ended: AtomicBool::new(false),
-            cache_policy: Mutex::new(CachePolicy::default()),
+            cache_policy: Mutex::new(cache_policy),
+            cache_policies,
             upkept_for: Mutex::new(None),
         });
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
@@ -335,12 +348,13 @@ impl AgentSession {
         lock(&self.cache_policy).clone()
     }
 
-    /// Replace the cache policy and tell every attached client.
+    /// Replace and save the cache policy, and tell every attached client.
     pub(super) fn set_cache_policy(&self, policy: CachePolicy) -> Result<()> {
         if self.kind != AgentKind::Claude {
             bail!("Only Claude chats have a prompt cache to manage.");
         }
         *lock(&self.cache_policy) = policy.clone();
+        self.cache_policies.set(&self.id(), &policy);
         let _ = self
             .tx
             .send(json!({"t": "cachePolicy", "policy": policy}).to_string());
@@ -510,6 +524,11 @@ impl AgentSession {
         }
         if let Some(new_id) = effects.new_id {
             *lock(&self.session_id) = new_id.clone();
+            // The policy follows the conversation to its new id.
+            let policy = self.cache_policy();
+            if policy != CachePolicy::default() {
+                self.cache_policies.set(&new_id, &policy);
+            }
             alias(&new_id);
             self.touch(view);
             let _ = self.tx.send(self.snapshot(view));
