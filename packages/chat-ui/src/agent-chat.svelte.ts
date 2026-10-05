@@ -40,6 +40,8 @@ export interface PendingPrompt {
 	files: string[];
 	/** User items already in the chat when it was sent; only later ones can echo it. */
 	after: number;
+	/** Absolute index the next item had when it was sent. */
+	at: number;
 }
 
 const RECONNECT_MS = 1500;
@@ -213,7 +215,7 @@ export class AgentChat {
 				// the `/clear` itself; prompts queued after it echo in the new one.
 				if (msg.sessionId !== this.sessionId) {
 					const clear = this.pending.findIndex((p) => /^\/clear(\s|$)/.test(p.text));
-					this.pending = this.pending.slice(clear + 1).map((p) => ({ ...p, after: 0 }));
+					this.pending = this.pending.slice(clear + 1).map((p) => ({ ...p, after: 0, at: 0 }));
 				}
 				this.sessionId = msg.sessionId;
 				this.start = msg.start;
@@ -310,13 +312,20 @@ export class AgentChat {
 	private settlePending(): void {
 		if (this.pending.length === 0) return;
 		const users = this.items.filter((i) => i.kind === 'user');
-		// The CLI collapses runs of spaces in a slash command's echo.
-		const same = (a: string, b: string) => a.replace(/\s+/g, ' ') === b.replace(/\s+/g, ' ');
+		// The CLI collapses runs of spaces in a slash command's echo, and echoes
+		// an alias like `/design consent` as `/design-consent`.
+		const norm = (s: string) => s.replace(/[\s-]+/g, ' ');
+		const same = (a: string, b: string) => norm(a) === norm(b);
+		// A command the CLI can't run headless (`/design-login`) is never echoed,
+		// only answered with a notice.
+		const idle = !this.meta?.busy;
+		const noticeSince = (at: number) =>
+			this.items.some((i, k) => i.kind === 'notice' && this.start + k >= at);
 		const previews: Record<string, string[]> = {};
 		this.pending = this.pending.filter((p) => {
 			const echo = users.slice(p.after).find((u) => u.kind === 'user' && same(u.text, p.text));
 			if (echo && p.previews.length > 0) previews[echo.id] = p.previews;
-			return !echo;
+			return !echo && !(idle && p.text.startsWith('/') && noticeSince(p.at));
 		});
 		if (Object.keys(previews).length > 0) {
 			this.imagePreviews = { ...this.imagePreviews, ...previews };
@@ -359,7 +368,8 @@ export class AgentChat {
 				text: trimmed,
 				previews: images.map(previewUrl),
 				files: files.map((f) => f.name),
-				after: this.userTexts().length
+				after: this.userTexts().length,
+				at: this.start + this.items.length
 			}
 		];
 		this.busySince ??= Date.now();
