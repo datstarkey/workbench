@@ -1,6 +1,7 @@
 import { invoke } from '$lib/transport';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { KEEPALIVE_PROMPT } from '@workbench/chat-ui';
 import { stripAnsi } from '$lib/utils/format';
 import { newSessionCommandWithPrompt, type LaunchOptions } from '$lib/utils/claude';
 import { getWorkbenchSettingsStore } from './context';
@@ -459,6 +460,8 @@ export class ClaudeSessionStore {
 
 		switch (event.hookEventName) {
 			case 'UserPromptSubmit':
+				// A cache keep-alive turn isn't work to report: its Stop then flags nothing.
+				if (this.payloadString(event.hookPayload, 'prompt') === KEEPALIVE_PROMPT) break;
 				this.panesInProgress.add(paneId);
 				this.panesAwaitingInput.delete(paneId);
 				break;

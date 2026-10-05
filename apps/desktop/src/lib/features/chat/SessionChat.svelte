@@ -12,6 +12,8 @@
 		ChatArtifacts,
 		chatArtifacts,
 		ChatComposer,
+		ChatCache,
+		ChatCacheHint,
 		ChatContext,
 		ChatModelPicker,
 		ChatPlan,
@@ -274,6 +276,7 @@
 		<div class="ml-auto flex shrink-0 items-center gap-3">
 			<ChatUsage {chips} chipClass="h-6 px-2 text-[11px]" />
 			<ChatContext meta={chat.meta} class="h-6 px-2 text-[11px]" />
+			<ChatCache {chat} class="h-6 px-2 text-[11px]" />
 			{#if artifacts.length > 0}
 				<button
 					type="button"
@@ -351,6 +354,7 @@
 				{#if todos.length > 0}
 					<ChatPlan steps={todos} />
 				{/if}
+				<ChatCacheHint {chat} />
 				<ChatSuggestions {suggestions} onPick={(text) => (draft = text)} />
 				<ChatComposer
 					id="chat-draft-{paneId}"
