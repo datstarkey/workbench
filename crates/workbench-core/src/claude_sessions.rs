@@ -5,6 +5,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 use crate::claude_accounts;
+use crate::claude_transcript::SavedTitle;
 use crate::paths;
 use crate::session_utils;
 use crate::types::DiscoveredClaudeSession;
@@ -19,6 +20,7 @@ pub(crate) fn parse_session_jsonl(
 
     let mut label = String::new();
     let mut timestamp = String::new();
+    let mut title = SavedTitle::default();
 
     for line in reader.lines() {
         let line = match line {
@@ -30,6 +32,13 @@ pub(crate) fn parse_session_jsonl(
             Err(_) => continue,
         };
 
+        if obj.get("isSidechain").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        // Titles are usually appended after the first turn. Read through to
+        // the end so the resume picker uses the latest saved name.
+        title.apply(&obj);
+
         // Grab timestamp from first entry
         if timestamp.is_empty() {
             if let Some(ts) = obj.get("timestamp").and_then(|v| v.as_str()) {
@@ -38,7 +47,7 @@ pub(crate) fn parse_session_jsonl(
         }
 
         // Find first real user message text
-        if obj.get("type").and_then(|v| v.as_str()) != Some("user") {
+        if !label.is_empty() || obj.get("type").and_then(|v| v.as_str()) != Some("user") {
             continue;
         }
         // Skip meta/system messages
@@ -55,10 +64,12 @@ pub(crate) fn parse_session_jsonl(
                 continue;
             }
             label = session_utils::truncate_label(trimmed);
-            break;
         }
     }
 
+    if let Some(saved) = title.get() {
+        label = saved.to_string();
+    }
     if label.is_empty() {
         label = session_utils::fallback_label(&session_id);
     }
@@ -135,6 +146,33 @@ mod tests {
     use tempfile::tempdir;
 
     // parse_session_jsonl tests
+
+    #[test]
+    fn parse_session_uses_saved_titles_after_the_first_prompt() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let mut contents = concat!(
+            "{\"type\":\"user\",\"timestamp\":\"2024-01-15T10:00:00Z\",\"message\":{\"content\":\"The original prompt\"}}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"First generated title\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Latest generated title\"}\n"
+        ).to_string();
+        fs::write(&path, &contents).unwrap();
+        let session = parse_session_jsonl(&path, "s".into()).unwrap();
+        assert_eq!(session.label, "Latest generated title");
+        assert_eq!(session.timestamp, "2024-01-15T10:00:00Z");
+
+        contents.push_str(concat!(
+            "{\"type\":\"custom-title\",\"customTitle\":\"My session name\"}\n",
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Later generated title\"}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\" \"}\n",
+            "{\"type\":\"custom-title\",\"customTitle\":\"Subagent name\",\"isSidechain\":true}\n"
+        ));
+        fs::write(&path, contents).unwrap();
+        assert_eq!(
+            parse_session_jsonl(&path, "s".into()).unwrap().label,
+            "My session name"
+        );
+    }
 
     #[test]
     fn parse_valid_session_with_user_message() {

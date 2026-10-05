@@ -29,6 +29,71 @@ fn user_texts(t: &Transcript) -> Vec<&str> {
 }
 
 #[test]
+fn title_falls_back_to_the_first_real_prompt_live_and_on_resume() {
+    let lines = [
+        json!({"type":"user","isMeta":true,"message":{"content":"Injected context"}}),
+        user("command", json!("<command-name>/model</command-name>")),
+        user("first", json!("Fix the keyboard inset\nDetails below")),
+        user("second", json!("Now add tests")),
+    ];
+    let mut live = Transcript::default();
+    for line in &lines[..2] {
+        live.apply(line);
+    }
+    assert_eq!(live.meta().title, None);
+    assert!(live.apply(&lines[2]).meta);
+    live.apply(&lines[3]);
+    assert_eq!(live.meta().title.as_deref(), Some("Fix the keyboard inset"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    fs::write(&path, lines.map(|l| l.to_string()).join("\n")).unwrap();
+    let resumed = Transcript::load(&path);
+    assert_eq!(resumed.meta().title, live.meta().title);
+    assert!(!resumed.meta().busy);
+
+    live.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
+    assert_eq!(live.meta().title, None);
+    live.apply(&user("new", json!("A different task")));
+    assert_eq!(live.meta().title.as_deref(), Some("A different task"));
+}
+
+#[test]
+fn resume_restores_the_latest_saved_title_and_preserves_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    let lines = [
+        user("u", json!("The original prompt")),
+        json!({"type":"ai-title","aiTitle":"First generated title","sessionId":SID}),
+        json!({"type":"ai-title","aiTitle":"Updated generated title","sessionId":SID}),
+    ];
+    let mut contents = lines.map(|l| l.to_string()).join("\n");
+    fs::write(&path, &contents).unwrap();
+    let mut resumed = Transcript::load(&path);
+    assert_eq!(
+        resumed.meta().title.as_deref(),
+        Some("Updated generated title")
+    );
+    let rename = json!({"type":"custom-title","customTitle":"My session name","sessionId":SID});
+    assert!(resumed.apply(&rename).meta);
+    contents.push_str(&format!("\n{rename}"));
+    fs::write(&path, contents).unwrap();
+    let mut resumed = Transcript::load(&path);
+    for line in [
+        json!({"type":"ai-title","aiTitle":"Later generated title"}),
+        json!({"type":"custom-title","customTitle":" "}),
+        json!({"type":"ai-title"}),
+        json!({"type":"custom-title","customTitle":"Subagent name","isSidechain":true}),
+    ] {
+        resumed.apply(&line);
+    }
+    assert_eq!(resumed.meta().title.as_deref(), Some("My session name"));
+    resumed.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
+    resumed.apply(&json!({"type":"ai-title","aiTitle":"New conversation"}));
+    assert_eq!(resumed.meta().title.as_deref(), Some("New conversation"));
+}
+
+#[test]
 fn folds_a_jsonl_turn_into_chat_items() {
     let mut t = Transcript::default();
     t.apply(&user("u1", json!("Fix the keyboard inset")));
