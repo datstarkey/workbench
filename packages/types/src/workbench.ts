@@ -714,6 +714,10 @@ export interface TranscriptMeta {
 	/** A `CodexMode` in a Codex chat; null there when Codex's own config is in charge. */
 	permissionMode: PermissionMode | CodexMode | null;
 	contextTokens: number | null;
+	/** Claude only: unix ms when the prompt cache the latest API call used expires. */
+	cacheExpiresAt?: number;
+	/** Claude only: that cache's lifetime in seconds (3600 or 300). */
+	cacheTtlSecs?: number;
 	busy: boolean;
 	tasks: TaskInfo[];
 	retry: RetryInfo | null;
@@ -733,6 +737,14 @@ export interface TranscriptMeta {
 	promptSuggestion?: string;
 }
 
+/** A chat's prompt cache upkeep, run by the server (Claude only). */
+export interface CachePolicy {
+	/** Unix ms; hidden keep-alive turns refresh the cache until then (at most 24h ahead). */
+	keepWarmUntil?: number;
+	/** Compact just before the cache expires (once keep-warm has ended). */
+	compactOnExpiry: boolean;
+}
+
 export type AgentServerMsg =
 	| {
 			t: 'snapshot';
@@ -742,8 +754,10 @@ export type AgentServerMsg =
 			items: TranscriptItem[];
 			meta: TranscriptMeta;
 			commands: SlashCommand[];
+			cachePolicy?: CachePolicy;
 			exited: boolean;
 	  }
+	| { t: 'cachePolicy'; policy: CachePolicy }
 	/** `[index, item]` pairs that were added or changed. */
 	| { t: 'update'; changes: [number, TranscriptItem][]; meta: TranscriptMeta }
 	/** `ended`: the person ended it (End session), not a crash, `/exit` or a handoff. */
@@ -817,6 +831,9 @@ export type AgentClientMsg =
 	| { t: 'effort'; effort: EffortLevel }
 	| { t: 'output'; toolId: string }
 	| { t: 'taskOutput'; taskId: string }
+	/** Refresh the prompt cache now with a hidden keep-alive turn. */
+	| { t: 'cachePing' }
+	| { t: 'cachePolicy'; policy: CachePolicy }
 	/**
 	 * Go back to before the prompt `messageId` (Claude only): restore the files
 	 * changed since (`code`) and/or restart the conversation from there.

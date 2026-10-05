@@ -14,9 +14,10 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
 use workbench_core::claude_transcript::{
-    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem, TranscriptMeta,
+    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem, TranscriptMeta, KEEPALIVE_PROMPT,
 };
 
+use super::cache::{self, CachePolicy, Upkeep};
 use super::driver::{Driver, Effects, Launch};
 use super::{lock, now_ms, AgentKind, AgentSummary, PromptFile, PromptImage, StartAgent};
 
@@ -75,6 +76,9 @@ pub struct AgentSession {
     replaced: AtomicBool,
     /// Ended on purpose (End session), not by a crash, `/exit` or a handoff.
     ended: AtomicBool,
+    cache_policy: Mutex<CachePolicy>,
+    /// The cache expiry upkeep last acted on, so it acts once per expiry.
+    upkept_for: Mutex<Option<u64>>,
 }
 
 /// The command every chat process starts from: cwd, pipes, the inherited
@@ -155,6 +159,8 @@ impl AgentSession {
             waiters: Mutex::new(HashMap::new()),
             replaced: AtomicBool::new(false),
             ended: AtomicBool::new(false),
+            cache_policy: Mutex::new(CachePolicy::default()),
+            upkept_for: Mutex::new(None),
         });
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
         lock(&registry).insert(key, session.clone());
@@ -325,6 +331,66 @@ impl AgentSession {
         self.run(|d| d.set_effort(level))
     }
 
+    pub fn cache_policy(&self) -> CachePolicy {
+        lock(&self.cache_policy).clone()
+    }
+
+    /// Replace the cache policy and tell every attached client.
+    pub(super) fn set_cache_policy(&self, policy: CachePolicy) -> Result<()> {
+        if self.kind != AgentKind::Claude {
+            bail!("Only Claude chats have a prompt cache to manage.");
+        }
+        *lock(&self.cache_policy) = policy.clone();
+        let _ = self
+            .tx
+            .send(json!({"t": "cachePolicy", "policy": policy}).to_string());
+        Ok(())
+    }
+
+    /// Refresh the prompt cache now with a hidden keep-alive turn.
+    pub fn keep_cache_warm(&self) -> Result<()> {
+        if self.kind != AgentKind::Claude {
+            bail!("Only Claude chats have a prompt cache to manage.");
+        }
+        if !self.is_idle() {
+            bail!("Claude is mid-turn, which keeps the cache warm anyway.");
+        }
+        self.prompt(KEEPALIVE_PROMPT, &[], &[])
+    }
+
+    fn is_idle(&self) -> bool {
+        let d = lock(&self.driver);
+        !d.view().meta().busy && d.view().waiting_on().is_none()
+    }
+
+    /// Run whatever the cache policy calls for at `now`, once per expiry.
+    pub(super) fn upkeep(&self, now: u64) {
+        if self.kind != AgentKind::Claude || self.has_exited() {
+            return;
+        }
+        let policy = self.cache_policy();
+        let (due, expires) = {
+            let d = lock(&self.driver);
+            let view = d.view();
+            let meta = view.meta();
+            let idle = !meta.busy && view.waiting_on().is_none();
+            (cache::due(&policy, meta, idle, now), meta.cache_expires_at)
+        };
+        let Some(due) = due else {
+            return;
+        };
+        if std::mem::replace(&mut *lock(&self.upkept_for), expires) == expires {
+            return;
+        }
+        let text = match due {
+            Upkeep::KeepAlive => KEEPALIVE_PROMPT,
+            Upkeep::Compact => "/compact",
+        };
+        if let Err(e) = self.prompt(text, &[], &[]) {
+            tracing::warn!("cache upkeep ({due:?}) failed: {e}");
+        }
+    }
+
     /// The session's meta, or an error while a turn runs: a rewind then
     /// would race the edits and messages still being made.
     pub(super) fn idle_meta(&self) -> Result<TranscriptMeta> {
@@ -415,6 +481,7 @@ impl AgentSession {
             "items": &items[start..],
             "meta": t.meta(),
             "commands": t.commands(),
+            "cachePolicy": self.cache_policy(),
             "exited": exited,
         })
         .to_string()

@@ -8,7 +8,7 @@
 //! per CLI lives in a driver (`claude`, `codex`); the plumbing in `session`.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
@@ -17,17 +17,21 @@ use workbench_core::claude_launch::PERMISSION_MODES;
 use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
 
 mod attachment;
+mod cache;
 mod claude;
 mod codex;
 mod driver;
 mod session;
 
 pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
+pub use cache::CachePolicy;
 pub use session::AgentSession;
 
 const DEFAULT_MAX_AGENTS: usize = 16;
 /// How long a start waits for codex to open (or resume) its thread.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How far ahead a chat may be kept warm: every keep-alive turn costs usage.
+const MAX_KEEP_WARM_MS: u64 = 24 * 60 * 60 * 1000;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -126,6 +130,9 @@ pub struct AgentManager {
     /// two starts for one id can't both spawn, and a start can't slip in while
     /// a stopped process is still exiting (two writers on one session file).
     lifecycle: Arc<Mutex<()>>,
+    cache_policies: Arc<cache::PolicyStore>,
+    /// The cache upkeep thread, started with the first session.
+    upkeep: Arc<OnceLock<()>>,
 }
 
 impl AgentManager {
@@ -179,7 +186,7 @@ impl AgentManager {
                             codex::launch(&req, thread_id.as_deref(), mode.as_deref())
                         }
                     };
-                    AgentSession::spawn(req, launch, self.inner.clone())?
+                    self.spawn(req, launch)?
                 }
             }
         };
@@ -255,8 +262,53 @@ impl AgentManager {
         claude::carry_over(&mut launch, &meta);
         self.forget(&session);
         session.replace();
-        AgentSession::spawn(req, launch, self.inner.clone())?;
+        self.spawn(req, launch)?;
         Ok(())
+    }
+
+    /// Spawn a session with the cache policy its id had.
+    fn spawn(&self, req: StartAgent, launch: driver::Launch) -> Result<Arc<AgentSession>> {
+        let session = AgentSession::spawn(req, launch, self.inner.clone())?;
+        if session.kind == AgentKind::Claude {
+            let policy = self.cache_policies.get(&session.id());
+            let _ = session.set_cache_policy(policy);
+        }
+        self.start_upkeep();
+        Ok(session)
+    }
+
+    /// Set a chat's cache policy, saved under its id.
+    pub fn set_cache_policy(&self, session: &AgentSession, policy: CachePolicy) -> Result<()> {
+        if policy
+            .keep_warm_until
+            .is_some_and(|until| until > now_ms() + MAX_KEEP_WARM_MS)
+        {
+            bail!("A chat can be kept warm for at most 24 hours.");
+        }
+        session.set_cache_policy(policy.clone())?;
+        self.cache_policies.set(&session.id(), &policy);
+        Ok(())
+    }
+
+    /// Check every session's cache policy each tick, until the manager is gone.
+    fn start_upkeep(&self) {
+        self.upkeep.get_or_init(|| {
+            let registry = Arc::downgrade(&self.inner);
+            std::thread::spawn(move || loop {
+                std::thread::sleep(cache::TICK);
+                let Some(registry) = registry.upgrade() else {
+                    break;
+                };
+                let mut sessions: Vec<_> = lock(&registry).values().cloned().collect();
+                drop(registry);
+                sessions.sort_by_key(|s| Arc::as_ptr(s) as usize);
+                sessions.dedup_by(|a, b| Arc::ptr_eq(a, b));
+                let now = now_ms();
+                for session in sessions {
+                    session.upkeep(now);
+                }
+            });
+        });
     }
 
     /// Stop a session's process (any of its ids). `end`: the person ended the

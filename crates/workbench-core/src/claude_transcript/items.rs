@@ -248,6 +248,13 @@ pub struct TranscriptMeta {
     pub permission_mode: Option<String>,
     /// Prompt size of the latest API call (input + cache read + cache write).
     pub context_tokens: Option<u64>,
+    /// Unix ms when the prompt cache the latest API call read or wrote
+    /// expires (Claude only); cleared by a compact, which leaves nothing worth keeping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_expires_at: Option<u64>,
+    /// That cache's lifetime in seconds: 3600 or 300, from what the calls wrote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_secs: Option<u64>,
     /// A turn is in progress: set by a prompt or the first model event,
     /// cleared by `result`, the JSONL `turn_duration` line or an interrupt.
     pub busy: bool,

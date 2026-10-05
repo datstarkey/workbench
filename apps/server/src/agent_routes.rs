@@ -35,8 +35,8 @@ use workbench_core::claude_accounts::{self, UsageLimit};
 use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
-    AgentKind, AgentManager, AgentSession, AgentSummary, Launch, PromptFile, PromptImage,
-    StartAgent, MAX_FILES, MAX_IMAGES,
+    AgentKind, AgentManager, AgentSession, AgentSummary, CachePolicy, Launch, PromptFile,
+    PromptImage, StartAgent, MAX_FILES, MAX_IMAGES,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
@@ -309,6 +309,12 @@ enum ClientMsg {
     Effort {
         effort: String,
     },
+    /// Refresh the prompt cache now (a hidden keep-alive turn).
+    CachePing,
+    /// Keep the cache warm until a time and/or compact before it expires.
+    CachePolicy {
+        policy: CachePolicy,
+    },
     /// Fetch the whole output of a tool shown as a preview.
     #[serde(rename_all = "camelCase")]
     Output {
@@ -403,6 +409,8 @@ fn handle(
         ClientMsg::Mode { mode } => session.set_mode(&mode),
         ClientMsg::Model { model } => session.set_model(&model),
         ClientMsg::Effort { effort } => session.set_effort(&effort),
+        ClientMsg::CachePing => session.keep_cache_warm(),
+        ClientMsg::CachePolicy { policy } => agents.set_cache_policy(session, policy),
     };
     reply.map(|()| None)
 }

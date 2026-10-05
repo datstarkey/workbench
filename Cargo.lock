@@ -7535,6 +7535,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "getrandom 0.4.2",
  "if-addrs",

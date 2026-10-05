@@ -517,3 +517,27 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 });
+
+describe('AgentChat prompt cache', () => {
+	beforeEach(() => {
+		vi.stubGlobal('WebSocket', FakeSocket);
+		FakeSocket.last = null;
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('follows the server cache policy and sends pings and changes', async () => {
+		const { chat, ws } = await connected();
+		expect(chat.cachePolicy).toEqual({ compactOnExpiry: false });
+
+		ws.emit({ t: 'cachePolicy', policy: { compactOnExpiry: true, keepWarmUntil: 5 } });
+		expect(chat.cachePolicy).toEqual({ compactOnExpiry: true, keepWarmUntil: 5 });
+
+		chat.pingCache();
+		chat.setCachePolicy({ compactOnExpiry: false });
+		expect(ws.sent).toEqual([
+			{ t: 'cachePing' },
+			{ t: 'cachePolicy', policy: { compactOnExpiry: false } }
+		]);
+		expect(chat.cachePolicy).toEqual({ compactOnExpiry: false });
+	});
+});

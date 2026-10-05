@@ -3,6 +3,7 @@ import type {
 	AgentKind,
 	AgentServerMsg,
 	ApprovalDecision,
+	CachePolicy,
 	ChatFile,
 	ChatImage,
 	CodexMode,
@@ -92,6 +93,8 @@ export class AgentChat {
 	seenAt = $state.raw<Record<string, number>>({});
 	/** The open "Rewind to here" panel, if any. */
 	rewind = $state.raw<RewindState | null>(null);
+	/** What the server does as the prompt cache nears expiry (Claude only). */
+	cachePolicy = $state.raw<CachePolicy>({ compactOnExpiry: false });
 
 	private body: StartAgentBody;
 	private readonly api: AgentApi;
@@ -216,6 +219,7 @@ export class AgentChat {
 				this.start = msg.start;
 				this.items = msg.items;
 				this.commands = msg.commands;
+				this.cachePolicy = msg.cachePolicy ?? { compactOnExpiry: false };
 				this.setMeta(msg.meta);
 				this.status = msg.exited ? 'exited' : 'live';
 				this.settlePending();
@@ -251,6 +255,9 @@ export class AgentChat {
 				break;
 			case 'commands':
 				this.commands = msg.commands;
+				break;
+			case 'cachePolicy':
+				this.cachePolicy = msg.policy;
 				break;
 			case 'output':
 				this.outputWaiters[msg.toolId]?.(msg.text);
@@ -400,6 +407,15 @@ export class AgentChat {
 
 	setEffort(effort: EffortLevel): void {
 		this.send({ t: 'effort', effort });
+	}
+
+	/** Refresh the prompt cache now with a hidden keep-alive turn. */
+	pingCache(): void {
+		this.send({ t: 'cachePing' });
+	}
+
+	setCachePolicy(policy: CachePolicy): void {
+		if (this.send({ t: 'cachePolicy', policy })) this.cachePolicy = policy;
 	}
 
 	/** The whole output of a tool shown as a preview; null if it's gone. */

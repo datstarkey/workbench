@@ -19,6 +19,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 mod branch;
+mod cache;
 mod elicitation;
 mod events;
 mod items;
@@ -27,6 +28,7 @@ mod protocol;
 mod summary;
 
 pub use branch::fork_point;
+pub use cache::KEEPALIVE_PROMPT;
 pub use elicitation::ElicitationAction;
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use summary::{RunningSummary, WaitingSummary};
@@ -140,6 +142,8 @@ pub struct Transcript {
     commands: Vec<SlashCommand>,
     /// Skill calls that launched and still await their body, oldest first.
     skill_bodies_due: VecDeque<String>,
+    /// A keep-alive turn is running: its reply stays out of the chat.
+    keepalive: bool,
 }
 
 /// Largest tool output kept whole for "show full output".
@@ -236,7 +240,10 @@ impl Transcript {
                 Some("status") if str_at(obj, "status") == Some("requesting") => {
                     self.meta.busy = true
                 }
-                Some("turn_duration") => self.meta.busy = false,
+                Some("turn_duration") => {
+                    self.meta.busy = false;
+                    self.keepalive = false;
+                }
                 // Output of a slash command run in chat (`/cost`, `/context`).
                 Some("local_command_output") => {
                     if let Some(text) = str_at(obj, "content").filter(|t| !t.trim().is_empty()) {
@@ -279,6 +286,8 @@ impl Transcript {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
                     let text = "Conversation compacted".to_string();
                     self.upsert(TranscriptItem::Notice { id, text }, &mut changed);
+                    self.meta.context_tokens = None;
+                    self.meta.cache_expires_at = None;
                 }
                 _ => {
                     if let Some(item) = events::system_event(obj, self.event_id(obj)) {
@@ -445,6 +454,7 @@ impl Transcript {
             busy: false,
             title: None,
             context_tokens: None,
+            cache_expires_at: None,
             tasks: Vec::new(),
             artifacts: Vec::new(),
             prompt_suggestion: None,
@@ -704,6 +714,7 @@ impl Transcript {
 
     fn apply_result(&mut self, obj: &Value, changed: &mut Vec<usize>) {
         self.meta.busy = false;
+        self.keepalive = false;
         self.meta.retry = None;
         self.streaming_message = None;
         // `modelUsage` is keyed by init's model id, `[1m]` included (CLI 2.1.286);
@@ -794,6 +805,9 @@ impl Transcript {
             self.attach_skill_body(obj, text, changed);
             return;
         }
+        if self.start_keepalive(id.clone(), text, changed) {
+            return;
+        }
         let text = match if text.is_empty() {
             Some(UserText::Prompt(String::new()))
         } else {
@@ -801,6 +815,7 @@ impl Transcript {
         } {
             Some(UserText::Prompt(text)) => {
                 self.meta.busy = true;
+                self.keepalive = false;
                 text
             }
             Some(UserText::Command(text)) => text,
@@ -972,7 +987,7 @@ impl Transcript {
                     self.note_model(model);
                 }
             }
-            Some("content_block_start") => {
+            Some("content_block_start") if !self.keepalive => {
                 let (Some(msg), Some(index), Some(block)) = (
                     self.streaming_message.clone(),
                     event.get("index").and_then(Value::as_u64),
@@ -1076,6 +1091,11 @@ impl Transcript {
             if total > 0 {
                 self.meta.context_tokens = Some(total);
             }
+            self.note_cache(obj, usage);
+        }
+        if self.keepalive {
+            self.meta.busy = true;
+            return;
         }
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
             return;
