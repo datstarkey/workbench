@@ -51,6 +51,8 @@
 	import { acquireChat } from './chat-registry';
 	import { desktopChatPlatform } from './chat-platform';
 	import ChatResumePicker from './ChatResumePicker.svelte';
+	import PanelResizeHandle from './PanelResizeHandle.svelte';
+	import { tasksPanelWidth } from './panel-width.svelte';
 
 	let {
 		agent,
@@ -395,7 +397,17 @@
 			</div>
 		</div>
 		{#if tasks.length > 0 && wide}
-			<ChatTasks {tasks} seenAt={chat.seenAt} fetchOutput={(id) => chat.taskOutput(id)} />
+			<div class="relative flex shrink-0" style:width="{tasksPanelWidth.width}px">
+				<PanelResizeHandle size={tasksPanelWidth} label="Resize agents and tasks panel" />
+				<ChatTasks
+					{tasks}
+					seenAt={chat.seenAt}
+					cwd={workdir}
+					fetchOutput={(id) => chat.taskOutput(id)}
+					fetchTranscript={(id) => chat.taskTranscript(id)}
+					class="w-full"
+				/>
+			</div>
 		{/if}
 	</div>
 
@@ -410,7 +422,9 @@
 			<ChatTasks
 				{tasks}
 				seenAt={chat.seenAt}
+				cwd={workdir}
 				fetchOutput={(id) => chat.taskOutput(id)}
+				fetchTranscript={(id) => chat.taskTranscript(id)}
 				onClose={() => (tasksOpen = false)}
 			/>
 		</div>

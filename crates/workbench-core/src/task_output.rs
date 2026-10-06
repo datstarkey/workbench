@@ -11,7 +11,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Task ids are short alphanumeric strings; anything else never touches the disk.
-fn is_task_id(id: &str) -> bool {
+pub fn is_task_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id

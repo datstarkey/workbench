@@ -4,6 +4,7 @@
 	import { watch } from 'runed';
 	import type { TaskOutput } from './agent-chat.svelte';
 	import { formatBytes } from './chat-format';
+	import { TaskPoll } from './task-poll.svelte';
 
 	let {
 		taskId,
@@ -16,31 +17,12 @@
 		fetchOutput: (taskId: string) => Promise<TaskOutput | null>;
 	} = $props();
 
-	const REFRESH_MS = 1500;
-
-	let output = $state<TaskOutput | null>(null);
-	let loaded = $state(false);
-
-	onMount(() => {
-		let stopped = false;
-		const load = async () => {
-			const next = await fetchOutput(taskId);
-			if (stopped) return;
-			output = next;
-			loaded = true;
-		};
-		void load();
-		// One more fetch after it finishes, for the lines written since the last poll.
-		let wasLive = live;
-		const timer = setInterval(() => {
-			if (live || wasLive) void load();
-			wasLive = live;
-		}, REFRESH_MS);
-		return () => {
-			stopped = true;
-			clearInterval(timer);
-		};
-	});
+	const poll = new TaskPoll(
+		() => fetchOutput(taskId),
+		() => live
+	);
+	onMount(() => poll.start());
+	const output = $derived(poll.value);
 
 	/** Keep the newest lines in view, like a terminal. */
 	const followEnd: Attachment<HTMLPreElement> = (node) => {
@@ -54,7 +36,7 @@
 </script>
 
 <div class="mt-2 flex flex-col gap-1">
-	{#if !loaded}
+	{#if !poll.loaded}
 		<span class="text-[11px] text-wb-ink-soft">Loading output…</span>
 	{:else if !output || !output.text}
 		<span class="text-[11px] text-wb-ink-soft">

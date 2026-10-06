@@ -5,22 +5,37 @@
 	import TerminalSquareIcon from '@lucide/svelte/icons/square-terminal';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
-	import type { TaskInfo } from '@workbench/types';
+	import type { TaskInfo, TaskTranscript } from '@workbench/types';
 	import type { TaskOutput } from './agent-chat.svelte';
-	import { formatCount, formatElapsed, isRunning, pickTasks, type TaskTab } from './chat-format';
+	import {
+		formatCount,
+		formatElapsed,
+		isRunning,
+		pickTasks,
+		pickTaskView,
+		taskViews,
+		type TaskTab,
+		type TaskView
+	} from './chat-format';
 	import ChatTaskOutput from './ChatTaskOutput.svelte';
+	import ChatTaskTranscript from './ChatTaskTranscript.svelte';
 
 	let {
 		tasks,
 		seenAt,
+		cwd,
 		fetchOutput,
+		fetchTranscript,
 		onClose,
 		class: className
 	}: {
 		tasks: TaskInfo[];
 		/** When each task was first seen, for running timers. */
 		seenAt: Record<string, number>;
+		/** The chat's cwd, so tool cards show paths relative to it. */
+		cwd?: string;
 		fetchOutput: (taskId: string) => Promise<TaskOutput | null>;
+		fetchTranscript: (taskId: string) => Promise<TaskTranscript | null>;
 		/** Set when shown as an overlay (narrow pane). */
 		onClose?: () => void;
 		class?: string;
@@ -39,6 +54,9 @@
 	const view = $derived(pickTasks(tasks, pickedTab, pickedId));
 	const list = $derived(view[view.tab]);
 	const selected = $derived(view.selected);
+	let pickedView = $state<TaskView | null>(null);
+	const detailView = $derived(selected ? pickTaskView(selected, pickedView) : 'output');
+	const VIEW_LABELS: Record<TaskView, string> = { conversation: 'Conversation', output: 'Output' };
 
 	function elapsed(task: TaskInfo): string {
 		if (isRunning(task) && seenAt[task.id]) return formatElapsed(now - seenAt[task.id]);
@@ -151,46 +169,88 @@
 			</ul>
 			{#if selected}
 				{@const live = isRunning(selected)}
+				{@const views = taskViews(selected)}
 				<section
 					id="{uid}-detail"
-					class="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-2.5"
+					class="flex min-h-0 flex-1 flex-col"
 					aria-label="{title(selected)} details"
 				>
-					<div class="flex items-center gap-2 text-xs">
-						{@render status(selected)}
-						<span class="min-w-0 truncate font-medium text-wb-ink">{title(selected)}</span>
-						{#if selected.background}
-							<span class="shrink-0 text-[10px] text-wb-ink-soft">background</span>
+					<div class="shrink-0 px-3 pt-2.5">
+						{@render summary(selected, live)}
+						{#if views.length > 1}
+							<div
+								class="mt-2 flex gap-0.5 rounded-md border border-wb-hair p-0.5"
+								role="group"
+								aria-label="Show"
+							>
+								{#each views as v (v)}
+									<button
+										type="button"
+										aria-pressed={detailView === v}
+										class={cn(
+											'flex-1 rounded px-2 py-0.5 text-[11px] focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
+											detailView === v
+												? 'bg-wb-panel2 text-wb-ink'
+												: 'text-wb-ink-mute hover:text-wb-ink'
+										)}
+										onclick={() => (pickedView = v)}
+									>
+										{VIEW_LABELS[v]}
+									</button>
+								{/each}
+							</div>
 						{/if}
-						<span class="ml-auto shrink-0 text-[11px] text-wb-ink-soft tabular-nums">
-							{elapsed(selected)}
-						</span>
 					</div>
-					<p class="mt-1 text-xs leading-snug text-wb-ink">{selected.description}</p>
-					{#if live && (selected.activity || selected.lastTool)}
-						<p class="mt-1 truncate text-[11px] text-wb-ink-mute">
-							{selected.activity ?? `Using ${selected.lastTool}`}
-						</p>
-					{:else if !live && selected.summary}
-						<p class="mt-1 text-[11px] leading-snug text-wb-ink-soft">{selected.summary}</p>
-					{/if}
-					{#if selected.toolUses > 0 || selected.tokens > 0}
-						<p class="mt-1.5 text-[10px] text-wb-ink-soft tabular-nums">
-							{formatCount(selected.toolUses, selected.toolUses === 1 ? 'tool call' : 'tool calls')}
-							{#if selected.tokens > 0}<span class="px-1">/</span>{formatCount(
-									selected.tokens,
-									'tokens'
-								)}{/if}
-						</p>
-					{/if}
-					{#key selected.id}
-						<ChatTaskOutput taskId={selected.id} {live} {fetchOutput} />
+					{#key `${selected.id}:${detailView}`}
+						{#if detailView === 'conversation'}
+							<ChatTaskTranscript
+								taskId={selected.id}
+								{live}
+								{cwd}
+								{fetchTranscript}
+								class="px-3 pt-2.5 pb-3"
+							/>
+						{:else}
+							<div class="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-3 pb-2.5">
+								<ChatTaskOutput taskId={selected.id} {live} {fetchOutput} />
+							</div>
+						{/if}
 					{/key}
 				</section>
 			{/if}
 		</div>
 	{/if}
 </aside>
+
+{#snippet summary(selected: TaskInfo, live: boolean)}
+	<div class="flex items-center gap-2 text-xs">
+		{@render status(selected)}
+		<span class="min-w-0 truncate font-medium text-wb-ink">{title(selected)}</span>
+		{#if selected.background}
+			<span class="shrink-0 text-[10px] text-wb-ink-soft">background</span>
+		{/if}
+		<span class="ml-auto shrink-0 text-[11px] text-wb-ink-soft tabular-nums">
+			{elapsed(selected)}
+		</span>
+	</div>
+	<p class="mt-1 text-xs leading-snug text-wb-ink">{selected.description}</p>
+	{#if live && (selected.activity || selected.lastTool)}
+		<p class="mt-1 truncate text-[11px] text-wb-ink-mute">
+			{selected.activity ?? `Using ${selected.lastTool}`}
+		</p>
+	{:else if !live && selected.summary}
+		<p class="mt-1 text-[11px] leading-snug text-wb-ink-soft">{selected.summary}</p>
+	{/if}
+	{#if selected.toolUses > 0 || selected.tokens > 0}
+		<p class="mt-1.5 text-[10px] text-wb-ink-soft tabular-nums">
+			{formatCount(selected.toolUses, selected.toolUses === 1 ? 'tool call' : 'tool calls')}
+			{#if selected.tokens > 0}<span class="px-1">/</span>{formatCount(
+					selected.tokens,
+					'tokens'
+				)}{/if}
+		</p>
+	{/if}
+{/snippet}
 
 <style>
 	.spinner {

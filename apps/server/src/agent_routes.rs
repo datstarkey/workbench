@@ -15,6 +15,8 @@
 //! - `POST /agent/:kind/:id/message` applies one of those messages without a
 //!   socket (an approval from the phone's home screen): 200 with the reply
 //!   frame when there is one, else 204.
+//! - `GET /agent/claude/:id/tasks/:taskId/transcript` is a subagent's own
+//!   conversation as chat items, from the CLI's `subagents/` transcript.
 //!
 //! Ids are global, so the stop/message/WS routes of either kind reach any session.
 //! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
@@ -237,6 +239,23 @@ pub async fn agent_message(
         Some(reply) => Json(reply).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     })
+}
+
+/// A subagent's own conversation as chat items (`{start, items}`), or null
+/// until the CLI has written its transcript. Read-only.
+pub async fn agent_task_transcript(
+    State(state): State<AppState>,
+    Path((id, task_id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    let session = find(&state, &id)?;
+    crate::routes::blocking(move || {
+        Ok(match session.task_transcript(&task_id) {
+            Some((start, items)) => json!({"start": start, "items": items}),
+            None => Value::Null,
+        })
+    })
+    .await
+    .map(Json)
 }
 
 fn find(state: &AppState, id: &str) -> Result<Arc<AgentSession>, ApiError> {

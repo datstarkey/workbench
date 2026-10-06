@@ -42,6 +42,12 @@ describe('agentClient', () => {
 		]);
 	});
 
+	it('reads a subagent transcript, null before it exists', async () => {
+		const fetch = stubFetch(null);
+		await expect(api.taskTranscript('sid', 'toolu_1/x')).resolves.toBeNull();
+		expect(fetch.mock.calls[0][0]).toBe('http://box/agent/claude/sid/tasks/toolu_1%2Fx/transcript');
+	});
+
 	it('falls back to the Claude list on a server older than Codex chat', async () => {
 		const fetch = vi.fn(async (url: string) =>
 			url.endsWith('/agent')

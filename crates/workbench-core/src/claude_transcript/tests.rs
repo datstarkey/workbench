@@ -662,6 +662,52 @@ fn load_reads_history_and_never_reports_a_turn_in_flight() {
 }
 
 #[test]
+fn finds_and_loads_a_subagent_transcript_beside_its_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("-repo");
+    let session = project.join(format!("{SID}.jsonl"));
+    let subagents = project.join(SID).join("subagents");
+    fs::create_dir_all(&subagents).unwrap();
+    fs::write(&session, "").unwrap();
+    let side = |mut row: Value| {
+        row["isSidechain"] = json!(true);
+        row
+    };
+    let agent = subagents.join("agent-a6ee299a623b37fc4.jsonl");
+    fs::write(
+        &agent,
+        format!(
+            "{}\n{}\n",
+            side(user("u1", json!("Find the bug"))),
+            side(assistant(
+                "a1",
+                "m1",
+                json!({"type":"text","text":"Found it"})
+            ))
+        ),
+    )
+    .unwrap();
+    fs::write(project.join("secret.jsonl"), "").unwrap();
+
+    assert_eq!(
+        find_subagent_transcript(&session, "a6ee299a623b37fc4"),
+        Some(agent.clone())
+    );
+    assert_eq!(find_subagent_transcript(&session, "missing"), None);
+    for bad in ["", "../../secret", "a/b", "..", "a.b", "a\\b"] {
+        assert_eq!(find_subagent_transcript(&session, bad), None, "{bad:?}");
+    }
+
+    let t = Transcript::load_subagent(&agent);
+    assert_eq!(user_texts(&t), ["Find the bug"]);
+    assert_eq!(t.items().len(), 2);
+    assert!(
+        Transcript::load(&agent).items().is_empty(),
+        "a session's own history still skips sidechain rows"
+    );
+}
+
+#[test]
 fn uuid_check_rejects_paths() {
     assert!(is_uuid(SID));
     assert!(!is_uuid("../../etc/passwd"));

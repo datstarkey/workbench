@@ -42,7 +42,7 @@ pub use items::{
 
 pub(crate) use parse::{clip, clip_patch, clip_value, str_at, MAX_TEXT_BYTES};
 use parse::{document_names, tool_output_text, user_visible_text, UserText};
-pub use parse::{find_transcript, is_uuid};
+pub use parse::{find_subagent_transcript, find_transcript, is_uuid};
 
 /// What a server reads from a chat transcript, whichever CLI it folds.
 pub trait ChatView {
@@ -150,6 +150,8 @@ pub struct Transcript {
     /// `meta.models` came from the server's own `initialize` probe, which a
     /// terminal plugin's guessed list must not replace.
     models_pinned: bool,
+    /// Folding a subagent's own transcript, whose every row is a sidechain.
+    sidechain: bool,
 }
 
 /// Largest tool output kept whole for "show full output".
@@ -165,7 +167,19 @@ impl Transcript {
     /// History along the branch that ends at `leaf` (the newest entry when
     /// `None`), as `claude --resume-session-at <leaf>` continues it.
     pub fn load_at(path: &Path, leaf: Option<&str>) -> Self {
-        let mut t = Self::default();
+        Self::load_from(path, leaf, false)
+    }
+
+    /// A subagent's transcript (see [`find_subagent_transcript`]).
+    pub fn load_subagent(path: &Path) -> Self {
+        Self::load_from(path, None, true)
+    }
+
+    fn load_from(path: &Path, leaf: Option<&str>, sidechain: bool) -> Self {
+        let mut t = Self {
+            sidechain,
+            ..Self::default()
+        };
         let entries = branch::read_entries(path);
         let dead = branch::abandoned(&entries, leaf);
         for entry in &entries {
@@ -188,8 +202,9 @@ impl Transcript {
     pub fn apply(&mut self, obj: &Value) -> Applied {
         // Subagent turns belong to their own transcript; the Task tool card
         // already stands for them here.
-        if obj.get("isSidechain").and_then(Value::as_bool) == Some(true)
-            || obj.get("parent_tool_use_id").is_some_and(|v| !v.is_null())
+        if !self.sidechain
+            && (obj.get("isSidechain").and_then(Value::as_bool) == Some(true)
+                || obj.get("parent_tool_use_id").is_some_and(|v| !v.is_null()))
         {
             return Applied::default();
         }

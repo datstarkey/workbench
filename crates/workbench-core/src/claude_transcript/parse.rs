@@ -144,6 +144,19 @@ pub fn find_transcript(projects_dir: &Path, session_id: &str) -> Option<PathBuf>
         .find(|path| path.is_file())
 }
 
+/// A subagent's transcript, which the CLI writes beside its session's JSONL:
+/// `<session-id>/subagents/agent-<agent-id>.jsonl`.
+pub fn find_subagent_transcript(session_jsonl: &Path, agent_id: &str) -> Option<PathBuf> {
+    if !crate::task_output::is_task_id(agent_id) {
+        return None;
+    }
+    let path = session_jsonl
+        .with_extension("")
+        .join("subagents")
+        .join(format!("agent-{agent_id}.jsonl"));
+    path.is_file().then_some(path)
+}
+
 /// Strict 8-4-4-4-12 hex check — the id becomes part of a file name and a
 /// command-line argument.
 pub fn is_uuid(s: &str) -> bool {

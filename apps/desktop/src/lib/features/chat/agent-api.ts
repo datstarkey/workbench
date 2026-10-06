@@ -14,7 +14,8 @@ export const loopbackAgentApi: AgentApi = {
 	},
 	socketUrl: loopback.socketUrl,
 	terminalId: loopback.terminalId,
-	files: loopback.files
+	files: loopback.files,
+	taskTranscript: loopback.taskTranscript
 };
 
 /** A Claude account's plan limits, cached by the loopback server. */

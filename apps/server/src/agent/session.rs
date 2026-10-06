@@ -307,26 +307,30 @@ impl AgentSession {
         }
     }
 
+    /// The Claude session's JSONL under its current id, cached once found.
+    fn history_path(&self) -> Option<PathBuf> {
+        let super::Launch::Claude { config_dir, .. } = &self.relaunch.launch else {
+            return None;
+        };
+        let id = self.id();
+        let mut found = lock(&self.transcript_path);
+        match &*found {
+            Some((for_id, path)) if *for_id == id => Some(path.clone()),
+            _ => {
+                let path = super::claude::history(config_dir.as_deref(), &id);
+                *found = path.clone().map(|p| (id, p));
+                path
+            }
+        }
+    }
+
     /// The plugin's usage has no `cache_creation` split, so a terminal's
     /// session reads the cache's lifetime from its transcript file each time
     /// a turn ends (its rows are written by then); the CLI may change it.
     pub(super) fn learn_cache_ttl(&self) {
-        let super::Launch::Claude { config_dir, .. } = &self.relaunch.launch else {
-            return;
-        };
-        let id = self.id();
-        let path = {
-            let mut found = lock(&self.transcript_path);
-            match &*found {
-                Some((for_id, path)) if *for_id == id => Some(path.clone()),
-                _ => {
-                    let path = super::claude::history(config_dir.as_deref(), &id);
-                    *found = path.clone().map(|p| (id, p));
-                    path
-                }
-            }
-        };
-        let Some(ttl) = path.and_then(|p| workbench_core::claude_transcript::written_cache_ttl(&p))
+        let Some(ttl) = self
+            .history_path()
+            .and_then(|p| workbench_core::claude_transcript::written_cache_ttl(&p))
         else {
             return;
         };
@@ -606,24 +610,47 @@ impl AgentSession {
         }
         let known = lock(&self.task_files).get(task_id).cloned();
         let path = known.or_else(|| {
-            let output_id = lock(&self.driver)
-                .view()
-                .meta()
-                .tasks
-                .iter()
-                .find(|t| t.id == task_id)
-                .and_then(|t| t.output_id.clone());
-            // A terminal plugin's agent task is keyed by its tool call, which
-            // names no file: only its `output_id` can.
-            if output_id.is_none() && task_id.starts_with("toolu_") {
-                return None;
-            }
-            let file_id = output_id.unwrap_or_else(|| task_id.to_string());
-            let found = workbench_core::task_output::find(&file_id)?;
+            let found = workbench_core::task_output::find(&self.task_file_id(task_id)?)?;
             lock(&self.task_files).insert(task_id.to_string(), found.clone());
             Some(found)
         })?;
         workbench_core::task_output::tail(&path, TASK_OUTPUT_TAIL).ok()
+    }
+
+    /// The id a task's files are named by: its `output_id` (a subagent's id)
+    /// when it has one, else its own id.
+    fn task_file_id(&self, task_id: &str) -> Option<String> {
+        let output_id = lock(&self.driver)
+            .view()
+            .meta()
+            .tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .and_then(|t| t.output_id.clone());
+        // A terminal plugin's agent task is keyed by its tool call, which
+        // names no file: only its `output_id` can.
+        if output_id.is_none() && task_id.starts_with("toolu_") {
+            return None;
+        }
+        Some(output_id.unwrap_or_else(|| task_id.to_string()))
+    }
+
+    /// A subagent's own conversation, read from the transcript the CLI keeps
+    /// beside the session's: the newest items and how many came before them.
+    /// None until that file exists. Claude only.
+    pub fn task_transcript(&self, task_id: &str) -> Option<(usize, Vec<TranscriptItem>)> {
+        if self.kind != AgentKind::Claude {
+            return None;
+        }
+        let agent_id = self.task_file_id(task_id)?;
+        let path = workbench_core::claude_transcript::find_subagent_transcript(
+            &self.history_path()?,
+            &agent_id,
+        )?;
+        let transcript = workbench_core::claude_transcript::Transcript::load_subagent(&path);
+        let items = transcript.items();
+        let start = items.len().saturating_sub(SNAPSHOT_ITEMS);
+        Some((start, items[start..].to_vec()))
     }
 
     /// The whole output of a tool whose chat item carries a preview.

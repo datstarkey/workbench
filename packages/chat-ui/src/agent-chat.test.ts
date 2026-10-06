@@ -495,6 +495,22 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it("reads a subagent's transcript for the session, null when it can't", async () => {
+		const taskTranscript = vi
+			.fn<NonNullable<AgentApi['taskTranscript']>>()
+			.mockResolvedValueOnce({ start: 0, items: [] })
+			.mockRejectedValueOnce(new Error('gone'));
+		const { chat } = await connected({ ...fakeApi(), taskTranscript });
+		await expect(chat.taskTranscript('toolu_1')).resolves.toEqual({ start: 0, items: [] });
+		expect(taskTranscript).toHaveBeenCalledWith('sid', 'toolu_1');
+		await expect(chat.taskTranscript('toolu_1')).resolves.toBeNull();
+		chat.dispose();
+
+		const bare = await connected();
+		await expect(bare.chat.taskTranscript('toolu_1')).resolves.toBeNull();
+		bare.chat.dispose();
+	});
+
 	it('keeps the slash command list up to date', async () => {
 		const { chat, ws } = await connected();
 		ws.emit({ t: 'commands', commands: [{ name: 'compact', description: 'Free up context' }] });
