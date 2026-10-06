@@ -15,6 +15,7 @@
 		ChatArtifacts,
 		chatArtifacts,
 		ChatComposer,
+		CodexControls,
 		ChatCache,
 		ChatCacheHint,
 		ChatContext,
@@ -165,7 +166,7 @@
 		void client.showAsTerminal({ ...ref, sessionId: chat.sessionId });
 	}
 
-	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean {
+	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean | Promise<boolean> {
 		stickToBottom = true;
 		return chat.prompt(text, images, files);
 	}
@@ -354,6 +355,10 @@
 		{#if todos.length > 0}
 			<ChatPlan steps={todos} />
 		{/if}
+		<CodexControls
+			{chat}
+			onThread={(sessionId, name) => client.openChat({ ...ref, sessionId, name, agent: 'codex' })}
+		/>
 		<ChatCacheHint {chat} />
 		<ChatSuggestions {suggestions} onPick={(text) => (draft.text = text)} />
 		<ChatComposer

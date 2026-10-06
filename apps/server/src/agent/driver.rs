@@ -26,6 +26,7 @@ pub(super) enum Driver {
 pub(super) struct Effects {
     /// Lines for the CLI's stdin, in order.
     pub send: Vec<Value>,
+    pub frames: Vec<Value>,
     /// Item indices added or changed.
     pub items: Vec<usize>,
     /// Broadcast an update even if no item changed.
@@ -54,6 +55,30 @@ pub(super) struct Launch {
 }
 
 impl Driver {
+    pub fn codex_action(
+        &mut self,
+        request_id: &str,
+        action: workbench_core::codex_controls::Action,
+        params: &Value,
+    ) -> Result<Effects> {
+        match self {
+            Self::Codex(c) => c.action(request_id, action, params),
+            Self::Claude(_) => anyhow::bail!("this action needs a Codex session"),
+        }
+    }
+
+    pub fn tick(&mut self) -> Effects {
+        match self {
+            Self::Codex(c) => c.tick(),
+            Self::Claude(_) => Effects::default(),
+        }
+    }
+    pub fn artifacts(&self, id: &str) -> Option<&[Value]> {
+        match self {
+            Self::Codex(c) => c.transcript().artifacts(id),
+            _ => None,
+        }
+    }
     pub fn view(&self) -> &dyn ChatView {
         match self {
             Self::Claude(t) => t,
@@ -88,7 +113,7 @@ impl Driver {
     ) -> Result<Effects> {
         match self {
             Self::Claude(t) => claude::approve(t, request_id, decision, answers),
-            Self::Codex(c) => Ok(c.approve(request_id, decision, answers)),
+            Self::Codex(c) => c.approve(request_id, decision, answers),
         }
     }
 
@@ -97,19 +122,19 @@ impl Driver {
         request_id: &str,
         action: ElicitationAction,
         content: Option<&Map<String, Value>>,
-    ) -> Effects {
+    ) -> Result<Effects> {
         let resolved = match self {
             Self::Claude(t) => t.resolve_elicitation(request_id, action, content),
-            Self::Codex(c) => c.resolve_elicitation(request_id, action, content),
+            Self::Codex(c) => c.resolve_elicitation(request_id, action, content)?,
         };
         // `None`: already answered (another device, or twice).
-        resolved
+        Ok(resolved
             .map(|(i, response)| Effects {
                 send: vec![response],
                 items: vec![i],
                 ..Effects::default()
             })
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
     pub fn interrupt(&mut self) -> Result<Effects> {

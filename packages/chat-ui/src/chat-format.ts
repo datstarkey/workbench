@@ -301,6 +301,9 @@ export interface QuestionOption {
 }
 
 export interface Question {
+	id?: string;
+	isSecret?: boolean;
+	isOther?: boolean;
 	question: string;
 	header: string;
 	multiSelect: boolean;
@@ -328,6 +331,9 @@ export function parseQuestions(input: Record<string, unknown> | null): Question[
 		return [
 			{
 				question: q.question,
+				...(typeof q.id === 'string' ? { id: q.id } : {}),
+				...(typeof q.isSecret === 'boolean' ? { isSecret: q.isSecret } : {}),
+				...(typeof q.isOther === 'boolean' ? { isOther: q.isOther } : {}),
 				header: typeof q.header === 'string' ? q.header : '',
 				multiSelect: q.multiSelect === true,
 				options
@@ -358,7 +364,8 @@ export type Activity =
 
 /** An approval, question or MCP elicitation still waiting on the person. */
 export function awaitsAnswer(item: TranscriptItem): item is ApprovalItem | ElicitationItem {
-	if (item.kind === 'approval') return !item.decision && !item.expired;
+	if (item.kind === 'approval')
+		return !item.decision && !item.expired && item.input?.isBlocking !== false;
 	return item.kind === 'elicitation' && !item.action && !item.expired;
 }
 

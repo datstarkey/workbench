@@ -89,6 +89,7 @@ macro_rules! build_invoke_handler {
             commands::delete_branch,
             commands::open_url,
             commands::check_codex_integration,
+            commands::codex_supports_no_daemon,
             commands::apply_codex_integration,
             commands::get_hook_logs,
             commands::clear_hook_logs,

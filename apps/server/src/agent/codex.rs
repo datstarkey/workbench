@@ -8,7 +8,11 @@
 //! `thread/resume` and a backwards `thread/items/list` for history) +
 //! `model/list`. The session is ready once the thread id (and history) is in.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+use workbench_core::codex_controls::{LaunchOptions, QueuedPrompt, State};
+#[path = "codex/controls.rs"]
+mod controls;
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
@@ -47,6 +51,18 @@ enum Pending {
         turn: String,
     },
     Interrupt,
+    Control {
+        request_id: String,
+        method: String,
+        probe: bool,
+    },
+    OlderHistory {
+        request_id: String,
+    },
+    ForkDetached {
+        request_id: String,
+        result: Value,
+    },
 }
 
 pub(super) struct CodexDriver {
@@ -70,10 +86,24 @@ pub(super) struct CodexDriver {
     effort: Option<String>,
     skills: HashMap<String, String>,
     skills_revision: u64,
+    options: LaunchOptions,
+    state: State,
+    followups: Vec<(QueuedPrompt, Vec<Value>)>,
+    inflight_followup: Option<(QueuedPrompt, Vec<Value>)>,
+    models: Vec<Value>,
+    older_cursor: Option<Value>,
+    deadlines: HashMap<u64, Instant>,
+    listed_threads: HashSet<String>,
+    remote_environment: Option<String>,
 }
 
 /// `thread_id` resumes that thread; `None` starts a new one.
-pub(super) fn launch(req: &StartAgent, thread_id: Option<&str>, mode: Option<&str>) -> Launch {
+pub(super) fn launch(
+    req: &StartAgent,
+    thread_id: Option<&str>,
+    mode: Option<&str>,
+    options: LaunchOptions,
+) -> Launch {
     let mut cmd = super::session::base_command(codex_config::codex_binary(), req);
     cmd.arg("app-server");
     let mut driver = CodexDriver {
@@ -92,7 +122,17 @@ pub(super) fn launch(req: &StartAgent, thread_id: Option<&str>, mode: Option<&st
         effort: None,
         skills: HashMap::new(),
         skills_revision: 0,
+        options: LaunchOptions::default(),
+        state: State::default(),
+        followups: Vec::new(),
+        inflight_followup: None,
+        models: Vec::new(),
+        older_cursor: None,
+        deadlines: HashMap::new(),
+        listed_threads: HashSet::new(),
+        remote_environment: None,
     };
+    driver.options = options;
     let hello = driver.request(
         "initialize",
         json!({
@@ -101,7 +141,7 @@ pub(super) fn launch(req: &StartAgent, thread_id: Option<&str>, mode: Option<&st
                 "title": "Workbench",
                 "version": env!("CARGO_PKG_VERSION"),
             },
-            "capabilities": {"experimentalApi": false, "requestAttestation": false},
+            "capabilities": {"experimentalApi": true, "requestAttestation": false},
         }),
         Pending::Initialize,
     );
@@ -123,6 +163,8 @@ impl CodexDriver {
         let id = self.next_id;
         self.next_id += 1;
         self.pending.insert(id, pending);
+        self.deadlines
+            .insert(id, Instant::now() + Duration::from_secs(30));
         json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
     }
 
@@ -130,7 +172,22 @@ impl CodexDriver {
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
             return Effects::default();
         };
+        // Forking loads another thread in this CLI. Its notifications must not
+        // overwrite the original conversation while we detach it for its pane.
+        if let (Some(owned), Some(incoming)) = (
+            self.thread_id.as_deref(),
+            msg.pointer("/params/threadId").and_then(Value::as_str),
+        ) {
+            if owned != incoming {
+                return Effects {send:msg.get("id").map(|id|json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"This Workbench session serves a different thread"}})).into_iter().collect(),..Effects::default()};
+            }
+        }
         let mut fx = Effects::default();
+        if let Some(id) = msg.get("id").and_then(Value::as_u64) {
+            if msg.get("method").is_none() {
+                self.deadlines.remove(&id);
+            }
+        }
         if msg.get("method").and_then(Value::as_str) == Some("skills/changed") {
             fx.send.push(self.load_skills(true));
         } else if msg.get("method").is_some() {
@@ -151,12 +208,39 @@ impl CodexDriver {
                 None => self.on_result(pending, msg.get("result").unwrap_or(&Value::Null), &mut fx),
             }
         }
+        if msg["method"] == "turn/completed" && self.t.prune() {
+            fx.snapshot = true;
+        }
+        self.sync_notifications(&msg, &mut fx);
+        self.sync_state(&mut fx);
         self.flush_queue(&mut fx);
+        self.flush_followups(&mut fx);
+        self.sync_state(&mut fx);
         fx
     }
 
     fn on_result(&mut self, pending: Pending, result: &Value, fx: &mut Effects) {
         match pending {
+            Pending::Control {
+                request_id,
+                method,
+                probe,
+            } => self.control_result(&request_id, &method, probe, result, fx),
+            Pending::OlderHistory { request_id } => {
+                let next_cursor = result.get("nextCursor").filter(|v| !v.is_null()).cloned();
+                let mut entries = result
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                entries.reverse();
+                let mut older = CodexTranscript::default();
+                older.load_history(&entries);
+                fx.frames.push(json!({"t":"codexResult", "requestId":request_id,"result":{"items":older.items(),"nextCursor":next_cursor,"hasMore":next_cursor.is_some()}}));
+            }
+            Pending::ForkDetached { request_id, result } => fx
+                .frames
+                .push(json!({"t":"codexResult","requestId":request_id,"result":result})),
             Pending::Initialize => {
                 fx.send
                     .push(json!({"jsonrpc": "2.0", "method": "initialized"}));
@@ -167,6 +251,12 @@ impl CodexDriver {
                     .and_then(codex_transcript::sandbox_mode)
                 {
                     params["approvalPolicy"] = json!(policy);
+                    params["sandbox"] = json!(sandbox);
+                }
+                if let Some(policy) = &self.options.codex_approval_policy {
+                    params["approvalPolicy"] = json!(policy);
+                }
+                if let Some(sandbox) = &self.options.codex_sandbox_mode {
                     params["sandbox"] = json!(sandbox);
                 }
                 let thread = match &self.resume {
@@ -189,6 +279,22 @@ impl CodexDriver {
                 };
                 self.thread_id = Some(id.to_string());
                 self.t.apply_thread(result);
+                self.state = self.t.meta().codex.clone().unwrap_or_default();
+                self.effort = self.t.meta().effort.clone();
+                for method in [
+                    "account/rateLimits/read",
+                    "collaborationMode/list",
+                    "thread/goal/get",
+                    "remoteControl/status/read",
+                    "thread/realtime/listVoices",
+                ] {
+                    let params = if method == "thread/goal/get" {
+                        json!({"threadId":id})
+                    } else {
+                        json!({})
+                    };
+                    fx.send.push(self.control_request("", method, params, true));
+                }
                 fx.meta = true;
                 match result.get("itemsBackwardsCursor").filter(|c| !c.is_null()) {
                     Some(cursor) if self.resume.is_some() => {
@@ -199,6 +305,7 @@ impl CodexDriver {
                 }
             }
             Pending::History => {
+                self.older_cursor = result.get("nextCursor").filter(|v| !v.is_null()).cloned();
                 let page = result.get("data").and_then(Value::as_array);
                 self.history.extend(page.into_iter().flatten().cloned());
                 match result.get("nextCursor").filter(|c| !c.is_null()) {
@@ -211,8 +318,17 @@ impl CodexDriver {
             }
             Pending::Models => {
                 let data = result.get("data").and_then(Value::as_array);
-                self.t
-                    .set_models(data.map(Vec::as_slice).unwrap_or_default());
+                self.models.extend(data.into_iter().flatten().cloned());
+                self.t.set_models(&self.models);
+                if let Some(cursor) = result.get("nextCursor").filter(|v| !v.is_null()) {
+                    if self.models.len() < 1000 {
+                        fx.send.push(self.request(
+                            "model/list",
+                            json!({"cursor":cursor}),
+                            Pending::Models,
+                        ));
+                    }
+                }
                 fx.meta = true;
             }
             Pending::Skills(revision) => {
@@ -267,6 +383,7 @@ impl CodexDriver {
                 fx.commands = true;
             }
             Pending::TurnStart => {
+                self.inflight_followup = None;
                 self.starting_turn = false;
                 if let Some(turn) = result.pointer("/turn/id").and_then(Value::as_str) {
                     self.t.turn_started(turn);
@@ -289,6 +406,24 @@ impl CodexDriver {
             .unwrap_or("codex refused the request")
             .to_string();
         match pending {
+            Pending::Control {
+                request_id,
+                method,
+                probe,
+            } => {
+                if error.get("code").and_then(Value::as_i64) == Some(-32601) {
+                    self.state.capabilities.retain(|m| m != &method);
+                }
+                if !probe {
+                    fx.frames
+                        .push(json!({"t":"codexResult", "requestId":request_id, "error":message}));
+                }
+            }
+            Pending::OlderHistory { request_id } => {
+                fx.frames
+                    .push(json!({"t":"codexResult", "requestId":request_id,"error":message}));
+            }
+            Pending::ForkDetached {request_id,result} => fx.frames.push(json!({"t":"codexResult","requestId":request_id,"error":format!("Fork {} was created, but could not detach it: {message}",result["thread"]["id"])})),
             Pending::Initialize | Pending::Thread => fx.ready = Some(Err(message)),
             Pending::History => {
                 tracing::warn!("codex history: {message}");
@@ -298,6 +433,10 @@ impl CodexDriver {
                 self.history_loaded(fx);
             }
             Pending::TurnStart => {
+                if let Some(followup) = self.inflight_followup.take() {
+                    self.followups.insert(0, followup);
+                    self.state.queue_paused = true;
+                }
                 self.starting_turn = false;
                 self.interrupt_on_start = false;
                 let message = if std::mem::take(&mut self.queued).is_empty() {
@@ -370,6 +509,30 @@ impl CodexDriver {
             params["approvalPolicy"] = json!(policy);
             params["sandboxPolicy"] = codex_transcript::sandbox_policy(mode)?;
         }
+        if let Some(policy) = &self.options.codex_approval_policy {
+            params["approvalPolicy"] = json!(policy);
+        }
+        if let Some(sandbox) = &self.options.codex_sandbox_mode {
+            params["sandboxPolicy"] = match sandbox.as_str() {
+                "read-only" => codex_transcript::sandbox_policy("read-only"),
+                "workspace-write" => codex_transcript::sandbox_policy("auto"),
+                _ => codex_transcript::sandbox_policy("full-access"),
+            }
+            .unwrap();
+        }
+        if let Some(tier) = &self.state.service_tier {
+            params["serviceTier"] = json!(tier);
+        }
+        if let Some(mode) = &self.state.collaboration_mode {
+            let preset = self
+                .state
+                .collaboration_modes
+                .iter()
+                .find(|v| v.get("mode").and_then(Value::as_str) == Some(mode));
+            if let Some(preset) = preset {
+                params["collaborationMode"] = json!({"mode":mode,"settings":{"model":self.model.as_ref().or(self.t.meta().model.as_ref()).map(|v| json!(v)).unwrap_or_else(||preset["model"].clone()),"reasoning_effort":self.effort,"developer_instructions":null}});
+            }
+        }
         if let Some(model) = &self.model {
             params["model"] = json!(model);
         }
@@ -397,20 +560,23 @@ impl CodexDriver {
         if self.thread_id.is_none() {
             bail!("Codex is still starting");
         }
-        // app-server has no document input kind. Upload files to the same
-        // private attachment folder Claude uses, and ask Codex to read them
-        // with its tools. Images still use native image input below.
-        let text = super::attachment::attachments_as_mentions(
-            self.thread_id.as_deref().expect("ready thread"),
-            text,
-            &[],
-            files,
-        )?;
-        let text = if files.is_empty() {
-            text
-        } else {
-            format!("{text}\n\nThe attached files above are local files on this machine. Read them with your tools; extract PDF text or pages as needed.")
-        };
+        let input = self.prompt_input(text, images, files)?;
+        self.t.set_busy();
+        Ok(Effects {
+            send: self.submit(input).into_iter().collect(),
+            meta: true,
+            ..Effects::default()
+        })
+    }
+
+    fn prompt_input(
+        &self,
+        text: &str,
+        images: &[PromptImage],
+        files: &[PromptFile],
+    ) -> Result<Vec<Value>> {
+        let context = self.file_context(files)?;
+        let text = format!("{text}{context}").trim_start().to_string();
         let mut input = Vec::new();
         if !text.trim().is_empty() {
             let trimmed = text.trim_start();
@@ -429,12 +595,20 @@ impl CodexDriver {
         input.extend(images.iter().map(|img| {
             json!({"type": "image", "url": format!("data:{};base64,{}", img.media_type, img.data)})
         }));
-        self.t.set_busy();
-        Ok(Effects {
-            send: self.submit(input).into_iter().collect(),
-            meta: true,
-            ..Effects::default()
-        })
+        Ok(input)
+    }
+
+    fn file_context(&self, files: &[PromptFile]) -> Result<String> {
+        if files.is_empty() {
+            return Ok(String::new());
+        }
+        let mentions = super::attachment::attachments_as_mentions(
+            self.thread_id.as_deref().expect("ready thread"),
+            "",
+            &[],
+            files,
+        )?;
+        Ok(format!("\n\n{}\n\nThe attached files above are local files on this machine. Read them with your tools; extract PDF text or pages as needed.", mentions.trim()))
     }
 
     pub fn approve(
@@ -442,15 +616,18 @@ impl CodexDriver {
         request_id: &str,
         decision: ApprovalDecision,
         answers: Option<&Map<String, Value>>,
-    ) -> Effects {
-        match self.t.resolve_approval(request_id, decision, answers) {
-            Some((i, response)) => Effects {
-                send: vec![response],
-                items: vec![i],
-                ..Effects::default()
+    ) -> Result<Effects> {
+        self.t.validate_decision(request_id, decision)?;
+        Ok(
+            match self.t.resolve_approval(request_id, decision, answers) {
+                Some((i, response)) => Effects {
+                    send: vec![response],
+                    items: vec![i],
+                    ..Effects::default()
+                },
+                None => Effects::default(),
             },
-            None => Effects::default(),
-        }
+        )
     }
 
     pub fn resolve_elicitation(
@@ -458,8 +635,19 @@ impl CodexDriver {
         request_id: &str,
         action: ElicitationAction,
         content: Option<&Map<String, Value>>,
-    ) -> Option<(usize, Value)> {
-        self.t.resolve_elicitation(request_id, action, content)
+    ) -> Result<Option<(usize, Value)>> {
+        let choice = match action {
+            ElicitationAction::Accept => "accept",
+            ElicitationAction::Decline => "decline",
+            ElicitationAction::Cancel => "cancel",
+        };
+        self.t
+            .resolve_elicitation_checked(
+                request_id,
+                choice,
+                content.map(|v| Value::Object(v.clone())).as_ref(),
+            )
+            .map(Some)
     }
 
     /// Withdraw open approvals, then stop the turn — once it has an id, if
@@ -467,6 +655,8 @@ impl CodexDriver {
     pub fn interrupt(&mut self) -> Effects {
         let (items, mut send) = self.t.cancel_approvals();
         self.queued.clear();
+        self.state.queue_paused = true;
+        self.t.set_codex_state(self.state.clone());
         match (self.thread_id.clone(), self.t.active_turn()) {
             (Some(thread), Some(turn)) => {
                 let params = json!({"threadId": thread, "turnId": turn});
@@ -478,6 +668,7 @@ impl CodexDriver {
         Effects {
             send,
             items,
+            meta: true,
             ..Effects::default()
         }
     }
@@ -488,12 +679,20 @@ impl CodexDriver {
             bail!("unknown Codex mode: {mode}");
         }
         self.mode = Some(mode.to_string());
+        self.options = LaunchOptions::default();
         self.t.set_permission_mode(mode);
         Ok(meta_changed())
     }
 
     pub fn set_model(&mut self, model: &str) -> Result<Effects> {
-        let Some(option) = self.t.meta().models.iter().find(|m| m.value == model) else {
+        let Some(option) = self
+            .t
+            .meta()
+            .models
+            .iter()
+            .find(|m| m.value == model)
+            .cloned()
+        else {
             bail!("unknown model: {model}");
         };
         // An effort the new model lacks would fail the next turn.
@@ -502,8 +701,16 @@ impl CodexDriver {
             .as_ref()
             .is_none_or(|e| option.effort_levels.contains(e));
         if !keeps_effort {
-            self.effort = None;
-            self.t.set_effort(None);
+            self.effort = option
+                .default_effort
+                .clone()
+                .or_else(|| option.effort_levels.first().cloned());
+            self.t.set_effort(self.effort.as_deref());
+        }
+        if self.state.service_tier.as_ref().is_some_and(|tier| {
+            tier != "default" && !option.service_tiers.iter().any(|v| v["id"] == *tier)
+        }) {
+            self.state.service_tier = Some("default".into());
         }
         self.model = Some(model.to_string());
         self.t.set_model_choice(model);
@@ -541,7 +748,7 @@ fn meta_changed() -> Effects {
 mod tests {
     use super::*;
 
-    fn driver() -> CodexDriver {
+    pub(super) fn driver() -> CodexDriver {
         CodexDriver {
             t: CodexTranscript::default(),
             cwd: "/tmp".into(),
@@ -558,6 +765,15 @@ mod tests {
             effort: None,
             skills: HashMap::new(),
             skills_revision: 0,
+            options: LaunchOptions::default(),
+            state: State::default(),
+            followups: Vec::new(),
+            inflight_followup: None,
+            models: Vec::new(),
+            older_cursor: None,
+            deadlines: HashMap::new(),
+            listed_threads: HashSet::new(),
+            remote_environment: None,
         }
     }
 

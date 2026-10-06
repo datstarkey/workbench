@@ -43,8 +43,17 @@ fn folds_a_recorded_turn() {
             json!({"jsonrpc":"2.0","id":1,"result":{"decision":"accept"}}),
         ]
     );
-    let kinds: Vec<&str> = t
+    assert!(t
         .items()
+        .iter()
+        .any(|i| matches!(i, TranscriptItem::Notice { .. })));
+    let items: Vec<_> = t
+        .items()
+        .iter()
+        .filter(|i| !matches!(i, TranscriptItem::Notice { .. }))
+        .cloned()
+        .collect();
+    let kinds: Vec<&str> = items
         .iter()
         .map(|i| match i {
             TranscriptItem::User { .. } => "user",
@@ -63,7 +72,7 @@ fn folds_a_recorded_turn() {
         images,
         timestamp,
         ..
-    } = &t.items()[0]
+    } = &items[0]
     else {
         panic!()
     };
@@ -71,7 +80,7 @@ fn folds_a_recorded_turn() {
     assert_eq!(*images, 1);
     assert_eq!(timestamp, "2026-10-01T18:41:04.596Z");
     assert_eq!(
-        t.items()[1],
+        items[1],
         TranscriptItem::Text {
             id: "msg_0ea25b3050922329016abea942fe0c87d28fbb148f90825439".into(),
             text: "I’ll request write access for the command, then create b.txt.\n".into(),
@@ -82,7 +91,7 @@ fn folds_a_recorded_turn() {
         status,
         output,
         ..
-    } = &t.items()[2]
+    } = &items[2]
     else {
         panic!()
     };
@@ -97,7 +106,7 @@ fn folds_a_recorded_turn() {
         can_always_allow,
         decision,
         ..
-    } = &t.items()[3]
+    } = &items[3]
     else {
         panic!()
     };
@@ -117,7 +126,7 @@ fn folds_a_recorded_turn() {
         patch,
         status,
         ..
-    } = &t.items()[4]
+    } = &items[4]
     else {
         panic!()
     };
@@ -128,13 +137,13 @@ fn folds_a_recorded_turn() {
         Some(json!([{"oldStart":0,"newStart":1,"lines":["+x"]}]))
     );
     assert_eq!(*status, ToolStatus::Ok);
-    let TranscriptItem::Approval { tool, input, .. } = &t.items()[5] else {
+    let TranscriptItem::Approval { tool, input, .. } = &items[5] else {
         panic!()
     };
     assert_eq!(tool, "Write");
     assert_eq!(input["file_path"], "/work/repo/b.txt");
     assert_eq!(
-        t.items()[6],
+        items[6],
         TranscriptItem::Text {
             id: "msg_0ea25b3050922329016abea94b634887d294ade77e852f60eb".into(),
             text: "done".into()
@@ -431,7 +440,7 @@ fn questions_map_answers_back_to_their_ids() {
     assert_eq!(tool, "AskUserQuestion");
     assert_eq!(
         input["questions"][0],
-        json!({"question":"Which language?","header":"Language","multiSelect":false,
+        json!({"id":"lang","isOther":true,"isSecret":false,"question":"Which language?","header":"Language","multiSelect":false,
             "options":[{"label":"Rust","description":"fast"},{"label":"Go","description":""}]})
     );
     assert_eq!(input["questions"][1]["options"], json!([]));
@@ -476,7 +485,13 @@ fn unsupported_requests_are_declined_at_once() {
     let mut t = CodexTranscript::default();
     let a = t.apply(&request(4, "item/tool/call", json!({})));
     assert_eq!(a.reply.unwrap()["error"]["code"], -32601);
-    assert!(t.items().is_empty());
+    let a = t.apply(&request(
+        5,
+        "mcpServer/elicitation/request",
+        json!({"mode":"openai/userVerification"}),
+    ));
+    assert_eq!(a.reply.unwrap()["result"]["action"], "decline");
+    assert!(matches!(t.items()[0], TranscriptItem::Notice { .. }));
     let a = t.apply(&note("some/new/thing", json!({})));
     assert_eq!(a.unknown_method.as_deref(), Some("some/new/thing"));
     assert_eq!(
@@ -618,4 +633,143 @@ fn presets_round_trip() {
         );
     }
     assert!(sandbox_mode("bypassPermissions").is_none());
+}
+
+#[test]
+fn network_approval_preserves_destination_without_inventing_a_command() {
+    let mut t = CodexTranscript::default();
+    t.apply(&request(1,"item/commandExecution/requestApproval",json!({"networkApprovalContext":{"host":"example.com","protocol":"https"},"availableDecisions":["accept","decline"],"environment":"container"})));
+    let TranscriptItem::Approval {
+        tool,
+        input,
+        can_always_allow,
+        ..
+    } = &t.items()[0]
+    else {
+        panic!()
+    };
+    assert_eq!(tool, "Network");
+    assert_eq!(input["networkApprovalContext"]["host"], "example.com");
+    assert_eq!(input["environment"], "container");
+    assert!(!can_always_allow);
+    let (_, reply) = t
+        .resolve_approval("request:1", ApprovalDecision::AlwaysAllow, None)
+        .unwrap();
+    assert_eq!(reply["result"]["decision"], "accept");
+}
+
+#[test]
+fn duplicate_questions_are_answered_by_id_and_secrets_never_echo_in_transcript() {
+    let mut t = CodexTranscript::default();
+    t.apply(&request(
+        1,
+        "item/tool/requestUserInput",
+        json!({"isBlocking":false,"questions":[
+            {"id":"first","question":"Which value?","isOther":false,"isSecret":true,"options":null},
+            {"id":"second","question":"Which value?","isOther":true,"isSecret":false,"options":null}
+        ]}),
+    ));
+    assert!(t.waiting_on().is_none());
+    let (_, reply) = t
+        .resolve_approval(
+            "request:1",
+            ApprovalDecision::Allow,
+            json!({"first":"secret-value","second":"public-value"}).as_object(),
+        )
+        .unwrap();
+    assert_eq!(
+        reply["result"]["answers"]["first"]["answers"],
+        json!(["secret-value"])
+    );
+    assert_eq!(
+        reply["result"]["answers"]["second"]["answers"],
+        json!(["public-value"])
+    );
+    assert!(!serde_json::to_string(t.items())
+        .unwrap()
+        .contains("secret-value"));
+}
+
+#[test]
+fn elicitation_invalid_form_can_be_corrected_and_first_valid_answer_wins() {
+    let mut t = CodexTranscript::default();
+    t.apply(&request(1,"mcpServer/elicitation/request",json!({"mode":"form","serverName":"example","requestedSchema":{"type":"object","required":["count","choice"],"properties":{"count":{"type":"integer","minimum":1,"maximum":5},"choice":{"type":"string","enum":["A","B"]}}}})));
+    assert!(t
+        .resolve_elicitation_checked(
+            "request:1",
+            "accept",
+            Some(&json!({"count":0,"choice":"A"}))
+        )
+        .is_err());
+    assert!(t.waiting_on().is_some());
+    let (_, reply) = t
+        .resolve_elicitation_checked(
+            "request:1",
+            "accept",
+            Some(&json!({"count":2,"choice":"B"})),
+        )
+        .unwrap();
+    assert_eq!(reply["result"]["action"], "accept");
+    assert_eq!(reply["result"]["content"], json!({"count":2,"choice":"B"}));
+    assert!(t
+        .resolve_elicitation_checked("request:1", "decline", None)
+        .is_err());
+    // Form responses are not copied into the transcript, which can contain passwords.
+    let TranscriptItem::Elicitation { content, .. } = &t.items()[0] else {
+        panic!()
+    };
+    assert!(content.is_none());
+    t.apply(&request(
+        2,
+        "mcpServer/elicitation/request",
+        json!({"mode":"url","url":"https://example.com"}),
+    ));
+    let (_, replies) = t.cancel_approvals();
+    assert_eq!(replies[0]["result"]["action"], "cancel");
+}
+
+#[test]
+fn subagents_review_artifacts_and_unknown_items_are_visible() {
+    let mut t = CodexTranscript::default();
+    for item in [
+        json!({"type":"collabAgentToolCall","id":"spawn","tool":"spawnAgent","receiverThreadIds":["child"],"agentsStates":{"child":{"status":"running","message":null}},"prompt":"Run tests","status":"completed"}),
+        json!({"type":"subAgentActivity","id":"done","agentThreadId":"child","agentPath":"tests","kind":"completed"}),
+        json!({"type":"enteredReviewMode","id":"review","review":"Reviewing changes"}),
+        json!({"type":"imageGeneration","id":"image","result":"aGVsbG8=","status":"completed"}),
+        json!({"type":"futureKind","id":"future","description":"New activity"}),
+    ] {
+        let fx = t.apply(&note("item/completed", json!({"item":item})));
+        assert!(!fx.items.is_empty());
+    }
+    assert_eq!(t.meta().tasks[0].id, "child");
+    assert_eq!(t.meta().tasks[0].status, "completed");
+    assert_eq!(t.artifacts("image").unwrap()[0]["mimeType"], "image/png");
+    assert!(t
+        .items()
+        .iter()
+        .any(|i| matches!(i,TranscriptItem::Notice{text,..}if text.contains("futureKind"))));
+}
+
+#[test]
+fn model_catalog_and_effective_thread_settings_keep_defaults_and_tiers() {
+    let mut t = CodexTranscript::default();
+    t.apply_thread(&json!({"model":"one","reasoningEffort":"high","approvalPolicy":"never","sandbox":{"type":"readOnly"},"thread":{"id":"t"}}));
+    t.set_models(&[json!({"id":"one","displayName":"One","defaultReasoningEffort":"medium","inputModalities":["text","image"],"serviceTiers":[{"id":"fast","name":"Fast","description":"Faster"}]})]);
+    assert_eq!(t.meta().effort.as_deref(), Some("high"));
+    assert_eq!(
+        t.meta().codex.as_ref().unwrap().approval_policy,
+        Some(json!("never"))
+    );
+    assert_eq!(t.meta().models[0].default_effort.as_deref(), Some("medium"));
+    assert_eq!(t.meta().models[0].service_tiers[0]["id"], "fast");
+}
+
+#[test]
+fn mcp_resources_and_structured_results_are_preserved_as_output() {
+    let mut t = CodexTranscript::default();
+    t.apply(&note("item/completed",json!({"item":{"id":"resource","type":"mcpToolCall","server":"example","tool":"read","status":"completed","arguments":{},"result":{"content":[{"type":"resource","resource":{"uri":"test://readme","text":"Embedded README"}},{"type":"resource_link","uri":"test://guide","name":"Guide"}],"structuredContent":{"answer":42}}}})));
+    let output = serde_json::to_value(t.items()).unwrap().to_string();
+    assert!(output.contains("Embedded README"));
+    assert!(output.contains("test://guide"));
+    assert!(output.contains("answer"));
 }

@@ -8,10 +8,13 @@
 	  file access, spawning shells/PTYs and binding the control-plane port need no
 	  entitlement. Swift is statically linked, so library validation stays enabled.
 
-	  Apple Events is the one exception — `send_fallback_notification` and the native
+	  Apple Events is one exception — `send_fallback_notification` and the native
 	  terminal helpers drive `osascript`, which hardened runtime blocks without it.
+	  Audio input permits microphone capture for explicitly started Codex voice sessions.
 	-->
 	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
 	<true/>
 </dict>
 </plist>

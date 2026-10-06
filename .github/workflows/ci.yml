@@ -72,6 +72,10 @@ jobs:
         if: needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true'
         run: bun run lint
 
+      - name: Check Codex protocol inventory
+        if: needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.rust == 'true'
+        run: python3 scripts/check-codex-protocol.py
+
       - name: Typecheck
         if: needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true'
         run: bun run check

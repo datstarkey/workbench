@@ -81,6 +81,7 @@ pub enum Launch {
         thread_id: Option<String>,
         /// A `CodexMode`; `None` leaves `~/.codex/config.toml` in charge.
         mode: Option<String>,
+        options: workbench_core::codex_controls::LaunchOptions,
     },
 }
 
@@ -185,10 +186,16 @@ impl AgentManager {
     /// chat starts in a terminal: see `agent_routes::claude_start`.)
     pub fn start(&self, req: StartAgent) -> Result<Arc<AgentSession>> {
         let kind = req.launch.kind();
-        let Launch::Codex { thread_id, mode } = &req.launch else {
+        let Launch::Codex {
+            thread_id,
+            mode,
+            options,
+        } = &req.launch
+        else {
             bail!("Claude chats start in a terminal");
         };
         codex::validate(thread_id.as_deref(), mode.as_deref())?;
+        options.validate()?;
         let known_id = req.launch.known_id().map(String::from);
         let session = {
             let _lifecycle = lock(&self.lifecycle);
@@ -205,7 +212,8 @@ impl AgentManager {
                     if self.live_count() >= max {
                         bail!("chat session limit reached ({max})");
                     }
-                    let launch = codex::launch(&req, thread_id.as_deref(), mode.as_deref());
+                    let launch =
+                        codex::launch(&req, thread_id.as_deref(), mode.as_deref(), options.clone());
                     self.spawn(req, launch)?
                 }
             }

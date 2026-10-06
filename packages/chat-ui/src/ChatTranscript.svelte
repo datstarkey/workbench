@@ -55,7 +55,7 @@
 		'Review my uncommitted changes'
 	];
 
-	const blocks = $derived(groupBlocks(chat.items));
+	const blocks = $derived(groupBlocks([...chat.historyItems, ...chat.items]));
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
 	const lastId = $derived(chat.items[chat.items.length - 1]?.id);
@@ -92,6 +92,7 @@
 				{cwd}
 				startedAt={chat.seenAt[block.item.id]}
 				fetchFullOutput={(id) => chat.fullOutput(id)}
+				fetchArtifacts={(id) => chat.artifacts(id)}
 			/>
 		{/if}
 	{/if}
@@ -250,7 +251,7 @@
 			</div>
 		{:else if block.item.kind === 'approval'}
 			{@const approval = block.item}
-			{#if inlineApprovals || approval.decision || approval.expired}
+			{#if inlineApprovals || approval.decision || approval.expired || approval.input?.isBlocking === false}
 				{#if approval.tool === 'AskUserQuestion'}
 					<ChatQuestion
 						{approval}

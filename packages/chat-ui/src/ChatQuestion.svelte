@@ -30,10 +30,10 @@
 
 	const answers = $derived(
 		Object.fromEntries(
-			questions.map((q, i) => [q.question, answerFor(picks[i] ?? [], others[i] ?? '')])
+			questions.map((q, i) => [q.id ?? q.question, answerFor(picks[i] ?? [], others[i] ?? '')])
 		)
 	);
-	const complete = $derived(questions.every((q) => answers[q.question]));
+	const complete = $derived(questions.every((q) => answers[q.id ?? q.question]));
 
 	function pick(index: number, label: string, multi: boolean) {
 		const current = picks[index] ?? [];
@@ -45,7 +45,7 @@
 			picks[index] = [label];
 			others[index] = '';
 			// A single choice is complete: move on to the next unanswered question.
-			const next = questions.findIndex((q, i) => i > index && !answers[q.question]);
+			const next = questions.findIndex((q, i) => i > index && !answers[q.id ?? q.question]);
 			if (next !== -1) active = next;
 		}
 		looking[index] = label;
@@ -70,11 +70,13 @@
 				{approval.expired ? `Question withdrawn by ${name}` : 'You skipped the question'}
 			</span>
 		{:else}
-			{#each questions as q (q.question)}
+			{#each questions as q (q.id ?? q.question)}
 				<span class="flex min-w-0 items-center gap-2">
 					<CheckIcon class="size-3.5 shrink-0 text-wb-ok" />
 					<span class="shrink-0">{q.header || q.question}</span>
-					<span class="min-w-0 truncate text-wb-ink">{approval.answers?.[q.question] ?? ''}</span>
+					<span class="min-w-0 truncate text-wb-ink"
+						>{q.isSecret ? 'Answered' : (approval.answers?.[q.id ?? q.question] ?? '')}</span
+					>
 				</span>
 			{/each}
 		{/if}
@@ -86,12 +88,14 @@
 	>
 		<header class="flex items-center gap-2 px-3.5 pt-3 text-xs text-wb-ink-mute">
 			<AgentIcon {agent} class="size-4" />
-			{name} needs your input
+			{approval.input?.isBlocking === false
+				? `${name} has an optional question`
+				: `${name} needs your input`}
 		</header>
 		{#if questions.length > 1}
 			<div class="flex flex-wrap gap-1 px-3.5 pt-3" role="tablist" aria-label="Questions">
-				{#each questions as q, qi (q.question)}
-					{@const done = Boolean(answers[q.question])}
+				{#each questions as q, qi (q.id ?? q.question)}
+					{@const done = Boolean(answers[q.id ?? q.question])}
 					<button
 						type="button"
 						role="tab"
@@ -115,7 +119,7 @@
 			</div>
 		{/if}
 		<div class="flex flex-col gap-5 px-3.5 pt-3">
-			{#each questions as q, qi (q.question)}
+			{#each questions as q, qi (q.id ?? q.question)}
 				{#if qi === active}
 					{@const chosen = picks[qi] ?? []}
 					{@const preview = q.options.find((o) => o.label === looking[qi])?.preview}
@@ -176,16 +180,19 @@
 							<pre
 								class="scrollbar-thin max-h-48 overflow-auto rounded-md border border-wb-hair bg-wb-bg px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre text-wb-ink-mute">{preview}</pre>
 						{/if}
-						<label class="flex items-center gap-2 text-xs text-wb-ink-mute">
-							<span class="shrink-0">Other</span>
-							<input
-								type="text"
-								value={others[qi] ?? ''}
-								oninput={(e) => typeOther(qi, q.multiSelect, e.currentTarget.value)}
-								placeholder="Type your own answer"
-								class="min-w-0 flex-1 rounded-md border border-wb-hair bg-wb-bg px-2.5 py-1.5 text-xs text-wb-ink placeholder:text-wb-ink-soft focus:border-wb-ink-soft focus:outline-none"
-							/>
-						</label>
+						{#if q.isOther !== false || q.options.length === 0}
+							<label class="flex items-center gap-2 text-xs text-wb-ink-mute">
+								<span class="shrink-0">Other</span>
+								<input
+									type={q.isSecret ? 'password' : 'text'}
+									autocomplete="off"
+									value={others[qi] ?? ''}
+									oninput={(e) => typeOther(qi, q.multiSelect, e.currentTarget.value)}
+									placeholder="Type your own answer"
+									class="min-w-0 flex-1 rounded-md border border-wb-hair bg-wb-bg px-2.5 py-1.5 text-xs text-wb-ink placeholder:text-wb-ink-soft focus:border-wb-ink-soft focus:outline-none"
+								/>
+							</label>
+						{/if}
 					</fieldset>
 				{/if}
 			{/each}
@@ -202,7 +209,7 @@
 			{#if !complete && !sent}
 				<span class="text-[11px] text-wb-ink-soft">
 					{questions.length > 1
-						? `${questions.filter((q) => answers[q.question]).length} of ${questions.length} answered`
+						? `${questions.filter((q) => answers[q.id ?? q.question]).length} of ${questions.length} answered`
 						: 'Choose an answer to continue'}
 				</span>
 			{/if}
