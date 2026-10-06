@@ -106,11 +106,11 @@
 	/** The `/` and `@` menus: matches for what's being typed, unless dismissed with Esc. */
 	let menuIndex = $state(0);
 	let dismissedAt = $state<string | null>(null);
-	const query = $derived(slashQuery(draft));
-	const matches = $derived(query === null ? [] : matchCommands(commands, query));
+	let caret = $state(0);
+	const slash = $derived(slashQuery(draft, caret));
+	const matches = $derived(slash ? matchCommands(commands, slash.query) : []);
 	const menuOpen = $derived(matches.length > 0 && dismissedAt !== draft && !disabledReason);
 
-	let caret = $state(0);
 	let paths = $state.raw<string[]>([]);
 	const mention = $derived(loadFiles && !menuOpen ? mentionQuery(draft, caret) : null);
 	const fileMatches = $derived(mention ? matchFiles(paths, mention.query) : []);
@@ -136,18 +136,29 @@
 		textarea.setSelectionRange(next.caret, next.caret);
 	}
 
-	function pick(command: SlashCommand, sendNow: boolean) {
+	/**
+	 * A command that is the whole draft can be handled here or sent at once;
+	 * one typed mid-line is inserted where it stands, for Claude to expand.
+	 */
+	async function pick(command: SlashCommand, sendNow: boolean) {
+		if (!slash || !textarea) return;
 		menuIndex = 0;
-		if (onCommand?.(command.name)) {
+		const whole = slash.start === 0 && !draft.slice(caret).trim();
+		if (whole && onCommand?.(command.name)) {
 			draft = '';
 			return;
 		}
-		if (command.argumentHint || !sendNow) {
-			draft = `/${command.name} `;
+		if (whole && sendNow && !command.argumentHint) {
+			draft = `/${command.name}`;
+			send();
 			return;
 		}
-		draft = `/${command.name}`;
-		send();
+		const token = `/${command.name} `;
+		const after = draft.slice(caret).replace(/^\S*/, '').replace(/^ /, '');
+		draft = draft.slice(0, slash.start) + token + after;
+		caret = slash.start + token.length;
+		await tick();
+		textarea.setSelectionRange(caret, caret);
 	}
 
 	const canSend = $derived(
@@ -226,7 +237,7 @@
 			}
 			if ((event.key === 'Enter' && !event.shiftKey && !event.isComposing) || event.key === 'Tab') {
 				event.preventDefault();
-				if (menuOpen) pick(matches[active], event.key === 'Enter' && enterSends);
+				if (menuOpen) void pick(matches[active], event.key === 'Enter' && enterSends);
 				else void pickFile(fileMatches[active]);
 				return;
 			}
@@ -259,7 +270,7 @@
 			items={matches}
 			key={(command) => command.name}
 			{active}
-			onPick={(command) => pick(command, true)}
+			onPick={(command) => void pick(command, true)}
 			onHover={(i) => (menuIndex = i)}
 		>
 			{#snippet row(command)}
@@ -282,10 +293,10 @@
 			onHover={(i) => (menuIndex = i)}
 		>
 			{#snippet row(path)}
-				{@const slash = path.lastIndexOf('/')}
-				<span class="shrink-0 font-mono text-wb-ink">{path.slice(slash + 1)}</span>
+				{@const cut = path.lastIndexOf('/')}
+				<span class="shrink-0 font-mono text-wb-ink">{path.slice(cut + 1)}</span>
 				<span class="min-w-0 truncate font-mono text-[11px] text-wb-ink-soft">
-					{path.slice(0, slash + 1)}
+					{path.slice(0, cut + 1)}
 				</span>
 			{/snippet}
 		</ChatMenu>
