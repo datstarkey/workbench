@@ -956,6 +956,50 @@ fn the_initialize_reply_lists_models_to_pick_from() {
 }
 
 #[test]
+fn pinned_models_outlast_a_plugin_list_and_its_choice_and_effort_show() {
+    let real = |value: &str, resolved: &str| ModelOption {
+        value: value.into(),
+        display_name: value.into(),
+        description: String::new(),
+        resolved_model: Some(resolved.into()),
+        effort_levels: vec!["low".into(), "high".into()],
+    };
+    let mut t = Transcript::default();
+    t.pin_models(vec![
+        real("default", "claude-opus-5-5"),
+        real("sonnet", "claude-sonnet-5-5"),
+    ]);
+    // A terminal's plugin: guessed list, plus the pick `/config` holds.
+    let a = t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[{"value":"sonnet","displayName":"Sonnet"}],"modelChoice":"sonnet"}}}),
+    );
+    assert!(a.meta);
+    assert_eq!(t.meta().models.len(), 2);
+    assert_eq!(t.meta().model_choice.as_deref(), Some("sonnet"));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
+
+    t.set_permission_mode("plan");
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-sonnet-5-5","effort":"high"}));
+    assert_eq!(t.meta().effort.as_deref(), Some("high"));
+    assert_eq!(t.meta().permission_mode.as_deref(), Some("plan"));
+}
+
+#[test]
+fn a_prompt_put_into_a_running_turn_shows_as_typed() {
+    let mut t = Transcript::default();
+    let framed = format!(
+        "{QUEUED_PROMPT_PREFIX}look at @/tmp/a.png\n\nAttached files (read each with the Read tool):\n- /tmp/a.png\n\nIMPORTANT: do it"
+    );
+    t.apply(&json!({"type":"user","uuid":"q","isMeta":true,"message":{"content":framed}}));
+    assert!(
+        matches!(&t.items()[..], [TranscriptItem::User { text, .. }] if text == "look at @/tmp/a.png"),
+        "{:?}",
+        t.items()
+    );
+}
+
+#[test]
 fn slash_commands_come_from_initialize_and_updates() {
     let mut t = Transcript::default();
     let a = t.apply(&json!({"type":"control_response","response":{"subtype":"success","request_id":"i",

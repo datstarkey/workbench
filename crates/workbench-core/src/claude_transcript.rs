@@ -29,7 +29,7 @@ mod summary;
 mod title;
 
 pub use branch::fork_point;
-pub use cache::KEEPALIVE_PROMPT;
+pub use cache::{written_cache_ttl, KEEPALIVE_PROMPT};
 pub use elicitation::ElicitationAction;
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use summary::{RunningSummary, WaitingSummary};
@@ -147,6 +147,9 @@ pub struct Transcript {
     skill_bodies_due: VecDeque<String>,
     /// A keep-alive turn is running: its reply stays out of the chat.
     keepalive: bool,
+    /// `meta.models` came from the server's own `initialize` probe, which a
+    /// terminal plugin's guessed list must not replace.
+    models_pinned: bool,
 }
 
 /// Largest tool output kept whole for "show full output".
@@ -241,9 +244,16 @@ impl Transcript {
                 self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from)
             }
             Some("system") => match str_at(obj, "subtype") {
+                // A terminal's plugin sends one per request, with the effort
+                // the engine resolved; it knows no permission mode to report.
                 Some("init") => {
                     self.set_model(str_at(obj, "model").map(String::from));
-                    self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from);
+                    if let Some(mode) = str_at(obj, "permissionMode") {
+                        self.meta.permission_mode = Some(mode.to_string());
+                    }
+                    if let Some(effort) = str_at(obj, "effort") {
+                        self.meta.effort = Some(effort.to_string());
+                    }
                 }
                 Some("status") if str_at(obj, "status") == Some("requesting") => {
                     self.meta.busy = true
@@ -533,36 +543,31 @@ impl Transcript {
         self.meta.effort = Some(level.to_string());
     }
 
+    /// The models the CLI really offers (see `claude_accounts::models`), kept
+    /// over any list an `initialize` reply brings later.
+    pub fn pin_models(&mut self, models: Vec<ModelOption>) {
+        self.meta.models = models;
+        self.models_pinned = true;
+        if let Some(choice) = self.meta.model_choice.clone() {
+            self.set_model_choice(&choice);
+        }
+    }
+
     /// Replies to the host's own requests; the `initialize` reply lists the
-    /// models the session can switch to.
+    /// models the session can switch to. A terminal's plugin also names the
+    /// current pick (`modelChoice`), which `-p` has no way to say.
     fn apply_control_response(&mut self, obj: &Value) {
-        let Some(models) = obj
-            .pointer("/response/response/models")
-            .and_then(Value::as_array)
-        else {
+        let Some(reply) = obj.pointer("/response/response") else {
             return;
         };
-        self.meta.models = models
-            .iter()
-            .filter_map(|m| {
-                Some(ModelOption {
-                    value: str_at(m, "value")?.to_string(),
-                    display_name: str_at(m, "displayName").unwrap_or_default().to_string(),
-                    description: str_at(m, "description").unwrap_or_default().to_string(),
-                    resolved_model: str_at(m, "resolvedModel").map(String::from),
-                    effort_levels: m
-                        .get("supportedEffortLevels")
-                        .and_then(Value::as_array)
-                        .map(|l| {
-                            l.iter()
-                                .filter_map(Value::as_str)
-                                .map(String::from)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                })
-            })
-            .collect();
+        if let Some(models) = reply.get("models").and_then(Value::as_array) {
+            if !self.models_pinned {
+                self.meta.models = model_options(models);
+            }
+        }
+        if let Some(choice) = str_at(reply, "modelChoice") {
+            self.set_model_choice(choice);
+        }
     }
 
     /// Record the answer to an approval and build the `control_response` for
@@ -809,7 +814,10 @@ impl Transcript {
         // Some turns stream a skill body with neither flag (seen on CLI
         // 2.1.286 beside prompts sent mid-turn), so the body is also known by
         // its opening line, which no prompt starts with.
-        if flagged || text.starts_with(SKILL_BODY_PREFIX) {
+        // A prompt a terminal's plugin put into a running turn: show what was typed.
+        let queued = queued_prompt(text);
+        let text = queued.unwrap_or(text);
+        if (flagged && queued.is_none()) || text.starts_with(SKILL_BODY_PREFIX) {
             self.attach_skill_body(obj, text, changed);
             return;
         }
@@ -1221,6 +1229,46 @@ fn control_reply(obj: &Value) -> Option<(String, Result<Value, String>)> {
         _ => Err(str_at(r, "error").unwrap_or("request failed").to_string()),
     };
     Some((id, result))
+}
+
+/// How a terminal's plugin frames a chat prompt it puts into a running turn
+/// (the CLI's own wording for a prompt typed mid-turn).
+pub const QUEUED_PROMPT_PREFIX: &str = "The user sent a new message while you were working:\n";
+
+/// The typed text of a [`QUEUED_PROMPT_PREFIX`] row, without the framing.
+fn queued_prompt(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix(QUEUED_PROMPT_PREFIX)?;
+    let end = ["\n\nAttached files", "\n\nIMPORTANT:"]
+        .iter()
+        .filter_map(|m| rest.find(m))
+        .min()
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// The models an `initialize` reply lists, as the chat's picker offers them.
+pub fn model_options(models: &[Value]) -> Vec<ModelOption> {
+    models
+        .iter()
+        .filter_map(|m| {
+            Some(ModelOption {
+                value: str_at(m, "value")?.to_string(),
+                display_name: str_at(m, "displayName").unwrap_or_default().to_string(),
+                description: str_at(m, "description").unwrap_or_default().to_string(),
+                resolved_model: str_at(m, "resolvedModel").map(String::from),
+                effort_levels: m
+                    .get("supportedEffortLevels")
+                    .and_then(Value::as_array)
+                    .map(|l| {
+                        l.iter()
+                            .filter_map(Value::as_str)
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

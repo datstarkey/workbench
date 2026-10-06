@@ -4,11 +4,17 @@
 //! transcripts — verified against Claude Code 2.1.286. The implicit default
 //! account (id `None`) is `~/.claude` with no override.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
+use crate::claude_transcript::{model_options, ModelOption};
 use crate::paths;
 use crate::types::WorkbenchSettings;
 
@@ -133,7 +139,7 @@ pub struct UsageLimit {
 }
 
 /// Starting the CLI and asking Anthropic for the numbers takes a couple of seconds.
-const USAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// `account_id`'s plan limits, from `claude -p /usage` — the same server-side
 /// figures as `/usage` in a session, so they include other devices and
@@ -147,6 +153,70 @@ pub fn usage(account_id: Option<&str>) -> Result<Vec<UsageLimit>> {
     let stdout = crate::shell::output_with_timeout(&mut cmd, USAGE_TIMEOUT)
         .context("`claude -p /usage` failed or timed out")?;
     Ok(parse_usage(&stdout))
+}
+
+/// The CLI answers `initialize` in about a second; slow MCP start-ups add to it.
+const MODELS_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The models `account_id` can pick in `cwd` (project settings can narrow
+/// them), each with its effort levels, from the CLI's `initialize` reply. Only
+/// the handshake is sent, so no model is called and nothing is billed; hooks
+/// are off so a probe doesn't run the person's `SessionStart` hooks. Closing
+/// stdin then ends the CLI, which stops its MCP servers itself; it is killed
+/// only if it hangs.
+pub fn models(account_id: Option<&str>, cwd: &Path) -> Result<Vec<ModelOption>> {
+    let mut cmd = claude_command(account_id)?;
+    cmd.args([
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--no-session-persistence",
+        "--settings",
+        r#"{"disableAllHooks":true}"#,
+    ])
+    .current_dir(cwd)
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+    let mut child = cmd.spawn().context("Failed to run claude")?;
+    let reply = initialize_reply(&mut child);
+    drop(child.stdin.take());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while matches!(child.try_wait(), Ok(None)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let reply = reply?;
+    let models = reply
+        .pointer("/response/response/models")
+        .and_then(Value::as_array)
+        .with_context(|| format!("`claude` listed no models: {}", reply["response"]))?;
+    Ok(model_options(models))
+}
+
+/// Send `initialize` and wait for its reply; the caller reaps the child either way.
+fn initialize_reply(child: &mut std::process::Child) -> Result<Value> {
+    let hello = json!({"type": "control_request", "request_id": "models",
+        "request": {"subtype": "initialize"}});
+    writeln!(child.stdin.as_mut().context("no stdin")?, "{hello}")?;
+    let stdout = child.stdout.take().context("no stdout")?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let reply = BufReader::new(stdout)
+            .lines()
+            .map_while(std::io::Result::ok)
+            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+            .find(|v| v.get("type").and_then(Value::as_str) == Some("control_response"));
+        let _ = tx.send(reply);
+    });
+    rx.recv_timeout(MODELS_TIMEOUT)
+        .ok()
+        .flatten()
+        .context("`claude` didn't answer `initialize`")
 }
 
 /// Picks `Current <label>: <n>% used[ · resets <when>]` lines out of the text.

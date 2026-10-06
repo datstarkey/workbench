@@ -1,6 +1,8 @@
 //! Prompt cache timing: when the cache the latest API call used expires, and
 //! the keep-alive turn that refreshes it without showing in the chat.
 
+use std::path::Path;
+
 use serde_json::Value;
 
 use super::{str_at, Transcript, TranscriptItem};
@@ -25,6 +27,24 @@ impl Transcript {
         self.meta.cache_expires_at = Some(line_time_ms(obj) + ttl * 1000);
     }
 
+    /// Set the cache's lifetime learned elsewhere (a terminal's plugin reports
+    /// usage without the split, so its session reads the transcript file),
+    /// moving the expiry to match. False when nothing changed.
+    pub fn learn_cache_ttl(&mut self, ttl: u64) -> bool {
+        if self.meta.cache_ttl_secs == Some(ttl) {
+            return false;
+        }
+        let old = self
+            .meta
+            .cache_ttl_secs
+            .replace(ttl)
+            .unwrap_or(DEFAULT_TTL_SECS);
+        if let Some(at) = &mut self.meta.cache_expires_at {
+            *at = (*at + ttl * 1000).saturating_sub(old * 1000);
+        }
+        true
+    }
+
     /// A keep-alive prompt's echo: true if `text` is one, after recording it.
     pub(super) fn start_keepalive(
         &mut self,
@@ -43,16 +63,41 @@ impl Transcript {
     }
 }
 
-/// The lifetime a call wrote its cache with; `None` when it only read.
+/// The lifetime a call wrote its cache with; `None` when it only read, or
+/// its usage has no `cache_creation` split (a terminal's plugin) to say.
 fn written_ttl_secs(usage: &Value) -> Option<u64> {
-    let n = |p| usage.pointer(p).and_then(Value::as_u64).unwrap_or(0);
-    if n("/cache_creation/ephemeral_1h_input_tokens") > 0 {
+    let split = usage.get("cache_creation")?;
+    let n = |k| split.get(k).and_then(Value::as_u64).unwrap_or(0);
+    if n("ephemeral_1h_input_tokens") > 0 {
         Some(3600)
-    } else if n("/cache_creation_input_tokens") > 0 {
+    } else if n("ephemeral_5m_input_tokens") > 0 {
         Some(300)
     } else {
         None
     }
+}
+
+/// How much of a session JSONL's end is searched for the newest cache write.
+const TAIL_BYTES: u64 = 512 * 1024;
+
+/// The lifetime the newest call near the end of a session JSONL wrote its
+/// cache with. Only the tail is read: transcripts run to many megabytes.
+pub fn written_cache_ttl(path: &Path) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    // A cut first line is never whole JSON, so parsing skips it.
+    text.lines().rev().find_map(|line| {
+        let obj: Value = serde_json::from_str(line).ok()?;
+        if str_at(&obj, "type") != Some("assistant") {
+            return None;
+        }
+        written_ttl_secs(obj.pointer("/message/usage")?)
+    })
 }
 
 /// When a line was written: its `timestamp` (JSONL history), else now (a live event).
@@ -96,6 +141,51 @@ mod tests {
             json!({"cache_read_input_tokens":500}),
         ));
         assert_eq!(t.meta().cache_expires_at, Some(T0 + 600_000 + 3_600_000));
+    }
+
+    #[test]
+    fn flat_usage_keeps_the_ttl_until_one_is_learned() {
+        // A terminal's plugin: counts only, no `cache_creation` split.
+        let flat = json!({"cache_creation_input_tokens":500});
+        let mut t = Transcript::default();
+        t.apply(&call("2026-10-01T21:07:10Z", flat.clone()));
+        assert_eq!(t.meta().cache_expires_at, Some(T0 + 300_000));
+
+        assert!(t.learn_cache_ttl(3600));
+        assert_eq!(t.meta().cache_ttl_secs, Some(3600));
+        assert_eq!(t.meta().cache_expires_at, Some(T0 + 3_600_000));
+        assert!(!t.learn_cache_ttl(3600));
+
+        // Later flat writes keep the learned lifetime.
+        t.apply(&call("2026-10-01T21:17:10Z", flat));
+        assert_eq!(t.meta().cache_expires_at, Some(T0 + 600_000 + 3_600_000));
+    }
+
+    #[test]
+    fn the_newest_split_in_a_jsonl_names_the_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let lines = [
+            call(
+                "2026-10-01T21:07:10Z",
+                json!({"cache_creation_input_tokens":500,
+                "cache_creation":{"ephemeral_5m_input_tokens":500,"ephemeral_1h_input_tokens":0}}),
+            ),
+            call(
+                "2026-10-01T21:08:10Z",
+                json!({"cache_creation_input_tokens":500,
+                "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":500}}),
+            ),
+            call(
+                "2026-10-01T21:09:10Z",
+                json!({"cache_read_input_tokens":500,
+                "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}),
+            ),
+        ];
+        let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+        std::fs::write(&path, text.join("\n")).unwrap();
+        assert_eq!(written_cache_ttl(&path), Some(3600));
+        assert_eq!(written_cache_ttl(&dir.path().join("missing.jsonl")), None);
     }
 
     #[test]

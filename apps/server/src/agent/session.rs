@@ -84,6 +84,8 @@ pub struct AgentSession {
     cache_policies: Arc<PolicyStore>,
     /// The cache expiry upkeep last acted on, so it acts once per expiry.
     upkept_for: Mutex<Option<u64>>,
+    /// The session JSONL, found once per session id (`learn_cache_ttl`).
+    transcript_path: Mutex<Option<(String, PathBuf)>>,
 }
 
 /// The command every chat process starts from: cwd, pipes, the inherited
@@ -264,6 +266,7 @@ impl AgentSession {
             cache_policy: Mutex::new(cache_policy),
             cache_policies: cache_policies.clone(),
             upkept_for: Mutex::new(None),
+            transcript_path: Mutex::new(None),
         })
     }
 
@@ -285,6 +288,54 @@ impl AgentSession {
     /// Apply a line the plugin posted, as the reader thread does for a process's stdout.
     pub(super) fn feed(&self, line: &str, alias: impl FnOnce(&str)) {
         self.apply_line(line, alias);
+    }
+
+    pub fn claude_account_id(&self) -> Option<String> {
+        self.claude_account_id.clone()
+    }
+
+    pub fn cwd(&self) -> PathBuf {
+        PathBuf::from(&self.relaunch.cwd)
+    }
+
+    /// Replace a terminal plugin's guessed model list with the CLI's own.
+    pub fn pin_models(&self, models: Vec<workbench_core::claude_transcript::ModelOption>) {
+        let mut d = lock(&self.driver);
+        if let Driver::Claude(t) = &mut *d {
+            t.pin_models(models);
+            self.broadcast_update(t, &[]);
+        }
+    }
+
+    /// The plugin's usage has no `cache_creation` split, so a terminal's
+    /// session reads the cache's lifetime from its transcript file each time
+    /// a turn ends (its rows are written by then); the CLI may change it.
+    pub(super) fn learn_cache_ttl(&self) {
+        let super::Launch::Claude { config_dir, .. } = &self.relaunch.launch else {
+            return;
+        };
+        let id = self.id();
+        let path = {
+            let mut found = lock(&self.transcript_path);
+            match &*found {
+                Some((for_id, path)) if *for_id == id => Some(path.clone()),
+                _ => {
+                    let path = super::claude::history(config_dir.as_deref(), &id);
+                    *found = path.clone().map(|p| (id, p));
+                    path
+                }
+            }
+        };
+        let Some(ttl) = path.and_then(|p| workbench_core::claude_transcript::written_cache_ttl(&p))
+        else {
+            return;
+        };
+        let mut d = lock(&self.driver);
+        if let Driver::Claude(t) = &mut *d {
+            if t.learn_cache_ttl(ttl) {
+                self.broadcast_update(t, &[]);
+            }
+        }
     }
 
     pub fn has_exited(&self) -> bool {
