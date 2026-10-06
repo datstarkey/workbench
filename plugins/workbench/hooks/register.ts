@@ -1,5 +1,5 @@
 import type { AnyEventHook, Register } from 'claude-code';
-import { noteBackgroundTasks, register as registerChat } from './chat';
+import { noteBackgroundTasks, notePermissionMode, register as registerChat } from './chat';
 
 const REFRESH_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
 
@@ -7,6 +7,7 @@ const REFRESH_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
 // outside Workbench they are unset and the plugin does nothing. Awaiting the
 // POST (the bridge answers once it has handled the event) keeps events in order.
 const forward: AnyEventHook = async ($, e, next) => {
+	notePermissionMode((e as { permission_mode?: string }).permission_mode);
 	const socket = await $.env.get('WORKBENCH_HOOK_SOCKET');
 	const paneId = await $.env.get('WORKBENCH_PANE_ID');
 	if (socket && paneId) {
