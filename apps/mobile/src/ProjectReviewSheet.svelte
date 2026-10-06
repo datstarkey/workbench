@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { onMount } from 'svelte';
 	import type { AgentKind, DiscoveredClaudeSession, GitFileStatus } from '@workbench/types';
 	import { cn } from '@workbench/ui';
@@ -87,7 +88,7 @@
 		<div class="flex flex-wrap items-center gap-2">
 			{#if tab === 'history'}
 				<label class="flex items-center gap-2 text-xs"
-					>Agent
+					>Agent <AgentIcon {agent} class="size-4" />
 					<select
 						class="h-9 rounded-lg border border-wb-hair bg-wb-panel2 px-2"
 						bind:value={agent}

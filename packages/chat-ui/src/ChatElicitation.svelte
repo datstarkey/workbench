@@ -1,7 +1,7 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
-	import PlugIcon from '@lucide/svelte/icons/plug';
 	import XIcon from '@lucide/svelte/icons/x';
 	import type { AgentKind, ElicitationAction } from '@workbench/types';
 	import { agentName } from './chat-format';
@@ -128,7 +128,7 @@
 		aria-label="{elicitation.server} needs your input"
 	>
 		<header class="flex items-center gap-2 px-3.5 pt-3 text-sm">
-			<PlugIcon class="size-4 shrink-0 text-wb-accent" />
+			<AgentIcon {agent} class="size-4" />
 			<span class="font-medium text-wb-ink">{heading}</span>
 			<span class="ml-auto shrink-0 text-xs text-wb-ink-soft">MCP · {agentName(agent)}</span>
 		</header>

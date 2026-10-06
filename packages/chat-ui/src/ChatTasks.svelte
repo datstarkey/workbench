@@ -1,6 +1,6 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { onMount } from 'svelte';
-	import BotIcon from '@lucide/svelte/icons/bot';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import TerminalSquareIcon from '@lucide/svelte/icons/square-terminal';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -21,6 +21,7 @@
 	import ChatTaskTranscript from './ChatTaskTranscript.svelte';
 
 	let {
+		agent = 'claude',
 		tasks,
 		seenAt,
 		cwd,
@@ -29,6 +30,7 @@
 		onClose,
 		class: className
 	}: {
+		agent?: 'claude' | 'codex';
 		tasks: TaskInfo[];
 		/** When each task was first seen, for running timers. */
 		seenAt: Record<string, number>;
@@ -93,7 +95,7 @@
 		)}
 		onclick={() => (pickedTab = key)}
 	>
-		{#if key === 'agents'}<BotIcon class="size-3" />{:else}<TerminalSquareIcon
+		{#if key === 'agents'}<AgentIcon {agent} class="size-3" />{:else}<TerminalSquareIcon
 				class="size-3"
 			/>{/if}
 		{label}

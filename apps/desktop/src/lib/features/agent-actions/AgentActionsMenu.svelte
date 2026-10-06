@@ -1,7 +1,6 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import PlayIcon from '@lucide/svelte/icons/play';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
-	import ZapIcon from '@lucide/svelte/icons/zap';
 	import { Badge } from '@workbench/ui/badge';
 	import { Button } from '@workbench/ui/button';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
@@ -129,13 +128,13 @@
 					<DropdownMenu.SubContent class="w-52">
 						{#if action.target !== 'codex'}
 							<DropdownMenu.Item onclick={() => runAction(action, 'claude')}>
-								<SparklesIcon class="size-3.5 text-violet-400" />
+								<AgentIcon agent="claude" class="size-3.5" />
 								Start in Claude
 							</DropdownMenu.Item>
 						{/if}
 						{#if action.target !== 'claude'}
 							<DropdownMenu.Item onclick={() => runAction(action, 'codex')}>
-								<ZapIcon class="size-3.5 text-sky-400" />
+								<AgentIcon agent="codex" class="size-3.5" />
 								Start in Codex
 							</DropdownMenu.Item>
 						{/if}

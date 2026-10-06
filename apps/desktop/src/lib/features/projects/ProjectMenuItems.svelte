@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import type { Component } from 'svelte';
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
@@ -9,10 +10,8 @@
 	import PlayCircleIcon from '@lucide/svelte/icons/play-circle';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
-	import ZapIcon from '@lucide/svelte/icons/zap';
 	import {
 		getClaudeSessionStore,
 		getGitHubStore,
@@ -67,7 +66,7 @@
 	Open
 </Item>
 <Item onclick={() => claudeSessionStore.startSessionByProject(project.path)}>
-	<SparklesIcon class="size-3.5" />
+	<AgentIcon agent="claude" class="size-3.5" />
 	New Claude Session
 </Item>
 {#if runnableActions.length > 0}
@@ -80,13 +79,13 @@
 			{#each runnableActions as action (action.id)}
 				{#if action.target !== 'codex'}
 					<Item onclick={() => runAction(action, 'claude')}>
-						<SparklesIcon class="size-3.5 text-violet-400" />
+						<AgentIcon agent="claude" class="size-3.5" />
 						<span class="truncate">Claude: {action.name}</span>
 					</Item>
 				{/if}
 				{#if action.target !== 'claude'}
 					<Item onclick={() => runAction(action, 'codex')}>
-						<ZapIcon class="size-3.5 text-sky-400" />
+						<AgentIcon agent="codex" class="size-3.5" />
 						<span class="truncate">Codex: {action.name}</span>
 					</Item>
 				{/if}

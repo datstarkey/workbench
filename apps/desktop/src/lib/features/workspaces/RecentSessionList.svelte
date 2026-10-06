@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import XIcon from '@lucide/svelte/icons/x';
 	import * as ContextMenu from '@workbench/ui/context-menu';
@@ -6,11 +7,13 @@
 	import type { DiscoveredClaudeSession } from '$types/workbench';
 
 	let {
+		agent,
 		title,
 		sessions,
 		onResume,
 		onRemove
 	}: {
+		agent: 'claude' | 'codex';
 		title: string;
 		sessions: DiscoveredClaudeSession[];
 		onResume: (sessionId: string, label: string) => void;
@@ -20,8 +23,10 @@
 
 {#if sessions.length > 0}
 	<div class="mt-8 w-full">
-		<h3 class="mb-2 text-left text-xs font-medium tracking-wider text-muted-foreground uppercase">
-			{title}
+		<h3
+			class="mb-2 flex items-center gap-2 text-left text-xs font-medium tracking-wider text-muted-foreground uppercase"
+		>
+			<AgentIcon {agent} class="size-3.5" />{title}
 		</h3>
 		<div class="flex flex-col gap-1">
 			{#each sessions as session (session.sessionId)}

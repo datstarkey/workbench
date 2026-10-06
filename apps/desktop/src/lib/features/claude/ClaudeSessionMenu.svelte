@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import { Button } from '@workbench/ui/button';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
@@ -54,7 +55,12 @@
 		<Tooltip.Content>{tooltipLabel}</Tooltip.Content>
 	</Tooltip.Root>
 	<DropdownMenu.Content align="end" class="max-h-80 w-72 overflow-y-auto">
-		<DropdownMenu.Label>Past Sessions</DropdownMenu.Label>
+		<DropdownMenu.Label class="flex items-center gap-2"
+			><AgentIcon agent={type === 'codex' ? 'codex' : 'claude'} class="size-3.5" />Past {type ===
+			'codex'
+				? 'Codex'
+				: 'Claude'} Sessions</DropdownMenu.Label
+		>
 		<DropdownMenu.Separator />
 		{#if sessions.length === 0}
 			<div class="px-2 py-3 text-center text-xs text-muted-foreground">No past sessions found</div>
