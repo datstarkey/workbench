@@ -74,9 +74,8 @@ export interface ClaudeSessionLaunch {
 /**
  * Request body for POST /remote/terminals.
  *
- * Desktop xterm path populates the optional desktop-parity fields (paneId,
- * hookSocket, shell) so the Claude/Codex hook bridge and the project shell work
- * identically to the local PtyManager path. ZDOTDIR shell-integration is applied
+ * Desktop xterm panes populate the optional desktop fields (paneId, hookSocket,
+ * shell) so the Claude/Codex hook bridge and the project shell work. ZDOTDIR shell-integration is applied
  * server-side (the resolver lives in workbench-core), so it is NOT a wire field.
  */
 export interface CreateServerTerminalBody {
