@@ -39,11 +39,8 @@ let lastUsage: unknown;
 // Tool results the transcript row doesn't carry (an Artifact's link), by call id.
 const toolResults = new Map<string, unknown>();
 const toolRows = new Map<string, Line>();
-// Agent calls whose subagent is starting, by description + prompt (what
-// `agent.spawn` sees of the call) -> task ids in call order, so parallel calls
-// with the same input each get one.
-const spawning = new Map<string, string[]>();
-// Agent calls still running (task ids), for progress when no spawn was matched.
+// Main-thread Agent calls still running (task ids = tool call ids); progress
+// goes to the only one when a subagent wasn't linked.
 const runningAgents = new Set<string>();
 // Running subagents: agent id <-> task id, for progress and their output file.
 const agentTasks = new Map<string, string>();
@@ -110,10 +107,6 @@ function modelOption(value: string) {
 		displayName: wide ? `${name} (1M context)` : name,
 		...(base === 'haiku' ? {} : { supportedEffortLevels: EFFORT_LEVELS })
 	};
-}
-
-function spawnKey(description: string | undefined, prompt: string | undefined): string {
-	return `${description ?? ''}\n${prompt ?? ''}`;
 }
 
 function linkAgent(agent: string, task: string) {
@@ -526,11 +519,9 @@ export const register: Register = (on) => {
 				return next({ ...e, ...(answer.updatedInput ?? {}) } as typeof e);
 			}
 		}
-		const input = e as unknown as { description?: string; subagent_type?: string; prompt?: string };
+		const input = e as unknown as { description?: string; subagent_type?: string };
 		const isAgent = !e.agentId && e.tool === 'Agent';
-		const key = spawnKey(input.description, input.prompt);
 		if (isAgent && id) {
-			spawning.set(key, [...(spawning.get(key) ?? []), id]);
 			runningAgents.add(id);
 			emit({
 				type: 'system',
@@ -555,9 +546,6 @@ export const register: Register = (on) => {
 		const launched = result.result as { status?: string; agentId?: string } | undefined;
 		if (isAgent && id) {
 			runningAgents.delete(id);
-			const left = (spawning.get(key) ?? []).filter((t) => t !== id);
-			if (left.length) spawning.set(key, left);
-			else spawning.delete(key);
 		}
 		if (isAgent && id && launched?.status === 'async_launched' && launched.agentId) {
 			asyncAgents.add(launched.agentId);
@@ -596,9 +584,8 @@ export const register: Register = (on) => {
 
 	on('agent.spawn', async ($, e, next) => {
 		const result = await next(e);
-		const key = spawnKey(e.description, e.prompt);
-		// The oldest call with this input that has no subagent yet.
-		const task = spawning.get(key)?.find((t) => !taskAgents.has(t));
+		// The spawn names its Agent call; only the main thread's calls are tasks.
+		const task = runningAgents.has(e.tool_use_id) ? e.tool_use_id : undefined;
 		if (link && task && result.agentId) {
 			linkAgent(result.agentId, task);
 			// The CLI writes a subagent's log as `<agent id>.output`.
