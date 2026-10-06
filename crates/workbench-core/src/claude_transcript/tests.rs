@@ -1000,6 +1000,18 @@ fn a_prompt_put_into_a_running_turn_shows_as_typed() {
 }
 
 #[test]
+fn a_task_can_name_the_agent_whose_file_holds_its_output() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"task_started","task_id":"toolu_1","description":"Track"}));
+    t.apply(&json!({"type":"system","subtype":"task_updated","task_id":"toolu_1","output_id":"a6ee299a623b37fc4"}));
+    assert_eq!(
+        t.meta().tasks[0].output_id.as_deref(),
+        Some("a6ee299a623b37fc4")
+    );
+    assert_eq!(t.meta().tasks[0].status, "running");
+}
+
+#[test]
 fn slash_commands_come_from_initialize_and_updates() {
     let mut t = Transcript::default();
     let a = t.apply(&json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
