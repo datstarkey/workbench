@@ -1,0 +1,18 @@
+{
+	"name": "@workbench/claude-plugin",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "The Workbench Claude Code plugin, checked against the plugin API types in types/.",
+	"scripts": {
+		"check": "tsc --noEmit -p tsconfig.json",
+		"lint": "eslint ."
+	},
+	"devDependencies": {
+		"@eslint/js": "^10.0.1",
+		"eslint": "^10.4.1",
+		"eslint-config-prettier": "^10.1.8",
+		"typescript": "catalog:",
+		"typescript-eslint": "^8.60.1"
+	}
+}

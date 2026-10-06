@@ -23,7 +23,7 @@ packages/
   theme/             # @workbench/theme: theme.css — design tokens, accent presets, Tailwind v4 @theme mappings
   control-plane-ui/  # @workbench/control-plane-ui: transport-driven ControlPlaneStore + ControlPlaneSidebar (desktop-remote)
   chat-ui/           # @workbench/chat-ui: Claude chat view (AgentChat, agentClient, ChatTranscript, composer, cards) for desktop + mobile
-plugins/workbench/    # Claude Code plugin (mod) reporting session activity to the hook bridge; also this repo's marketplace (.claude-plugin/)
+plugins/workbench/    # Claude Code plugin (mod) reporting session activity to the hook bridge; also this repo's marketplace (.claude-plugin/). Workspace package @workbench/claude-plugin: `check` = tsc against types/claude-code.d.ts (the plugin API Claude Code 2.1.291 writes; replace it whole when bumping the tested CLI), `lint` = eslint; `claude plugin validate plugins/workbench` locally (no CLI in CI)
 docs/                # SIGNING, SANDBOX_RUNTIME, MOBILE, LANDING_PAGE deep dives
 .design-sync/        # claude.ai/design sync inputs (tokens-only; see its NOTES.md)
 ```
