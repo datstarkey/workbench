@@ -1,6 +1,6 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import CheckIcon from '@lucide/svelte/icons/check';
-	import ShieldQuestionIcon from '@lucide/svelte/icons/shield-question-mark';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import type { AgentKind, ApprovalDecision } from '@workbench/types';
@@ -93,7 +93,7 @@
 		aria-label="Permission request"
 	>
 		<header class="flex items-center gap-2 px-3.5 pt-3 text-sm">
-			<ShieldQuestionIcon class="size-4 shrink-0 text-wb-warn" />
+			<AgentIcon {agent} class="size-4" />
 			<span class="font-medium text-wb-ink">{question}</span>
 			{#if !isPlan}<span class="ml-auto text-xs text-wb-ink-soft">{approval.tool}</span>{/if}
 		</header>

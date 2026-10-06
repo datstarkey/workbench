@@ -1,6 +1,6 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import CheckIcon from '@lucide/svelte/icons/check';
-	import MessageCircleQuestionIcon from '@lucide/svelte/icons/message-circle-question-mark';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import type { AgentKind, ApprovalDecision } from '@workbench/types';
@@ -87,7 +87,7 @@
 		aria-label="{name} has a question"
 	>
 		<header class="flex items-center gap-2 px-3.5 pt-3 text-xs text-wb-ink-mute">
-			<MessageCircleQuestionIcon class="size-4 text-wb-accent" />
+			<AgentIcon {agent} class="size-4" />
 			{approval.input?.isBlocking === false
 				? `${name} has an optional question`
 				: `${name} needs your input`}

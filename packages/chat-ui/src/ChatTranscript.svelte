@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import HistoryIcon from '@lucide/svelte/icons/history';
@@ -142,6 +143,9 @@
 		</div>
 	{:else if chat.items.length === 0 && chat.pending.length === 0}
 		<div class="mt-[12vh] flex flex-col gap-4">
+			<div class="grid size-12 place-items-center rounded-xl border border-wb-hair bg-wb-panel">
+				<AgentIcon agent={chat.agent} class="size-7" />
+			</div>
 			<h2 class="text-lg font-medium text-balance">What should {name} work on?</h2>
 			<p class="text-xs break-all text-wb-ink-mute">
 				Working in <span class="font-mono text-wb-ink">{cwd}</span>

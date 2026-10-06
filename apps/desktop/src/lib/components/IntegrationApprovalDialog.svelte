@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { Button } from '@workbench/ui/button';
 	import * as Dialog from '@workbench/ui/dialog';
 	import { getIntegrationApprovalStore } from '$stores/context';
@@ -13,7 +14,9 @@
 <Dialog.Root open={store.open} {onOpenChange}>
 	<Dialog.Content class="sm:max-w-md">
 		<Dialog.Header>
-			<Dialog.Title>Configure Codex Integration</Dialog.Title>
+			<Dialog.Title class="flex items-center gap-2"
+				><AgentIcon agent="codex" class="size-5" />Configure Codex Integration</Dialog.Title
+			>
 			<Dialog.Description>{store.description}</Dialog.Description>
 		</Dialog.Header>
 		{#if store.error}

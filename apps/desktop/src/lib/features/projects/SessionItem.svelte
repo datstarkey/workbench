@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import CirclePauseIcon from '@lucide/svelte/icons/circle-pause';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
@@ -34,8 +35,6 @@
 	const badgeClass = $derived(
 		isClaude ? 'bg-wb-claude/20 text-wb-claude' : 'bg-wb-codex/20 text-wb-codex'
 	);
-
-	const badgeLabel = $derived(isClaude ? 'CLA' : 'COD');
 </script>
 
 <ContextMenu.Root>
@@ -55,9 +54,10 @@
 				/>
 			{/if}
 			<span class={['truncate font-mono text-[11px]', labelClass]}>{session.label}</span>
-			<span
-				class={['ml-auto shrink-0 rounded px-1 font-mono text-[9.5px] font-semibold', badgeClass]}
-				>{badgeLabel}</span
+			<span class={['ml-auto flex shrink-0 items-center rounded p-1', badgeClass]}
+				><AgentIcon agent={isClaude ? 'claude' : 'codex'} class="size-3" /><span class="sr-only"
+					>{isClaude ? 'Claude' : 'Codex'}</span
+				></span
 			>
 		</button>
 	</ContextMenu.Trigger>

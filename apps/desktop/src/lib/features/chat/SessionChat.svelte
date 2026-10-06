@@ -1,9 +1,9 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import { OverlayScrollbars } from 'overlayscrollbars';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
-	import BotIcon from '@lucide/svelte/icons/bot';
 	import PanelsTopLeftIcon from '@lucide/svelte/icons/panels-top-left';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import {
@@ -261,7 +261,9 @@
 				(chat.status === 'exited' || chat.status === 'failed') && 'bg-wb-ink-soft'
 			)}
 		></span>
-		<span class="min-w-0 truncate font-medium">{chat.meta?.title ?? agentLabel}</span>
+		<AgentIcon {agent} class="size-4" /><span class="min-w-0 truncate font-medium"
+			>{chat.meta?.title ?? agentLabel}</span
+		>
 		{#if chat.meta?.model}
 			<span class="shrink-0 text-wb-ink-soft">{chat.meta.model.replace(/\[1m\]$/, '')}</span>
 		{/if}
@@ -303,7 +305,7 @@
 					aria-expanded={tasksOpen}
 					onclick={() => (tasksOpen = !tasksOpen)}
 				>
-					<BotIcon class="size-3.5" />
+					<AgentIcon {agent} class="size-3.5" />
 					{runningTasks > 0 ? `${runningTasks} running` : 'Tasks'}
 				</button>
 			{/if}
@@ -381,6 +383,7 @@
 					{#snippet popover()}
 						{#if resumeOpen}
 							<ChatResumePicker
+								{agent}
 								load={earlierSessions}
 								onPick={resume}
 								onClose={() => (resumeOpen = false)}
@@ -403,6 +406,7 @@
 			<div class="relative flex max-w-1/2 shrink-0" style:width="{tasksPanelWidth.width}px">
 				<PanelResizeHandle size={tasksPanelWidth} label="Resize agents and tasks panel" />
 				<ChatTasks
+					{agent}
 					{tasks}
 					seenAt={chat.seenAt}
 					cwd={workdir}
@@ -423,6 +427,7 @@
 	{#if tasksOpen && tasks.length > 0 && !wide}
 		<div class="absolute inset-y-0 right-0 z-20 flex shadow-2xl">
 			<ChatTasks
+				{agent}
 				{tasks}
 				seenAt={chat.seenAt}
 				cwd={workdir}

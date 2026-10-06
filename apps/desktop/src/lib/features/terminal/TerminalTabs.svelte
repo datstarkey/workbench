@@ -1,10 +1,10 @@
 <script lang="ts">
+	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import Columns2Icon from '@lucide/svelte/icons/columns-2';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import Rows2Icon from '@lucide/svelte/icons/rows-2';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import XIcon from '@lucide/svelte/icons/x';
-	import ZapIcon from '@lucide/svelte/icons/zap';
 	import { Button } from '@workbench/ui/button';
 	import { Separator } from '@workbench/ui/separator';
 	import * as Tooltip from '@workbench/ui/tooltip';
@@ -49,19 +49,6 @@
 		const sessions = claudeSessionStore.activeSessionsByProject[workspace.projectPath] ?? [];
 		return Object.fromEntries(sessions.map((s) => [s.tabId, s]));
 	});
-
-	/** Badge label: first 3 chars of type uppercased */
-	function kindBadge(tab: TerminalTabState): string {
-		const t = tab.type ?? 'shell';
-		return t.slice(0, 3).toUpperCase();
-	}
-
-	/** Tailwind classes for the session-kind badge */
-	function kindBadgeClass(tab: TerminalTabState): string {
-		if (tab.type === 'claude') return 'bg-wb-claude/20 text-wb-claude';
-		if (tab.type === 'codex') return 'bg-wb-codex/20 text-wb-codex';
-		return 'bg-wb-shell/20 text-wb-shell';
-	}
 
 	/** Top border color for active tab based on session type */
 	function activeTopBorderClass(tab: TerminalTabState): string {
@@ -125,13 +112,13 @@
 					>
 						<!-- Index number -->
 						<span class="text-[9.5px] text-wb-ink-soft">{idx + 1}</span>
-						<!-- Kind badge -->
-						<span
-							class={[
-								'rounded px-1 font-mono text-[9.5px] font-bold tracking-wide',
-								kindBadgeClass(tab)
-							]}>{kindBadge(tab)}</span
-						>
+						{#if tab.type === 'claude' || tab.type === 'codex'}
+							<AgentIcon agent={tab.type} class="size-3.5" />
+							<span class="sr-only">{tab.type === 'claude' ? 'Claude' : 'Codex'}:</span>
+						{:else}
+							<SquareTerminalIcon class="size-3.5 text-wb-shell" />
+							<span class="sr-only">Terminal:</span>
+						{/if}
 						<span class="max-w-36 truncate">{tab.label}</span>
 						<!-- Status indicator -->
 						{#if isLive}
@@ -185,9 +172,10 @@
 						size="icon-sm"
 						class="size-6 text-wb-claude hover:bg-wb-claude/10 hover:text-wb-claude"
 						type="button"
+						aria-label="New Claude session"
 						onclick={() => claudeSessionStore.startSessionInWorkspace(workspace)}
 					>
-						<SparklesIcon class="size-3.5" />
+						<AgentIcon agent="claude" class="size-3.5" />
 					</Button>
 				{/snippet}
 			</Tooltip.Trigger>
@@ -210,9 +198,10 @@
 						size="icon-sm"
 						class="size-6 text-wb-codex hover:bg-wb-codex/10 hover:text-wb-codex"
 						type="button"
+						aria-label="New Codex session"
 						onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
 					>
-						<ZapIcon class="size-3.5" />
+						<AgentIcon agent="codex" class="size-3.5" />
 					</Button>
 				{/snippet}
 			</Tooltip.Trigger>

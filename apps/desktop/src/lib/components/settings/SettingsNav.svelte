@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { SETTINGS_NAV, type SettingsPageId } from './settings-pages';
 
 	let {
@@ -24,10 +25,14 @@
 		{:else}
 			<div
 				class={[
-					'px-2.5 pb-1.5 text-[10.5px] font-semibold tracking-wider text-wb-ink-mute uppercase',
+					'flex items-center gap-2 px-2.5 pb-1.5 text-[10.5px] font-semibold tracking-wider text-wb-ink-mute uppercase',
 					i === 0 ? 'pt-0.5' : 'pt-3.5'
 				]}
 			>
+				{#if group.label === 'Claude Code'}<AgentIcon
+						agent="claude"
+						class="size-3.5"
+					/>{:else if group.label === 'Codex'}<AgentIcon agent="codex" class="size-3.5" />{/if}
 				{group.label}
 			</div>
 		{/if}

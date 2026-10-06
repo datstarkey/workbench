@@ -1,10 +1,10 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import LogInIcon from '@lucide/svelte/icons/log-in';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
-	import UserIcon from '@lucide/svelte/icons/user';
 	import { getWorkbenchSettingsStore, getWorkspaceStore } from '$stores/context';
 	import AddClaudeAccountDialog from './AddClaudeAccountDialog.svelte';
 	import {
@@ -43,7 +43,7 @@
 		class="flex items-center gap-1 rounded px-1 transition-colors hover:text-wb-ink"
 		title="Claude account for new sessions"
 	>
-		<UserIcon size={11} />
+		<AgentIcon agent="claude" class="size-3" />
 		{active.name}
 	</DropdownMenu.Trigger>
 
