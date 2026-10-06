@@ -532,3 +532,12 @@ describe('claudeNewSessionWithIdCommand', () => {
 		expect(() => claudeNewSessionWithIdCommand('x; rm -rf /')).toThrow();
 	});
 });
+
+describe('Codex terminal launch', () => {
+	it('opts supported terminals out of the daemon and recovers persisted prompts', () => {
+		const command = newSessionCommand('codex', { codexNoDaemon: true });
+		expect(command).toContain(' --no-daemon ');
+		expect(extractPromptArg('codex', `${command} 'do work'`)).toBe("'do work'");
+		expect(newSessionCommand('codex')).not.toContain('--no-daemon');
+	});
+});

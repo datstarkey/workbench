@@ -1274,6 +1274,9 @@ pub fn model_options(models: &[Value]) -> Vec<ModelOption> {
                 display_name: str_at(m, "displayName").unwrap_or_default().to_string(),
                 description: str_at(m, "description").unwrap_or_default().to_string(),
                 resolved_model: str_at(m, "resolvedModel").map(String::from),
+                default_effort: None,
+                input_modalities: Vec::new(),
+                service_tiers: Vec::new(),
                 effort_levels: m
                     .get("supportedEffortLevels")
                     .and_then(Value::as_array)

@@ -51,6 +51,20 @@ pub(super) fn model_options(data: &[Value]) -> Vec<ModelOption> {
         .filter_map(|m| {
             Some(ModelOption {
                 value: str_at(m, "id")?.to_string(),
+                default_effort: str_at(m, "defaultReasoningEffort").map(String::from),
+                input_modalities: m
+                    .get("inputModalities")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect(),
+                service_tiers: m
+                    .get("serviceTiers")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
                 display_name: str_at(m, "displayName").unwrap_or_default().to_string(),
                 description: str_at(m, "description").unwrap_or_default().to_string(),
                 resolved_model: str_at(m, "model").map(String::from),

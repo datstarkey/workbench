@@ -32,11 +32,11 @@ enum Kind {
     },
     /// Question text → question id, in order.
     Questions {
-        ids: Vec<(String, String)>,
+        ids: Vec<(String, String, bool)>,
     },
-    /// An MCP elicitation and its whole form schema.
     Elicitation {
         schema: Option<Value>,
+        metadata: Value,
     },
 }
 
@@ -61,6 +61,12 @@ impl CodexTranscript {
         params: &Value,
         changed: &mut Vec<usize>,
     ) -> Option<Value> {
+        if method == "currentTime/read" {
+            return Some(response(
+                rpc_id,
+                json!({"currentTimeAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()}),
+            ));
+        }
         let reason = str_at(params, "reason").map(String::from);
         let (tool, input, kind, can_always_allow, blocked_path) = match method {
             "item/commandExecution/requestApproval" => {
@@ -76,9 +82,22 @@ impl CodexTranscript {
                 let input = json!({
                     "command": strip_shell(str_at(params, "command").unwrap_or_default()),
                     "cwd": str_at(params, "cwd").unwrap_or_default(),
+                    "networkApprovalContext": params.get("networkApprovalContext"),
+                    "approvalKind": params.get("approvalKind"),
+                    "environment": params.get("environment"),
+                    "additionalPermissions": params.get("additionalPermissions"),
+                    "canAllow": offered.as_ref().is_none_or(|o|o.iter().any(|v|v=="accept")),
                 });
                 (
-                    "Bash".to_string(),
+                    if params
+                        .get("networkApprovalContext")
+                        .is_some_and(|v| !v.is_null())
+                    {
+                        "Network"
+                    } else {
+                        "Bash"
+                    }
+                    .to_string(),
                     input,
                     Kind::Command { offered },
                     always,
@@ -107,6 +126,10 @@ impl CodexTranscript {
                 let input = json!({
                     "permissions": requested,
                     "cwd": str_at(params, "cwd").unwrap_or_default(),
+                    "networkApprovalContext": params.get("networkApprovalContext"),
+                    "approvalKind": params.get("approvalKind"),
+                    "environment": params.get("environment"),
+                    "additionalPermissions": params.get("additionalPermissions"),
                 });
                 let kind = Kind::Permissions { requested };
                 ("Permissions".to_string(), input, kind, true, None)
@@ -116,7 +139,13 @@ impl CodexTranscript {
                 let raw = raw.map(Vec::as_slice).unwrap_or_default();
                 let ids = raw
                     .iter()
-                    .filter_map(|q| Some((str_at(q, "question")?.into(), str_at(q, "id")?.into())))
+                    .filter_map(|q| {
+                        Some((
+                            str_at(q, "question")?.into(),
+                            str_at(q, "id")?.into(),
+                            q.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                        ))
+                    })
                     .collect();
                 let questions: Vec<Value> = raw
                     .iter()
@@ -132,13 +161,16 @@ impl CodexTranscript {
                             .unwrap_or_default();
                         json!({
                             "question": q.get("question"),
+                            "id": q.get("id"),
+                            "isSecret": q.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                            "isOther": q.get("isOther").and_then(Value::as_bool).unwrap_or(false),
                             "header": str_at(q, "header").unwrap_or_default(),
                             "options": options,
                             "multiSelect": false,
                         })
                     })
                     .collect();
-                let input = json!({ "questions": questions });
+                let input = json!({ "questions": questions, "isBlocking": params.get("isBlocking").and_then(Value::as_bool).unwrap_or(true) });
                 (
                     "AskUserQuestion".to_string(),
                     input,
@@ -148,6 +180,13 @@ impl CodexTranscript {
                 )
             }
             "mcpServer/elicitation/request" => {
+                if str_at(params, "mode").is_some_and(|mode| !["form", "url"].contains(&mode)) {
+                    changed.extend(self.notice(&format!("elicitation:{rpc_id}"), "This MCP server requested a form Workbench cannot display. The request was declined."));
+                    return Some(response(
+                        rpc_id,
+                        json!({"action":"decline","content":null,"_meta":params.get("_meta")}),
+                    ));
+                }
                 self.apply_elicitation(rpc_id, params, changed);
                 return None;
             }
@@ -204,7 +243,10 @@ impl CodexTranscript {
         }
         .into_item();
         let item = self.upsert(item, changed);
-        let kind = Kind::Elicitation { schema };
+        let kind = Kind::Elicitation {
+            schema,
+            metadata: params.get("_meta").cloned().unwrap_or(Value::Null),
+        };
         let rpc_id = rpc_id.clone();
         self.approvals.insert(id, Pending { item, rpc_id, kind });
     }
@@ -221,14 +263,14 @@ impl CodexTranscript {
             return None;
         }
         let pending = self.approvals.remove(request_id)?;
-        let Kind::Elicitation { schema } = pending.kind else {
+        let Kind::Elicitation { schema, metadata } = pending.kind else {
             return None;
         };
         let mut result =
             PendingElicitation::new(pending.item, schema).answer(&mut self.items, action, content);
         // Both are required (nullable) in codex's response type.
         result["content"] = result.get("content").cloned().unwrap_or(Value::Null);
-        result["_meta"] = Value::Null;
+        result["_meta"] = metadata;
         Some((pending.item, response(&pending.rpc_id, result)))
     }
 
@@ -237,6 +279,27 @@ impl CodexTranscript {
         Some(matches!(kind, Kind::Elicitation { .. }))
     }
 
+    pub fn validate_decision(&self, id: &str, decision: ApprovalDecision) -> anyhow::Result<()> {
+        if let Some(Pending {
+            kind: Kind::Command {
+                offered: Some(offered),
+            },
+            ..
+        }) = self.approvals.get(id)
+        {
+            let allowed = match decision {
+                ApprovalDecision::Allow => offered.iter().any(|v| v == "accept"),
+                ApprovalDecision::AlwaysAllow => offered
+                    .iter()
+                    .any(|v| v == "accept" || v == "acceptForSession"),
+                ApprovalDecision::Deny => true,
+            };
+            if !allowed {
+                anyhow::bail!("Codex did not offer that approval decision");
+            }
+        }
+        Ok(())
+    }
     /// Record the answer to an approval and build codex's response. `None` if
     /// it's unknown or already answered (another device got there first).
     ///
@@ -266,7 +329,20 @@ impl CodexTranscript {
         } = &mut self.items[pending.item]
         {
             *d = Some(decision);
-            *a = answers.clone().map(Value::Object);
+            let mut stored = answers.clone();
+            if let Kind::Questions { ids } = &pending.kind {
+                if let Some(stored) = &mut stored {
+                    for (question, id, secret) in ids {
+                        if *secret {
+                            stored.remove(question);
+                            if stored.contains_key(id) {
+                                stored.insert(id.clone(), json!("Answered"));
+                            }
+                        }
+                    }
+                }
+            }
+            *a = stored.map(Value::Object);
         }
         let result = match &pending.kind {
             Kind::Command { offered } => {
@@ -297,8 +373,11 @@ impl CodexTranscript {
                 let answers = answers.unwrap_or_default();
                 let picked: Map<String, Value> = ids
                     .iter()
-                    .filter_map(|(question, id)| {
-                        let text = answers.get(question)?.as_str()?;
+                    .filter_map(|(question, id, _)| {
+                        let text = answers
+                            .get(id)
+                            .or_else(|| answers.get(question))?
+                            .as_str()?;
                         Some((id.clone(), json!({ "answers": [text] })))
                     })
                     .collect();
@@ -307,6 +386,39 @@ impl CodexTranscript {
             Kind::Elicitation { .. } => elicitation_cancel(),
         };
         Some((pending.item, response(&pending.rpc_id, result)))
+    }
+
+    /// Validate before consuming a request so a bad form can be corrected.
+    pub fn resolve_elicitation_checked(
+        &mut self,
+        id: &str,
+        choice: &str,
+        content: Option<&Value>,
+    ) -> anyhow::Result<(usize, Value)> {
+        let action: ElicitationAction = serde_json::from_value(json!(choice))?;
+        let pending = self
+            .approvals
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Request already answered or withdrawn"))?;
+        let Kind::Elicitation { schema, .. } = &pending.kind else {
+            anyhow::bail!("This is not an MCP elicitation");
+        };
+        if action == ElicitationAction::Accept {
+            if let Some(schema) = schema {
+                super::elicitation::validate(
+                    schema,
+                    content.ok_or_else(|| anyhow::anyhow!("Form content is required"))?,
+                )?;
+            }
+        }
+        let (i, reply) = self
+            .resolve_elicitation(id, action, content.and_then(Value::as_object))
+            .ok_or_else(|| anyhow::anyhow!("Request already answered"))?;
+        // Never retain form values that might contain credentials in transcript state.
+        if let TranscriptItem::Elicitation { content, .. } = &mut self.items[i] {
+            *content = None;
+        }
+        Ok((i, reply))
     }
 
     /// Withdraw every open approval (an interrupt): marks them expired and
@@ -319,7 +431,9 @@ impl CodexTranscript {
                 Kind::Command { .. } | Kind::FileChange => json!({"decision": "cancel"}),
                 Kind::Permissions { .. } => json!({"permissions": {}, "scope": "turn"}),
                 Kind::Questions { .. } => json!({"answers": {}}),
-                Kind::Elicitation { .. } => elicitation_cancel(),
+                Kind::Elicitation { metadata, .. } => {
+                    json!({"action":"cancel","content":null,"_meta":metadata})
+                }
             };
             replies.push(response(&pending.rpc_id, result));
             self.mark_expired(pending.item, &mut changed);

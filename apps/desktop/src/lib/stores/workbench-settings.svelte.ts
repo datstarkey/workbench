@@ -42,6 +42,7 @@ function isAbsolutePath(path: string): boolean {
 }
 
 export class WorkbenchSettingsStore {
+	codexNoDaemon = $state(false);
 	worktreeStrategy: WorktreeStrategy = $state('sibling');
 	worktreeFetchBeforeCreate = $state(true);
 	worktreeStartPoint: WorktreeStartPoint = $state('auto');
@@ -99,6 +100,7 @@ export class WorkbenchSettingsStore {
 			permissionMode: this.claudePermissionMode,
 			codexApprovalPolicy: this.codexApprovalPolicy,
 			codexSandboxMode: this.codexSandboxMode,
+			codexNoDaemon: this.codexNoDaemon,
 			sandboxSettingsPath
 		};
 	}
@@ -115,6 +117,9 @@ export class WorkbenchSettingsStore {
 	);
 
 	async load() {
+		this.codexNoDaemon = Boolean(
+			await invokeLocal<boolean>('codex_supports_no_daemon').catch(() => false)
+		);
 		const settings = await invoke<WorkbenchSettings>('load_workbench_settings');
 		this.worktreeStrategy = settings.worktreeStrategy;
 		this.worktreeFetchBeforeCreate = settings.worktreeFetchBeforeCreate ?? true;

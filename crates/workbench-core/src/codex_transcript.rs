@@ -23,6 +23,7 @@ use crate::claude_transcript::{
 };
 
 mod approvals;
+mod elicitation;
 mod items;
 mod modes;
 
@@ -85,6 +86,7 @@ pub struct CodexTranscript {
     named: bool,
     unknown_seen: HashSet<String>,
     commands: Vec<SlashCommand>,
+    artifacts: HashMap<String, Vec<Value>>,
 }
 
 impl ChatView for CodexTranscript {
@@ -101,12 +103,65 @@ impl ChatView for CodexTranscript {
         self.full_outputs.get(tool_id).map(String::as_str)
     }
     fn waiting_on(&self) -> Option<&TranscriptItem> {
-        let first = self.approvals.values().map(|p| p.item).min()?;
+        let first = self
+            .approvals
+            .values()
+            .map(|p| p.item)
+            .filter(|&i| match &self.items[i] {
+                TranscriptItem::Approval { input, .. } => {
+                    input.get("isBlocking").and_then(Value::as_bool) != Some(false)
+                }
+                _ => true,
+            })
+            .min()?;
         self.items.get(first)
     }
 }
 
 impl CodexTranscript {
+    /// Keep memory bounded after settled turns. Index changes require a fresh
+    /// snapshot; unanswered approvals are never displaced.
+    pub fn prune(&mut self) -> bool {
+        if !self.approvals.is_empty() {
+            return false;
+        }
+        let sizes: Vec<_> = self
+            .items
+            .iter()
+            .map(|i| serde_json::to_vec(i).map(|v| v.len()).unwrap_or(0))
+            .collect();
+        let mut bytes: usize = sizes.iter().sum();
+        let mut remove = 0;
+        while self.items.len() - remove > 2
+            && (self.items.len() - remove > 2000 || bytes > 32 * 1024 * 1024)
+        {
+            bytes = bytes.saturating_sub(sizes[remove]);
+            remove += 1;
+        }
+        if remove == 0 {
+            return false;
+        }
+        self.items.drain(..remove);
+        self.index = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| (item.id().to_string(), i))
+            .collect();
+        self.full_outputs
+            .retain(|id, _| self.index.contains_key(id));
+        self.live_output.retain(|id, _| self.index.contains_key(id));
+        self.file_changes
+            .retain(|id, _| self.index.contains_key(id));
+        self.artifacts.retain(|id, _| self.index.contains_key(id));
+        true
+    }
+    pub fn artifacts(&self, id: &str) -> Option<&[Value]> {
+        self.artifacts.get(id).map(Vec::as_slice)
+    }
+    pub fn set_codex_state(&mut self, state: crate::codex_controls::State) {
+        self.meta.codex = Some(state);
+    }
     pub fn set_commands(&mut self, commands: Vec<SlashCommand>) {
         self.commands = commands;
     }
@@ -143,6 +198,40 @@ impl CodexTranscript {
         changed: &mut Vec<usize>,
     ) -> bool {
         match method {
+            "warning" | "configWarning" | "deprecationNotice" => {
+                let message = str_at(params, "message")
+                    .or_else(|| str_at(params, "summary"))
+                    .unwrap_or("Codex reported a configuration warning");
+                let detail = str_at(params, "details").unwrap_or_default();
+                let text = if detail.is_empty() {
+                    message.to_string()
+                } else {
+                    format!("{message}\n{detail}")
+                };
+                let i = self.notice(&format!("{method}:{message}"), &text);
+                changed.extend(i);
+            }
+            "turn/diff/updated" => {
+                let text = str_at(params, "diff").unwrap_or_default();
+                if !text.is_empty() {
+                    let i = self.notice("turn-diff", &format!("Changes in this turn\n{text}"));
+                    changed.extend(i);
+                }
+            }
+            "hook/started"
+            | "hook/completed"
+            | "mcpServer/startupStatus/updated"
+            | "item/mcpToolCall/progress" => {
+                let id = str_at(params, "itemId")
+                    .or_else(|| str_at(params, "hookId"))
+                    .or_else(|| str_at(params, "server"))
+                    .unwrap_or(method);
+                let message = str_at(params, "message")
+                    .or_else(|| str_at(params, "status"))
+                    .unwrap_or(method);
+                let i = self.notice(&format!("progress:{id}"), message);
+                changed.extend(i);
+            }
             "turn/started" => {
                 let turn = params.pointer("/turn/id").and_then(Value::as_str);
                 self.turn_started(turn.unwrap_or_default());
@@ -210,6 +299,11 @@ impl CodexTranscript {
     /// A `thread/start` or `thread/resume` result: the model, the effective
     /// preset and the thread's name.
     pub fn apply_thread(&mut self, result: &Value) {
+        self.meta.effort = str_at(result, "reasoningEffort").map(String::from);
+        let state = self.meta.codex.get_or_insert_with(Default::default);
+        state.approval_policy = result.get("approvalPolicy").cloned();
+        state.sandbox = result.get("sandbox").cloned();
+        state.service_tier = str_at(result, "serviceTier").map(String::from);
         if let Some(model) = str_at(result, "model") {
             self.meta.model = Some(model.to_string());
         }
@@ -430,7 +524,12 @@ impl CodexTranscript {
         if let TranscriptItem::Text { text, .. } | TranscriptItem::Thinking { text, .. } =
             &mut self.items[i]
         {
-            text.push_str(delta);
+            let remaining = (1024 * 1024_usize).saturating_sub(text.len());
+            let mut end = delta.len().min(remaining);
+            while !delta.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.push_str(&delta[..end]);
             changed.push(i);
         }
     }
@@ -472,9 +571,13 @@ impl CodexTranscript {
         *output = (!text.is_empty()).then(|| clip(text));
         *full_output_bytes = None;
         if text.len() > MAX_TEXT_BYTES {
-            *full_output_bytes = Some(text.len());
             let kept = crate::text::truncate_bytes(text, MAX_FULL_OUTPUT_BYTES).to_string();
-            self.full_outputs.insert(id.clone(), kept);
+            self.full_outputs.remove(id);
+            let total: usize = self.full_outputs.values().map(String::len).sum();
+            if total + kept.len() <= 32 * 1024 * 1024 {
+                *full_output_bytes = Some(text.len());
+                self.full_outputs.insert(id.clone(), kept);
+            }
         }
     }
 

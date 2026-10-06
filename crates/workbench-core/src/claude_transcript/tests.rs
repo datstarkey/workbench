@@ -1008,6 +1008,9 @@ fn pinned_models_outlast_a_plugin_list_and_its_choice_and_effort_show() {
         display_name: value.into(),
         description: String::new(),
         resolved_model: Some(resolved.into()),
+        default_effort: None,
+        input_modalities: Vec::new(),
+        service_tiers: Vec::new(),
         effort_levels: vec!["low".into(), "high".into()],
     };
     let mut t = Transcript::default();

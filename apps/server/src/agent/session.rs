@@ -3,11 +3,11 @@
 //! change to attached clients (desktop chat pane, phone) as `update` frames.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -65,6 +65,8 @@ pub struct AgentSession {
     keepalive_turn: AtomicBool,
     tx: broadcast::Sender<String>,
     stdin: Mutex<Option<Sink>>,
+    outgoing: Mutex<Option<mpsc::SyncSender<String>>>,
+    outgoing_bytes: AtomicUsize,
     /// `None` for a session fed by a terminal's plugin: there is no process of ours.
     child: Mutex<Option<Child>>,
     /// Kept apart from `child` so a stop never waits on the reaping lock.
@@ -183,15 +185,33 @@ impl AgentSession {
 
         let reader = session.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                tracing::warn!("{} stderr: {line}", reader.program);
-                *lock(&reader.stderr_tail) = strip_ansi(&line);
+            let mut lines = BufReader::new(stderr);
+            loop {
+                match bounded_line(&mut lines, 64 * 1024) {
+                    Ok(Some(line)) => {
+                        tracing::warn!("{} stderr: {line}", reader.program);
+                        *lock(&reader.stderr_tail) = strip_ansi(&line);
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        reader.fail_io("stderr", e);
+                        break;
+                    }
+                }
             }
         });
         let reader = session.clone();
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                // The old id stays an alias: a late request for it reaches this process too.
+            let mut lines = BufReader::new(stdout);
+            loop {
+                let line = match bounded_line(&mut lines, 96 * 1024 * 1024) {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break,
+                    Err(e) => {
+                        reader.fail_io("output", e);
+                        break;
+                    }
+                };
                 reader.apply_line(&line, |new_id| {
                     lock(&registry).insert(new_id.to_string(), reader.clone());
                 });
@@ -248,6 +268,12 @@ impl AgentSession {
             Sink::Pipe(_) => None,
         };
         let (tx, _) = broadcast::channel(256);
+        let (outgoing, receiver) = if matches!(&sink, Sink::Pipe(_)) {
+            let (tx, rx) = mpsc::sync_channel::<String>(128);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let session = Arc::new(Self {
             kind,
             session_id: Mutex::new(known_id.unwrap_or_default()),
@@ -265,6 +291,8 @@ impl AgentSession {
             keepalive_turn: AtomicBool::new(false),
             tx,
             stdin: Mutex::new(Some(sink)),
+            outgoing: Mutex::new(outgoing),
+            outgoing_bytes: AtomicUsize::new(0),
             pid: child.as_ref().map(Child::id),
             child: Mutex::new(child),
             link,
@@ -283,6 +311,38 @@ impl AgentSession {
             upkept_for: Mutex::new(None),
             transcript_path: Mutex::new(None),
         });
+        if let Some(receiver) = receiver {
+            let writer = Arc::downgrade(&session);
+            std::thread::spawn(move || {
+                while let Ok(line) = receiver.recv() {
+                    let Some(session) = writer.upgrade() else {
+                        break;
+                    };
+                    let result = session.write_line(&line);
+                    session
+                        .outgoing_bytes
+                        .fetch_sub(line.len(), Ordering::SeqCst);
+                    if let Err(e) = result {
+                        session.fail_io("write", e);
+                        break;
+                    }
+                }
+                if let Some(session) = writer.upgrade() {
+                    lock(&session.stdin).take();
+                }
+            });
+            let timer = Arc::downgrade(&session);
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let Some(session) = timer.upgrade() else {
+                    break;
+                };
+                if session.has_exited() {
+                    break;
+                }
+                let _ = session.run(|d| Ok(d.tick()));
+            });
+        }
         session.refresh_attention();
         session
     }
@@ -458,42 +518,101 @@ impl AgentSession {
     }
 
     fn send(&self, msg: &Value) -> Result<()> {
-        let mut stdin = lock(&self.stdin);
-        match stdin.as_mut() {
-            None => bail!("the session has stopped"),
-            Some(Sink::Mod(link)) => {
-                // An answer the plugin waits on in `/mod/ask` goes there.
-                if !link.answer(msg) {
-                    link.push(msg.clone());
-                }
-                Ok(())
+        if let Some(link) = &self.link {
+            if self.has_exited() {
+                bail!("the session has stopped");
             }
-            Some(Sink::Pipe(pipe)) => {
-                writeln!(pipe, "{msg}").with_context(|| format!("write to {}", self.program))?;
-                pipe.flush()
-                    .with_context(|| format!("flush to {}", self.program))
+            if !link.answer(msg) {
+                link.push(msg.clone());
+            }
+            return Ok(());
+        }
+        let line = msg.to_string();
+        let bytes = line.len();
+        self.outgoing_bytes
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                n.checked_add(bytes).filter(|v| *v <= 96 * 1024 * 1024)
+            })
+            .map_err(|_| anyhow::anyhow!("Agent input buffer is full"))?;
+        let result = lock(&self.outgoing)
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("the session has stopped"))
+            .and_then(|tx| {
+                tx.try_send(line)
+                    .map_err(|_| anyhow::anyhow!("Agent input buffer is full or closed"))
+            });
+        if result.is_err() {
+            self.outgoing_bytes.fetch_sub(bytes, Ordering::SeqCst);
+        }
+        result
+    }
+
+    fn write_line(&self, msg: &str) -> Result<()> {
+        let mut stdin = lock(&self.stdin);
+        let Some(Sink::Pipe(pipe)) = stdin.as_mut() else {
+            bail!("the session has stopped");
+        };
+        writeln!(pipe, "{msg}").with_context(|| format!("write to {}", self.program))?;
+        pipe.flush()
+            .with_context(|| format!("flush to {}", self.program))
+    }
+
+    fn fail_io(&self, what: &str, error: impl std::fmt::Display) {
+        let _ = self.tx.send(
+            json!({"t":"error","message":format!("Invalid {} {what}: {error}",self.program)})
+                .to_string(),
+        );
+        if let Some(pid) = self.pid {
+            #[cfg(unix)]
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+            }
+            #[cfg(windows)]
+            {
+                let _ = workbench_core::shell::command("taskkill")
+                    .args(["/T", "/F", "/PID", &pid.to_string()])
+                    .output();
             }
         }
     }
 
-    /// Apply a client message through the driver. Its lines are written
-    /// outside the driver lock: a prompt full of images must not stall the
-    /// reader thread (and with it the process's stdout).
+    /// Publish changes and enqueue effects in protocol order under the driver
+    /// lock. Only the separate pipe writer performs blocking process IO.
     fn run(&self, op: impl FnOnce(&mut Driver) -> Result<Effects>) -> Result<()> {
-        let effects = {
-            let mut d = lock(&self.driver);
-            let effects = op(&mut d)?;
-            // Publish the change before writing: a fast CLI response must not
-            // hide a turn's start or reorder an answered approval's update.
-            if effects.meta || !effects.items.is_empty() {
-                self.broadcast_update(d.view(), &effects.items);
-            }
-            effects
-        };
+        let mut d = lock(&self.driver);
+        let effects = op(&mut d)?;
+        for frame in &effects.frames {
+            let _ = self.tx.send(frame.to_string());
+        }
+        if let Some(ready) = effects.ready {
+            self.set_ready(ready);
+        }
+        if effects.snapshot {
+            self.touch(d.view());
+            let _ = self.tx.send(self.snapshot(d.view()));
+        } else if effects.meta || !effects.items.is_empty() {
+            self.broadcast_update(d.view(), &effects.items);
+        }
         for msg in &effects.send {
-            self.send(msg)?;
+            if let Err(e) = self.send(msg) {
+                // The driver has already advanced. Continuing after dropping an
+                // RPC would leave its state out of sync with the owned process.
+                if self.pid.is_some() {
+                    self.fail_io("write", &e);
+                }
+                return Err(e);
+            }
         }
         Ok(())
+    }
+
+    pub fn codex_action(
+        &self,
+        request_id: &str,
+        action: workbench_core::codex_controls::Action,
+        params: &Value,
+    ) -> Result<()> {
+        self.run(|d| d.codex_action(request_id, action, params))
     }
 
     pub fn prompt(&self, text: &str, images: &[PromptImage], files: &[PromptFile]) -> Result<()> {
@@ -527,7 +646,7 @@ impl AgentSession {
         action: ElicitationAction,
         content: Option<&Map<String, Value>>,
     ) -> Result<()> {
-        self.run(|d| Ok(d.elicit(request_id, action, content)))
+        self.run(|d| d.elicit(request_id, action, content))
     }
 
     pub fn interrupt(&self) -> Result<()> {
@@ -707,6 +826,10 @@ impl AgentSession {
     }
 
     /// The whole output of a tool whose chat item carries a preview.
+    pub fn artifacts(&self, id: &str) -> Option<Vec<Value>> {
+        lock(&self.driver).artifacts(id).map(Vec::from)
+    }
+
     pub fn full_output(&self, tool_id: &str) -> Option<String> {
         lock(&self.driver)
             .view()
@@ -745,6 +868,9 @@ impl AgentSession {
     fn apply_line(&self, line: &str, alias: impl FnOnce(&str)) {
         let mut d = lock(&self.driver);
         let effects = d.apply_line(line);
+        for frame in &effects.frames {
+            let _ = self.tx.send(frame.to_string());
+        }
         if let Some((id, reply)) = effects.response {
             if let Some(waiter) = lock(&self.waiters).remove(&id) {
                 let _ = waiter.send(reply);
@@ -753,6 +879,9 @@ impl AgentSession {
         for msg in &effects.send {
             if let Err(e) = self.send(msg) {
                 tracing::warn!("could not answer {}: {e}", self.program);
+                if self.pid.is_some() {
+                    self.fail_io("write", e);
+                }
             }
         }
         let view = d.view();
@@ -815,7 +944,7 @@ impl AgentSession {
     }
 
     fn finish(&self) {
-        lock(&self.stdin).take();
+        lock(&self.outgoing).take();
         let _ = std::fs::remove_dir_all(super::attachment::attachment_dir(&self.id()));
         // Until the leader is reaped below its pid still names its process
         // group: end the background shells it started, which would otherwise
@@ -823,9 +952,18 @@ impl AgentSession {
         #[cfg(unix)]
         if let Some(pid) = self.pid {
             unsafe {
-                libc::killpg(pid as libc::pid_t, libc::SIGTERM);
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
             }
         }
+        #[cfg(windows)]
+        if let Some(pid) = self.pid {
+            let _ = workbench_core::shell::command("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .output();
+        }
+        // End the process before taking the pipe lock: the writer may be
+        // blocked because a broken CLI closed stdout and stopped reading stdin.
+        lock(&self.stdin).take();
         let code = lock(&self.child)
             .as_mut()
             .and_then(|c| c.wait().ok())
@@ -866,7 +1004,7 @@ impl AgentSession {
                 .args(["/T", "/F", "/PID", &pid.to_string()])
                 .output();
         }
-        lock(&self.stdin).take();
+        lock(&self.outgoing).take();
         let deadline = Instant::now() + STOP_GRACE;
         while !self.exited.load(Ordering::SeqCst) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
@@ -900,4 +1038,46 @@ fn strip_ansi(line: &str) -> String {
         }
     }
     out
+}
+
+/// A malicious/misbehaving CLI cannot allocate an unbounded line. Return an
+/// error at the limit and terminate the owned process instead of desyncing RPCs.
+fn bounded_line(reader: &mut impl BufRead, limit: usize) -> std::io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    let n = reader
+        .take((limit + 1) as u64)
+        .read_until(b'\n', &mut bytes)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if n > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "line exceeds size limit",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::bounded_line;
+    use std::io::Cursor;
+    #[test]
+    fn bounded_reader_preserves_framing_and_rejects_oversize_or_invalid_utf8() {
+        let mut input = Cursor::new(b"one\ntwo\n");
+        assert_eq!(
+            bounded_line(&mut input, 4).unwrap().as_deref(),
+            Some("one\n")
+        );
+        assert_eq!(
+            bounded_line(&mut input, 4).unwrap().as_deref(),
+            Some("two\n")
+        );
+        assert_eq!(bounded_line(&mut input, 4).unwrap(), None);
+        assert!(bounded_line(&mut Cursor::new(b"oversize\n"), 4).is_err());
+        assert!(bounded_line(&mut Cursor::new([255, b'\n']), 4).is_err());
+    }
 }

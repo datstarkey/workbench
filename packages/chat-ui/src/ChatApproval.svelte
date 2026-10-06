@@ -23,6 +23,10 @@
 
 	const question = $derived.by(() => {
 		switch (approval.tool) {
+			case 'Network':
+				return 'Allow network access?';
+			case 'Permissions':
+				return 'Grant this access?';
 			case 'Bash':
 				return 'Run this command?';
 			case 'Edit':
@@ -40,7 +44,15 @@
 	});
 	const isPlan = $derived(approval.tool === 'ExitPlanMode');
 	const plan = $derived(typeof approval.input?.plan === 'string' ? approval.input.plan : '');
-	const preview = $derived(isPlan ? plan : approvalPreview(approval, cwd));
+	const preview = $derived(
+		isPlan
+			? plan
+			: approval.tool === 'Network'
+				? JSON.stringify(approval.input?.networkApprovalContext, null, 2)
+				: approval.tool === 'Permissions'
+					? JSON.stringify(approval.input?.permissions, null, 2)
+					: approvalPreview(approval, cwd)
+	);
 	const isCommand = $derived(approval.tool === 'Bash');
 	const outcome = $derived.by(() => {
 		if (approval.expired) return `Withdrawn by ${agentName(agent)}`;
@@ -112,10 +124,16 @@
 			<button
 				type="button"
 				class="rounded-md bg-wb-accent px-3 py-1 text-xs font-semibold text-wb-accent-ink hover:brightness-110 focus-visible:ring-2 focus-visible:ring-wb-accent/50 focus-visible:outline-none disabled:opacity-50"
-				disabled={sent !== null}
+				disabled={sent !== null || approval.input?.canAllow === false}
 				onclick={() => decide('allow')}
 			>
-				{sent === 'allow' ? 'Sending…' : isPlan ? 'Start building' : 'Allow'}
+				{sent === 'allow'
+					? 'Sending…'
+					: isPlan
+						? 'Start building'
+						: agent === 'codex'
+							? 'Allow once'
+							: 'Allow'}
 			</button>
 			{#if approval.canAlwaysAllow}
 				<button
