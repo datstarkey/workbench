@@ -36,6 +36,12 @@ describe('adoptableTerminals', () => {
 		const result = adoptableTerminals(list, new Set(['mapped']), (id) => id === 'claimed');
 		expect(result.map((t) => t.id)).toEqual(['new']);
 	});
+
+	it("skips a chat's terminal before its chat is listed", () => {
+		const list = [term('chat', { claudeSessionId: 'abc' }), term('new')];
+		const result = adoptableTerminals(list, new Set(), () => false);
+		expect(result.map((t) => t.id)).toEqual(['new']);
+	});
 });
 
 const chat = (sessionId: string, overrides: Partial<AgentSummary> = {}): AgentSummary => ({

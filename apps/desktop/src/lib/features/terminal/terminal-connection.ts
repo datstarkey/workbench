@@ -78,6 +78,8 @@ export interface TerminalMeta {
 	cwd: string;
 	createdAt: number;
 	alive: boolean;
+	/** Set on a chat's terminal: it's adopted as the chat, not as a terminal. */
+	claudeSessionId?: string;
 }
 
 /** Resolved loopback server coordinates. */

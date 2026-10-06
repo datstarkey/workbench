@@ -90,6 +90,10 @@ pub struct TerminalMeta {
     /// Unix epoch milliseconds.
     pub created_at: u64,
     pub alive: bool,
+    /// The Claude session this terminal's `claude` runs: a chat's terminal,
+    /// listed before its plugin attaches, so clients adopt it as the chat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_session_id: Option<String>,
 }
 
 struct TerminalSession {
@@ -150,6 +154,7 @@ impl TerminalManager {
         hook_socket: Option<String>,
         shell: Option<String>,
         claude_config_dir: Option<&std::path::Path>,
+        claude_session_id: Option<String>,
         extra_env: &[(&str, String)],
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
@@ -233,6 +238,7 @@ impl TerminalManager {
             cwd,
             created_at,
             alive: true,
+            claude_session_id,
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
         let (done_tx, _done_rx) = watch::channel(false);
@@ -535,6 +541,7 @@ pub fn create_from_body(
         body.hook_socket,
         body.shell,
         claude_config_dir.as_deref(),
+        body.claude_session.as_ref().map(|s| s.id.clone()),
         &mod_env,
     );
     match (&created, &token) {
