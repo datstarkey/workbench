@@ -1,4 +1,4 @@
-import type { AnyEventHook, Register } from 'claude-code';
+import type { EngineInterface, Register } from 'claude-code';
 import {
 	noteBackgroundTasks,
 	notePermissionMode,
@@ -11,8 +11,12 @@ const REFRESH_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
 // Workbench sets both variables on every shell and chat process it starts;
 // outside Workbench they are unset and the plugin does nothing. Awaiting the
 // POST (the bridge answers once it has handled the event) keeps events in order.
-const forward: AnyEventHook = async ($, e, next) => {
-	notePermissionMode((e as { permission_mode?: string }).permission_mode);
+async function forward<R>(
+	$: EngineInterface,
+	e: { permission_mode?: string; [field: string]: unknown },
+	next: () => Promise<R>
+): Promise<R> {
+	notePermissionMode(e.permission_mode);
 	const socket = await $.env.get('WORKBENCH_HOOK_SOCKET');
 	const paneId = await $.env.get('WORKBENCH_PANE_ID');
 	if (socket && paneId) {
@@ -24,16 +28,16 @@ const forward: AnyEventHook = async ($, e, next) => {
 			})
 			.catch(() => {});
 	}
-	return next(e);
-};
+	return next();
+}
 
 export const register: Register = (on, options) => {
 	registerChat(on, options);
-	on('classic.SessionStart', forward);
-	on('classic.UserPromptSubmit', forward);
+	on('classic.SessionStart', ($, e, next) => forward($, e, () => next(e)));
+	on('classic.UserPromptSubmit', ($, e, next) => forward($, e, () => next(e)));
 	on('classic.Stop', ($, e, next) => {
 		noteBackgroundTasks(e.background_tasks);
-		return forward($, e, next);
+		return forward($, e, () => next(e));
 	});
 	// Approvals reach both devices through the mod link; only an MCP form the
 	// terminal shows needs naming here (the desktop isn't sent Notification).

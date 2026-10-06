@@ -23,3 +23,5 @@ bun.lockb
 # Build output
 dist/
 .turbo/
+# Claude Code writes it; replaced whole on a CLI bump.
+/plugins/workbench/types/claude-code.d.ts

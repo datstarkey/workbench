@@ -200,6 +200,17 @@
         "svelte": "^5",
       },
     },
+    "plugins/workbench": {
+      "name": "@workbench/claude-plugin",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "eslint": "^10.4.1",
+        "eslint-config-prettier": "^10.1.8",
+        "typescript": "catalog:",
+        "typescript-eslint": "^8.60.1",
+      },
+    },
   },
   "catalog": {
     "@lucide/svelte": "^1.17.0",
@@ -696,6 +707,8 @@
     "@wdio/xvfb": ["@wdio/xvfb@9.32.0", "", { "dependencies": { "@wdio/logger": "9.29.1" } }, "sha512-K1DL05PngTMKY8mkzMNYpKNqZNPTrdJheuvTeWwwYlm4Yn9hLc8V3hw6EDsuEYw4cyEyiVeukLbLOEW+AhvqVw=="],
 
     "@workbench/chat-ui": ["@workbench/chat-ui@workspace:packages/chat-ui"],
+
+    "@workbench/claude-plugin": ["@workbench/claude-plugin@workspace:plugins/workbench"],
 
     "@workbench/control-plane-ui": ["@workbench/control-plane-ui@workspace:packages/control-plane-ui"],
 
