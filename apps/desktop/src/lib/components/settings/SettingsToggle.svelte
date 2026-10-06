@@ -7,12 +7,14 @@
 		label,
 		description,
 		checked,
+		disabled = false,
 		onCheckedChange,
 		children
 	}: {
 		label: string;
 		description?: string | Snippet;
 		checked: boolean;
+		disabled?: boolean;
 		onCheckedChange: (value: boolean) => void;
 		children?: Snippet;
 	} = $props();
@@ -20,6 +22,6 @@
 
 <SettingsRow {label} {description} {children}>
 	{#snippet control()}
-		<Switch {checked} {onCheckedChange} aria-label={label} />
+		<Switch {checked} {disabled} {onCheckedChange} aria-label={label} />
 	{/snippet}
 </SettingsRow>

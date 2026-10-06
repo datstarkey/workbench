@@ -160,6 +160,12 @@ pub fn run() {
         .manage(RefreshDispatcher::new())
         .manage(server_control::ServerControl::new())
         .setup(|app| {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            app.handle().plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ))?;
+
             let handle = app.handle().clone();
             #[cfg(target_os = "macos")]
             menu::build(&handle).expect("failed to build menu");
