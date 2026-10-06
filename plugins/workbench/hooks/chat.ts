@@ -64,6 +64,9 @@ const echoed = new Set<string>();
 // Questions and plans are asked from `tool.call` (an answer edits the input);
 // `tool.check` then lets the answered call through.
 const ASKED_IN_CALL = new Set(['AskUserQuestion', 'ExitPlanMode']);
+// Modes that settle an `ask` verdict without a dialog (bypass allows, dontAsk
+// denies): asking in chat would pre-empt them.
+const NO_DIALOG_MODES = new Set(['bypassPermissions', 'dontAsk']);
 const answeredInChat = new Set<string>();
 // Approvals the terminal's own dialog asks (no chat was open): tool call id → request id.
 const askedInTerminal = new Map<string, string>();
@@ -153,7 +156,13 @@ const NO_SESSION_ALLOW = new Set(['Bash', 'PowerShell']);
 // terminal's "allow for this session" does: a hook can't add the engine's rule.
 const sessionAllowed = new Set<string>();
 
-function askLine(requestId: string, tool: string, input: unknown, toolUseId?: string): Line {
+function askLine(
+	requestId: string,
+	tool: string,
+	input: unknown,
+	toolUseId?: string,
+	reason?: string
+): Line {
 	const suggestions =
 		NO_SESSION_ALLOW.has(tool) || ASKED_IN_CALL.has(tool)
 			? undefined
@@ -173,6 +182,7 @@ function askLine(requestId: string, tool: string, input: unknown, toolUseId?: st
 			tool_name: tool,
 			input,
 			tool_use_id: toolUseId,
+			description: reason,
 			permission_suggestions: suggestions
 		}
 	};
@@ -376,7 +386,9 @@ export const register: Register = (on) => {
 								const set = await $.config
 									.set({ key: 'permissionMode', value: req.mode })
 									.catch((err: unknown) => ({ deny: String(err) }));
-								reply(line.request_id, denial(set, 'Mode'));
+								const denied = denial(set, 'Mode');
+								if (!denied) notePermissionMode(req.mode);
+								reply(line.request_id, denied);
 							} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
 								effort = req.settings.effortLevel as TurnStepInput['effort'];
 								reply(line.request_id);
@@ -674,12 +686,13 @@ export const register: Register = (on) => {
 		const verdict = await next(e);
 		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
 		if (verdict.decision !== 'ask' || !link || ASKED_IN_CALL.has(e.tool)) return verdict;
+		if (liveMode && NO_DIALOG_MODES.has(liveMode)) return verdict;
 		if (sessionAllowed.has(e.tool)) return { decision: 'allow' };
 		// Asked in chat while one is open; the server answers `fallback` when none is
 		// (or it closes), and the terminal asks instead. A held request in flight
 		// doesn't spend the hook's time budget, however long the person takes.
 		const requestId = `wbmod-ask-${++askSeq}`;
-		let line: Line | undefined = askLine(requestId, e.tool, e.input, e.tool_use_id);
+		let line: Line | undefined = askLine(requestId, e.tool, e.input, e.tool_use_id, verdict.reason);
 		let answer: Answer | null | undefined;
 		while (answer === undefined && link && !next.signal.aborted) {
 			const res = await $.http
