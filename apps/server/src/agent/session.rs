@@ -606,14 +606,19 @@ impl AgentSession {
         }
         let known = lock(&self.task_files).get(task_id).cloned();
         let path = known.or_else(|| {
-            let file_id = lock(&self.driver)
+            let output_id = lock(&self.driver)
                 .view()
                 .meta()
                 .tasks
                 .iter()
                 .find(|t| t.id == task_id)
-                .and_then(|t| t.output_id.clone())
-                .unwrap_or_else(|| task_id.to_string());
+                .and_then(|t| t.output_id.clone());
+            // A terminal plugin's agent task is keyed by its tool call, which
+            // names no file: only its `output_id` can.
+            if output_id.is_none() && task_id.starts_with("toolu_") {
+                return None;
+            }
+            let file_id = output_id.unwrap_or_else(|| task_id.to_string());
             let found = workbench_core::task_output::find(&file_id)?;
             lock(&self.task_files).insert(task_id.to_string(), found.clone());
             Some(found)

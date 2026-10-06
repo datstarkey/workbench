@@ -2,7 +2,9 @@
 //! background agents). The CLI writes each to
 //! `<temp>/claude[-<uid>]/<encoded-cwd>/<run-id>/tasks/<task-id>.output`
 //! — `%TEMP%\claude\…` on Windows, `/tmp/claude-<uid>/…` on macOS — and only
-//! names the file when the task ends, so it's found by task id.
+//! names the file when the task ends, so it's found by task id (or, for a
+//! terminal plugin's agent task, keyed by its tool call, by the subagent's
+//! id: `TaskInfo::output_id`).
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};

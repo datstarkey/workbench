@@ -40,10 +40,14 @@ let lastUsage: unknown;
 const toolResults = new Map<string, unknown>();
 const toolRows = new Map<string, Line>();
 // Agent calls whose subagent is starting, by description + prompt (what
-// `agent.spawn` sees of the call) -> task id; parallel calls stay apart.
-const spawning = new Map<string, string>();
-// Running subagents: agent id -> task id, for progress and their output file.
+// `agent.spawn` sees of the call) -> task ids in call order, so parallel calls
+// with the same input each get one.
+const spawning = new Map<string, string[]>();
+// Agent calls still running (task ids), for progress when no spawn was matched.
+const runningAgents = new Set<string>();
+// Running subagents: agent id <-> task id, for progress and their output file.
 const agentTasks = new Map<string, string>();
+const taskAgents = new Map<string, string>();
 // Background agents: their Agent call returned at launch, so their own
 // `turn.complete` ends the task.
 const asyncAgents = new Set<string>();
@@ -106,6 +110,24 @@ function modelOption(value: string) {
 		displayName: wide ? `${name} (1M context)` : name,
 		...(base === 'haiku' ? {} : { supportedEffortLevels: EFFORT_LEVELS })
 	};
+}
+
+function spawnKey(description: string | undefined, prompt: string | undefined): string {
+	return `${description ?? ''}\n${prompt ?? ''}`;
+}
+
+function linkAgent(agent: string, task: string) {
+	agentTasks.set(agent, task);
+	taskAgents.set(task, agent);
+}
+
+function unlinkTask(task: string) {
+	const agent = taskAgents.get(task);
+	taskAgents.delete(task);
+	if (agent) {
+		agentTasks.delete(agent);
+		asyncAgents.delete(agent);
+	}
 }
 
 function denial(result: { deny?: string } | undefined, what: string): string | undefined {
@@ -302,11 +324,13 @@ export const register: Register = (on) => {
 								effort = req.settings.effortLevel as TurnStepInput['effort'];
 								reply(line.request_id);
 							} else if (sub === 'rewind_files') {
-								// A plugin has no way to restore Claude's file checkpoints.
-								reply(
-									line.request_id,
-									"Files can't be restored in a terminal chat yet. Rewind the conversation only, or undo the changes with git."
-								);
+								// A plugin has no way to restore Claude's file checkpoints; a
+								// `canRewind: false` result shows as the rewind panel's own note.
+								reply(line.request_id, undefined, {
+									canRewind: false,
+									error:
+										"files can't be restored in a terminal chat yet. Rewind the conversation only, or undo the changes with git."
+								});
 							} else {
 								reply(
 									line.request_id,
@@ -325,6 +349,7 @@ export const register: Register = (on) => {
 	on('session.end', async ($, e, next) => {
 		if (link && e.reason === 'clear') {
 			clearPending = true;
+			for (const task of [...taskAgents.keys()]) unlinkTask(task);
 			return next(e);
 		}
 		if (link) {
@@ -448,8 +473,7 @@ export const register: Register = (on) => {
 	on('turn.complete', ($, e, next) => {
 		const task = e.agentId && asyncAgents.has(e.agentId) ? agentTasks.get(e.agentId) : undefined;
 		if (link && task && e.agentId) {
-			asyncAgents.delete(e.agentId);
-			agentTasks.delete(e.agentId);
+			unlinkTask(task);
 			emit({
 				type: 'system',
 				subtype: 'task_notification',
@@ -504,9 +528,10 @@ export const register: Register = (on) => {
 		}
 		const input = e as unknown as { description?: string; subagent_type?: string; prompt?: string };
 		const isAgent = !e.agentId && e.tool === 'Agent';
-		const spawnKey = `${input.description ?? ''}\n${input.prompt ?? ''}`;
+		const key = spawnKey(input.description, input.prompt);
 		if (isAgent && id) {
-			spawning.set(spawnKey, id);
+			spawning.set(key, [...(spawning.get(key) ?? []), id]);
+			runningAgents.add(id);
 			emit({
 				type: 'system',
 				subtype: 'task_started',
@@ -517,23 +542,28 @@ export const register: Register = (on) => {
 				task_type: 'local_agent',
 				uuid: `wbmod-task-${id}`
 			});
-		} else if (e.agentId && agentTasks.has(e.agentId)) {
+		} else if (e.agentId && (agentTasks.has(e.agentId) || runningAgents.size === 1)) {
 			emit({
 				type: 'system',
 				subtype: 'task_progress',
-				task_id: agentTasks.get(e.agentId),
+				task_id: agentTasks.get(e.agentId) ?? [...runningAgents][0],
 				last_tool_name: e.tool,
 				uuid: `wbmod-progress-${++askSeq}`
 			});
 		}
 		const result = await next(e);
 		const launched = result.result as { status?: string; agentId?: string } | undefined;
-		if (isAgent) spawning.delete(spawnKey);
+		if (isAgent && id) {
+			runningAgents.delete(id);
+			const left = (spawning.get(key) ?? []).filter((t) => t !== id);
+			if (left.length) spawning.set(key, left);
+			else spawning.delete(key);
+		}
 		if (isAgent && id && launched?.status === 'async_launched' && launched.agentId) {
 			asyncAgents.add(launched.agentId);
-			agentTasks.set(launched.agentId, id);
+			linkAgent(launched.agentId, id);
 		} else if (isAgent && id) {
-			for (const [agent, task] of agentTasks) if (task === id) agentTasks.delete(agent);
+			unlinkTask(id);
 			emit({
 				type: 'system',
 				subtype: 'task_notification',
@@ -566,9 +596,11 @@ export const register: Register = (on) => {
 
 	on('agent.spawn', async ($, e, next) => {
 		const result = await next(e);
-		const task = spawning.get(`${e.description}\n${e.prompt}`);
+		const key = spawnKey(e.description, e.prompt);
+		// The oldest call with this input that has no subagent yet.
+		const task = spawning.get(key)?.find((t) => !taskAgents.has(t));
 		if (link && task && result.agentId) {
-			agentTasks.set(result.agentId, task);
+			linkAgent(result.agentId, task);
 			// The CLI writes a subagent's log as `<agent id>.output`.
 			emit({
 				type: 'system',
