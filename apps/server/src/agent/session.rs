@@ -474,7 +474,7 @@ impl AgentSession {
         self.keepalive_turn
             .store(text == KEEPALIVE_PROMPT, Ordering::SeqCst);
         let sent = if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
-            super::modlink::attachments_as_mentions(&self.id(), text, images, files)
+            super::attachment::attachments_as_mentions(&self.id(), text, images, files)
                 .and_then(|text| self.run(|d| d.prompt(&text, &[], &[])))
         } else {
             self.run(|d| d.prompt(text, images, files))
@@ -783,9 +783,7 @@ impl AgentSession {
 
     fn finish(&self) {
         lock(&self.stdin).take();
-        if self.link.is_some() {
-            let _ = std::fs::remove_dir_all(super::modlink::attachment_dir(&self.id()));
-        }
+        let _ = std::fs::remove_dir_all(super::attachment::attachment_dir(&self.id()));
         // Until the leader is reaped below its pid still names its process
         // group: end the background shells it started, which would otherwise
         // outlive it holding ports and files.

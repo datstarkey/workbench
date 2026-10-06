@@ -806,7 +806,7 @@ export interface RewindFiles {
 	deletions?: number;
 }
 
-/** An image attached to a chat message: base64 data the Claude API accepts. */
+/** An image attached to either agent's chat message, with base64 data. */
 export interface ChatImage {
 	mediaType: string;
 	data: string;
@@ -814,8 +814,8 @@ export interface ChatImage {
 }
 
 /**
- * A PDF or text file attached to a chat message, sent to Claude as a document
- * block: `data` is base64 for a PDF and the text itself for a text file.
+ * A PDF or text file uploaded to either agent's chat: `data` is base64
+ * for a PDF and the text itself for a text file.
  */
 export interface ChatFile {
 	mediaType: 'application/pdf' | 'text/plain';
@@ -866,7 +866,7 @@ export interface StartAgentBody {
 	 */
 	sessionId?: string;
 	permissionMode?: PermissionMode;
-	/** Codex: the preset to start in; absent leaves `~/.codex/config.toml` in charge. */
+	/** Codex preset; absent uses the server's saved Workbench preset, else Codex config. */
 	codexMode?: CodexMode;
 	paneId?: string;
 	hookSocket?: string;

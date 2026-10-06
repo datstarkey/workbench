@@ -178,18 +178,19 @@ describe('MobileClient with several machines', () => {
 		await c.switchTo(idOf(c, 'mac'));
 		const ref = { sessionId: 'mac-session', projectPath: '/repo', name: 'repo' };
 		c.openChat(ref);
-		const stopping = gate();
-		hosts.mac.holds['DELETE /agent/claude/mac-session'] = stopping.promise;
+		const listing = gate();
+		hosts.mac.holds['GET /remote/terminals'] = listing.promise;
 
-		const toTerminal = c.showAsTerminal(ref, true);
-		await vi.waitFor(() => expect(hosts.mac.calls).toContain('DELETE /agent/claude/mac-session'));
+		const toTerminal = c.showAsTerminal(ref);
+		await Promise.resolve();
 		await c.switchTo(idOf(c, 'pc'));
 		const pcCalls = hosts.pc.calls.length;
-		stopping.release();
+		listing.release();
 		await toTerminal;
 
 		expect(hosts.pc.calls.slice(pcCalls)).toEqual([]);
 		expect(hosts.mac.calls).not.toContain('POST /remote/terminals');
+		expect(hosts.mac.calls).not.toContain('DELETE /agent/claude/mac-session');
 		expect(c.activeTerminalId).toBeNull();
 		expect(c.switching).toBe(false);
 		expect(c.notice).toBeNull();

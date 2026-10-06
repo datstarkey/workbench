@@ -65,7 +65,7 @@
 			id={terminalId}
 			name={c.activeTerminal.name ?? 'terminal'}
 			onClose={c.closeTerminal}
-			onShowChat={c.claudeTerminals[terminalId] ? () => c.showAsChat(terminalId) : undefined}
+			onShowChat={c.terminalChats[terminalId] ? () => c.showAsChat(terminalId) : undefined}
 			switching={c.switching}
 			notice={c.notice}
 		/>

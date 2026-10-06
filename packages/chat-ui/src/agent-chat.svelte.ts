@@ -320,7 +320,7 @@ export class AgentChat {
 		const norm = (s: string) => s.replace(/[\s-]+/g, ' ');
 		// A terminal session's prompt comes back with its attachments as `@path` mentions.
 		const same = (echo: string, sent: string) =>
-			norm(echo) === norm(sent) || norm(echo).startsWith(`${norm(sent)} @`);
+			norm(echo) === norm(sent) || norm(echo).startsWith(`${norm(sent)} @`.trimStart());
 		// A command the CLI can't run headless (`/design-login`) is never echoed,
 		// only answered with a notice.
 		const idle = !this.meta?.busy;

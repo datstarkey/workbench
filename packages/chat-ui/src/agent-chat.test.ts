@@ -231,6 +231,45 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it.each(['claude', 'codex'] as const)(
+		'%s file-only prompts settle when the server echoes uploaded file references',
+		async (agent) => {
+			const chat = new AgentChat({ ...body, agent }, fakeApi());
+			await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+			const ws = FakeSocket.last!;
+			ws.emit({
+				t: 'snapshot',
+				sessionId: 'sid',
+				start: 0,
+				items: [],
+				meta: meta(),
+				commands: [],
+				exited: false
+			});
+			const file = { mediaType: 'text/plain' as const, data: 'hello', name: 'notes.txt' };
+			expect(chat.prompt('', [], [file])).toBe(true);
+			expect(ws.sent).toEqual([{ t: 'prompt', text: '', files: [file] }]);
+			expect(chat.pending[0].files).toEqual(['notes.txt']);
+			ws.emit({
+				t: 'update',
+				changes: [
+					[
+						0,
+						{
+							kind: 'user',
+							id: 'u1',
+							text: '@"/tmp/upload/notes.txt"\n\nRead the attached file.',
+							timestamp: ''
+						}
+					]
+				],
+				meta: meta(true)
+			});
+			expect(chat.pending).toEqual([]);
+			chat.dispose();
+		}
+	);
+
 	it('lists the cwd for @ mentions, reusing the list for a while', async () => {
 		const files = vi.fn<NonNullable<AgentApi['files']>>(async () => ['src/main.rs']);
 		const chat = new AgentChat({ ...body, worktreePath: '/repo-wt' }, { ...fakeApi(), files });

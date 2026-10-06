@@ -191,7 +191,8 @@ pub struct CodexStartBody {
     pub worktree_path: Option<String>,
     /// The thread to resume; absent starts a new one.
     pub session_id: Option<String>,
-    /// `read-only` | `auto` | `full-access`; absent leaves `~/.codex/config.toml` in charge.
+    /// `read-only` | `auto` | `full-access`; absent uses the saved Workbench
+    /// launch preset, or inherits Codex config when no preset matches.
     pub codex_mode: Option<String>,
     pub pane_id: Option<String>,
     pub hook_socket: Option<String>,
@@ -214,6 +215,19 @@ pub async fn codex_start(
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
         let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
+        // Apply one launch default for desktop and Android. Explicit picks
+        // take precedence; attaching to a running session keeps its live mode.
+        let mode = match body.codex_mode {
+            Some(mode) => Some(mode),
+            None => {
+                let settings = workbench_core::config::load_workbench_settings()?;
+                workbench_core::codex_config::chat_mode(
+                    &settings.codex_approval_policy,
+                    &settings.codex_sandbox_mode,
+                )
+                .map(String::from)
+            }
+        };
         let session = agents.start(StartAgent {
             cwd,
             project_path: body.project_path,
@@ -223,7 +237,7 @@ pub async fn codex_start(
             claude_account_id: None,
             launch: Launch::Codex {
                 thread_id: body.session_id,
-                mode: body.codex_mode,
+                mode,
             },
         })?;
         Ok(json!({"sessionId": session.id()}))

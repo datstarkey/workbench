@@ -21,6 +21,17 @@ pub fn codex_binary() -> PathBuf {
     paths::find_binary("WORKBENCH_CODEX_BIN", names)
 }
 
+/// The chat preset matching Workbench's saved CLI launch settings. Other
+/// combinations keep Codex's own config in charge, as the desktop did.
+pub fn chat_mode(approval: &str, sandbox: &str) -> Option<&'static str> {
+    match (approval, sandbox) {
+        ("on-request", "read-only") => Some("read-only"),
+        ("on-request", "workspace-write") => Some("auto"),
+        ("never", "danger-full-access") => Some("full-access"),
+        _ => None,
+    }
+}
+
 fn workbench_codex_notify_script_path() -> PathBuf {
     paths::codex_config_dir().join(WORKBENCH_CODEX_NOTIFY_SCRIPT_NAME)
 }
@@ -179,6 +190,19 @@ pub fn ensure_codex_config() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_presets_match_saved_launch_settings_or_inherit_codex_config() {
+        assert_eq!(chat_mode("on-request", "read-only"), Some("read-only"));
+        assert_eq!(chat_mode("on-request", "workspace-write"), Some("auto"));
+        assert_eq!(
+            chat_mode("never", "danger-full-access"),
+            Some("full-access")
+        );
+        assert_eq!(chat_mode("default", "default"), None);
+        assert_eq!(chat_mode("never", "read-only"), None);
+        assert_eq!(chat_mode("on-request", "default"), None);
+    }
 
     // -----------------------------------------------------------------------
     // ensure_codex_notify_config

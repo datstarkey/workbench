@@ -118,7 +118,7 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     .unwrap();
     std::fs::write(
         tmp.path().join("settings.json"),
-        json!({ "sandboxRuntimeEnabled": true }).to_string(),
+        json!({ "sandboxRuntimeEnabled": true, "codexApprovalPolicy": "on-request", "codexSandboxMode": "read-only" }).to_string(),
     )
     .unwrap();
     let log = tmp.path().join("received.jsonl");
@@ -150,10 +150,9 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     };
 
     // A new thread: the start answers with codex's thread id.
-    let res =
-        start(json!({ "projectPath": project, "paneId": "pane-1", "codexMode": "read-only" }))
-            .await
-            .unwrap();
+    let res = start(json!({ "projectPath": project, "paneId": "pane-1" }))
+        .await
+        .unwrap();
     assert_eq!(
         res.status(),
         200,
@@ -209,8 +208,27 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     .await
     .unwrap();
     assert_eq!(next_json(&mut ws).await["meta"]["effort"], "high");
+    // A malformed upload fails before starting a turn.
+    let invalid = client()
+        .post(format!("{base}/agent/codex/{NEW_THREAD}/message"))
+        .json(&json!({"t":"prompt", "text":"bad upload", "files":[
+            {"name":"bad.pdf", "mediaType":"application/pdf", "data":"A"}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 400);
+    assert_eq!(list("/agent").await[0]["busy"], false);
+
+    // Both hosts send this same payload: file uploads become tool-readable
+    // references, while an image stays native app-server input.
     ws.send(Message::Text(
-        json!({"t":"prompt","text":"hello"}).to_string(),
+        json!({"t":"prompt","text":"hello", "images":[
+            {"mediaType":"image/png", "data":"aGk="}
+        ], "files":[
+            {"name":"notes with spaces.rs", "mediaType":"text/plain", "data":"fn main() {} // ü"},
+            {"name":"../../../report with spaces.pdf", "mediaType":"application/pdf", "data":"JVBERg=="}
+        ]}).to_string(),
     ))
     .await
     .unwrap();
@@ -268,9 +286,32 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     assert_eq!(thread["params"]["sandbox"], "read-only");
     let turn = by_method("turn/start");
     assert_eq!(turn["params"]["threadId"], NEW_THREAD);
+    let input = turn["params"]["input"].as_array().unwrap();
+    assert_eq!(input.len(), 2);
+    assert_eq!(input[0]["type"], "text");
+    assert_eq!(input[0]["text_elements"], json!([]));
+    let prompt = input[0]["text"].as_str().unwrap();
+    assert!(prompt.starts_with("hello\n\n@"));
+    assert!(prompt.contains("Read them with your tools"));
+    let mentions = prompt.split("\n\n").nth(1).unwrap();
+    let paths: Vec<std::path::PathBuf> = mentions
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(Into::into)
+        .collect();
+    assert_eq!(paths.len(), 2);
+    let attachment_dir = std::env::temp_dir().join("workbench-chat").join(NEW_THREAD);
+    assert!(paths.iter().all(|p| p.starts_with(&attachment_dir)));
     assert_eq!(
-        turn["params"]["input"],
-        json!([{"type":"text","text":"hello","text_elements":[]}])
+        std::fs::read_to_string(&paths[0]).unwrap(),
+        "fn main() {} // ü"
+    );
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), b"%PDF");
+    assert_eq!(paths[1].file_name().unwrap(), "2-report with spaces.pdf");
+    assert_eq!(
+        input[1],
+        json!({"type":"image", "url":"data:image/png;base64,aGk="})
     );
     assert_eq!(turn["params"]["sandboxPolicy"]["type"], "readOnly");
     assert_eq!(turn["params"]["effort"], "high");
@@ -284,7 +325,7 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     // for the same thread joins the running process.
     for _ in 0..2 {
         let res =
-            start(json!({ "projectPath": project, "sessionId": OLD_THREAD, "paneId": "pane-2" }))
+            start(json!({ "projectPath": project, "sessionId": OLD_THREAD, "paneId": "pane-2", "codexMode": "full-access" }))
                 .await
                 .unwrap();
         assert_eq!(
@@ -297,6 +338,16 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     }
     let received = std::fs::read_to_string(&log).unwrap();
     assert_eq!(received.matches(r#""method":"thread/resume""#).count(), 1);
+    let resume: Value = received
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v["method"] == "thread/resume")
+        .unwrap();
+    assert_eq!(
+        resume["params"]["approvalPolicy"], "never",
+        "an explicit mode overrides the saved read-only default"
+    );
+    assert_eq!(resume["params"]["sandbox"], "danger-full-access");
     let (mut old_ws, _) = tokio_tungstenite::connect_async(ws_url(OLD_THREAD))
         .await
         .unwrap();
@@ -341,6 +392,10 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         }
     }
     assert!(list("/agent").await.is_empty());
+    assert!(
+        !attachment_dir.exists(),
+        "stopping Codex removes its uploads"
+    );
 
     handle.stop().await;
 }
