@@ -110,11 +110,14 @@ export class SavedMachines {
 	}
 
 	/** Pairing: add the machine, or update the matching saved one (`find`); it becomes active. */
-	save(url: string, token: string): Machine {
+	save(url: string, token: string, nickname = ''): Machine {
 		const existing = this.find(url, token);
-		const machine = existing
-			? { ...existing, url, token }
-			: { id: crypto.randomUUID(), name: hostOf(url), url, token };
+		const machine: Machine = {
+			id: existing?.id ?? crypto.randomUUID(),
+			name: nickname.trim() || existing?.name || hostOf(url),
+			url,
+			token
+		};
 		this.list = existing
 			? this.list.map((m) => (m.id === machine.id ? machine : m))
 			: [...this.list, machine];

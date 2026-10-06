@@ -6,27 +6,13 @@
 
 	/** The home screen's machine switcher: rename this one, switch, forget, add. */
 	let { client, onClose }: { client: MobileClient; onClose: () => void } = $props();
-
-	/** The rename field; a rejected (blank) name snaps back to the stored one. */
-	let nameDraft = $derived(client.machine?.name ?? '');
 </script>
 
 <Sheet label="Machines" {onClose}>
 	<div class="flex flex-col gap-4 pb-2">
-		{#if client.machine}
-			{@const id = client.machine.id}
-			<label class="flex flex-col gap-1.5">
-				<span class="text-[13px] font-semibold">This machine's name</span>
-				<input
-					bind:value={nameDraft}
-					onchange={() => (nameDraft = client.machines.rename(id, nameDraft))}
-					autocapitalize="words"
-					autocorrect="off"
-					spellcheck={false}
-					class="h-10 rounded-lg border border-wb-hair bg-wb-panel2 px-3 text-[13px] text-wb-ink focus:border-wb-ink-soft focus:outline-none"
-				/>
-			</label>
-		{/if}
+		<p class="text-[12px] text-wb-ink-mute">
+			Give your hosts nicknames with the pencil button. You can rename an offline host too.
+		</p>
 		<div class="flex flex-col gap-2">
 			<span class="text-[13px] font-semibold">Switch to</span>
 			<MachineList {client} onPick={onClose} />

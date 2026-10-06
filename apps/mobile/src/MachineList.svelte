@@ -1,6 +1,7 @@
 <script lang="ts">
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import XIcon from '@lucide/svelte/icons/x';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import { cn } from '@workbench/ui';
 	import type { MobileClient } from './client.svelte.ts';
 
@@ -9,6 +10,8 @@
 
 	/** The machine whose × was tapped; its row asks before forgetting. */
 	let confirming = $state<string | null>(null);
+	let editing = $state<string | null>(null);
+	let nickname = $state('');
 </script>
 
 <ul class="flex flex-col gap-1.5">
@@ -20,7 +23,41 @@
 				current ? 'border-wb-accent/50' : 'border-wb-hair-soft'
 			)}
 		>
-			{#if confirming === m.id}
+			{#if editing === m.id}
+				<form
+					class="flex min-w-0 flex-1 items-center gap-1"
+					onsubmit={(event) => {
+						event.preventDefault();
+						client.machines.rename(m.id, nickname);
+						editing = null;
+					}}
+				>
+					<input
+						aria-label="Nickname for {m.name}"
+						bind:value={nickname}
+						{@attach (node) => node.focus()}
+						onkeydown={(event) => {
+							if (event.key === 'Escape') {
+								event.preventDefault();
+								editing = null;
+							}
+						}}
+						autocapitalize="words"
+						class="h-10 min-w-0 flex-1 rounded-lg border border-wb-hair bg-wb-panel2 px-2 text-[13px] focus:border-wb-accent focus:outline-none"
+					/>
+					<button
+						type="submit"
+						disabled={!nickname.trim()}
+						class="h-10 rounded-lg px-2 text-[13px] font-semibold text-wb-accent disabled:opacity-40"
+						>Save</button
+					>
+					<button
+						type="button"
+						class="h-10 rounded-lg px-2 text-[13px] text-wb-ink-mute"
+						onclick={() => (editing = null)}>Cancel</button
+					>
+				</form>
+			{:else if confirming === m.id}
 				<span class="min-w-0 flex-1 truncate text-[13px]">Forget {m.name}?</span>
 				<button
 					type="button"
@@ -57,6 +94,16 @@
 						{client.connectingTo === m.id ? 'Connecting…' : m.url}
 					</span>
 				</button>
+				<button
+					type="button"
+					class="grid size-10 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-ink"
+					aria-label="Rename {m.name}"
+					onclick={() => {
+						nickname = m.name;
+						editing = m.id;
+						confirming = null;
+					}}><PencilIcon class="size-4" /></button
+				>
 				<button
 					type="button"
 					class="grid size-10 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-err"
