@@ -181,8 +181,7 @@ impl TerminalManager {
         })?;
 
         // Prefer the caller's shell (desktop forwards the project's configured
-        // shell for parity with the local PtyManager path); fall back to the
-        // platform default.
+        // shell); fall back to the platform default.
         let shell_path = match shell {
             Some(s) if !s.is_empty() => s,
             _ => workbench_core::shell::default_shell(),
@@ -217,8 +216,8 @@ impl TerminalManager {
 
         // Shell integration (OSC 133): when launching a bare zsh (no startup
         // command), point ZDOTDIR at our generated rc dir so prompt/command marks
-        // are emitted. Mirrors the desktop PtyManager path; the dir resolver lives
-        // in workbench-core so the server can call it directly (no frontend seam).
+        // are emitted. The dir resolver lives in workbench-core so the server can
+        // call it directly (no frontend seam).
         if command.is_none() && shell_path.contains("zsh") {
             if let Ok(zsh_dir) = workbench_core::shell_integration::ensure_shell_integration_dir() {
                 if let Ok(orig) = std::env::var("ZDOTDIR") {
@@ -666,7 +665,7 @@ fn wait_for_shell_prompt(session: &TerminalSession) {
 ///
 /// Signal-BEFORE-reap is load-bearing: the group is signalled while the leader still
 /// holds the pgid, so `killpg` never targets a freed (and possibly recycled) PID.
-/// Mirrors the desktop PtyManager path. Best-effort; the SIGTERM→grace→SIGKILL
+/// Best-effort; the SIGTERM→grace→SIGKILL
 /// escalation blocks, so callers run it on a dedicated thread or the reader thread.
 #[cfg(unix)]
 fn terminate_process_group(session: &TerminalSession) {

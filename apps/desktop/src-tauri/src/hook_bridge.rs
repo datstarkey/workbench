@@ -187,13 +187,13 @@ fn should_emit_project_refresh_for_hook(hook: &Value) -> bool {
 
 /// Emit a project refresh event. Caller must verify `should_emit_project_refresh_for_hook` first.
 fn emit_project_refresh_event(handle: &AppHandle, hook: &Value) {
-    // The project to refresh is the hook's reported cwd, normalized to its git
-    // repo root — a subdir/worktree cwd would otherwise key a project no store
-    // recognizes.
+    // The project to refresh is the hook's cwd at its checkout root (a linked
+    // worktree's own root), so a subdirectory cwd keys the path the stores use.
     let Some(project_path) = hook
         .get("cwd")
         .and_then(|v| v.as_str())
-        .and_then(resolve_repo_root)
+        .and_then(|cwd| crate::git::git_info(cwd).ok())
+        .map(|info| info.repo_root)
     else {
         return;
     };
@@ -207,20 +207,6 @@ fn emit_project_refresh_event(handle: &AppHandle, hook: &Value) {
     };
 
     dispatcher.request_refresh(handle, project_path, "claude-hook", trigger);
-}
-
-fn resolve_repo_root(path: &str) -> Option<String> {
-    let output = crate::shell::command("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(path)
-        .env("PATH", crate::paths::enriched_path())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let repo_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!repo_root.is_empty()).then_some(repo_root)
 }
 
 /// Process lines from a stream, dispatching hook events to the frontend.

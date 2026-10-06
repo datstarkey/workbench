@@ -275,6 +275,35 @@ async fn agent_files_lists_a_registered_cwd_only() {
     handle.stop().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_create_rejects_unknown_worktree() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    // A real repo, so the known-worktree guard runs rather than list_worktrees failing.
+    git_init(tmp.path());
+    let _cfg = register_project(&env, tmp.path());
+
+    let (handle, base) = start().await;
+    let res = client()
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({
+            "projectPath": tmp.path(),
+            "worktreePath": "/nonexistent/worktree"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_server_error());
+    let body: Value = res.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap().contains("not a known worktree"),
+        "{body}"
+    );
+
+    handle.stop().await;
+}
+
 /// Create a terminal in `project` over REST and return its id.
 async fn create_terminal(http: &reqwest::Client, base: &str, project: &std::path::Path) -> String {
     let meta: Value = http

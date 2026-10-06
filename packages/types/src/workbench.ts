@@ -39,25 +39,10 @@ export interface PackageInfo {
 	scripts: PackageScript[];
 }
 
-// ── Native (SwiftTerm / PtyManager) terminal types ──────────────────────────
-// These are used ONLY by the native SwiftTerm path (pty.rs / native_terminal.rs)
-// and the corresponding Tauri IPC commands (create_terminal / terminal:data /
-// terminal:exit). The xterm path no longer uses them — xterm attaches over
+// ── Native (SwiftTerm) terminal types ──────────────────────────────────────
+// These are used ONLY by the native SwiftTerm path (native_terminal.rs) and its
+// Tauri events (terminal:data / terminal:exit). The xterm path no longer uses them — xterm attaches over
 // WebSocket to TerminalManager in the embedded server.
-
-export interface CreateTerminalRequest {
-	id: string;
-	projectPath: string;
-	shell: string;
-	cols: number;
-	rows: number;
-	startupCommand?: string;
-}
-
-export interface CreateTerminalResponse {
-	id: string;
-	backend: string;
-}
 
 export interface TerminalDataEvent {
 	sessionId: string;

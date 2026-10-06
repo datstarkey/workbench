@@ -4,7 +4,7 @@
  * binary has been built (`cargo build -p workbench-server`), so it never breaks
  * `turbo run test` in environments without the Rust toolchain.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +39,8 @@ describe.skipIf(!hasBin)('HttpTransport ↔ real workbench-server', () => {
 
 	beforeAll(async () => {
 		projectDir = mkdtempSync(join(tmpdir(), 'wb-int-'));
+		// A real repo, so the known-worktree guard runs rather than `git worktree list` failing.
+		execFileSync('git', ['init', '-q'], { cwd: projectDir });
 
 		// Register projectDir as a Workbench project so the cwd allowlist accepts
 		// it (point the server's config dir at a throwaway projects.json).
@@ -72,7 +74,7 @@ describe.skipIf(!hasBin)('HttpTransport ↔ real workbench-server', () => {
 	it('throws a server error for an unknown worktree', async () => {
 		await expect(
 			transport.invoke('git_status', { path: '/nope/worktree', projectPath: projectDir })
-		).rejects.toThrow();
+		).rejects.toThrow(/not a known worktree/);
 	});
 
 	it('throws for commands the server does not expose', async () => {

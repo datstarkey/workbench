@@ -86,14 +86,21 @@ mod tests {
     #[test]
     fn rejects_unknown_worktree() {
         let dir = tempfile::tempdir().unwrap();
+        // A real repo, so the known-worktree guard runs rather than list_worktrees failing.
+        let ok = workbench_core::shell::command("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
         let registered = vec![dir.path().to_str().unwrap().to_string()];
-        // Registered project, but the worktree path isn't a known worktree (the
-        // non-repo dir makes list_worktrees fail, which is also a rejection).
-        let res = resolve_in(
+        let err = resolve_in(
             dir.path().to_str().unwrap(),
             Some("/tmp/elsewhere"),
             &registered,
-        );
-        assert!(res.is_err());
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not a known worktree"), "{err}");
     }
 }

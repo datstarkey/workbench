@@ -265,5 +265,3 @@ async fn settings_sync_stub() -> ApiError {
     }
 }
 
-// --- remote-control spawn (Claude only; Codex has no remote-control) ---
-
