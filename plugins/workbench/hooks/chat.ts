@@ -39,11 +39,14 @@ let lastUsage: unknown;
 // Tool results the transcript row doesn't carry (an Artifact's link), by call id.
 const toolResults = new Map<string, unknown>();
 const toolRows = new Map<string, Line>();
-// Agent tool calls still running, for the tasks panel.
-const runningAgents: string[] = [];
-// Background agents (their Agent call returned at launch): agent id -> task id,
-// until the agent's own `turn.complete`.
-const asyncAgents = new Map<string, string>();
+// Agent calls whose subagent is starting, by description + prompt (what
+// `agent.spawn` sees of the call) -> task id; parallel calls stay apart.
+const spawning = new Map<string, string>();
+// Running subagents: agent id -> task id, for progress and their output file.
+const agentTasks = new Map<string, string>();
+// Background agents: their Agent call returned at launch, so their own
+// `turn.complete` ends the task.
+const asyncAgents = new Set<string>();
 // Chat prompts appended into the running turn that no request has read yet;
 // any left when the turn ends run as their own turn (echoed once already).
 let injected: string[] = [];
@@ -437,9 +440,10 @@ export const register: Register = (on) => {
 	});
 
 	on('turn.complete', ($, e, next) => {
-		const task = e.agentId ? asyncAgents.get(e.agentId) : undefined;
+		const task = e.agentId && asyncAgents.has(e.agentId) ? agentTasks.get(e.agentId) : undefined;
 		if (link && task && e.agentId) {
 			asyncAgents.delete(e.agentId);
+			agentTasks.delete(e.agentId);
 			emit({
 				type: 'system',
 				subtype: 'task_notification',
@@ -492,10 +496,11 @@ export const register: Register = (on) => {
 				return next({ ...e, ...(answer.updatedInput ?? {}) } as typeof e);
 			}
 		}
-		const input = e as unknown as { description?: string; subagent_type?: string };
+		const input = e as unknown as { description?: string; subagent_type?: string; prompt?: string };
 		const isAgent = !e.agentId && e.tool === 'Agent';
+		const spawnKey = `${input.description ?? ''}\n${input.prompt ?? ''}`;
 		if (isAgent && id) {
-			runningAgents.push(id);
+			spawning.set(spawnKey, id);
 			emit({
 				type: 'system',
 				subtype: 'task_started',
@@ -506,22 +511,23 @@ export const register: Register = (on) => {
 				task_type: 'local_agent',
 				uuid: `wbmod-task-${id}`
 			});
-		} else if (e.agentId && (asyncAgents.has(e.agentId) || runningAgents.length === 1)) {
+		} else if (e.agentId && agentTasks.has(e.agentId)) {
 			emit({
 				type: 'system',
 				subtype: 'task_progress',
-				task_id: asyncAgents.get(e.agentId) ?? runningAgents[0],
+				task_id: agentTasks.get(e.agentId),
 				last_tool_name: e.tool,
 				uuid: `wbmod-progress-${++askSeq}`
 			});
 		}
 		const result = await next(e);
 		const launched = result.result as { status?: string; agentId?: string } | undefined;
+		if (isAgent) spawning.delete(spawnKey);
 		if (isAgent && id && launched?.status === 'async_launched' && launched.agentId) {
-			runningAgents.splice(runningAgents.indexOf(id), 1);
-			asyncAgents.set(launched.agentId, id);
+			asyncAgents.add(launched.agentId);
+			agentTasks.set(launched.agentId, id);
 		} else if (isAgent && id) {
-			runningAgents.splice(runningAgents.indexOf(id), 1);
+			for (const [agent, task] of agentTasks) if (task === id) agentTasks.delete(agent);
 			emit({
 				type: 'system',
 				subtype: 'task_notification',
@@ -548,6 +554,23 @@ export const register: Register = (on) => {
 			toolResults.set(id, result.result);
 			const row = toolRows.get(id);
 			if (row) emit({ ...row, tool_use_result: result.result });
+		}
+		return result;
+	});
+
+	on('agent.spawn', async ($, e, next) => {
+		const result = await next(e);
+		const task = spawning.get(`${e.description}\n${e.prompt}`);
+		if (link && task && result.agentId) {
+			agentTasks.set(result.agentId, task);
+			// The CLI writes a subagent's log as `<agent id>.output`.
+			emit({
+				type: 'system',
+				subtype: 'task_updated',
+				task_id: task,
+				output_id: result.agentId,
+				uuid: `wbmod-task-out-${task}`
+			});
 		}
 		return result;
 	});

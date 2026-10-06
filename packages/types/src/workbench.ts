@@ -674,6 +674,8 @@ export interface TaskInfo {
 	activity?: string;
 	lastTool?: string;
 	summary?: string;
+	/** Whose `<id>.output` file holds the live output, when not `id` itself. */
+	outputId?: string;
 }
 
 /** A slash command the session accepts (built-ins, custom commands, skills). */

@@ -224,6 +224,10 @@ pub struct TaskInfo {
     pub last_tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Whose `<id>.output` file holds the live output, when not `id` itself
+    /// (a terminal plugin's agent task is keyed by its tool call).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_id: Option<String>,
 }
 
 /// An artifact on claude.ai that an `Artifact` call published or opened.
