@@ -39,6 +39,18 @@ while IFS= read -r line; do
     *'"method":"thread/items/list"'*)
       echo "{\"id\":$id,\"result\":{\"data\":[{\"item\":{\"type\":\"agentMessage\",\"id\":\"m0\",\"text\":\"earlier answer\"}},{\"item\":{\"type\":\"userMessage\",\"id\":\"u0\",\"content\":[{\"type\":\"text\",\"text\":\"earlier question\"}]}}],\"nextCursor\":null}}"
       ;;
+    *'"method":"thread/compact/start"'*)
+      echo "{\"id\":$id,\"result\":{}}"
+      ;;
+    *'"method":"thread/fork"'*)
+      echo "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"01a0f8c4-0000-7000-8000-000000000002\",\"name\":\"Fork\"}}}"
+      ;;
+    *'"method":"remoteControl/enable"'*)
+      echo "{\"id\":$id,\"error\":{\"code\":-32601,\"message\":\"Unsupported\"}}"
+      ;;
+    *'"method":"thread/unsubscribe"'*)
+      echo "{\"id\":$id,\"result\":{\"status\":\"unsubscribed\"}}"
+      ;;
     *'"method":"model/list"'*)
       echo "{\"id\":$id,\"result\":{\"data\":[{\"id\":\"fake-model\",\"model\":\"fake-model\",\"displayName\":\"Fake\",\"description\":\"\",\"hidden\":false,\"supportedReasoningEfforts\":[{\"reasoningEffort\":\"low\"},{\"reasoningEffort\":\"high\"}]}]}}"
       ;;
@@ -339,6 +351,34 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
             .is_empty(),
         "catch-up doesn't repeat an alert"
     );
+    // Explicit native actions are correlated on the socket; forking keeps this
+    // session's identity, and unavailable optional APIs report an action error.
+    for (request, action) in [
+        ("compact", "compact"),
+        ("fork", "fork"),
+        ("remote", "remoteEnable"),
+    ] {
+        ws.send(Message::Text(
+            json!({"t":"codex","requestId":request,"action":action}).to_string(),
+        ))
+        .await
+        .unwrap();
+        loop {
+            let frame = next_json(&mut ws).await;
+            if frame["t"] != "codexResult" || frame["requestId"] != request {
+                continue;
+            }
+            if action == "remoteEnable" {
+                assert_eq!(frame["error"], "Unsupported");
+            } else if action == "fork" {
+                assert_eq!(frame["result"]["thread"]["name"], "Fork");
+            } else {
+                assert!(frame.get("error").is_none());
+            }
+            break;
+        }
+    }
+    assert_eq!(list("/agent/codex").await[0]["sessionId"], NEW_THREAD);
 
     let received = std::fs::read_to_string(&log).unwrap();
     let sent: Vec<Value> = received
@@ -464,6 +504,54 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         !attachment_dir.exists(),
         "stopping Codex removes its uploads"
     );
+
+    // A broken CLI closes stdout while leaving stdin unread. A large queued
+    // write must not deadlock cleanup or keep its socket alive indefinitely.
+    let stalled = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) echo "{\"id\":$id,\"result\":{}}" ;;
+    *'"method":"thread/start"'*)
+      echo "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"01a0f8c5-1c60-78a3-a1f0-a30542fec38b\"}}}"
+      trap '' TERM
+      sleep 2
+      exec 1>&-
+      sleep 30
+      ;;
+  esac
+done
+"#;
+    std::fs::write(&fake, stalled).unwrap();
+    let res = start(json!({"projectPath":project})).await.unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "{}",
+        res.text().await.unwrap_or_default()
+    );
+    let (mut stalled_ws, _) = tokio_tungstenite::connect_async(ws_url(NEW_THREAD))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut stalled_ws).await["t"], "snapshot");
+    stalled_ws
+        .send(Message::Text(
+            json!({"t":"prompt","text":"x".repeat(2 * 1024 * 1024)}).to_string(),
+        ))
+        .await
+        .unwrap();
+    loop {
+        if next_json(&mut stalled_ws).await["t"] == "exit" {
+            break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !list("/agent").await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("stdout EOF releases a stalled writer and removes the session");
 
     handle.stop().await;
 }

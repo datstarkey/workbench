@@ -66,7 +66,7 @@
 		/** Set when nothing can be sent right now; shown as the placeholder. */
 		disabledReason: string | null;
 		/** Returns false if the message could not be sent (the draft is kept). */
-		onSend: (text: string, images: ChatImage[], files: ChatFile[]) => boolean;
+		onSend: (text: string, images: ChatImage[], files: ChatFile[]) => boolean | Promise<boolean>;
 		onStop: () => void;
 		onMode: (mode: PermissionMode | CodexMode) => void;
 		/** More pickers for the toolbar (model, effort). */
@@ -173,8 +173,11 @@
 		await place(insertCommand(draft, slash, caret, command.name));
 	}
 
+	let sending = $state(false);
 	const canSend = $derived(
-		!disabledReason && (draft.trim().length > 0 || images.length > 0 || files.length > 0)
+		!sending &&
+			!disabledReason &&
+			(draft.trim().length > 0 || images.length > 0 || files.length > 0)
 	);
 
 	/** Grow with the text up to ~8 lines, then scroll. */
@@ -226,13 +229,24 @@
 			}
 		});
 
-	function send() {
+	async function send() {
 		const typed = /^\/(\S+)$/.exec(draft.trim());
 		if (typed && images.length === 0 && files.length === 0 && onCommand?.(typed[1])) {
 			draft = '';
 			return;
 		}
-		if (!canSend || !onSend(draft, images, files)) return;
+		if (!canSend) return;
+		const sentDraft = draft;
+		const sentImages = images;
+		const sentFiles = files;
+		sending = true;
+		try {
+			if (!(await onSend(sentDraft, sentImages, sentFiles))) return;
+		} finally {
+			sending = false;
+		}
+		// A queued send waits for acknowledgment; preserve edits made while waiting.
+		if (draft !== sentDraft || images !== sentImages || files !== sentFiles) return;
 		draft = '';
 		images = [];
 		files = [];

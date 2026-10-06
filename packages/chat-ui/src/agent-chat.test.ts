@@ -47,8 +47,8 @@ function fakeApi(
 	return { start, socketUrl: async (id) => `ws://test/agent/claude/${id}/ws` };
 }
 
-async function connected(api = fakeApi()) {
-	const chat = new AgentChat(body, api);
+async function connected(api = fakeApi(), startBody = body) {
+	const chat = new AgentChat(startBody, api);
 	await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
 	const ws = FakeSocket.last!;
 	ws.emit({
@@ -595,6 +595,109 @@ describe('AgentChat', () => {
 		const chat = new AgentChat(body, fakeApi());
 		expect(chat.agent).toBe('claude');
 		expect(chat.sessionId).toBe('sid');
+		chat.dispose();
+	});
+	it('correlates native action replies across clients and settles timeouts', async () => {
+		const { chat, ws } = await connected(fakeApi(), { ...body, agent: 'codex' });
+		const first = chat.codexAction('compact');
+		const second = chat.codexAction('inspect', { section: 'account' });
+		const messages = ws.sent as { requestId: string }[];
+		ws.emit({ t: 'codexResult', requestId: messages[1].requestId, result: { account: 'user' } });
+		ws.emit({ t: 'codexResult', requestId: messages[0].requestId, result: {} });
+		await expect(first).resolves.toEqual({});
+		await expect(second).resolves.toEqual({ account: 'user' });
+		const timeout = chat.codexAction('review');
+		const rejected = expect(timeout).rejects.toThrow('timed out');
+		await vi.advanceTimersByTimeAsync(35000);
+		await rejected;
+		chat.dispose();
+	});
+	it('disposal releases outstanding native actions', async () => {
+		const { chat } = await connected();
+		const action = chat.codexAction('inspect', { section: 'account' });
+		const rejected = expect(action).rejects.toThrow('Chat closed');
+		chat.dispose();
+		await rejected;
+	});
+	it('queues shared file attachments and clears the draft only after acknowledgment', async () => {
+		const { chat, ws } = await connected(fakeApi(), { ...body, agent: 'codex' });
+		chat.receive({ t: 'update', changes: [], meta: meta(true) });
+		chat.delivery = 'queue';
+		const file = { name: 'README.md', mediaType: 'text/plain' as const, data: 'Hi' };
+		const sending = chat.prompt('Use this file', [], [file]);
+		const sent = ws.sent[0] as {
+			t: string;
+			action: string;
+			params: { text: string; files: unknown[] };
+			requestId: string;
+		};
+		expect(sent.t).toBe('codex');
+		expect(sent.action).toBe('queueAdd');
+		expect(sent.params).toMatchObject({ text: 'Use this file', files: [file] });
+		ws.emit({ t: 'codexResult', requestId: sent.requestId, result: {} });
+		await expect(sending).resolves.toBe(true);
+		const retry = chat.prompt('', [], [file]);
+		const failed = ws.sent.at(-1) as { requestId: string };
+		ws.emit({ t: 'codexResult', requestId: failed.requestId, error: 'Queue full' });
+		await expect(retry).resolves.toBe(false);
+		expect(chat.notice).toBe('Queue full');
+		chat.dispose();
+	});
+	it('older history follows a client cursor and resets on a different session', async () => {
+		const { chat, ws } = await connected(fakeApi(), { ...body, agent: 'codex' });
+		const first = chat.loadOlder();
+		const request = ws.sent.at(-1) as { requestId: string };
+		ws.emit({
+			t: 'codexResult',
+			requestId: request.requestId,
+			result: { items: [{ kind: 'text', id: 'old', text: 'Earlier' }], nextCursor: 'next' }
+		});
+		await first;
+		const second = chat.loadOlder();
+		expect(ws.sent.at(-1)).toMatchObject({ params: { cursor: 'next' } });
+		ws.emit({
+			t: 'codexResult',
+			requestId: (ws.sent.at(-1) as { requestId: string }).requestId,
+			result: { items: [], nextCursor: null }
+		});
+		await second;
+		expect(chat.hasOlderHistory).toBe(false);
+		expect(chat.hasHistory).toBe(true);
+		ws.emit({
+			t: 'snapshot',
+			sessionId: 'different',
+			start: 0,
+			items: [],
+			commands: [],
+			meta: meta(),
+			exited: false
+		});
+		expect(chat.historyItems).toEqual([]);
+		expect(chat.hasHistory).toBe(false);
+		chat.dispose();
+	});
+	it('identical pending messages require separate echoes', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('same');
+		chat.prompt('same');
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'a', text: 'same', timestamp: '' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toHaveLength(1);
+		ws.emit({
+			t: 'update',
+			changes: [[1, { kind: 'text', id: 'text', text: 'Working' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toHaveLength(1);
+		ws.emit({
+			t: 'update',
+			changes: [[2, { kind: 'user', id: 'b', text: 'same', timestamp: '' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toHaveLength(0);
 		chat.dispose();
 	});
 });

@@ -23,6 +23,7 @@ export * from './artifacts.ts';
 export * from './prompt-cache.ts';
 export { default as ChatActivity } from './ChatActivity.svelte';
 export { default as ChatApproval } from './ChatApproval.svelte';
+export { default as CodexControls } from './CodexControls.svelte';
 export { default as ChatArtifactCard } from './ChatArtifactCard.svelte';
 export { default as ChatArtifacts } from './ChatArtifacts.svelte';
 export { default as ChatCache } from './ChatCache.svelte';

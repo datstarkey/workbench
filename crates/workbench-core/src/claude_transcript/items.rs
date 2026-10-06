@@ -171,6 +171,12 @@ pub struct ModelOption {
     pub resolved_model: Option<String>,
     /// Effort levels it accepts; empty when it has no effort setting.
     pub effort_levels: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub input_modalities: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<Value>,
 }
 
 /// The API call is being retried (`api_retry`): overloaded, rate limited, …
@@ -280,6 +286,8 @@ pub struct TranscriptMeta {
     /// `GET /agent/usage`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_limits: Option<Vec<crate::claude_accounts::UsageLimit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex: Option<crate::codex_controls::State>,
     /// Artifacts this conversation's `Artifact` calls touched, in call order.
     /// Kept here because their links only arrive in the tool's structured result.
     #[serde(skip_serializing_if = "Vec::is_empty")]

@@ -21,7 +21,7 @@ impl CodexTranscript {
         match str_at(item, "type") {
             Some("userMessage") => self.apply_user(id, item, started_at_ms, changed),
             Some(kind @ ("agentMessage" | "plan")) => {
-                let text = str_at(item, "text").unwrap_or_default().to_string();
+                let text = bounded_text(str_at(item, "text").unwrap_or_default());
                 // Started items arrive empty and fill from deltas.
                 if text.is_empty() && self.index.contains_key(&id) {
                     return;
@@ -49,16 +49,125 @@ impl CodexTranscript {
                     .pointer("/error/message")
                     .and_then(Value::as_str)
                     .map(String::from)
-                    .or_else(|| content_text(item.pointer("/result/content")));
+                    .or_else(|| mcp_result_text(item.get("result")));
+                if let Some(content) = item.pointer("/result/content").and_then(Value::as_array) {
+                    self.keep_artifacts(&id, content);
+                }
+                let mut input = clip_value(item.get("arguments").unwrap_or(&Value::Null));
+                if self.artifacts.contains_key(&id) {
+                    if !input.is_object() {
+                        input = json!({"arguments":input});
+                    }
+                    input["artifacts"] = json!(true);
+                }
+                let i = self.upsert(tool(id, name, input), changed);
+                self.finish_tool(i, item_status(item, completed), output.as_deref());
+            }
+            Some("collabAgentToolCall") => {
+                let states = item.get("agentsStates").and_then(Value::as_object);
+                let receivers = item.get("receiverThreadIds").and_then(Value::as_array);
+                for thread in receivers.into_iter().flatten().filter_map(Value::as_str) {
+                    let state = states.and_then(|s| s.get(thread));
+                    let status = state.and_then(|s| str_at(s, "status")).unwrap_or("running");
+                    self.update_task(
+                        thread,
+                        &id,
+                        str_at(item, "prompt").unwrap_or("Codex subagent"),
+                        status,
+                        state.and_then(|s| str_at(s, "message")),
+                    );
+                }
+                let input = json!({"description":str_at(item,"prompt").unwrap_or("Codex subagent"),"threads":receivers,"tool":item.get("tool")});
+                let i = self.upsert(tool(id, "Agent".into(), clip_value(&input)), changed);
+                self.finish_tool(i, item_status(item, completed), None);
+            }
+            Some("subAgentActivity") => {
+                let thread = str_at(item, "agentThreadId").unwrap_or(&id).to_string();
+                let status = match str_at(item, "kind") {
+                    Some("completed") => "completed",
+                    Some("interrupted") => "stopped",
+                    _ => "running",
+                };
+                self.update_task(
+                    &thread,
+                    &id,
+                    str_at(item, "agentPath").unwrap_or("Codex subagent"),
+                    status,
+                    None,
+                );
                 let i = self.upsert(
                     tool(
                         id,
-                        name,
+                        "Agent".into(),
+                        json!({"description":item.get("agentPath"),"threadId":thread}),
+                    ),
+                    changed,
+                );
+                self.finish_tool(
+                    i,
+                    if status == "running" {
+                        ToolStatus::Running
+                    } else {
+                        ToolStatus::Ok
+                    },
+                    None,
+                );
+            }
+            Some(kind @ ("enteredReviewMode" | "exitedReviewMode")) => {
+                self.upsert(
+                    TranscriptItem::Notice {
+                        id,
+                        text: format!(
+                            "{}\n{}",
+                            if kind == "enteredReviewMode" {
+                                "Review started"
+                            } else {
+                                "Review completed"
+                            },
+                            clip(str_at(item, "review").unwrap_or_default())
+                        ),
+                    },
+                    changed,
+                );
+            }
+            Some("imageGeneration") => {
+                let mut input = json!({"description":str_at(item,"revisedPrompt").unwrap_or("Generated image"),"file_path":item.get("savedPath")});
+                if let Some(data) = str_at(item, "result") {
+                    self.keep_artifacts(
+                        &id,
+                        &[json!({"type":"image","mimeType":"image/png","data":data})],
+                    );
+                }
+                input["artifacts"] = json!(self.artifacts.contains_key(&id));
+                let i = self.upsert(tool(id, "ImageGeneration".into(), input), changed);
+                self.finish_tool(i, item_status(item, completed), str_at(item, "status"));
+            }
+            Some("dynamicToolCall" | "functionCallOutput") => {
+                let i = self.upsert(
+                    tool(
+                        id,
+                        str_at(item, "tool")
+                            .or_else(|| str_at(item, "name"))
+                            .unwrap_or("Codex tool")
+                            .into(),
                         clip_value(item.get("arguments").unwrap_or(&Value::Null)),
                     ),
                     changed,
                 );
-                self.finish_tool(i, item_status(item, completed), output.as_deref());
+                self.finish_tool(i, item_status(item, completed), str_at(item, "output"));
+            }
+            Some("hookPrompt") => {
+                self.upsert(
+                    TranscriptItem::Notice {
+                        id,
+                        text: format!("Hook context\n{}", clip(&item.to_string())),
+                    },
+                    changed,
+                );
+            }
+            Some("sleep") => {
+                let i = self.upsert(tool(id, "Sleep".into(), clip_value(item)), changed);
+                self.finish_tool(i, item_status(item, completed), None);
             }
             Some("webSearch") => {
                 let input = json!({"query": str_at(item, "query").unwrap_or_default()});
@@ -75,7 +184,91 @@ impl CodexTranscript {
                 let text = "Conversation compacted".to_string();
                 self.upsert(TranscriptItem::Notice { id, text }, changed);
             }
-            _ => {}
+            Some(kind) => {
+                if self.unknown_seen.insert(format!("item:{kind}")) {
+                    log::warn!("Codex item needs an adapter: {kind}");
+                }
+                self.upsert(
+                    TranscriptItem::Notice {
+                        id,
+                        text: format!("Codex {kind}: {}", clip(&item.to_string())),
+                    },
+                    changed,
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn keep_artifacts(&mut self, id: &str, content: &[Value]) {
+        use base64::Engine;
+        let images: Vec<Value> = content
+            .iter()
+            .filter(|c| str_at(c, "type") == Some("image"))
+            .filter(|c| {
+                matches!(
+                    str_at(c, "mimeType"),
+                    Some("image/png" | "image/jpeg" | "image/webp" | "image/gif")
+                )
+            })
+            .filter(|c| {
+                str_at(c, "data").is_some_and(|data| {
+                    data.len() <= 8 * 1024 * 1024
+                        && base64::engine::general_purpose::STANDARD
+                            .decode(data)
+                            .is_ok()
+                })
+            })
+            .take(4)
+            .cloned()
+            .collect();
+        let retained: usize = self
+            .artifacts
+            .values()
+            .flatten()
+            .map(|c| str_at(c, "data").unwrap_or_default().len())
+            .sum();
+        if !images.is_empty()
+            && retained
+                + images
+                    .iter()
+                    .map(|c| str_at(c, "data").unwrap_or_default().len())
+                    .sum::<usize>()
+                <= 32 * 1024 * 1024
+        {
+            self.artifacts.insert(id.into(), images);
+        }
+    }
+
+    fn update_task(
+        &mut self,
+        id: &str,
+        tool: &str,
+        description: &str,
+        status: &str,
+        summary: Option<&str>,
+    ) {
+        use crate::claude_transcript::TaskInfo;
+        let status = match status {
+            "completed" | "failed" | "stopped" | "paused" => status,
+            "errored" => "failed",
+            "shutdown" | "notFound" => "stopped",
+            _ => "running",
+        };
+        if let Some(task) = self.meta.tasks.iter_mut().find(|t| t.id == id) {
+            task.status = status.into();
+            task.summary = summary.map(clip);
+        } else if self.meta.tasks.len() < 200 {
+            self.meta.tasks.push(TaskInfo {
+                id: id.into(),
+                tool_use_id: Some(tool.into()),
+                kind: "agent".into(),
+                description: clip(description),
+                status: status.into(),
+                background: true,
+                summary: summary.map(clip),
+                ..TaskInfo::default()
+            });
         }
     }
 
@@ -332,12 +525,41 @@ fn strings(v: Option<&Value>) -> Vec<&str> {
         .unwrap_or_default()
 }
 
-/// The text blocks of an MCP result.
-fn content_text(content: Option<&Value>) -> Option<String> {
-    let texts: Vec<&str> = content?
-        .as_array()?
-        .iter()
-        .filter_map(|b| str_at(b, "text"))
-        .collect();
+/// Preserve text, embedded resources, resource links, and structured MCP results.
+fn mcp_result_text(result: Option<&Value>) -> Option<String> {
+    let result = result?;
+    let mut texts = Vec::new();
+    for block in result
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(text) = str_at(block, "text") {
+            texts.push(text.to_string());
+        } else if let Some(resource) = block.get("resource") {
+            if let Some(text) = str_at(resource, "text") {
+                texts.push(text.to_string());
+            } else if let Some(uri) = str_at(resource, "uri") {
+                texts.push(format!("Resource: {uri}"));
+            }
+        } else if let Some(uri) = str_at(block, "uri") {
+            texts.push(format!(
+                "{}: {uri}",
+                str_at(block, "name").unwrap_or("Resource")
+            ));
+        }
+    }
+    if let Some(structured) = result.get("structuredContent").filter(|v| !v.is_null()) {
+        texts.push(serde_json::to_string_pretty(structured).unwrap_or_default());
+    }
     (!texts.is_empty()).then(|| texts.join("\n"))
+}
+
+fn bounded_text(text: &str) -> String {
+    let mut end = text.len().min(1024 * 1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].into()
 }

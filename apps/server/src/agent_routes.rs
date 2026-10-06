@@ -195,6 +195,8 @@ pub struct CodexStartBody {
     /// `read-only` | `auto` | `full-access`; absent uses the saved Workbench
     /// launch preset, or inherits Codex config when no preset matches.
     pub codex_mode: Option<String>,
+    #[serde(flatten)]
+    pub options: workbench_core::codex_controls::LaunchOptions,
     pub pane_id: Option<String>,
     pub hook_socket: Option<String>,
     #[serde(default)]
@@ -216,18 +218,17 @@ pub async fn codex_start(
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
         let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
-        // Apply one launch default for desktop and Android. Explicit picks
-        // take precedence; attaching to a running session keeps its live mode.
-        let mode = match body.codex_mode {
-            Some(mode) => Some(mode),
-            None => {
-                let settings = workbench_core::config::load_workbench_settings()?;
-                workbench_core::codex_config::chat_mode(
-                    &settings.codex_approval_policy,
-                    &settings.codex_sandbox_mode,
-                )
-                .map(String::from)
-            }
+        let mode = body.codex_mode;
+        // A preset is an explicit pick. Otherwise fill missing independent
+        // overrides from the same saved settings for desktop and Android.
+        let options = if mode.is_none() {
+            let settings = workbench_core::config::load_workbench_settings()?;
+            body.options.with_defaults(
+                &settings.codex_approval_policy,
+                &settings.codex_sandbox_mode,
+            )
+        } else {
+            body.options
         };
         let session = agents.start(StartAgent {
             cwd,
@@ -239,6 +240,7 @@ pub async fn codex_start(
             launch: Launch::Codex {
                 thread_id: body.session_id,
                 mode,
+                options,
             },
         })?;
         Ok(json!({"sessionId": session.id()}))
@@ -448,6 +450,16 @@ const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
 enum ClientMsg {
+    Artifacts {
+        id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Codex {
+        request_id: String,
+        action: workbench_core::codex_controls::Action,
+        #[serde(default)]
+        params: Value,
+    },
     Prompt {
         #[serde(default)]
         text: String,
@@ -520,6 +532,35 @@ fn handle(
     text: &str,
 ) -> anyhow::Result<Option<Value>> {
     let reply = match serde_json::from_str::<ClientMsg>(text)? {
+        ClientMsg::Artifacts { id } => {
+            return Ok(Some(
+                json!({"t":"artifacts","id":id,"content":session.artifacts(&id).unwrap_or_default()}),
+            ))
+        }
+        ClientMsg::Codex {
+            request_id,
+            action,
+            params,
+        } => {
+            if request_id.len() > 128
+                || params.to_string().len()
+                    > if matches!(action, workbench_core::codex_controls::Action::QueueAdd) {
+                        MAX_PROMPT_BYTES
+                    } else {
+                        2 * 1024 * 1024
+                    }
+            {
+                return Ok(Some(
+                    json!({"t":"codexResult","requestId":request_id,"error":"Codex control exceeds its size limit"}),
+                ));
+            }
+            if let Err(e) = session.codex_action(&request_id, action, &params) {
+                return Ok(Some(
+                    json!({"t":"codexResult", "requestId":request_id,"error":e.to_string()}),
+                ));
+            }
+            Ok(())
+        }
         ClientMsg::Rewind {
             message_id,
             code,

@@ -23,7 +23,10 @@
 	}: {
 		elicitation: ElicitationItem;
 		agent?: AgentKind;
-		onAnswer: (action: ElicitationAction, content?: Record<string, ElicitationValue>) => void;
+		onAnswer: (
+			action: ElicitationAction,
+			content?: Record<string, ElicitationValue>
+		) => void | Promise<void>;
 	} = $props();
 
 	const platform = getChatPlatform();
@@ -36,6 +39,7 @@
 	const result = $derived(elicitationContent(fields, draft));
 	/** Errors show once a send was tried, not while the form is first filled in. */
 	let tried = $state(false);
+	let serverError = $state('');
 	let sent = $state<ElicitationAction | null>(null);
 
 	const isUrl = $derived(elicitation.mode === 'url');
@@ -69,9 +73,15 @@
 			.join(' · ')
 	);
 
-	function answer(action: ElicitationAction, content?: Record<string, ElicitationValue>) {
+	async function answer(action: ElicitationAction, content?: Record<string, ElicitationValue>) {
 		sent = action;
-		onAnswer(action, content);
+		serverError = '';
+		try {
+			await onAnswer(action, content);
+		} catch (e) {
+			serverError = e instanceof Error ? e.message : String(e);
+			sent = null;
+		}
 	}
 
 	function submit(event: SubmitEvent) {
@@ -250,6 +260,7 @@
 				</div>
 			</form>
 		{/if}
+		{#if serverError}<p role="alert" class="px-3.5 pb-3 text-xs text-wb-err">{serverError}</p>{/if}
 	</section>
 {/if}
 
