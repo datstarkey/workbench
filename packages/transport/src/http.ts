@@ -72,12 +72,6 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 		}
 		case 'load_workbench_settings':
 			return { method: 'GET', path: '/settings/workbench' };
-		case 'remote_spawn':
-			return { method: 'POST', path: '/remote/spawn', body: a };
-		case 'remote_sessions':
-			return { method: 'GET', path: '/remote/sessions' };
-		case 'remote_kill':
-			return { method: 'DELETE', path: `/remote/sessions/${encodeURIComponent(String(a.id))}` };
 		default:
 			throw new Error(`HttpTransport: command "${String(name)}" is not supported by the server`);
 	}

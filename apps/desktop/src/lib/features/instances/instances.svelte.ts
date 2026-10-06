@@ -12,7 +12,7 @@ export interface RemoteInstanceConfig {
 }
 
 /** A connected remote Workbench server: its config, live status, and a
- *  transport-driven control-plane store for its projects/sessions. */
+ *  transport-driven control-plane store for its projects. */
 export class RemoteInstance {
 	readonly config: RemoteInstanceConfig;
 	status = $state<InstanceStatus>('connecting');
@@ -29,7 +29,7 @@ export class RemoteInstance {
 		return this.config.url.replace(/\/$/, '');
 	}
 
-	/** Ping /health; (re)load its projects/sessions on any transition into online —
+	/** Ping /health; (re)load its projects on any transition into online —
 	 *  the first connect AND every recovery after an outage, so a server that comes
 	 *  back doesn't keep showing stale pre-outage data. */
 	async checkHealth(): Promise<void> {
@@ -45,11 +45,6 @@ export class RemoteInstance {
 		if (this.status === 'online' && prev !== 'online') {
 			await this.store.refresh();
 		}
-	}
-
-	/** Release background timers held by this instance's control-plane store. */
-	dispose(): void {
-		this.store.dispose();
 	}
 }
 
@@ -104,12 +99,8 @@ export class InstancesStore {
 	}
 
 	remove(id: string): void {
-		const removed = this.remotes.find((r) => r.config.id === id);
 		this.remotes = this.remotes.filter((r) => r.config.id !== id);
 		if (this.activeId === id) this.activeId = this.localId;
-		// Stop the removed instance's store timers so a spawn poll in flight doesn't
-		// keep hitting the now-disconnected server.
-		removed?.dispose();
 		this.persist();
 	}
 
@@ -128,12 +119,11 @@ export class InstancesStore {
 		this.pollHandle = setInterval(() => void this.pollAll(), 15000);
 	}
 
-	/** Stop health polling and release every remote's store timers. */
+	/** Stop health polling. */
 	dispose(): void {
 		if (this.pollHandle) {
 			clearInterval(this.pollHandle);
 			this.pollHandle = null;
 		}
-		for (const r of this.remotes) r.dispose();
 	}
 }

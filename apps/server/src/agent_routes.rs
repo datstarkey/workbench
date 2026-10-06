@@ -45,7 +45,7 @@ use crate::agent::{
     PromptImage, StartAgent, MAX_FILES, MAX_IMAGES,
 };
 use crate::error::{ApiError, ApiResult};
-use crate::spawn::RemoteControlManager;
+use crate::cwd::resolve_cwd;
 use crate::state::{wait_revoked, AppState};
 use crate::terminal::WsAuthQuery;
 
@@ -255,15 +255,6 @@ fn attach_only(state: &AppState, id: &str) -> ApiResult<Json<Value>> {
         message: "This chat ended on the other device.".into(),
     })?;
     Ok(Json(start_reply(&session)))
-}
-
-/// The cwd a chat may run in: a registered project or one of its worktrees.
-fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> anyhow::Result<String> {
-    let registered: Vec<String> = workbench_core::config::load_projects()?
-        .into_iter()
-        .map(|p| p.path)
-        .collect();
-    RemoteControlManager::resolve_cwd(project_path, worktree_path, &registered)
 }
 
 pub async fn agent_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {

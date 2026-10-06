@@ -58,15 +58,13 @@ describe('InstancesStore', () => {
 		store.dispose();
 	});
 
-	it('remove() disposes the removed instance store and resets active to local', () => {
+	it('remove() resets active to local', () => {
 		const store = new InstancesStore();
 		const inst = store.add({ name: 'box', url: 'http://box:4317' });
-		const disposeSpy = vi.spyOn(inst.store, 'dispose');
 		store.setActive(inst.config.id);
 
 		store.remove(inst.config.id);
 
-		expect(disposeSpy).toHaveBeenCalled();
 		expect(store.remotes).toHaveLength(0);
 		expect(store.activeId).toBe('local');
 		store.dispose();
@@ -87,7 +85,7 @@ describe('RemoteInstance.checkHealth', () => {
 		vi.unstubAllGlobals();
 	});
 
-	it('reloads projects/sessions on every offline→online transition', async () => {
+	it('reloads projects on every offline→online transition', async () => {
 		const inst = new RemoteInstance({ id: '1', name: 'box', url: 'http://box:4317' });
 		const refresh = vi.spyOn(inst.store, 'refresh').mockResolvedValue(undefined);
 

@@ -41,6 +41,5 @@ export const TOKEN = 'mobile-token-0123456789abcdef012345';
 
 export const CONNECT_ROUTES: Record<string, Route> = {
 	'/health': () => jsonResponse('ok'),
-	'/projects': () => jsonResponse([]),
-	'/remote/sessions': () => jsonResponse([])
+	'/projects': () => jsonResponse([])
 };

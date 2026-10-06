@@ -52,7 +52,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 
 use crate::error::{ApiError, ApiResult};
-use crate::spawn::RemoteControlManager;
 use crate::state::AppState;
 
 /// Scrollback kept per session for replay on reattach.
@@ -64,7 +63,7 @@ const STARTUP_QUIET: Duration = Duration::from_millis(150);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const STARTUP_POLL: Duration = Duration::from_millis(20);
 
-/// Backstop against runaway terminal creation (see RemoteControlManager).
+/// Backstop against runaway terminal creation.
 /// Overridable via `WORKBENCH_MAX_TERMINALS` (defaults to 64).
 fn max_terminals() -> usize {
     std::env::var("WORKBENCH_MAX_TERMINALS")
@@ -494,15 +493,7 @@ pub fn create_from_body(
     agents: &crate::agent::AgentManager,
     mut body: CreateTerminalBody,
 ) -> anyhow::Result<TerminalMeta> {
-    let registered: Vec<String> = workbench_core::config::load_projects()?
-        .into_iter()
-        .map(|p| p.path)
-        .collect();
-    let cwd = RemoteControlManager::resolve_cwd(
-        &body.project_path,
-        body.worktree_path.as_deref(),
-        &registered,
-    )?;
+    let cwd = crate::cwd::resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
     let claude_config_dir =
         workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
     // Resume whatever has a transcript, as a chat start does: a client can't

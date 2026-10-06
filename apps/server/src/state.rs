@@ -1,16 +1,14 @@
 use tokio::sync::watch;
 
 use crate::agent::AgentManager;
-use crate::spawn::RemoteControlManager;
 use crate::terminal::TerminalManager;
 use crate::usage::{ModelsCache, UsageCache};
 
 /// The long-lived session managers. Both are `Arc`-backed, so clones share the
-/// same terminals and spawned sessions — which is how the desktop's loopback and
+/// same terminals and chats — which is how the desktop's loopback and
 /// LAN listeners expose one set of terminals.
 #[derive(Clone, Default)]
 pub struct Managers {
-    pub spawn: RemoteControlManager,
     pub terminals: TerminalManager,
     pub agents: AgentManager,
     pub usage: UsageCache,
@@ -18,17 +16,15 @@ pub struct Managers {
 }
 
 impl Managers {
-    /// Blocking: kills every terminal, spawned session and chat process and waits for them.
+    /// Blocking: kills every terminal and chat process and waits for them.
     pub fn kill_all(&self) {
         self.terminals.kill_all();
-        self.spawn.kill_all();
         self.agents.kill_all();
     }
 }
 
 #[derive(Clone)]
 pub struct AppState {
-    pub spawn: RemoteControlManager,
     pub terminals: TerminalManager,
     pub agents: AgentManager,
     pub usage: UsageCache,
@@ -49,7 +45,6 @@ pub struct AppState {
 impl AppState {
     pub fn new(managers: Managers, token: Option<String>, revoked: watch::Receiver<bool>) -> Self {
         Self {
-            spawn: managers.spawn,
             terminals: managers.terminals,
             agents: managers.agents,
             usage: managers.usage,

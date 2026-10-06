@@ -119,17 +119,15 @@ describe('MobileClient with several machines', () => {
 		expect(c.machines.activeId).toBe(c.machineId);
 	});
 
-	it('switching disposes the old connection, closes its screens and connects to the other machine', async () => {
+	it('switching drops the old connection, closes its screens and connects to the other machine', async () => {
 		servers('mac', 'pc');
 		const c = await connectedTo('mac');
 		await connectedTo('pc', c);
 		const pcStore = c.store!;
-		const dispose = vi.spyOn(pcStore, 'dispose');
 		c.openChat({ sessionId: 's', projectPath: '/repo', name: 'repo' });
 
 		await c.switchTo(idOf(c, 'mac'));
 
-		expect(dispose).toHaveBeenCalled();
 		expect(c.store).not.toBe(pcStore);
 		expect(c.store).not.toBeNull();
 		expect(c.activeChat).toBeNull();
@@ -143,14 +141,12 @@ describe('MobileClient with several machines', () => {
 		const c = await connectedTo('mac');
 		await connectedTo('pc', c);
 		const store = c.store!;
-		const dispose = vi.spyOn(store, 'dispose');
 		const chat = { sessionId: 's', projectPath: '/repo', name: 'repo' };
 		c.openChat(chat);
 		delete hosts.mac;
 
 		await c.switchTo(idOf(c, 'mac'));
 
-		expect(dispose).not.toHaveBeenCalled();
 		expect(c.store).toBe(store);
 		expect(c.activeChat).toEqual(chat);
 		expect(c.machine?.url).toBe(url('pc'));
@@ -264,11 +260,9 @@ describe('MobileClient with several machines', () => {
 		servers('mac', 'pc');
 		const c = await connectedTo('mac');
 		await connectedTo('pc', c);
-		const dispose = vi.spyOn(c.store!, 'dispose');
 
 		c.forget(c.machineId!);
 
-		expect(dispose).toHaveBeenCalled();
 		expect(c.store).toBeNull();
 		expect(c.connection).toBeNull();
 		expect(c.url).toBe('');
