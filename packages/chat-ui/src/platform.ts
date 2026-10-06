@@ -7,6 +7,8 @@ export interface ChatPlatform {
 	openLink(href: string): void;
 	/** Enter sends and Shift+Enter breaks the line (default). Phones set false: no Shift, so Enter breaks and the button sends. */
 	enterSends?: boolean;
+	/** Native speech input; cancellation returns null. The result stays in the draft. */
+	dictate?(): Promise<string | null>;
 	/**
 	 * Desktop: the webview takes OS file drops before the page sees them, so the
 	 * host watches drops over `node` and hands over the files it read.

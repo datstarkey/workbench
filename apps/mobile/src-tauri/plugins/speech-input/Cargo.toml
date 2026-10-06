@@ -1,0 +1,14 @@
+[package]
+name = "tauri-plugin-speech-input"
+version = "0.1.0"
+description = "Android native speech input for chat drafts"
+license = "AGPL-3.0-or-later"
+edition = "2021"
+publish = false
+links = "tauri-plugin-speech-input"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = "2"
