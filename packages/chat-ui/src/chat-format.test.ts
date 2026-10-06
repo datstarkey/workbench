@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskInfo, TranscriptItem, TranscriptMeta } from '@workbench/types';
+import type { ToolItem } from './chat-format';
 import {
 	activity,
 	agentName,
@@ -175,6 +176,7 @@ describe('groupBlocks', () => {
 		const blocks = groupBlocks([
 			tool('r1', 'Read'),
 			tool('todo', 'TodoWrite'),
+			tool('tc', 'TaskCreate'),
 			running,
 			tool('g1', 'Grep'),
 			text('a', 'Found it.')
@@ -263,6 +265,68 @@ describe('latestTodos', () => {
 		];
 		expect(latestTodos(items)).toEqual([{ content: 'new', status: 'completed' }]);
 		expect(latestTodos([text('a', 'x')])).toEqual([]);
+	});
+
+	const result = (item: ToolItem, output: string): ToolItem => ({ ...item, output });
+	const create = (id: string, subject: string, output?: string) => {
+		const item = tool(id, 'TaskCreate', { subject, description: 'd', activeForm: `${subject}ing` });
+		return output === undefined ? { ...item, status: 'running' as const } : result(item, output);
+	};
+
+	it('builds the plan from TaskCreate and TaskUpdate', () => {
+		const items: TranscriptItem[] = [
+			create('c1', 'Read', 'Task #1 created successfully: Read'),
+			create('c2', 'Write', 'Task #2 created successfully: Write'),
+			create('c3', 'Ship'),
+			tool('u1', 'TaskUpdate', { taskId: '1', status: 'completed' }),
+			tool('u2', 'TaskUpdate', { taskId: '2', status: 'in_progress', subject: 'Write it' }),
+			tool('u3', 'TaskUpdate', { taskId: '3', status: 'deleted' }),
+			tool('u4', 'TaskUpdate', { taskId: '9', status: 'completed' }),
+			{ ...tool('u5', 'TaskUpdate', { taskId: '1', status: 'pending' }), status: 'error' }
+		];
+		expect(latestTodos(items)).toEqual([
+			{ content: 'Read', status: 'completed', activeForm: 'Reading' },
+			{ content: 'Write it', status: 'in_progress', activeForm: 'Writeing' }
+		]);
+	});
+
+	it('takes ids from the result text, else the next number', () => {
+		const items: TranscriptItem[] = [
+			create('c1', 'A', 'Task #7 created successfully: A'),
+			create('c2', 'B'),
+			tool('u1', 'TaskUpdate', { taskId: '8', status: 'completed' })
+		];
+		expect(latestTodos(items).map((s) => [s.content, s.status])).toEqual([
+			['A', 'pending'],
+			['B', 'completed']
+		]);
+	});
+
+	it('replaces the plan with a TaskList result or a newer TodoWrite', () => {
+		const list = result(
+			tool('l1', 'TaskList'),
+			'#1 [completed] Read\n#4 [in_progress] Fix (agent) [blocked by #1]\n#5 [pending] Test [blocked by #4]'
+		);
+		const items: TranscriptItem[] = [
+			create('c1', 'Read', 'Task #1 created successfully: Read'),
+			create('c2', 'Gone', 'Task #2 created successfully: Gone'),
+			list,
+			create('c3', 'Next')
+		];
+		expect(latestTodos(items)).toEqual([
+			{ content: 'Read', status: 'completed', activeForm: 'Reading' },
+			{ content: 'Fix (agent)', status: 'in_progress', activeForm: undefined },
+			{ content: 'Test', status: 'pending', activeForm: undefined },
+			{ content: 'Next', status: 'pending', activeForm: 'Nexting' }
+		]);
+		expect(latestTodos([...items, result(tool('l2', 'TaskList'), 'No tasks found')])).toEqual([]);
+		expect(
+			latestTodos([
+				...items,
+				tool('t', 'TodoWrite', { todos: [{ content: 'only', status: 'pending' }] })
+			])
+		).toEqual([{ content: 'only', status: 'pending' }]);
+		expect(latestTodos([...items.slice(0, 2), { ...list, output: undefined }])).toHaveLength(2);
 	});
 });
 
