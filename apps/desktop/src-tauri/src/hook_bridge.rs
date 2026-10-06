@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::pty::PtyManager;
 use crate::refresh_dispatcher::RefreshDispatcher;
 
 mod http;
@@ -187,21 +186,15 @@ fn should_emit_project_refresh_for_hook(hook: &Value) -> bool {
 }
 
 /// Emit a project refresh event. Caller must verify `should_emit_project_refresh_for_hook` first.
-fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
-    let pty_manager = handle.state::<PtyManager>();
-    // Resolve the project to refresh. Local PtyManager panes are looked up by
-    // pane id; server-hosted xterm panes (loopback PTY) aren't in that map, so
-    // fall back to the `cwd` the hook itself reports — which works for any PTY
-    // backend and is strictly more general.
-    let Some(project_path) = pty_manager.project_path_for_session(pane_id).or_else(|| {
-        // Server-hosted panes aren't in the PtyManager map; fall back to the hook's
-        // reported cwd, normalized to the git repo root so the refresh keys on the
-        // same path the local PtyManager path uses (which resolves via git rev-parse)
-        // — a subdir/worktree cwd would otherwise key a project no store recognizes.
-        hook.get("cwd")
-            .and_then(|v| v.as_str())
-            .and_then(crate::pty::resolve_repo_root)
-    }) else {
+fn emit_project_refresh_event(handle: &AppHandle, hook: &Value) {
+    // The project to refresh is the hook's reported cwd, normalized to its git
+    // repo root — a subdir/worktree cwd would otherwise key a project no store
+    // recognizes.
+    let Some(project_path) = hook
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .and_then(resolve_repo_root)
+    else {
         return;
     };
     let dispatcher = handle.state::<RefreshDispatcher>();
@@ -214,6 +207,20 @@ fn emit_project_refresh_event(handle: &AppHandle, pane_id: &str, hook: &Value) {
     };
 
     dispatcher.request_refresh(handle, project_path, "claude-hook", trigger);
+}
+
+fn resolve_repo_root(path: &str) -> Option<String> {
+    let output = crate::shell::command("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(path)
+        .env("PATH", crate::paths::enriched_path())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let repo_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!repo_root.is_empty()).then_some(repo_root)
 }
 
 /// Process lines from a stream, dispatching hook events to the frontend.
@@ -268,7 +275,7 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
             HookBridgeEnvelope::Claude { pane_id, hook } => {
                 let refreshed = should_emit_project_refresh_for_hook(&hook);
                 if refreshed {
-                    emit_project_refresh_event(handle, &pane_id, &hook);
+                    emit_project_refresh_event(handle, &hook);
                 }
 
                 let event_name = hook

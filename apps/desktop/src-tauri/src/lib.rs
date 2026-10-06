@@ -30,7 +30,6 @@ mod native_terminal;
 #[cfg(target_os = "macos")]
 mod native_terminal_commands;
 mod observability;
-mod pty;
 mod refresh_dispatcher;
 mod server_control;
 mod trello_commands;
@@ -38,7 +37,6 @@ mod trello_commands;
 use git_watcher::GitWatcher;
 use github_poller::GitHubPoller;
 use hook_bridge::HookBridgeState;
-use pty::PtyManager;
 use refresh_dispatcher::RefreshDispatcher;
 use tauri::Manager;
 
@@ -51,10 +49,6 @@ macro_rules! build_invoke_handler {
             commands::list_projects,
             commands::read_chat_attachment,
             commands::save_projects,
-            commands::create_terminal,
-            commands::write_terminal,
-            commands::resize_terminal,
-            commands::kill_terminal,
             commands::open_in_vscode,
             commands::load_workspaces,
             commands::save_workspaces,
@@ -157,7 +151,6 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(PtyManager::new())
         .manage(RefreshDispatcher::new())
         .manage(server_control::ServerControl::new())
         .setup(|app| {

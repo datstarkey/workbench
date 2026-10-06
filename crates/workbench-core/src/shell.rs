@@ -1,5 +1,5 @@
 //! Spawning child processes and shells, with the per-platform differences in
-//! one place. Used by the desktop `PtyManager`, the server's `TerminalManager`,
+//! one place. Used by the desktop native terminals, the server's `TerminalManager`,
 //! and every `git`/`gh` invocation.
 
 use std::ffi::OsStr;
