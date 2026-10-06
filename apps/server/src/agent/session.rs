@@ -48,6 +48,9 @@ pub struct AgentSession {
     /// Changes when `/clear` continues the conversation under a new id; empty
     /// until a new Codex thread has one.
     session_id: Mutex<String>,
+    previous_ids: Mutex<Vec<String>>,
+    attention: crate::attention_feed::AttentionFeed,
+    attention_source: u64,
     pub pane_id: Option<String>,
     project_path: String,
     worktree_path: Option<String>,
@@ -138,6 +141,7 @@ impl AgentSession {
         launch: Launch,
         registry: Registry,
         cache_policies: Arc<PolicyStore>,
+        attention: crate::attention_feed::AttentionFeed,
     ) -> Result<Arc<Self>> {
         let relaunch = req.clone();
         let Launch {
@@ -164,6 +168,7 @@ impl AgentSession {
             program,
             ready,
             &cache_policies,
+            attention,
         );
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
         lock(&registry).insert(key, session.clone());
@@ -199,7 +204,7 @@ impl AgentSession {
         std::thread::spawn(move || {
             let mut lines = BufReader::new(stdout);
             loop {
-                let line = match bounded_line(&mut lines, 16 * 1024 * 1024) {
+                let line = match bounded_line(&mut lines, 96 * 1024 * 1024) {
                     Ok(Some(line)) => line,
                     Ok(None) => break,
                     Err(e) => {
@@ -212,6 +217,7 @@ impl AgentSession {
                 });
             }
             reader.finish();
+            lock(&registry).retain(|_, s| !Arc::ptr_eq(s, &reader));
         });
         Ok(session)
     }
@@ -222,6 +228,7 @@ impl AgentSession {
         driver: Driver,
         link: Arc<ModLink>,
         cache_policies: &Arc<PolicyStore>,
+        attention: crate::attention_feed::AttentionFeed,
     ) -> Arc<Self> {
         let ready = req.launch.known_id().map(String::from);
         let relaunch = req.clone();
@@ -234,6 +241,7 @@ impl AgentSession {
             "claude",
             ready,
             cache_policies,
+            attention,
         )
     }
 
@@ -247,6 +255,7 @@ impl AgentSession {
         program: &'static str,
         ready: Option<String>,
         cache_policies: &Arc<PolicyStore>,
+        attention: crate::attention_feed::AttentionFeed,
     ) -> Arc<Self> {
         let known_id = req.launch.known_id().map(String::from);
         let kind = req.launch.kind();
@@ -268,6 +277,9 @@ impl AgentSession {
         let session = Arc::new(Self {
             kind,
             session_id: Mutex::new(known_id.unwrap_or_default()),
+            previous_ids: Mutex::new(Vec::new()),
+            attention_source: attention.source(),
+            attention,
             pane_id: req.pane_id,
             project_path: req.project_path,
             worktree_path: req.worktree_path,
@@ -331,6 +343,7 @@ impl AgentSession {
                 let _ = session.run(|d| Ok(d.tick()));
             });
         }
+        session.refresh_attention();
         session
     }
 
@@ -468,7 +481,15 @@ impl AgentSession {
 
     pub fn summary(&self) -> AgentSummary {
         let d = lock(&self.driver);
-        let view = d.view();
+        self.summary_with_view(d.view())
+    }
+
+    pub(crate) fn refresh_attention(&self) {
+        self.attention
+            .observe(self.attention_source, self.summary());
+    }
+
+    fn summary_with_view(&self, view: &dyn ChatView) -> AgentSummary {
         let meta = view.meta();
         AgentSummary {
             agent: self.kind,
@@ -491,7 +512,7 @@ impl AgentSession {
             running: view
                 .running_tool()
                 .and_then(TranscriptItem::running_summary),
-            previous_ids: Vec::new(),
+            previous_ids: lock(&self.previous_ids).clone(),
             terminal_id: self.link.as_ref().and_then(|l| l.terminal_id.clone()),
         }
     }
@@ -555,9 +576,8 @@ impl AgentSession {
         }
     }
 
-    /// Apply a client message through the driver. Its lines are written
-    /// outside the driver lock: a prompt full of images must not stall the
-    /// reader thread (and with it the process's stdout).
+    /// Publish changes and enqueue effects in protocol order under the driver
+    /// lock. Only the separate pipe writer performs blocking process IO.
     fn run(&self, op: impl FnOnce(&mut Driver) -> Result<Effects>) -> Result<()> {
         let mut d = lock(&self.driver);
         let effects = op(&mut d)?;
@@ -574,7 +594,14 @@ impl AgentSession {
             self.broadcast_update(d.view(), &effects.items);
         }
         for msg in &effects.send {
-            self.send(msg)?;
+            if let Err(e) = self.send(msg) {
+                // The driver has already advanced. Continuing after dropping an
+                // RPC would leave its state out of sync with the owned process.
+                if self.pid.is_some() {
+                    self.fail_io("write", &e);
+                }
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -592,7 +619,7 @@ impl AgentSession {
         self.keepalive_turn
             .store(text == KEEPALIVE_PROMPT, Ordering::SeqCst);
         let sent = if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
-            super::modlink::attachments_as_mentions(&self.id(), text, images, files)
+            super::attachment::attachments_as_mentions(&self.id(), text, images, files)
                 .and_then(|text| self.run(|d| d.prompt(&text, &[], &[])))
         } else {
             self.run(|d| d.prompt(text, images, files))
@@ -852,6 +879,9 @@ impl AgentSession {
         for msg in &effects.send {
             if let Err(e) = self.send(msg) {
                 tracing::warn!("could not answer {}: {e}", self.program);
+                if self.pid.is_some() {
+                    self.fail_io("write", e);
+                }
             }
         }
         let view = d.view();
@@ -860,6 +890,10 @@ impl AgentSession {
             let _ = self.tx.send(frame.to_string());
         }
         if let Some(new_id) = effects.new_id {
+            let old_id = self.id();
+            if !old_id.is_empty() && old_id != new_id {
+                lock(&self.previous_ids).push(old_id);
+            }
             *lock(&self.session_id) = new_id.clone();
             // The policy follows the conversation to its new id.
             let policy = self.cache_policy();
@@ -904,28 +938,38 @@ impl AgentSession {
             *lock(&self.turn_ended_at) = Some(now);
         }
         *since = busy.then(|| since.unwrap_or(now));
+        drop(since);
+        self.attention
+            .observe(self.attention_source, self.summary_with_view(t));
     }
 
     fn finish(&self) {
         lock(&self.outgoing).take();
-        lock(&self.stdin).take();
-        if self.link.is_some() {
-            let _ = std::fs::remove_dir_all(super::modlink::attachment_dir(&self.id()));
-        }
+        let _ = std::fs::remove_dir_all(super::attachment::attachment_dir(&self.id()));
         // Until the leader is reaped below its pid still names its process
         // group: end the background shells it started, which would otherwise
         // outlive it holding ports and files.
         #[cfg(unix)]
         if let Some(pid) = self.pid {
             unsafe {
-                libc::killpg(pid as libc::pid_t, libc::SIGTERM);
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
             }
         }
+        #[cfg(windows)]
+        if let Some(pid) = self.pid {
+            let _ = workbench_core::shell::command("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .output();
+        }
+        // End the process before taking the pipe lock: the writer may be
+        // blocked because a broken CLI closed stdout and stopped reading stdin.
+        lock(&self.stdin).take();
         let code = lock(&self.child)
             .as_mut()
             .and_then(|c| c.wait().ok())
             .and_then(|s| s.code());
         self.exited.store(true, Ordering::SeqCst);
+        self.attention.forget(self.attention_source, &self.id());
         let tail = lock(&self.stderr_tail).clone();
         self.set_ready(Err(format!(
             "`{}` exited before it was ready{}",

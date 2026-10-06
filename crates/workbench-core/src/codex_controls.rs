@@ -10,6 +10,17 @@ pub struct LaunchOptions {
     pub codex_sandbox_mode: Option<String>,
 }
 impl LaunchOptions {
+    /// Resolve missing overrides on the server so every client shares saved defaults.
+    pub fn with_defaults(mut self, approval: &str, sandbox: &str) -> Self {
+        if self.codex_approval_policy.is_none() && approval != "default" {
+            self.codex_approval_policy = Some(approval.into());
+        }
+        if self.codex_sandbox_mode.is_none() && sandbox != "default" {
+            self.codex_sandbox_mode = Some(sandbox.into());
+        }
+        self
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self
             .codex_approval_policy
@@ -61,8 +72,6 @@ pub enum Action {
     RemoteRevoke,
     BackgroundTerminate,
     BackgroundClean,
-    AttachmentAdd,
-    AttachmentRemove,
     RealtimeStart,
     RealtimeStop,
     RealtimeAudio,
@@ -91,4 +100,35 @@ pub struct QueuedPrompt {
     pub id: String,
     pub text: String,
     pub images: usize,
+    pub files: Vec<String>,
+    /// Uploaded file mentions kept when the queued message's text is edited.
+    #[serde(skip)]
+    pub file_context: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn launch_defaults_are_independent_and_explicit_choices_win() {
+        let options = LaunchOptions::default().with_defaults("never", "read-only");
+        assert_eq!(options.codex_approval_policy.as_deref(), Some("never"));
+        assert_eq!(options.codex_sandbox_mode.as_deref(), Some("read-only"));
+        let options = LaunchOptions {
+            codex_approval_policy: Some("untrusted".into()),
+            codex_sandbox_mode: None,
+        }
+        .with_defaults("never", "workspace-write");
+        assert_eq!(options.codex_approval_policy.as_deref(), Some("untrusted"));
+        assert_eq!(
+            options.codex_sandbox_mode.as_deref(),
+            Some("workspace-write")
+        );
+        let options = LaunchOptions::default().with_defaults("default", "default");
+        assert!(options.codex_approval_policy.is_none());
+        assert!(options.codex_sandbox_mode.is_none());
+        let options = LaunchOptions::default().with_defaults("on-request", "default");
+        assert_eq!(options.codex_approval_policy.as_deref(), Some("on-request"));
+        assert!(options.codex_sandbox_mode.is_none());
+    }
 }

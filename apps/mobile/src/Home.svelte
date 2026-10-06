@@ -157,9 +157,9 @@
 			</section>
 		{/if}
 
-		{#if runningChats.length > 0 || client.terminals.length > 0}
+		{#if runningChats.length > 0 || client.standaloneTerminals.length > 0}
 			<section class="flex flex-col gap-2">
-				{@render sectionTitle('Running', runningChats.length + client.terminals.length)}
+				{@render sectionTitle('Running', runningChats.length + client.standaloneTerminals.length)}
 				{#each runningChats as chat (chat.sessionId)}
 					<button
 						type="button"
@@ -210,8 +210,8 @@
 						</span>
 					</button>
 				{/each}
-				{#each client.terminals as t (t.id)}
-					{@const claude = client.claudeTerminals[t.id]}
+				{#each client.standaloneTerminals as t (t.id)}
+					{@const claude = client.terminalChats[t.id]}
 					<div
 						class="flex items-center gap-2.5 rounded-xl border border-wb-hair-soft bg-wb-panel py-2.5 pr-1.5 pl-3"
 					>

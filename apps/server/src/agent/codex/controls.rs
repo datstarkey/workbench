@@ -180,10 +180,17 @@ impl CodexDriver {
                     bail!("Too many images");
                 }
                 images.iter().try_for_each(PromptImage::validate)?;
-                if text.trim().is_empty() && images.is_empty() {
-                    bail!("A queued message needs text or images");
+                let files: Vec<PromptFile> =
+                    serde_json::from_value(p.get("files").cloned().unwrap_or(json!([])))?;
+                if files.len() > super::super::MAX_FILES {
+                    bail!("Too many files");
                 }
-                let input = self.prompt_input(&text, &images);
+                files.iter().try_for_each(PromptFile::validate)?;
+                if text.trim().is_empty() && images.is_empty() && files.is_empty() {
+                    bail!("A queued message needs text or attachments");
+                }
+                let file_context = self.file_context(&files)?;
+                let input = self.prompt_input(&format!("{text}{file_context}"), &images, &[])?;
                 let existing: usize = self
                     .followups
                     .iter()
@@ -199,6 +206,8 @@ impl CodexDriver {
                         id: uuid::Uuid::new_v4().to_string(),
                         text,
                         images: images.len(),
+                        files: files.iter().map(|file| file.name.clone()).collect(),
+                        file_context,
                     },
                     input,
                 ));
@@ -221,7 +230,11 @@ impl CodexDriver {
                     Action::QueueUpdate => {
                         let text = string("text")?;
                         self.followups[i].0.text = text.clone();
-                        let mut input = self.prompt_input(&text, &[]);
+                        let mut input = self.prompt_input(
+                            &format!("{text}{}", self.followups[i].0.file_context),
+                            &[],
+                            &[],
+                        )?;
                         input.extend(
                             self.followups[i]
                                 .1
@@ -316,14 +329,6 @@ impl CodexDriver {
             Action::BackgroundClean => (
                 "thread/backgroundTerminals/clean",
                 json!({"threadId":thread}),
-            ),
-            Action::AttachmentAdd => (
-                "thread/attachment/add",
-                json!({"threadId":thread,"attachmentType":"workbench/file","identityKey":string("name")?,"payload":{"text":string("text")?}}),
-            ),
-            Action::AttachmentRemove => (
-                "thread/attachment/remove",
-                json!({"threadId":thread,"attachmentType":"workbench/file","identityKey":string("name")?}),
             ),
             Action::RealtimeStart => (
                 "thread/realtime/start",
@@ -608,6 +613,44 @@ mod tests {
         assert!(d.state.queue_paused);
         assert!(d.tick().send.is_empty());
     }
+    #[test]
+    fn queued_files_survive_edits_and_use_the_shared_attachment_store() {
+        let mut d = driver();
+        d.thread_id = Some(uuid::Uuid::new_v4().to_string());
+        d.state.queue_paused = true;
+        d.action("q", Action::QueueAdd, &json!({"text":"read it","files":[{"name":"README.md","mediaType":"text/plain","data":"Project context"}]})).unwrap();
+        let queued = &d.followups[0];
+        assert_eq!(queued.0.files, ["README.md"]);
+        assert!(queued.1[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Read them with your tools"));
+        let context = queued.0.file_context.clone();
+        let id = queued.0.id.clone();
+        d.action(
+            "edit",
+            Action::QueueUpdate,
+            &json!({"id":id,"text":"new instructions"}),
+        )
+        .unwrap();
+        assert_eq!(
+            d.followups[0].1[0]["text"],
+            format!("new instructions{context}")
+        );
+        let dir = super::super::super::attachment::attachment_dir(d.thread_id.as_ref().unwrap());
+        let upload = std::fs::read_dir(&dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(
+            std::fs::read_to_string(upload.join("1-README.md")).unwrap(),
+            "Project context"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn queued_skills_and_image_only_messages_keep_native_input_semantics() {
         let mut d = driver();

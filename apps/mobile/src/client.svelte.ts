@@ -15,7 +15,7 @@ import { lsGet, lsSet } from './storage.ts';
 import { baseName } from './home-format.ts';
 import { ProjectPrefs } from './project-prefs.svelte.ts';
 import { Drafts } from './drafts.svelte';
-import { SessionNotifications } from './session-notifications.svelte';
+import { SessionNotifications, type NotificationSession } from './session-notifications.svelte';
 import { ProjectReview, type ReviewFolder } from './project-review.svelte';
 import type { ChatRef, ClaudeLaunch, ClaudeView, TerminalMeta } from './types.ts';
 
@@ -104,7 +104,7 @@ export class MobileClient {
 	chatScreenKey = $state(0);
 	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
 	claudeTerminals = $state<Record<string, ChatRef>>({});
-	/** A chat ↔ terminal switch is stopping one process and starting the other. */
+	/** A Claude view switch is finding and attaching to the existing session. */
 	switching = $state(false);
 	/** Why the last action failed (switch, approve, open); shown on whichever screen is up. */
 	notice = $state<string | null>(null);
@@ -116,6 +116,28 @@ export class MobileClient {
 
 	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
+	/** Server associations also cover Claude sessions opened on another device. */
+	terminalChats = $derived.by(() => {
+		const links = { ...this.claudeTerminals };
+		for (const t of this.terminals) {
+			if (t.claudeSessionId && !links[t.id])
+				links[t.id] = {
+					sessionId: t.claudeSessionId,
+					projectPath: t.cwd,
+					name: t.name ?? baseName(t.cwd),
+					attachOnly: true
+				};
+		}
+		for (const chat of this.chats) {
+			if (!chat.exited && chat.terminalId) links[chat.terminalId] = this.chatRef(chat);
+		}
+		return links;
+	});
+	/** A Claude chat and its backing terminal are one entry on Home. */
+	standaloneTerminals = $derived.by(() => {
+		const backing = new Set(this.chats.filter((c) => !c.exited).map((c) => c.terminalId));
+		return this.terminals.filter((t) => !backing.has(t.id));
+	});
 
 	private readonly pairing: PairingScan;
 	/** A URL that is already a complete origin (saved, or from a pairing code): never re-normalised. */
@@ -338,15 +360,34 @@ export class MobileClient {
 		this.openChat({ sessionId: '', agent: 'codex', projectPath, worktreePath, name });
 	};
 
-	chatRef(chat: AgentSummary): ChatRef {
+	chatRef(chat: NotificationSession): ChatRef {
 		return {
 			sessionId: chat.sessionId,
+			attachOnly: true,
 			...(chat.agent === 'codex' ? { agent: 'codex' as const } : {}),
 			projectPath: chat.projectPath,
 			worktreePath: chat.worktreePath ?? undefined,
 			name: chat.title ?? baseName(chat.worktreePath ?? chat.projectPath),
 			...(chat.claudeAccountId ? { claudeAccountId: chat.claudeAccountId } : {})
 		};
+	}
+
+	/** A terminal notification attaches its existing process, never creates a Codex chat. */
+	async openNotification(chat: NotificationSession): Promise<void> {
+		if (!chat.terminalOnly) {
+			this.openChat(this.chatRef(chat));
+			return;
+		}
+		const live = this.live();
+		await this.refreshTerminals();
+		if (!live()) return;
+		if (chat.terminalId && this.terminals.some((t) => t.id === chat.terminalId && t.alive)) {
+			this.selectTerminal(chat.terminalId);
+		} else {
+			this.activeChat = null;
+			this.activeTerminalId = null;
+			this.notice = 'This Codex terminal is available on the desktop.';
+		}
 	}
 
 	openChat(ref: ChatRef): void {
@@ -359,6 +400,16 @@ export class MobileClient {
 	/** Update the screen's reference without remounting it when Codex starts or /clear re-keys. */
 	updateChatId(id: string): void {
 		if (this.activeChat && id) this.activeChat = { ...this.activeChat, sessionId: id };
+	}
+
+	/** Called on start/reconnect, including when mode changes or rewind replace the terminal. */
+	linkChatTerminal(screenKey: number, sessionId: string, terminalId: string): void {
+		if (screenKey !== this.chatScreenKey || !this.activeChat || this.activeChat.agent === 'codex')
+			return;
+		this.setLinks({
+			...this.claudeTerminals,
+			[terminalId]: { ...this.activeChat, sessionId, attachOnly: true }
+		});
 	}
 
 	/** Arrow field — the chat view's Back. The session keeps running on the server. */
@@ -393,48 +444,75 @@ export class MobileClient {
 		}
 		if (!live()) return;
 		this.activeChat = null;
-		await this.refreshChats();
+		await Promise.all([this.refreshChats(), this.refreshTerminals()]);
 	}
 
-	/**
-	 * Chat → terminal: stop the chat's process first (one writer per session
-	 * file), then continue the conversation in a real `claude`.
-	 */
-	async showAsTerminal(ref: ChatRef, hasHistory: boolean): Promise<void> {
+	/** Claude chat → terminal: show the PTY the same process already runs in. */
+	async showAsTerminal(ref: ChatRef): Promise<void> {
+		if (this.switching || ref.agent === 'codex') return;
 		const live = this.live();
+		const screenKey = this.chatScreenKey;
 		this.switching = true;
 		this.notice = null;
-		try {
-			await this.agents.stop(ref.sessionId);
-		} catch (e) {
-			if (!live()) return;
-			this.notice = `Couldn't stop the chat: ${errorText(e)}`;
+		await Promise.all([this.refreshTerminals(), this.refreshChats()]);
+		if (!live()) return;
+		if (!this.activeChat || this.chatScreenKey !== screenKey) {
 			this.switching = false;
 			return;
 		}
-		// A session id only means something on the machine it came from.
-		if (!live()) return;
-		this.activeChat = null;
-		await this.openClaudeTerminal(ref, hasHistory);
-		if (live()) this.switching = false;
+		const terminal = this.terminals.find((t) => {
+			const chat = this.terminalChats[t.id];
+			return (
+				t.alive &&
+				chat &&
+				(chat.sessionId === ref.sessionId ||
+					this.chats.some((c) => c.terminalId === t.id && c.previousIds.includes(ref.sessionId)))
+			);
+		});
+		if (terminal) this.selectTerminal(terminal.id);
+		else this.notice = 'This chat has no running terminal to show. Restart the session in Chat.';
+		this.switching = false;
 	}
 
-	/** Terminal → chat: end the terminal's `claude`, then pick the conversation up in chat. */
+	/** Terminal → Claude chat: attach to its plugin, never launch a second Claude. */
 	async showAsChat(terminalId: string): Promise<void> {
-		const ref = this.claudeTerminals[terminalId];
-		if (!ref) return;
+		if (this.switching) return;
 		const live = this.live();
+		const fromTerminal = this.activeTerminalId;
 		this.switching = true;
 		this.notice = null;
-		// Wait until the terminal's process group is gone: two `claude`s on one
-		// session would both write its transcript.
-		const stopped = await this.deleteTerminal(terminalId, true);
+		await this.refreshChats();
 		if (!live()) return;
-		if (stopped) {
-			this.openChat(ref);
-			await this.refreshTerminals();
-		} else {
-			this.notice = "Couldn't stop the terminal, so the chat didn't start. Try again.";
+		if (this.activeTerminalId !== fromTerminal) {
+			this.switching = false;
+			return;
+		}
+		const ref = this.terminalChats[terminalId];
+		try {
+			if (!ref) throw new Error('This terminal has no Claude session to attach to.');
+			const sessionId = await this.agents.start({
+				projectPath: ref.projectPath,
+				worktreePath: ref.worktreePath,
+				sessionId: ref.sessionId,
+				claudeAccountId: ref.claudeAccountId,
+				attachOnly: true
+			});
+			if (!live()) return;
+			if (this.activeTerminalId !== fromTerminal) {
+				this.switching = false;
+				return;
+			}
+			this.openChat({ ...ref, sessionId, attachOnly: true });
+		} catch (e) {
+			if (!live()) return;
+			if (this.activeTerminalId !== fromTerminal) {
+				this.switching = false;
+				return;
+			}
+			this.notice =
+				(e as { status?: number }).status === 404
+					? 'Claude has not connected to Chat. Complete any login or trust prompt in its terminal, then try again.'
+					: `Couldn't open Chat: ${errorText(e)}`;
 		}
 		this.switching = false;
 	}

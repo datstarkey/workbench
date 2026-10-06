@@ -151,7 +151,7 @@ fn valid_date(s: &str) -> bool {
     if n.len() != 3 || s.len() != 10 || !(1..=12).contains(&n[1]) {
         return false;
     }
-    let leap = n[0] % 4 == 0 && (n[0] % 100 != 0 || n[0] % 400 == 0);
+    let leap = n[0].is_multiple_of(4) && (!n[0].is_multiple_of(100) || n[0].is_multiple_of(400));
     let days = match n[1] {
         2 => {
             if leap {

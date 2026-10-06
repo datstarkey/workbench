@@ -70,26 +70,6 @@ export class CodexControlsStore {
 			this.cursor = v.nextCursor;
 		}
 	}
-	async attachFiles(event: Event) {
-		const input = event.currentTarget as HTMLInputElement;
-		for (const file of Array.from(input.files ?? [])) {
-			if (file.size > 64 * 1024) {
-				this.error = `${file.name} is too large. Choose a text file under 64 KB.`;
-				continue;
-			}
-			const text = await file.text();
-			if (text.includes('\0')) {
-				this.error = `${file.name} is not a text file.`;
-				continue;
-			}
-			if (this.chat.files.length >= 10) {
-				this.error = 'Attach at most ten files.';
-				break;
-			}
-			this.chat.files = [...this.chat.files, { name: file.name, text }];
-		}
-		input.value = '';
-	}
 	async startVoice() {
 		if (this.disposed || this.startingVoice || this.mic) return;
 		this.error = '';

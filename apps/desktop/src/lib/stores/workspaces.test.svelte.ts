@@ -2237,6 +2237,7 @@ describe('WorkspaceStore', () => {
 		beforeEach(() => {
 			vi.mocked(stopAgent).mockClear();
 			vi.mocked(stopAgentForPane).mockClear();
+			vi.mocked(deleteServerTerminal).mockClear();
 			vi.mocked(reopenChat).mockClear();
 		});
 
@@ -2405,16 +2406,33 @@ describe('WorkspaceStore', () => {
 			expect(adoptable([{ ...remote, sessionId: 'sess-own', paneId: 'pane-own' }])).toEqual([]);
 		});
 
-		it('switching an adopted chat to the terminal takes it over', async () => {
+		it('switches an adopted Claude chat through its existing terminal and only detaches on close', async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			adopt();
-			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
+			adopt({ ...remote, terminalId: 'phone-terminal' });
+			const tab = store.workspaces[0].terminalTabs[0];
+			const paneId = tab.panes[0].id;
+			expect(store.getServerTerminalId(paneId)).toBe('phone-terminal');
 
 			await store.setPaneView(paneId, 'terminal');
+			expect(store.isChatPane(paneId)).toBe(false);
+			await store.setPaneView(paneId, 'chat');
+			expect(store.isChatPane(paneId)).toBe(true);
+			expect(store.isAdoptedPane(paneId)).toBe(true);
+			expect(stopAgent).not.toHaveBeenCalled();
+			expect(deleteServerTerminal).not.toHaveBeenCalled();
+			expect(lastSnapshot().snapshot.workspaces[0].terminalTabs).toHaveLength(0);
+			store.closeTerminalTab('ws-a', tab.id);
+			expect(stopAgentForPane).not.toHaveBeenCalled();
+		});
 
-			expect(stopAgent).toHaveBeenCalledWith('sess-phone');
-			const { snapshot } = lastSnapshot();
-			expect(snapshot.workspaces[0].terminalTabs[0].panes[0].id).toBe(paneId);
+		it('follows a replaced adopted terminal without attaching it underneath chat', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			adopt({ ...remote, terminalId: 'old-terminal' });
+			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
+			store.linkLiveTerminal(paneId, 'replacement-terminal');
+			expect(store.getServerTerminalId(paneId)).toBe('replacement-terminal');
+			expect(store.isLiveTerminalPane(paneId)).toBe(false);
+			expect(store.isAdoptedPane(paneId)).toBe(true);
 		});
 	});
 

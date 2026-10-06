@@ -5,7 +5,6 @@
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
-	import ImagePlusIcon from '@lucide/svelte/icons/image-plus';
 	import MicIcon from '@lucide/svelte/icons/mic';
 	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import SquareIcon from '@lucide/svelte/icons/square';
@@ -32,13 +31,7 @@
 		slashQuery
 	} from './chat-format';
 	import ChatMenu from './ChatMenu.svelte';
-	import {
-		addAttachments,
-		fileToAttachment,
-		filesIn,
-		IMAGE_TYPES,
-		previewUrl
-	} from './attachment-intake';
+	import { addAttachments, fileToAttachment, filesIn, previewUrl } from './attachment-intake';
 	import { insertMention, matchFiles, mentionQuery } from './file-mentions';
 	import { getChatPlatform } from './platform';
 	import { Dictation, insertDictation } from './dictation.svelte';
@@ -66,14 +59,14 @@
 		draft?: string;
 		/** Hosts may retain image attachments when navigating away. */
 		images?: ChatImage[];
-		/** PDFs and text files; Claude only (Codex can't take them). */
+		/** PDF and text attachments for either agent. */
 		files?: ChatFile[];
 		mode: PermissionMode | CodexMode | null;
 		busy: boolean;
 		/** Set when nothing can be sent right now; shown as the placeholder. */
 		disabledReason: string | null;
 		/** Returns false if the message could not be sent (the draft is kept). */
-		onSend: (text: string, images: ChatImage[], files: ChatFile[]) => boolean;
+		onSend: (text: string, images: ChatImage[], files: ChatFile[]) => boolean | Promise<boolean>;
 		onStop: () => void;
 		onMode: (mode: PermissionMode | CodexMode) => void;
 		/** More pickers for the toolbar (model, effort). */
@@ -90,11 +83,9 @@
 
 	const name = $derived(agentName(agent));
 	const modes = $derived(modeOptions(agent));
-	/** Claude reads PDFs and text files; Codex's input has no document kind. */
-	const documents = $derived(agent === 'claude');
 	const placeholder = $derived(
 		agent === 'codex'
-			? 'Message Codex, @ for files, or paste an image'
+			? 'Message Codex, / for skills, @ for files, or attach a file'
 			: 'Message Claude, / for commands, @ for files, or attach a file'
 	);
 
@@ -182,8 +173,11 @@
 		await place(insertCommand(draft, slash, caret, command.name));
 	}
 
+	let sending = $state(false);
 	const canSend = $derived(
-		!disabledReason && (draft.trim().length > 0 || images.length > 0 || files.length > 0)
+		!sending &&
+			!disabledReason &&
+			(draft.trim().length > 0 || images.length > 0 || files.length > 0)
 	);
 
 	/** Grow with the text up to ~8 lines, then scroll. */
@@ -198,7 +192,7 @@
 	};
 
 	function attach(added: ChatAttachment[], error: string | null) {
-		const next = addAttachments({ images, files }, added, documents);
+		const next = addAttachments({ images, files }, added);
 		images = next.images;
 		files = next.files;
 		attachError = error ?? next.error ?? '';
@@ -206,7 +200,7 @@
 
 	async function addFiles(picked: File[]) {
 		attachError = '';
-		const results = await Promise.allSettled(picked.map((f) => fileToAttachment(f, documents)));
+		const results = await Promise.allSettled(picked.map((f) => fileToAttachment(f)));
 		const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
 		attach(
 			results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])),
@@ -235,13 +229,24 @@
 			}
 		});
 
-	function send() {
+	async function send() {
 		const typed = /^\/(\S+)$/.exec(draft.trim());
 		if (typed && images.length === 0 && files.length === 0 && onCommand?.(typed[1])) {
 			draft = '';
 			return;
 		}
-		if (!canSend || !onSend(draft, images, files)) return;
+		if (!canSend) return;
+		const sentDraft = draft;
+		const sentImages = images;
+		const sentFiles = files;
+		sending = true;
+		try {
+			if (!(await onSend(sentDraft, sentImages, sentFiles))) return;
+		} finally {
+			sending = false;
+		}
+		// A queued send waits for acknowledgment; preserve edits made while waiting.
+		if (draft !== sentDraft || images !== sentImages || files !== sentFiles) return;
 		draft = '';
 		images = [];
 		files = [];
@@ -327,7 +332,7 @@
 		<div
 			class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-wb-accent-soft text-xs font-medium text-wb-ink"
 		>
-			Drop {documents ? 'files' : 'images'} to attach
+			Drop files to attach
 		</div>
 	{/if}
 	{#if images.length > 0}
@@ -442,23 +447,18 @@
 		<button
 			type="button"
 			class="flex size-7 shrink-0 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
-			title={documents ? 'Attach images, PDFs or text files' : 'Attach images'}
-			aria-label={documents ? 'Attach files' : 'Attach images'}
+			title="Attach images, PDFs or text files"
+			aria-label="Attach files"
 			disabled={disabledReason !== null}
 			onclick={() => picker?.click()}
 		>
-			{#if documents}
-				<PaperclipIcon class="size-3.5" />
-			{:else}
-				<ImagePlusIcon class="size-3.5" />
-			{/if}
+			<PaperclipIcon class="size-3.5" />
 		</button>
 		<input
 			{@attach (node: HTMLInputElement) => {
 				picker = node;
 			}}
 			type="file"
-			accept={documents ? undefined : IMAGE_TYPES.join(',')}
 			multiple
 			class="hidden"
 			onchange={(e) => {

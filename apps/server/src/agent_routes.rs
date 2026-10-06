@@ -2,6 +2,7 @@
 //! - `GET /agent` lists every live session ([`AgentSummary`], with `agent`),
 //!   newest change first; `GET /agent/:kind` only that kind's (older phone
 //!   builds read `/agent/claude`).
+//! - `GET /agent/attention?cursor=` long-polls shared notification events.
 //! - `POST /agent/claude` starts (or returns) the session for a Claude session
 //!   id: a server terminal running `claude`, answered once the plugin attaches
 //!   (`{sessionId, terminalId}`); `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
@@ -191,7 +192,8 @@ pub struct CodexStartBody {
     pub worktree_path: Option<String>,
     /// The thread to resume; absent starts a new one.
     pub session_id: Option<String>,
-    /// `read-only` | `auto` | `full-access`; absent leaves `~/.codex/config.toml` in charge.
+    /// `read-only` | `auto` | `full-access`; absent uses the saved Workbench
+    /// launch preset, or inherits Codex config when no preset matches.
     pub codex_mode: Option<String>,
     #[serde(flatten)]
     pub options: workbench_core::codex_controls::LaunchOptions,
@@ -216,6 +218,18 @@ pub async fn codex_start(
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
         let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
+        let mode = body.codex_mode;
+        // A preset is an explicit pick. Otherwise fill missing independent
+        // overrides from the same saved settings for desktop and Android.
+        let options = if mode.is_none() {
+            let settings = workbench_core::config::load_workbench_settings()?;
+            body.options.with_defaults(
+                &settings.codex_approval_policy,
+                &settings.codex_sandbox_mode,
+            )
+        } else {
+            body.options
+        };
         let session = agents.start(StartAgent {
             cwd,
             project_path: body.project_path,
@@ -225,8 +239,8 @@ pub async fn codex_start(
             claude_account_id: None,
             launch: Launch::Codex {
                 thread_id: body.session_id,
-                mode: body.codex_mode,
-                options: body.options,
+                mode,
+                options,
             },
         })?;
         Ok(json!({"sessionId": session.id()}))
@@ -255,6 +269,39 @@ fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> anyhow::Resul
 
 pub async fn agent_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
     Json(state.agents.summaries(None))
+}
+
+#[derive(Deserialize)]
+pub struct AttentionQuery {
+    cursor: Option<String>,
+}
+
+/// The same buffered attention events the desktop emits, with a cursor so a
+/// sleeping phone can catch up. A new connection only seeds its position.
+pub async fn agent_attention(
+    State(state): State<AppState>,
+    Query(query): Query<AttentionQuery>,
+) -> ApiResult<Json<crate::attention_feed::AttentionBatch>> {
+    let mut revoked = state.revoked.clone();
+    let until = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut changes = state.agents.attention.subscribe();
+    loop {
+        if *revoked.borrow() {
+            return Err(ApiError {
+                status: StatusCode::UNAUTHORIZED,
+                message: "This listener stopped.".into(),
+            });
+        }
+        let batch = state.agents.attention.since(query.cursor.as_deref());
+        if query.cursor.as_deref() != Some(&batch.cursor) || tokio::time::Instant::now() >= until {
+            return Ok(Json(batch));
+        }
+        tokio::select! {
+            _ = wait_revoked(&mut revoked) => {},
+            _ = changes.recv() => {},
+            _ = tokio::time::sleep_until(until) => {},
+        }
+    }
 }
 
 pub async fn claude_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
@@ -498,7 +545,7 @@ fn handle(
             if request_id.len() > 128
                 || params.to_string().len()
                     > if matches!(action, workbench_core::codex_controls::Action::QueueAdd) {
-                        32 * 1024 * 1024
+                        MAX_PROMPT_BYTES
                     } else {
                         2 * 1024 * 1024
                     }

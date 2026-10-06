@@ -1321,7 +1321,10 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
     let log = tmp.path().join("received.jsonl");
     env.set("FAKE_CLAUDE_LOG", &log);
 
-    let (handle, base) = start().await;
+    let managers = Managers::default();
+    let desktop_feed = managers.agents.attention.clone();
+    let mut cursor = desktop_feed.since(None).cursor;
+    let (handle, base) = start_with(managers, TOKEN).await;
     let addr = handle.addr().to_string();
     let id = "0d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
     let ws_url = |token: &str| format!("ws://{addr}/agent/claude/{id}/ws?token={token}");
@@ -1405,6 +1408,24 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         saw_reply,
         "the assistant text must stream before the approval"
     );
+    let waiting: Value = client()
+        .get(format!("{base}/agent/attention"))
+        .query(&[("cursor", &cursor)])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(waiting["events"][0]["kind"], "waiting");
+    assert_eq!(waiting["events"][0]["agent"], "claude");
+    assert_eq!(waiting["events"][0]["waiting"]["id"], "perm-1");
+    assert_eq!(
+        waiting,
+        serde_json::to_value(desktop_feed.since(Some(&cursor))).unwrap(),
+        "plugin approvals reach desktop and Android through one feed"
+    );
+    cursor = waiting["cursor"].as_str().unwrap().into();
     ws.send(Message::Text(
         json!({"t":"approve","requestId":"perm-1","decision":"allow"}).to_string(),
     ))
@@ -1416,6 +1437,30 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
             break;
         }
     }
+
+    let completed: Value = client()
+        .get(format!("{base}/agent/attention"))
+        .query(&[("cursor", &cursor)])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        completed["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["resolved", "turnEnded"]
+    );
+    assert_eq!(
+        completed,
+        serde_json::to_value(desktop_feed.since(Some(&cursor))).unwrap(),
+        "plugin resolutions and completions reach both devices"
+    );
 
     let received = std::fs::read_to_string(&log).unwrap();
     assert!(
@@ -1826,4 +1871,52 @@ async fn git_review_is_read_only_and_restricted_to_registered_checkouts() {
         .unwrap();
     assert_eq!(no_auth.status(), 401);
     handle.stop().await;
+}
+
+#[tokio::test]
+async fn stopping_a_listener_revokes_its_pending_attention_request() {
+    let managers = Managers::default();
+    let (listener, base) = start_with(managers.clone(), TOKEN).await;
+    let (other, other_base) = start_with(managers, TOKEN).await;
+    let initial: Value = client()
+        .get(format!("{base}/agent/attention"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let initial_other: Value = client()
+        .get(format!("{other_base}/agent/attention"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        initial["cursor"], initial_other["cursor"],
+        "both listeners expose one notification feed"
+    );
+    let request = client()
+        .get(format!("{base}/agent/attention"))
+        .query(&[("cursor", initial["cursor"].as_str().unwrap())]);
+    let pending = tokio::spawn(async move { request.send().await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(2), listener.stop())
+        .await
+        .expect("a long poll must not prevent listener shutdown");
+    let response = tokio::time::timeout(Duration::from_secs(2), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    assert!(client()
+        .get(format!("{other_base}/agent/attention"))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    other.stop().await;
 }

@@ -4,8 +4,6 @@ import {
 	CODEX_NEW_SESSION_COMMAND,
 	claudeNewSessionWithIdCommand,
 	claudeResumeCommand,
-	codexChatMode,
-	codexChatSettings,
 	codexResumeCommand,
 	extractPromptArg,
 	newSessionCommandWithPrompt,
@@ -535,34 +533,7 @@ describe('claudeNewSessionWithIdCommand', () => {
 	});
 });
 
-describe('codexChatMode', () => {
-	it('maps the launch settings onto the chat presets', () => {
-		expect(codexChatMode('on-request', 'read-only')).toBe('read-only');
-		expect(codexChatMode('on-request', 'workspace-write')).toBe('auto');
-		expect(codexChatMode('never', 'danger-full-access')).toBe('full-access');
-	});
-
-	it('leaves Codex config in charge for anything else', () => {
-		expect(codexChatMode('default', 'default')).toBeUndefined();
-		expect(codexChatMode('never', 'read-only')).toBeUndefined();
-		expect(codexChatMode('on-request', 'default')).toBeUndefined();
-	});
-});
-
-describe('Codex launch contracts', () => {
-	it('keeps independent and partial permission choices in chat', () => {
-		expect(codexChatSettings('never', 'read-only')).toEqual({
-			codexApprovalPolicy: 'never',
-			codexSandboxMode: 'read-only'
-		});
-		expect(codexChatSettings('default', 'workspace-write')).toEqual({
-			codexSandboxMode: 'workspace-write'
-		});
-		expect(codexChatSettings('on-request', 'default')).toEqual({
-			codexApprovalPolicy: 'on-request'
-		});
-		expect(codexChatSettings('default', 'default')).toEqual({});
-	});
+describe('Codex terminal launch', () => {
 	it('opts supported terminals out of the daemon and recovers persisted prompts', () => {
 		const command = newSessionCommand('codex', { codexNoDaemon: true });
 		expect(command).toContain(' --no-daemon ');

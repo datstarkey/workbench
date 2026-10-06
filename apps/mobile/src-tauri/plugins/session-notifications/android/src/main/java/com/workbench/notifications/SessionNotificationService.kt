@@ -12,23 +12,23 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-/** Native polling survives a suspended WebView. The bearer token stays in memory only. */
+/** Native notification delivery survives a suspended WebView. Tokens stay in memory only. */
 class SessionNotificationService : Service() {
   companion object { @Volatile var visible = true }
   private val executor = Executors.newSingleThreadScheduledExecutor()
   private val main = Handler(Looper.getMainLooper())
   private var task: ScheduledFuture<*>? = null
-  private var generation = 0
-  private var tracker = AlertTracker()
+  @Volatile private var generation = 0
+  @Volatile private var activeConnection: HttpURLConnection? = null
   private val manager get() = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
   private val monitorId = 1
   /** Wall clock of the last poll: the executor's clock stops while the phone sleeps. */
@@ -44,7 +44,7 @@ class SessionNotificationService : Service() {
     generation++
     val current = generation
     task?.cancel(true)
-    tracker = AlertTracker()
+    activeConnection?.disconnect()
     // Switching machines clears old alerts so nothing opens on the wrong connection.
     manager.cancelAll()
     if (Build.VERSION.SDK_INT >= 26) {
@@ -60,13 +60,24 @@ class SessionNotificationService : Service() {
     else startForeground(monitorId, notification)
     lastPollAt = 0L
     Telemetry.breadcrumb("monitoring started")
+    val currentFeed = NotificationFeed()
     task = executor.scheduleWithFixedDelay({
+      if (generation != current) return@scheduleWithFixedDelay
       noteStall()
       try {
-        val connection = URL("$url/agent").openConnection() as HttpURLConnection
+        val cursor = currentFeed.cursor
+        val route = "/agent/attention" +
+          (cursor?.let { "?cursor=" + URLEncoder.encode(it, "UTF-8") } ?: "")
+        val connection = URL("$url$route").openConnection() as HttpURLConnection
+        activeConnection = connection
+        if (generation != current) {
+          connection.disconnect()
+          if (activeConnection === connection) activeConnection = null
+          return@scheduleWithFixedDelay
+        }
         connection.instanceFollowRedirects = false
         connection.connectTimeout = 8000
-        connection.readTimeout = 8000
+        connection.readTimeout = 25_000
         connection.setRequestProperty("Authorization", "Bearer $token")
         try {
           val code = connection.responseCode
@@ -77,38 +88,49 @@ class SessionNotificationService : Service() {
           }
           val body = connection.inputStream.use { it.readBytes() }
           if (body.size > 2 * 1024 * 1024) return@scheduleWithFixedDelay
-          val list = JSONArray(String(body, Charsets.UTF_8))
-          val serverTime = connection.getHeaderFieldDate("Date", 0L).takeIf { it > 0L }
+          val text = String(body, Charsets.UTF_8)
           main.post {
             if (generation != current) return@post
-            for (alert in tracker.update(list, serverTime)) {
-              if (visible) { Telemetry.breadcrumb("alert skipped: app visible"); continue }
-              noteBlocked()
-              val s = alert.session
-              val sessionId = s.getString("sessionId")
-              val payload = JSONObject().put("machineId", machineId).put("chat", s).toString()
-              val notificationId = 2 + (sessionId.hashCode() and 0x3fffffff)
-              val alertNotification = NotificationCompat.Builder(this, "sessions")
-                .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(alert.message)
-                .setContentText(if (s.isNull("title")) "Workbench chat" else s.getString("title")).setSubText(name)
-                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setAutoCancel(true)
-                .setContentIntent(open(payload, notificationId)).build()
-              manager.notify(notificationId, alertNotification)
-              Telemetry.breadcrumb("alert posted: ${alert.message}")
-            }
+            try {
+              val events = currentFeed.accept(JSONObject(text))
+              for (event in events) notifySession(event, machineId, name)
+            } catch (e: Exception) { Telemetry.exceptionOnce(e) }
           }
-        } finally { connection.disconnect() }
+        } finally { connection.disconnect(); if (activeConnection === connection) activeConnection = null }
       } catch (e: IOException) {
         // Retry when the private network is reachable again.
         Telemetry.breadcrumb("poll failed: ${e.javaClass.simpleName}")
       } catch (e: Exception) {
         Telemetry.exceptionOnce(e)
       }
-    }, 0, 10, TimeUnit.SECONDS)
+    }, 0, 1, TimeUnit.SECONDS)
     return START_NOT_STICKY
   }
 
-  /** A gap far past the 10s interval means polling was frozen (the CPU slept, or Doze). */
+  /** Post, replace or clear the same event the desktop consumed. */
+  private fun notifySession(event: NotificationEvent, machineId: String, name: String) {
+    val s = event.session
+    val sessionId = s.getString("sessionId")
+    val notificationId = 2 + (sessionId.hashCode() and 0x3fffffff)
+    // /clear changes the id; its old alert must not remain behind.
+    val aliases = s.optJSONArray("previousIds")
+    if (aliases != null) for (i in 0 until aliases.length()) {
+      manager.cancel(2 + (aliases.getString(i).hashCode() and 0x3fffffff))
+    }
+    if (event.message == null) { manager.cancel(notificationId); return }
+    if (visible) { Telemetry.breadcrumb("alert skipped: app visible"); return }
+    noteBlocked()
+    val payload = JSONObject().put("machineId", machineId).put("chat", s).toString()
+    val notification = NotificationCompat.Builder(this, "sessions")
+      .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(event.message)
+      .setContentText(if (s.isNull("title")) "Workbench chat" else s.getString("title")).setSubText(name)
+      .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setAutoCancel(true)
+      .setContentIntent(open(payload, notificationId)).build()
+    manager.notify(notificationId, notification)
+    Telemetry.breadcrumb("alert posted: ${event.message}")
+  }
+
+  /** A gap past long polling's timeout means the CPU slept or the network stalled. */
   private fun noteStall() {
     val now = System.currentTimeMillis()
     val gap = now - lastPollAt
@@ -142,6 +164,7 @@ class SessionNotificationService : Service() {
   override fun onDestroy() {
     generation++
     task?.cancel(true)
+    activeConnection?.disconnect()
     executor.shutdownNow()
     manager.cancel(monitorId)
     super.onDestroy()

@@ -36,7 +36,7 @@
 			.listen(async (machineId, chat) => {
 				if (!c.machines.list.some((m) => m.id === machineId)) return;
 				if (c.machineId !== machineId) await c.switchTo(machineId);
-				if (!destroyed && c.machineId === machineId) c.openChat(c.chatRef(chat));
+				if (!destroyed && c.machineId === machineId) await c.openNotification(chat);
 			})
 			.then((remove) => {
 				if (destroyed) remove();
@@ -65,7 +65,7 @@
 			id={terminalId}
 			name={c.activeTerminal.name ?? 'terminal'}
 			onClose={c.closeTerminal}
-			onShowChat={c.claudeTerminals[terminalId] ? () => c.showAsChat(terminalId) : undefined}
+			onShowChat={c.terminalChats[terminalId] ? () => c.showAsChat(terminalId) : undefined}
 			switching={c.switching}
 			notice={c.notice}
 		/>

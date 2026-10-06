@@ -33,11 +33,10 @@ export async function fileToChatImage(file: File): Promise<ChatImage> {
 }
 
 /**
- * A pasted, picked or dropped file as an attachment. With `documents` (Claude)
- * a PDF or any UTF-8 text file is taken too; otherwise images only.
+ * A pasted, picked or dropped image, PDF or UTF-8 text file for either agent.
  */
-export async function fileToAttachment(file: File, documents: boolean): Promise<ChatAttachment> {
-	if (IMAGE_TYPES.includes(file.type) || !documents) {
+export async function fileToAttachment(file: File): Promise<ChatAttachment> {
+	if (IMAGE_TYPES.includes(file.type)) {
 		return { kind: 'image', ...(await fileToChatImage(file)) };
 	}
 	const name = file.name || 'Pasted file';
@@ -60,22 +59,19 @@ export async function fileToAttachment(file: File, documents: boolean): Promise<
 }
 
 /**
- * Add what was read to what's attached, within the per-message caps. Files an
- * agent can't read (`documents` false) are refused with a note, not dropped silently.
+ * Add what was read to what's attached, within the per-message caps.
  */
 export function addAttachments(
 	current: Attachments,
-	added: ChatAttachment[],
-	documents: boolean
+	added: ChatAttachment[]
 ): Attachments & { error: string | null } {
 	const images = added.flatMap(({ kind, ...a }) => (kind === 'image' ? [a as ChatImage] : []));
 	const files = added.flatMap(({ kind, ...a }) => (kind === 'file' ? [a as ChatFile] : []));
 	let error: string | null = null;
-	if (files.length > 0 && !documents) error = 'Only images can be attached here.';
 	const imageRoom = Math.max(0, MAX_IMAGES - current.images.length);
-	const fileRoom = documents ? Math.max(0, MAX_FILES - current.files.length) : 0;
+	const fileRoom = Math.max(0, MAX_FILES - current.files.length);
 	if (images.length > imageRoom) error = `Attach up to ${MAX_IMAGES} images per message.`;
-	if (documents && files.length > fileRoom) error = `Attach up to ${MAX_FILES} files per message.`;
+	if (files.length > fileRoom) error = `Attach up to ${MAX_FILES} files per message.`;
 	return {
 		images: [...current.images, ...images.slice(0, imageRoom)],
 		files: [...current.files, ...files.slice(0, fileRoom)],

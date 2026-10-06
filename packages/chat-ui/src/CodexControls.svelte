@@ -141,26 +141,6 @@
 							codexState.sandbox?.type ?? 'Codex config'
 						)}
 					</p>{/if}
-				<label
-					>Attach text files to the next message <input
-						type="file"
-						multiple
-						onchange={(e) => controls.attachFiles(e)}
-					/></label
-				>
-				{#each chat.files as file, i (i)}<div class="flex gap-2">
-						<span>{file.name}</span><button
-							onclick={() => (chat.files = chat.files.filter((_, n) => n !== i))}>Remove</button
-						><button
-							disabled={controls.busy}
-							onclick={() => controls.run('attachmentAdd', { name: file.name, text: file.text })}
-							>Save with thread</button
-						><button
-							disabled={controls.busy}
-							onclick={() => controls.run('attachmentRemove', { name: file.name })}
-							>Remove saved copy</button
-						>
-					</div>{/each}
 			{:else if controls.tab === 'queue'}
 				<label
 					>Messages during a turn <select bind:value={chat.delivery}

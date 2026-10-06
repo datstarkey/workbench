@@ -46,7 +46,6 @@
 		getWorkspaceStore
 	} from '$stores/context';
 	import PRStatusBadge from '$features/projects/PRStatusBadge.svelte';
-	import { codexChatSettings } from '$lib/utils/claude';
 	import { openUrl } from '$lib/utils/open-url';
 	import { planUsage } from './agent-api';
 	import { acquireChat } from './chat-registry';
@@ -90,10 +89,6 @@
 	const githubStore = getGitHubStore();
 	// svelte-ignore state_referenced_locally
 	const agentLabel = agentName(agent);
-	const codexSettings = codexChatSettings(
-		settingsStore.codexApprovalPolicy,
-		settingsStore.codexSandboxMode
-	);
 	// svelte-ignore state_referenced_locally
 	const { chat } = acquireChat(paneId, {
 		agent,
@@ -101,15 +96,13 @@
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 		...(sessionId ? { sessionId } : {}),
 		paneId,
-		// The same launch settings terminal sessions get from Settings.
-		...(agent === 'codex'
-			? codexSettings
-			: {
-					...(claudeAccountId ? { claudeAccountId } : {}),
-					...(settingsStore.claudePermissionMode !== 'default'
-						? { permissionMode: settingsStore.claudePermissionMode }
-						: {})
-				}),
+		// Codex launch defaults are resolved on the server for both hosts.
+		...(agent === 'claude' && {
+			...(claudeAccountId ? { claudeAccountId } : {}),
+			...(settingsStore.claudePermissionMode !== 'default'
+				? { permissionMode: settingsStore.claudePermissionMode }
+				: {})
+		}),
 		// Another device's chat, or this pane's own terminal `claude`: join its
 		// process, never start one behind its back.
 		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)
@@ -238,7 +231,7 @@
 		return () => node.removeEventListener('scroll', onScroll);
 	};
 
-	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean {
+	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean | Promise<boolean> {
 		stickToBottom = true;
 		return chat.prompt(text, images, files);
 	}

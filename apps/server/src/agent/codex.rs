@@ -560,11 +560,7 @@ impl CodexDriver {
         if self.thread_id.is_none() {
             bail!("Codex is still starting");
         }
-        // app-server input has no document kind (0.160: text, image, audio, skill, mention).
-        if !files.is_empty() {
-            bail!("Codex can't read attached files. Mention them with @ instead.");
-        }
-        let input = self.prompt_input(text, images);
+        let input = self.prompt_input(text, images, files)?;
         self.t.set_busy();
         Ok(Effects {
             send: self.submit(input).into_iter().collect(),
@@ -573,7 +569,14 @@ impl CodexDriver {
         })
     }
 
-    fn prompt_input(&self, text: &str, images: &[PromptImage]) -> Vec<Value> {
+    fn prompt_input(
+        &self,
+        text: &str,
+        images: &[PromptImage],
+        files: &[PromptFile],
+    ) -> Result<Vec<Value>> {
+        let context = self.file_context(files)?;
+        let text = format!("{text}{context}").trim_start().to_string();
         let mut input = Vec::new();
         if !text.trim().is_empty() {
             let trimmed = text.trim_start();
@@ -592,7 +595,20 @@ impl CodexDriver {
         input.extend(images.iter().map(|img| {
             json!({"type": "image", "url": format!("data:{};base64,{}", img.media_type, img.data)})
         }));
-        input
+        Ok(input)
+    }
+
+    fn file_context(&self, files: &[PromptFile]) -> Result<String> {
+        if files.is_empty() {
+            return Ok(String::new());
+        }
+        let mentions = super::attachment::attachments_as_mentions(
+            self.thread_id.as_deref().expect("ready thread"),
+            "",
+            &[],
+            files,
+        )?;
+        Ok(format!("\n\n{}\n\nThe attached files above are local files on this machine. Read them with your tools; extract PDF text or pages as needed.", mentions.trim()))
     }
 
     pub fn approve(
@@ -759,6 +775,34 @@ mod tests {
             listed_threads: HashSet::new(),
             remote_environment: None,
         }
+    }
+
+    #[test]
+    fn uploaded_files_can_steer_an_active_turn_without_changing_its_mode() {
+        let mut d = driver();
+        let thread = uuid::Uuid::new_v4().to_string();
+        d.thread_id = Some(thread.clone());
+        d.mode = Some("read-only".into());
+        d.apply_line(r#"{"method":"turn/started","params":{"turn":{"id":"turn-1"}}}"#);
+        let fx = d
+            .prompt(
+                "",
+                &[],
+                &[PromptFile {
+                    name: "notes.txt".into(),
+                    media_type: "text/plain".into(),
+                    data: "hello".into(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(fx.send[0]["method"], "turn/steer");
+        assert_eq!(fx.send[0]["params"]["expectedTurnId"], "turn-1");
+        assert_eq!(d.mode.as_deref(), Some("read-only"));
+        let text = fx.send[0]["params"]["input"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with('@'), "a file-only prompt has input");
+        assert!(text.contains("notes.txt"));
+        assert!(text.contains("Read them with your tools"));
+        std::fs::remove_dir_all(super::super::attachment::attachment_dir(&thread)).unwrap();
     }
 
     #[test]

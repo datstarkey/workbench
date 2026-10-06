@@ -1,7 +1,6 @@
 import type {
 	ClaudePermissionMode,
 	CodexApprovalPolicy,
-	CodexMode,
 	CodexSandboxMode,
 	SessionType
 } from '$types/workbench';
@@ -67,27 +66,6 @@ function codexBinary(opts?: LaunchOptions): string {
 		codexOverride('approval_policy', opts?.codexApprovalPolicy, CODEX_APPROVAL_POLICIES) +
 		codexOverride('sandbox_mode', opts?.codexSandboxMode, CODEX_SANDBOX_MODES)
 	);
-}
-
-/**
- * Preserve approval and sandbox overrides independently for native chat.
- * Omitted values retain the CLI's own configuration.
- */
-export function codexChatSettings(approval: CodexApprovalPolicy, sandbox: CodexSandboxMode) {
-	return {
-		...(approval !== 'default' ? { codexApprovalPolicy: approval } : {}),
-		...(sandbox !== 'default' ? { codexSandboxMode: sandbox } : {})
-	};
-}
-/** Friendly preset for a recognized pair; independent overrides remain valid. */
-export function codexChatMode(
-	approval: CodexApprovalPolicy,
-	sandbox: CodexSandboxMode
-): CodexMode | undefined {
-	if (approval === 'on-request' && sandbox === 'read-only') return 'read-only';
-	if (approval === 'on-request' && sandbox === 'workspace-write') return 'auto';
-	if (approval === 'never' && sandbox === 'danger-full-access') return 'full-access';
-	return undefined;
 }
 
 /** How Claude and Codex sessions should be launched. */

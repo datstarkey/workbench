@@ -231,6 +231,45 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it.each(['claude', 'codex'] as const)(
+		'%s file-only prompts settle when the server echoes uploaded file references',
+		async (agent) => {
+			const chat = new AgentChat({ ...body, agent }, fakeApi());
+			await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+			const ws = FakeSocket.last!;
+			ws.emit({
+				t: 'snapshot',
+				sessionId: 'sid',
+				start: 0,
+				items: [],
+				meta: meta(),
+				commands: [],
+				exited: false
+			});
+			const file = { mediaType: 'text/plain' as const, data: 'hello', name: 'notes.txt' };
+			expect(chat.prompt('', [], [file])).toBe(true);
+			expect(ws.sent).toEqual([{ t: 'prompt', text: '', files: [file] }]);
+			expect(chat.pending[0].files).toEqual(['notes.txt']);
+			ws.emit({
+				t: 'update',
+				changes: [
+					[
+						0,
+						{
+							kind: 'user',
+							id: 'u1',
+							text: '@"/tmp/upload/notes.txt"\n\nRead the attached file.',
+							timestamp: ''
+						}
+					]
+				],
+				meta: meta(true)
+			});
+			expect(chat.pending).toEqual([]);
+			chat.dispose();
+		}
+	);
+
 	it('lists the cwd for @ mentions, reusing the list for a while', async () => {
 		const files = vi.fn<NonNullable<AgentApi['files']>>(async () => ['src/main.rs']);
 		const chat = new AgentChat({ ...body, worktreePath: '/repo-wt' }, { ...fakeApi(), files });
@@ -580,24 +619,28 @@ describe('AgentChat', () => {
 		chat.dispose();
 		await rejected;
 	});
-	it('queue delivery sends an explicit action and attachments wait for a prompt', async () => {
+	it('queues shared file attachments and clears the draft only after acknowledgment', async () => {
 		const { chat, ws } = await connected(fakeApi(), { ...body, agent: 'codex' });
-		chat.files = [{ name: 'README.md', text: 'Project context' }];
-		expect(ws.sent).toEqual([]);
 		chat.receive({ t: 'update', changes: [], meta: meta(true) });
 		chat.delivery = 'queue';
-		expect(chat.prompt('Use this file')).toBe(true);
+		const file = { name: 'README.md', mediaType: 'text/plain' as const, data: 'Hi' };
+		const sending = chat.prompt('Use this file', [], [file]);
 		const sent = ws.sent[0] as {
 			t: string;
 			action: string;
-			params: { text: string };
+			params: { text: string; files: unknown[] };
 			requestId: string;
 		};
 		expect(sent.t).toBe('codex');
 		expect(sent.action).toBe('queueAdd');
-		expect(sent.params.text).toBe('File: README.md\n\nProject context\n\nUse this file');
+		expect(sent.params).toMatchObject({ text: 'Use this file', files: [file] });
 		ws.emit({ t: 'codexResult', requestId: sent.requestId, result: {} });
-		await Promise.resolve();
+		await expect(sending).resolves.toBe(true);
+		const retry = chat.prompt('', [], [file]);
+		const failed = ws.sent.at(-1) as { requestId: string };
+		ws.emit({ t: 'codexResult', requestId: failed.requestId, error: 'Queue full' });
+		await expect(retry).resolves.toBe(false);
+		expect(chat.notice).toBe('Queue full');
 		chat.dispose();
 	});
 	it('older history follows a client cursor and resets on a different session', async () => {

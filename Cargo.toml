@@ -20,7 +20,7 @@ chrono = "0.4"
 portable-pty = "0.8"
 libc = "0.2"
 tempfile = "3"
-# server-only
+# async runtime / server
 tokio = { version = "1", default-features = false }
 axum = "0.7"
 clap = { version = "4", features = ["derive", "env"] }

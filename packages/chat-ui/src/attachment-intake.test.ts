@@ -31,14 +31,14 @@ describe('attachment intake', () => {
 
 	it('reads PDFs as base64 and text files (any extension) as text', async () => {
 		const pdf = new File(['%PDF'], 'report.pdf', { type: '' });
-		expect(await fileToAttachment(pdf, true)).toEqual({
+		expect(await fileToAttachment(pdf)).toEqual({
 			kind: 'file',
 			mediaType: 'application/pdf',
 			data: 'JVBERg==',
 			name: 'report.pdf'
 		});
 		const code = new File(['fn main() {} // ü'], 'main.rs', { type: '' });
-		expect(await fileToAttachment(code, true)).toEqual({
+		expect(await fileToAttachment(code)).toEqual({
 			kind: 'file',
 			mediaType: 'text/plain',
 			data: 'fn main() {} // ü',
@@ -47,18 +47,16 @@ describe('attachment intake', () => {
 		const png = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'a.png', {
 			type: 'image/png'
 		});
-		expect((await fileToAttachment(png, true)).kind).toBe('image');
+		expect((await fileToAttachment(png)).kind).toBe('image');
 	});
 
-	it('refuses binaries, oversized text, and documents where only images go', async () => {
+	it('refuses binaries and oversized text', async () => {
 		const binary = new File([new Uint8Array([0x7f, 0x45, 0, 1])], 'app', { type: '' });
-		await expect(fileToAttachment(binary, true)).rejects.toThrow(/isn't an image, PDF or text/);
+		await expect(fileToAttachment(binary)).rejects.toThrow(/isn't an image, PDF or text/);
 		const latin1 = new File([new Uint8Array([0x63, 0xe9])], 'old.txt', { type: 'text/plain' });
-		await expect(fileToAttachment(latin1, true)).rejects.toThrow(/isn't an image, PDF or text/);
+		await expect(fileToAttachment(latin1)).rejects.toThrow(/isn't an image, PDF or text/);
 		const long = new File(['a'.repeat(MAX_TEXT_BYTES + 1)], 'big.log', { type: 'text/plain' });
-		await expect(fileToAttachment(long, true)).rejects.toThrow(/over 256 KB/);
-		const pdf = new File(['%PDF'], 'report.pdf', { type: 'application/pdf' });
-		await expect(fileToAttachment(pdf, false)).rejects.toThrow(/PNG, JPEG, GIF or WebP/);
+		await expect(fileToAttachment(long)).rejects.toThrow(/over 256 KB/);
 	});
 
 	it('adds within the per-message caps and says what was left out', () => {
@@ -66,24 +64,19 @@ describe('attachment intake', () => {
 		const file: ChatAttachment = { kind: 'file', mediaType: 'text/plain', data: 'x', name: 'f' };
 		const none = { images: [], files: [] };
 
-		const both = addAttachments(none, [image, file], true);
+		const both = addAttachments(none, [image, file]);
 		expect(both).toEqual({
 			images: [{ mediaType: 'image/png', data: 'x', name: 'a' }],
 			files: [{ mediaType: 'text/plain', data: 'x', name: 'f' }],
 			error: null
 		});
 
-		const tooMany = addAttachments(none, Array(MAX_FILES + 1).fill(file), true);
+		const tooMany = addAttachments(none, Array(MAX_FILES + 1).fill(file));
 		expect(tooMany.files).toHaveLength(MAX_FILES);
 		expect(tooMany.error).toMatch(/up to 5 files/);
-		expect(addAttachments(none, Array(MAX_IMAGES + 1).fill(image), true).error).toMatch(
+		expect(addAttachments(none, Array(MAX_IMAGES + 1).fill(image)).error).toMatch(
 			/up to 10 images/
 		);
-
-		const imagesOnly = addAttachments(none, [image, file], false);
-		expect(imagesOnly.files).toEqual([]);
-		expect(imagesOnly.images).toHaveLength(1);
-		expect(imagesOnly.error).toMatch(/Only images/);
 	});
 
 	it('takes every file from a paste or drop', () => {

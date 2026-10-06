@@ -100,7 +100,6 @@ export class AgentChat {
 	/** When each task or running tool was first seen (client clock), for timers. */
 	seenAt = $state.raw<Record<string, number>>({});
 	delivery = $state<'steer' | 'queue'>('steer');
-	files = $state.raw<{ name: string; text: string }[]>([]);
 	historyItems = $state.raw<TranscriptItem[]>([]);
 	private historyCursor = $state<string | null | undefined>(undefined);
 	private loadingHistory = false;
@@ -367,7 +366,7 @@ export class AgentChat {
 		const norm = (s: string) => s.replace(/[\s-]+/g, ' ');
 		// A terminal session's prompt comes back with its attachments as `@path` mentions.
 		const same = (echo: string, sent: string) =>
-			norm(echo) === norm(sent) || norm(echo).startsWith(`${norm(sent)} @`);
+			norm(echo) === norm(sent) || norm(echo).startsWith(`${norm(sent)} @`.trimStart());
 		// A command the CLI can't run headless (`/design-login`) is never echoed,
 		// only answered with a notice.
 		const idle = !this.meta?.busy;
@@ -416,12 +415,11 @@ export class AgentChat {
 		return true;
 	}
 
-	prompt(text: string, images: ChatImage[] = [], files: ChatFile[] = []): boolean {
-		if (this.agent === 'codex' && files.length) {
-			this.notice =
-				'Codex cannot read document attachments. Mention project files with @ or attach inline text in Codex controls.';
-			return false;
-		}
+	prompt(
+		text: string,
+		images: ChatImage[] = [],
+		files: ChatFile[] = []
+	): boolean | Promise<boolean> {
 		const model = this.meta?.models.find(
 			(m) =>
 				m.value === (this.meta?.modelChoice ?? this.meta?.model) ||
@@ -437,32 +435,27 @@ export class AgentChat {
 				'The selected Codex model does not accept images. Choose a model with image support.';
 			return false;
 		}
-		const trimmed = [...this.files.map((file) => `File: ${file.name}\n\n${file.text}`), text.trim()]
-			.filter(Boolean)
-			.join('\n\n');
+		const trimmed = text.trim();
 		if (!trimmed && images.length === 0 && files.length === 0) return false;
 		if (
 			this.agent === 'codex' &&
 			this.delivery === 'queue' &&
 			(this.meta?.busy || this.meta?.codex?.queuePaused)
 		) {
-			void this.codexAction('queueAdd', {
+			return this.codexAction('queueAdd', {
 				text: trimmed,
-				images: images.map(({ mediaType, data }) => ({ mediaType, data }))
-			})
-				.then(() => (this.files = []))
-				.catch(() => {
-					// Retain a recoverable copy if the composer already cleared its draft.
-					this.files = [...this.files, { name: 'Unsent queued message', text: text.trim() }];
-				});
-			return true;
+				images: images.map(({ mediaType, data }) => ({ mediaType, data })),
+				files
+			}).then(
+				() => true,
+				() => false
+			);
 		}
 		const payload = images.map(({ mediaType, data }) => ({ mediaType, data }));
 		const msg: AgentClientMsg = { t: 'prompt', text: trimmed };
 		if (payload.length > 0) msg.images = payload;
 		if (files.length > 0) msg.files = files;
 		if (!this.send(msg)) return false;
-		this.files = [];
 		this.pending = [
 			...this.pending,
 			{
