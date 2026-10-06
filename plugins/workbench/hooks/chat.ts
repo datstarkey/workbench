@@ -7,7 +7,12 @@ import type { Register, TurnStepInput } from 'claude-code';
 // outside Workbench the module does nothing.
 
 type Line = Record<string, unknown>;
-type Answer = { behavior?: string; message?: string; updatedInput?: Record<string, unknown> };
+type Answer = {
+	behavior?: string;
+	message?: string;
+	updatedInput?: Record<string, unknown>;
+	updatedPermissions?: unknown[];
+};
 
 interface Link {
 	url: string;
@@ -137,11 +142,34 @@ function promptText(content: unknown): string {
 		.join('\n');
 }
 
+// A shell approval covers one command, never every later one.
+const NO_SESSION_ALLOW = new Set(['Bash', 'PowerShell']);
+// Tools the chat's Always allow covered for the rest of this session, as the
+// terminal's "allow for this session" does: a hook can't add the engine's rule.
+const sessionAllowed = new Set<string>();
+
 function askLine(requestId: string, tool: string, input: unknown, toolUseId?: string): Line {
+	const suggestions =
+		NO_SESSION_ALLOW.has(tool) || ASKED_IN_CALL.has(tool)
+			? undefined
+			: [
+					{
+						type: 'addRules',
+						rules: [{ toolName: tool }],
+						behavior: 'allow',
+						destination: 'session'
+					}
+				];
 	return {
 		type: 'control_request',
 		request_id: requestId,
-		request: { subtype: 'can_use_tool', tool_name: tool, input, tool_use_id: toolUseId }
+		request: {
+			subtype: 'can_use_tool',
+			tool_name: tool,
+			input,
+			tool_use_id: toolUseId,
+			permission_suggestions: suggestions
+		}
 	};
 }
 
@@ -604,6 +632,7 @@ export const register: Register = (on) => {
 		const verdict = await next(e);
 		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
 		if (verdict.decision !== 'ask' || !link || ASKED_IN_CALL.has(e.tool)) return verdict;
+		if (sessionAllowed.has(e.tool)) return { decision: 'allow' };
 		// Asked in chat while one is open; the server answers `fallback` when none is
 		// (or it closes), and the terminal asks instead. A held request in flight
 		// doesn't spend the hook's time budget, however long the person takes.
@@ -619,6 +648,8 @@ export const register: Register = (on) => {
 		}
 		if (next.signal.aborted) emit({ type: 'control_cancel_request', request_id: requestId });
 		if (!answer) return verdict;
+		if (answer.behavior === 'allow' && answer.updatedPermissions?.length)
+			sessionAllowed.add(e.tool);
 		return answer.behavior === 'allow'
 			? { decision: 'allow' }
 			: { decision: 'deny', reason: answer.message || 'Denied in Workbench chat' };
