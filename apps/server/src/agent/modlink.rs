@@ -31,6 +31,8 @@ pub struct ModGrant {
     pub hook_socket: Option<String>,
     /// Where a rewound terminal resumed from: history shows the conversation cut there.
     pub resume_at: Option<String>,
+    /// The mode picked in chat it was started in, kept across a restart.
+    pub permission_mode: Option<String>,
     /// The terminal the token was issued to, once created.
     pub terminal_id: Option<String>,
 }

@@ -123,6 +123,7 @@ fn claude_start(
                 id: body.session_id.clone(),
                 resume,
                 resume_at: None,
+                permission_mode: None,
             }),
             cols: 120,
             rows: 40,
@@ -530,6 +531,10 @@ fn handle(
             content,
         } => session.elicit(&request_id, action, content.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
+        // A Claude terminal session restarts in the mode; Codex switches in place.
+        ClientMsg::Mode { mode } if session.mod_link().is_some_and(|l| l.terminal_id.is_some()) => {
+            state.agents.mode_terminal(&state.terminals, session, &mode)
+        }
         ClientMsg::Mode { mode } => session.set_mode(&mode),
         ClientMsg::Model { model } => session.set_model(&model),
         ClientMsg::Effort { effort } => session.set_effort(&effort),

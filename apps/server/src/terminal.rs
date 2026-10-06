@@ -451,6 +451,9 @@ pub struct ClaudeSessionLaunch {
     /// With `resume`: continue from this entry, dropping what came after (a rewind).
     #[serde(default)]
     pub resume_at: Option<String>,
+    /// A mode picked in chat, over the configured one (a restart to switch modes).
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -506,6 +509,7 @@ pub fn create_from_body(
             &session.id,
             session.resume,
             session.resume_at.as_deref(),
+            session.permission_mode.as_deref(),
             &workbench_core::config::load_workbench_settings()?,
             &workbench_core::sandbox_runtime::settings_path(),
         )?),
@@ -526,6 +530,10 @@ pub fn create_from_body(
                     .claude_session
                     .as_ref()
                     .and_then(|s| s.resume_at.clone()),
+                permission_mode: body
+                    .claude_session
+                    .as_ref()
+                    .and_then(|s| s.permission_mode.clone()),
                 terminal_id: None,
             })?,
         ),

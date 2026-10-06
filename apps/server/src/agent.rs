@@ -334,7 +334,7 @@ impl AgentManager {
             claude_account_id: grant.claude_account_id,
             launch: Launch::Claude {
                 session_id: session_id.to_string(),
-                permission_mode: None,
+                permission_mode: grant.permission_mode,
                 config_dir,
             },
         };
@@ -355,6 +355,48 @@ impl AgentManager {
         session: &Arc<AgentSession>,
         message_id: &str,
     ) -> Result<()> {
+        self.restart_terminal(terminals, session, "Rewind", |launch| {
+            let Launch::Claude {
+                session_id,
+                config_dir,
+                permission_mode,
+            } = launch
+            else {
+                bail!("Codex chats can't rewind");
+            };
+            let history = claude::history(config_dir.as_deref(), session_id)
+                .ok_or_else(|| anyhow::anyhow!("the session has no history to rewind"))?;
+            let fork = workbench_core::claude_transcript::fork_point(&history, message_id)?;
+            Ok((Some(fork), permission_mode.clone()))
+        })
+    }
+
+    /// Switch a terminal session's permission mode: a plugin can't change the
+    /// live mode (`$.config.set` writes the settings default), so its terminal
+    /// restarts as `claude --resume <id> --permission-mode <mode>`, as a rewind does.
+    pub fn mode_terminal(
+        &self,
+        terminals: &crate::terminal::TerminalManager,
+        session: &Arc<AgentSession>,
+        mode: &str,
+    ) -> Result<()> {
+        if !workbench_core::claude_launch::PERMISSION_MODES.contains(&mode) {
+            bail!("unknown permission mode: {mode}");
+        }
+        self.restart_terminal(terminals, session, "Change the mode", |_| {
+            Ok((None, Some(mode.to_string())))
+        })
+    }
+
+    /// Restart an idle terminal session's `claude` under the same id; `plan`
+    /// reads its launch and picks where it resumes and the mode it runs in.
+    fn restart_terminal(
+        &self,
+        terminals: &crate::terminal::TerminalManager,
+        session: &Arc<AgentSession>,
+        what: &str,
+        plan: impl FnOnce(&Launch) -> Result<(Option<String>, Option<String>)>,
+    ) -> Result<()> {
         let link = session
             .mod_link()
             .context("not a terminal session")?
@@ -362,21 +404,25 @@ impl AgentManager {
         // A desktop native terminal's `claude` can't be restarted from here, and
         // a new server terminal beside it would run the session twice.
         if link.terminal_id.is_none() {
-            bail!("Rewind this session in its own terminal.");
+            bail!("{what} in this session's own terminal.");
         }
         session.idle_meta()?;
         let req = session.relaunch();
+        let (resume_at, permission_mode) = plan(&req.launch)?;
         let Launch::Claude {
             session_id,
             config_dir,
             ..
         } = req.launch
         else {
-            bail!("Codex chats can't rewind");
+            bail!("only Claude terminal sessions restart");
         };
-        let history = claude::history(config_dir.as_deref(), &session_id)
-            .ok_or_else(|| anyhow::anyhow!("the session has no history to rewind"))?;
-        let fork = workbench_core::claude_transcript::fork_point(&history, message_id)?;
+        // A session nobody has written to yet has no file to `--resume`.
+        let resume = claude_history_exists(config_dir.as_deref(), &session_id);
+        // Clients re-attach on `replaced` by starting the session: they wait here
+        // for this restart rather than open a second `claude` beside it.
+        let starting = self.start_lock(&session_id);
+        let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
         // Hand over before the old `claude` goes: clients re-attach (`replaced`)
         // rather than see it end, and its exit (`bye`) finds nothing to stop.
         {
@@ -399,8 +445,9 @@ impl AgentManager {
                 command: None,
                 claude_session: Some(crate::terminal::ClaudeSessionLaunch {
                     id: session_id.clone(),
-                    resume: true,
-                    resume_at: Some(fork),
+                    resume,
+                    resume_at,
+                    permission_mode,
                 }),
                 cols: 120,
                 rows: 40,
@@ -417,7 +464,7 @@ impl AgentManager {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        bail!("Claude didn't come back in its terminal after the rewind")
+        bail!("Claude didn't come back in its terminal after the restart")
     }
 
     /// The mod session `session_id` attached with `token`, or else the one the
