@@ -375,7 +375,7 @@ export class ClaudeSessionStore {
 	/**
 	 * A chat session on this machine (Claude via the plugin's mod link, or a
 	 * Codex chat) started or stopped waiting on someone, or finished a turn: the
-	 * same server state the phone's notifications poll, so both devices notify.
+	 * same server events the phone consumes, so both devices notify.
 	 */
 	private onAgentAttention(event: AgentAttention): void {
 		const paneId = this.workspaces.paneForAgent(event);
@@ -533,12 +533,11 @@ export class ClaudeSessionStore {
 			);
 		}
 
-		// Codex notify currently delivers completion/approval style events.
+		// The bridge publishes this completion to the shared attention feed;
+		// this event updates labels/activity without raising a second alert.
 		if (event.notifyEvent === 'agent-turn-complete') {
-			const wasInProgress = this.panesInProgress.has(paneId);
 			this.panesInProgress.delete(paneId);
 			this.clearSubmitFallback(paneId);
-			if (wasInProgress) this.emitAwaitingInput({ paneId });
 		}
 	}
 

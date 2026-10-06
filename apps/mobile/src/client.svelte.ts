@@ -15,7 +15,7 @@ import { lsGet, lsSet } from './storage.ts';
 import { baseName } from './home-format.ts';
 import { ProjectPrefs } from './project-prefs.svelte.ts';
 import { Drafts } from './drafts.svelte';
-import { SessionNotifications } from './session-notifications.svelte';
+import { SessionNotifications, type NotificationSession } from './session-notifications.svelte';
 import { ProjectReview, type ReviewFolder } from './project-review.svelte';
 import type { ChatRef, ClaudeLaunch, ClaudeView, TerminalMeta } from './types.ts';
 
@@ -360,7 +360,7 @@ export class MobileClient {
 		this.openChat({ sessionId: '', agent: 'codex', projectPath, worktreePath, name });
 	};
 
-	chatRef(chat: AgentSummary): ChatRef {
+	chatRef(chat: NotificationSession): ChatRef {
 		return {
 			sessionId: chat.sessionId,
 			attachOnly: true,
@@ -370,6 +370,24 @@ export class MobileClient {
 			name: chat.title ?? baseName(chat.worktreePath ?? chat.projectPath),
 			...(chat.claudeAccountId ? { claudeAccountId: chat.claudeAccountId } : {})
 		};
+	}
+
+	/** A terminal notification attaches its existing process, never creates a Codex chat. */
+	async openNotification(chat: NotificationSession): Promise<void> {
+		if (!chat.terminalOnly) {
+			this.openChat(this.chatRef(chat));
+			return;
+		}
+		const live = this.live();
+		await this.refreshTerminals();
+		if (!live()) return;
+		if (chat.terminalId && this.terminals.some((t) => t.id === chat.terminalId && t.alive)) {
+			this.selectTerminal(chat.terminalId);
+		} else {
+			this.activeChat = null;
+			this.activeTerminalId = null;
+			this.notice = 'This Codex terminal is available on the desktop.';
+		}
 	}
 
 	openChat(ref: ChatRef): void {

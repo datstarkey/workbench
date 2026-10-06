@@ -138,11 +138,10 @@ impl CodexNotifyEvent {
     fn from_payload(pane_id: String, codex_payload: Value) -> Self {
         let session_id = codex_payload
             .get("thread-id")
-            .or_else(|| codex_payload.get("thread_id"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let notify_event = codex_payload
-            .get("event")
+            .get("type")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let cwd = codex_payload
@@ -322,7 +321,7 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
             }
             HookBridgeEnvelope::Codex { pane_id, codex } => {
                 let event_name = codex
-                    .get("event")
+                    .get("type")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 let summary = event_name
@@ -341,6 +340,13 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
                 let _ = handle.emit("hook-bridge:log", log_entry);
 
                 let event = CodexNotifyEvent::from_payload(pane_id, codex);
+                if event.notify_event.as_deref() == Some("agent-turn-complete") {
+                    if let (Some(id), Some(cwd)) = (&event.session_id, &event.cwd) {
+                        handle
+                            .state::<crate::server_control::ServerControl>()
+                            .codex_notified(&event.pane_id, id, cwd);
+                    }
+                }
                 let _ = handle.emit("codex:notify", event);
             }
         }
@@ -481,46 +487,26 @@ mod tests {
     fn codex_notify_with_hyphenated_thread_id() {
         let payload = json!({
             "thread-id": "thread-abc",
-            "event": "task_complete",
+            "type": "agent-turn-complete",
+            "turn-id": "turn-1",
             "cwd": "/home/user/proj"
         });
         let event = CodexNotifyEvent::from_payload("pane-5".into(), payload.clone());
 
         assert_eq!(event.pane_id, "pane-5");
         assert_eq!(event.session_id.as_deref(), Some("thread-abc"));
-        assert_eq!(event.notify_event.as_deref(), Some("task_complete"));
+        assert_eq!(event.notify_event.as_deref(), Some("agent-turn-complete"));
         assert_eq!(event.cwd.as_deref(), Some("/home/user/proj"));
         assert_eq!(event.codex_payload, payload);
     }
 
     #[test]
-    fn codex_notify_with_underscore_thread_id() {
-        let payload = json!({"thread_id": "thread-xyz"});
-        let event = CodexNotifyEvent::from_payload("pane-6".into(), payload);
-
-        // thread_id is used as fallback when thread-id is absent
-        assert_eq!(event.session_id.as_deref(), Some("thread-xyz"));
-    }
-
-    #[test]
-    fn codex_notify_both_thread_id_forms_hyphen_wins() {
-        let payload = json!({
-            "thread-id": "hyphen-wins",
-            "thread_id": "underscore-loses"
-        });
-        let event = CodexNotifyEvent::from_payload("pane-7".into(), payload);
-
-        // Code checks thread-id first via or_else, so hyphen takes priority
-        assert_eq!(event.session_id.as_deref(), Some("hyphen-wins"));
-    }
-
-    #[test]
     fn codex_notify_missing_thread_id() {
-        let payload = json!({"event": "idle"});
+        let payload = json!({"type": "agent-turn-complete"});
         let event = CodexNotifyEvent::from_payload("pane-8".into(), payload);
 
         assert!(event.session_id.is_none());
-        assert_eq!(event.notify_event.as_deref(), Some("idle"));
+        assert_eq!(event.notify_event.as_deref(), Some("agent-turn-complete"));
     }
 
     #[test]

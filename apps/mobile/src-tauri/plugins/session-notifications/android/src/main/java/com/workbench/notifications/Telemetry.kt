@@ -33,7 +33,7 @@ object Telemetry {
     Sentry.addBreadcrumb(Breadcrumb.info(message).apply { category = "notifications" })
   }
 
-  /** Report `key` at most once per process, so a failing 10s poll can't flood Sentry. */
+  /** Report `key` at most once per process, so repeated request failures can't flood Sentry. */
   fun once(key: String, message: String, extras: Map<String, Any?> = emptyMap()) {
     synchronized(reported) { if (!reported.add(key)) return }
     Sentry.captureMessage(message, SentryLevel.WARNING) { scope ->

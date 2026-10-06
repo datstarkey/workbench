@@ -53,6 +53,10 @@ pub fn router(state: AppState) -> Router {
         .route("/mod/bye", post(crate::mod_routes::bye))
         .route("/agent", get(crate::agent_routes::agent_list))
         .route(
+            "/agent/attention",
+            get(crate::agent_routes::agent_attention),
+        )
+        .route(
             "/agent/claude",
             get(crate::agent_routes::claude_list)
                 .post(crate::agent_routes::agent_start)

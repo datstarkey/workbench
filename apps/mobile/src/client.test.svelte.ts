@@ -41,6 +41,42 @@ describe('MobileClient', () => {
 		return c;
 	}
 
+	it('a Codex terminal notification attaches its existing terminal without creating a chat', async () => {
+		const c = await connected({
+			'/remote/terminals': () => jsonResponse([{ id: 't1', cwd: '/p', createdAt: 0, alive: true }])
+		});
+		const start = vi.spyOn(c.agents, 'start');
+		await c.openNotification({
+			agent: 'codex',
+			sessionId: 'thread',
+			projectPath: '/p',
+			worktreePath: null,
+			title: null,
+			claudeAccountId: null,
+			terminalOnly: true,
+			terminalId: 't1'
+		});
+		expect(c.activeTerminalId).toBe('t1');
+		expect(c.activeChat).toBeNull();
+		expect(start).not.toHaveBeenCalled();
+	});
+
+	it('a desktop-only Codex terminal notification keeps Home open rather than starting another process', async () => {
+		const c = await connected();
+		await c.openNotification({
+			agent: 'codex',
+			sessionId: 'thread',
+			projectPath: '/p',
+			worktreePath: null,
+			title: null,
+			claudeAccountId: null,
+			terminalOnly: true
+		});
+		expect(c.activeChat).toBeNull();
+		expect(c.activeTerminalId).toBeNull();
+		expect(c.notice).toContain('desktop');
+	});
+
 	it('connect() normalizes the url, sets the store, and loads terminals', async () => {
 		const c = await connected({
 			'/remote/terminals': () => jsonResponse([{ id: 't1', cwd: '/p', createdAt: 0, alive: true }])

@@ -916,6 +916,9 @@ export interface AgentSummary {
  */
 export interface AgentAttention {
 	kind: 'waiting' | 'resolved' | 'turnEnded';
+	claudeAccountId?: string | null;
+	/** A Codex TUI completion; opening it must attach its terminal, not start a chat. */
+	terminalOnly?: boolean;
 	agent: AgentKind;
 	sessionId: string;
 	previousIds: string[];

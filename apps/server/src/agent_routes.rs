@@ -2,6 +2,7 @@
 //! - `GET /agent` lists every live session ([`AgentSummary`], with `agent`),
 //!   newest change first; `GET /agent/:kind` only that kind's (older phone
 //!   builds read `/agent/claude`).
+//! - `GET /agent/attention?cursor=` long-polls shared notification events.
 //! - `POST /agent/claude` starts (or returns) the session for a Claude session
 //!   id: a server terminal running `claude`, answered once the plugin attaches
 //!   (`{sessionId, terminalId}`); `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
@@ -266,6 +267,39 @@ fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> anyhow::Resul
 
 pub async fn agent_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
     Json(state.agents.summaries(None))
+}
+
+#[derive(Deserialize)]
+pub struct AttentionQuery {
+    cursor: Option<String>,
+}
+
+/// The same buffered attention events the desktop emits, with a cursor so a
+/// sleeping phone can catch up. A new connection only seeds its position.
+pub async fn agent_attention(
+    State(state): State<AppState>,
+    Query(query): Query<AttentionQuery>,
+) -> ApiResult<Json<crate::attention_feed::AttentionBatch>> {
+    let mut revoked = state.revoked.clone();
+    let until = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut changes = state.agents.attention.subscribe();
+    loop {
+        if *revoked.borrow() {
+            return Err(ApiError {
+                status: StatusCode::UNAUTHORIZED,
+                message: "This listener stopped.".into(),
+            });
+        }
+        let batch = state.agents.attention.since(query.cursor.as_deref());
+        if query.cursor.as_deref() != Some(&batch.cursor) || tokio::time::Instant::now() >= until {
+            return Ok(Json(batch));
+        }
+        tokio::select! {
+            _ = wait_revoked(&mut revoked) => {},
+            _ = changes.recv() => {},
+            _ = tokio::time::sleep_until(until) => {},
+        }
+    }
 }
 
 pub async fn claude_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {

@@ -48,6 +48,9 @@ pub struct AgentSession {
     /// Changes when `/clear` continues the conversation under a new id; empty
     /// until a new Codex thread has one.
     session_id: Mutex<String>,
+    previous_ids: Mutex<Vec<String>>,
+    attention: crate::attention_feed::AttentionFeed,
+    attention_source: u64,
     pub pane_id: Option<String>,
     project_path: String,
     worktree_path: Option<String>,
@@ -136,6 +139,7 @@ impl AgentSession {
         launch: Launch,
         registry: Registry,
         cache_policies: Arc<PolicyStore>,
+        attention: crate::attention_feed::AttentionFeed,
     ) -> Result<Arc<Self>> {
         let relaunch = req.clone();
         let Launch {
@@ -162,6 +166,7 @@ impl AgentSession {
             program,
             ready,
             &cache_policies,
+            attention,
         );
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
         lock(&registry).insert(key, session.clone());
@@ -203,6 +208,7 @@ impl AgentSession {
         driver: Driver,
         link: Arc<ModLink>,
         cache_policies: &Arc<PolicyStore>,
+        attention: crate::attention_feed::AttentionFeed,
     ) -> Arc<Self> {
         let ready = req.launch.known_id().map(String::from);
         let relaunch = req.clone();
@@ -215,6 +221,7 @@ impl AgentSession {
             "claude",
             ready,
             cache_policies,
+            attention,
         )
     }
 
@@ -228,6 +235,7 @@ impl AgentSession {
         program: &'static str,
         ready: Option<String>,
         cache_policies: &Arc<PolicyStore>,
+        attention: crate::attention_feed::AttentionFeed,
     ) -> Arc<Self> {
         let known_id = req.launch.known_id().map(String::from);
         let kind = req.launch.kind();
@@ -240,9 +248,12 @@ impl AgentSession {
             Sink::Pipe(_) => None,
         };
         let (tx, _) = broadcast::channel(256);
-        Arc::new(Self {
+        let session = Arc::new(Self {
             kind,
             session_id: Mutex::new(known_id.unwrap_or_default()),
+            previous_ids: Mutex::new(Vec::new()),
+            attention_source: attention.source(),
+            attention,
             pane_id: req.pane_id,
             project_path: req.project_path,
             worktree_path: req.worktree_path,
@@ -271,7 +282,9 @@ impl AgentSession {
             cache_policies: cache_policies.clone(),
             upkept_for: Mutex::new(None),
             transcript_path: Mutex::new(None),
-        })
+        });
+        session.refresh_attention();
+        session
     }
 
     /// The plugin link of a session fed by a terminal's `claude`.
@@ -408,7 +421,15 @@ impl AgentSession {
 
     pub fn summary(&self) -> AgentSummary {
         let d = lock(&self.driver);
-        let view = d.view();
+        self.summary_with_view(d.view())
+    }
+
+    pub(crate) fn refresh_attention(&self) {
+        self.attention
+            .observe(self.attention_source, self.summary());
+    }
+
+    fn summary_with_view(&self, view: &dyn ChatView) -> AgentSummary {
         let meta = view.meta();
         AgentSummary {
             agent: self.kind,
@@ -431,7 +452,7 @@ impl AgentSession {
             running: view
                 .running_tool()
                 .and_then(TranscriptItem::running_summary),
-            previous_ids: Vec::new(),
+            previous_ids: lock(&self.previous_ids).clone(),
             terminal_id: self.link.as_ref().and_then(|l| l.terminal_id.clone()),
         }
     }
@@ -459,13 +480,18 @@ impl AgentSession {
     /// outside the driver lock: a prompt full of images must not stall the
     /// reader thread (and with it the process's stdout).
     fn run(&self, op: impl FnOnce(&mut Driver) -> Result<Effects>) -> Result<()> {
-        let effects = op(&mut lock(&self.driver))?;
+        let effects = {
+            let mut d = lock(&self.driver);
+            let effects = op(&mut d)?;
+            // Publish the change before writing: a fast CLI response must not
+            // hide a turn's start or reorder an answered approval's update.
+            if effects.meta || !effects.items.is_empty() {
+                self.broadcast_update(d.view(), &effects.items);
+            }
+            effects
+        };
         for msg in &effects.send {
             self.send(msg)?;
-        }
-        if effects.meta || !effects.items.is_empty() {
-            let d = lock(&self.driver);
-            self.broadcast_update(d.view(), &effects.items);
         }
         Ok(())
     }
@@ -735,6 +761,10 @@ impl AgentSession {
             let _ = self.tx.send(frame.to_string());
         }
         if let Some(new_id) = effects.new_id {
+            let old_id = self.id();
+            if !old_id.is_empty() && old_id != new_id {
+                lock(&self.previous_ids).push(old_id);
+            }
             *lock(&self.session_id) = new_id.clone();
             // The policy follows the conversation to its new id.
             let policy = self.cache_policy();
@@ -779,6 +809,9 @@ impl AgentSession {
             *lock(&self.turn_ended_at) = Some(now);
         }
         *since = busy.then(|| since.unwrap_or(now));
+        drop(since);
+        self.attention
+            .observe(self.attention_source, self.summary_with_view(t));
     }
 
     fn finish(&self) {
@@ -798,6 +831,7 @@ impl AgentSession {
             .and_then(|c| c.wait().ok())
             .and_then(|s| s.code());
         self.exited.store(true, Ordering::SeqCst);
+        self.attention.forget(self.attention_source, &self.id());
         let tail = lock(&self.stderr_tail).clone();
         self.set_ready(Err(format!(
             "`{}` exited before it was ready{}",

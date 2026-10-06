@@ -126,7 +126,9 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
     std::env::set_var("FAKE_CODEX_LOG", &log);
 
-    let handle = spawn_embedded("127.0.0.1", 0, Managers::default(), TOKEN.to_string())
+    let managers = Managers::default();
+    let desktop_feed = managers.agents.attention.clone();
+    let handle = spawn_embedded("127.0.0.1", 0, managers, TOKEN.to_string())
         .await
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
@@ -148,6 +150,25 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
             response.json::<Vec<Value>>().await.unwrap()
         }
     };
+
+    let initial: Value = client()
+        .get(format!("{base}/agent/attention"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(initial["events"], json!([]));
+    let initial_cursor = initial["cursor"].as_str().unwrap().to_string();
+    assert_eq!(initial_cursor, desktop_feed.since(None).cursor);
+    assert_eq!(
+        reqwest::get(format!("{base}/agent/attention"))
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
 
     // A new thread: the start answers with codex's thread id.
     let res = start(json!({ "projectPath": project, "paneId": "pane-1" }))
@@ -251,6 +272,25 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     assert_eq!(waiting["preview"], "ls");
     assert_eq!(waiting["id"], approval["id"]);
 
+    let waiting_events: Value = client()
+        .get(format!("{base}/agent/attention"))
+        .query(&[("cursor", &initial_cursor)])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(waiting_events["events"][0]["kind"], "waiting");
+    assert_eq!(waiting_events["events"][0]["sessionId"], NEW_THREAD);
+    assert_eq!(waiting_events["events"][0]["waiting"]["id"], approval["id"]);
+    assert_eq!(
+        waiting_events,
+        serde_json::to_value(desktop_feed.since(Some(&initial_cursor))).unwrap(),
+        "desktop and phone consume the same plugin/app-server-driven event batch"
+    );
+    let waiting_cursor = waiting_events["cursor"].as_str().unwrap().to_string();
+
     let approve = json!({"t":"approve","requestId": approval["id"],"decision":"allow"});
     ws.send(Message::Text(approve.to_string())).await.unwrap();
     let mut saw_output = false;
@@ -270,6 +310,34 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     assert!(
         completed["turnEndedAt"].as_u64().is_some(),
         "Codex completion is visible to Android polling even after its busy frame was missed"
+    );
+
+    let completed_events: Value = client()
+        .get(format!("{base}/agent/attention"))
+        .query(&[("cursor", &waiting_cursor)])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = completed_events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["resolved", "turnEnded"]);
+    assert_eq!(
+        completed_events,
+        serde_json::to_value(desktop_feed.since(Some(&waiting_cursor))).unwrap()
+    );
+    assert!(
+        desktop_feed
+            .since(completed_events["cursor"].as_str())
+            .events
+            .is_empty(),
+        "catch-up doesn't repeat an alert"
     );
 
     let received = std::fs::read_to_string(&log).unwrap();
