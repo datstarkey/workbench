@@ -78,11 +78,70 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r#"'"'"'"#))
 }
 
+/// Keys that pick "Yes, I trust this folder" in Claude Code's trust dialog,
+/// sent one at a time: it opens on "No, exit", so Enter alone quits.
+pub const TRUST_ACCEPT_KEYS: [&[u8]; 2] = [b"\x1b[B", b"\r"];
+
+/// Whether a terminal running `claude` shows its folder trust dialog. It comes
+/// before any plugin loads, so a chat can't start until it's answered. The TUI
+/// places words with cursor moves rather than spaces, so the text is compared
+/// with escape sequences and whitespace removed.
+pub fn shows_trust_prompt(output: &str) -> bool {
+    let mut text = String::with_capacity(output.len());
+    let mut chars = output.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            match chars.next() {
+                // CSI: parameters, then one final byte in @..~.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ST.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if !c.is_whitespace() {
+            text.push(c);
+        }
+    }
+    text.contains("Yes,Itrustthisfolder")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SID: &str = "7b3c54f4-ba22-4654-9af9-037d1cd8e555";
+
+    /// The dialog as Claude Code 2.1.291 drew it in a PTY.
+    const TRUST_DIALOG: &str = "\x1b[2G\x1b[1mQuick\x1b[8Gsafety\x1b[15Gcheck\x1b[22m\r\r\n\x1b[2G\x1b[38;2;177;185;249m\u{276f}\x1b[4GNo,\x1b[8Gexit\x1b[39m\r\r\n\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis\x1b[22Gfolder\r\r\n\x1b]0;claude\x07";
+
+    #[test]
+    fn spots_the_trust_dialog_drawn_with_cursor_moves() {
+        assert!(shows_trust_prompt(TRUST_DIALOG));
+        assert!(shows_trust_prompt(&format!(
+            "$ claude --resume x\r\n{TRUST_DIALOG}"
+        )));
+    }
+
+    #[test]
+    fn other_output_is_not_the_trust_dialog() {
+        assert!(!shows_trust_prompt(
+            "$ claude\r\n\x1b[1mWelcome to Claude Code\x1b[22m"
+        ));
+        assert!(!shows_trust_prompt("\x1b[4GNo,\x1b[8Gexit"));
+        assert!(!shows_trust_prompt(""));
+    }
 
     fn settings(mode: &str, sandbox: bool) -> WorkbenchSettings {
         WorkbenchSettings {

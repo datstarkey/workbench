@@ -874,6 +874,8 @@ export interface StartAgentBody {
 	claudeAccountId?: string;
 	/** Join the running session only (another device's chat); 404 instead of spawning. */
 	attachOnly?: boolean;
+	/** Claude: the person trusted the folder, so the server answers Claude Code's trust dialog. */
+	trustFolder?: boolean;
 }
 
 /** A running chat session, as `GET /agent` lists it (phone home screen). */

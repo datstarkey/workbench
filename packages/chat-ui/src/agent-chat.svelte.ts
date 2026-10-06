@@ -17,7 +17,7 @@ import type {
 	TranscriptItem,
 	TranscriptMeta
 } from '@workbench/types';
-import type { AgentApi } from './agent-api';
+import { NeedsTrustError, type AgentApi } from './agent-api';
 import { agentName, applyChanges, awaitsAnswer } from './chat-format';
 import type { ElicitationValue } from './elicitation-form';
 import { previewUrl } from './attachment-intake';
@@ -27,9 +27,10 @@ import { previewUrl } from './attachment-intake';
  * - `live`: attached; prompts go straight to the agent.
  * - `reconnecting`: the socket dropped; the agent keeps running server-side.
  * - `exited`: the process ended (crash, `/exit`, server stopped).
+ * - `trust`: Claude Code waits for its folder to be trusted ({@link AgentChat.trustPath}).
  * - `failed`: it could not be started at all.
  */
-export type ChatStatus = 'starting' | 'live' | 'reconnecting' | 'exited' | 'failed';
+export type ChatStatus = 'starting' | 'live' | 'reconnecting' | 'exited' | 'trust' | 'failed';
 
 /** A prompt shown at once, until the agent echoes it back as a real item. */
 export interface PendingPrompt {
@@ -78,6 +79,8 @@ export class AgentChat {
 	status = $state<ChatStatus>('starting');
 	/** Why the session failed or ended. */
 	error = $state<string | null>(null);
+	/** The folder Claude Code asks to trust while `status` is `trust`. */
+	trustPath = $state<string | null>(null);
 	/** A rejected action (bad mode, write failed); cleared on the next success. */
 	notice = $state<string | null>(null);
 	pending = $state.raw<PendingPrompt[]>([]);
@@ -143,6 +146,13 @@ export class AgentChat {
 		return this.connect();
 	}
 
+	/** The person trusted the folder: start again, answering Claude Code's dialog. */
+	trustFolder(): Promise<void> {
+		this.body = { ...this.body, trustFolder: true };
+		this.trustPath = null;
+		return this.open();
+	}
+
 	/**
 	 * A new Codex thread has no id to make its start idempotent, so a restart
 	 * or reconnect mid-start joins the one in flight, and its id is kept even
@@ -179,6 +189,11 @@ export class AgentChat {
 			url = await this.api.socketUrl(sessionId);
 		} catch (e) {
 			if (stale()) return;
+			if (e instanceof NeedsTrustError) {
+				this.status = 'trust';
+				this.trustPath = e.path;
+				return;
+			}
 			// Waking phones lose the network for a moment; keep retrying rather than give up.
 			if (this.status === 'reconnecting') return this.scheduleReconnect();
 			this.status = 'failed';
@@ -518,7 +533,7 @@ export class AgentChat {
 	 * still read OPEN while the server has let it go.
 	 */
 	reconnect(): void {
-		if (this.disposed || this.status === 'failed' || this.status === 'exited') return;
+		if (this.disposed || ['failed', 'exited', 'trust'].includes(this.status)) return;
 		if (this.retryTimer) clearTimeout(this.retryTimer);
 		const old = this.ws;
 		this.ws = null;

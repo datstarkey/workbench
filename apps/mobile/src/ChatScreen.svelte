@@ -141,6 +141,8 @@
 				return `Starting ${name}…`;
 			case 'reconnecting':
 				return 'Reconnecting…';
+			case 'trust':
+				return 'Trust the folder to start';
 			case 'exited':
 			case 'failed':
 				return 'Restart the session to send messages';

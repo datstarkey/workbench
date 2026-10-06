@@ -25,6 +25,7 @@
 //!   (git-tracked and untracked, not ignored) for the composer's `@` mentions.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -35,6 +36,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 use workbench_core::claude_accounts::{self, UsageLimit};
+use workbench_core::claude_launch;
 use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
@@ -60,6 +62,9 @@ pub struct StartBody {
     /// Join the running session only, never spawn one (a chat another device owns).
     #[serde(default)]
     pub attach_only: bool,
+    /// The person trusted the folder in chat: answer Claude Code's trust dialog.
+    #[serde(default)]
+    pub trust_folder: bool,
 }
 
 pub async fn agent_start(
@@ -78,7 +83,11 @@ pub async fn agent_start(
 }
 
 /// How long a new terminal's `claude` gets to start and attach through the plugin.
-const TERMINAL_START: std::time::Duration = std::time::Duration::from_secs(30);
+const TERMINAL_START: Duration = Duration::from_secs(30);
+/// Between Claude Code's trust dialog appearing and it reading keys.
+const TRUST_SETTLE: Duration = Duration::from_secs(1);
+/// After answering the trust dialog, how long before answering once more.
+const TRUST_RETRY: Duration = Duration::from_secs(5);
 
 /// A Claude chat is always an interactive `claude` in a server terminal, run
 /// as a chat by the Workbench plugin (`mod_routes`): the terminal and the chat
@@ -97,6 +106,11 @@ fn claude_start(
     let config_dir =
         workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
     let resume = crate::agent::claude_history_exists(config_dir.as_deref(), &body.session_id);
+    let cwd = body
+        .worktree_path
+        .clone()
+        .unwrap_or_else(|| body.project_path.clone());
+    let trust_folder = body.trust_folder;
     let terminal = crate::terminal::create_from_body(
         terminals,
         agents,
@@ -118,16 +132,37 @@ fn claude_start(
             claude_account_id: body.claude_account_id,
         },
     )?;
-    let deadline = std::time::Instant::now() + TERMINAL_START;
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + TERMINAL_START;
+    // When the trust dialog was answered; again once if `claude` still hasn't attached.
+    let mut trust_answers: Vec<Instant> = Vec::new();
+    while Instant::now() < deadline {
         if let Some(session) = agents.get(&body.session_id) {
             return Ok(start_reply(&session));
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let answer_again = trust_answers.len() == 1 && trust_answers[0].elapsed() > TRUST_RETRY;
+        if (trust_answers.is_empty() || answer_again)
+            && terminals
+                .recent_output(&terminal.id)
+                .is_some_and(|out| claude_launch::shows_trust_prompt(&out))
+        {
+            if !trust_folder {
+                // The chat asks instead; trusting starts it again with `trustFolder`.
+                terminals.kill(&terminal.id);
+                return Ok(json!({ "needsTrust": cwd }));
+            }
+            // Keys typed as the dialog first draws are lost.
+            std::thread::sleep(TRUST_SETTLE);
+            for keys in claude_launch::TRUST_ACCEPT_KEYS {
+                terminals.type_keys(&terminal.id, keys);
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            trust_answers.push(Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     terminals.kill(&terminal.id);
     anyhow::bail!(
-        "Claude didn't start in its terminal within {}s. Open it as a terminal to see why (a folder trust prompt, a login).",
+        "Claude didn't start in its terminal within {}s. Open it as a terminal to see why (a login, an error).",
         TERMINAL_START.as_secs()
     )
 }
