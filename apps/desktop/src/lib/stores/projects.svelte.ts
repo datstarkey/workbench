@@ -1,11 +1,9 @@
+import { groupProjects, type ProjectGroup } from '@workbench/control-plane-ui';
 import { invoke } from '$lib/transport';
 import type { ProjectConfig } from '$types/workbench';
 import type { WorkspaceStore } from './workspaces.svelte';
 
-export interface ProjectGroup {
-	group: string | null;
-	projects: ProjectConfig[];
-}
+export type { ProjectGroup };
 
 export class ProjectStore {
 	projects: ProjectConfig[] = $state([]);
@@ -13,26 +11,7 @@ export class ProjectStore {
 	private workspaces: WorkspaceStore;
 
 	/** Projects grouped for display: named groups first (in array order), ungrouped at bottom */
-	groupedProjects: ProjectGroup[] = $derived.by(() => {
-		const groupOrder: string[] = [];
-		const groupMap: Record<string, ProjectConfig[]> = {};
-		const ungrouped: ProjectConfig[] = [];
-		for (const p of this.projects) {
-			if (p.group) {
-				if (!groupMap[p.group]) {
-					groupMap[p.group] = [];
-					groupOrder.push(p.group);
-				}
-				groupMap[p.group].push(p);
-			} else {
-				ungrouped.push(p);
-			}
-		}
-		const result: ProjectGroup[] = [];
-		for (const name of groupOrder) result.push({ group: name, projects: groupMap[name] });
-		if (ungrouped.length > 0) result.push({ group: null, projects: ungrouped });
-		return result;
-	});
+	groupedProjects: ProjectGroup[] = $derived(groupProjects(this.projects));
 
 	/** Unique group names in first-appearance order (derived from groupedProjects) */
 	groupNames: string[] = $derived(
