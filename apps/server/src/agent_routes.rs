@@ -123,8 +123,7 @@ fn claude_start(
             claude_session: Some(crate::terminal::ClaudeSessionLaunch {
                 id: body.session_id.clone(),
                 resume,
-                resume_at: None,
-                permission_mode: None,
+                ..Default::default()
             }),
             cols: 120,
             rows: 40,

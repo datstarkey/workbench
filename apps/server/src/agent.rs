@@ -154,6 +154,9 @@ fn prune_grants(grants: &Mutex<HashMap<String, ModGrant>>, terminals: &Terminals
     });
 }
 
+/// Env vars that hand a terminal's plugin its `/mod` link.
+pub type ModEnv = Vec<(&'static str, String)>;
+
 #[derive(Clone, Default)]
 pub struct AgentManager {
     pub attention: crate::attention_feed::AttentionFeed,
@@ -282,6 +285,32 @@ impl AgentManager {
         let token = workbench_core::token::generate()?;
         lock(&self.mod_grants).insert(token.clone(), grant);
         Ok(token)
+    }
+
+    /// A token for `grant` and the env that hands it to the terminal's plugin
+    /// (`WORKBENCH_MOD_URL`/`WORKBENCH_MOD_TOKEN`); None while no loopback
+    /// listener serves `/mod`.
+    pub fn mod_env(&self, grant: ModGrant) -> Result<Option<(String, ModEnv)>> {
+        let Some(port) = self.mod_port() else {
+            return Ok(None);
+        };
+        // The plugin is what makes the terminal a chat; a phone sends no hook
+        // socket, which is otherwise what loads it.
+        let load_plugin = grant.hook_socket.is_none();
+        let token = self.grant_mod(grant)?;
+        let mut env = vec![
+            ("WORKBENCH_MOD_URL", format!("http://127.0.0.1:{port}")),
+            ("WORKBENCH_MOD_TOKEN", token.clone()),
+        ];
+        if load_plugin {
+            if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
+                env.push((
+                    workbench_core::claude_plugin::PLUGIN_DIRS_ENV,
+                    dirs.to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        Ok(Some((token, env)))
     }
 
     /// Record which terminal a token was issued to.
@@ -468,6 +497,7 @@ impl AgentManager {
                     resume,
                     resume_at,
                     permission_mode,
+                    prompt: None,
                 }),
                 cols: 120,
                 rows: 40,
@@ -649,5 +679,42 @@ impl AgentManager {
 
     fn live_count(&self) -> usize {
         self.sessions(|_| true).len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mod_env_hands_a_terminal_its_own_token_on_loopback() {
+        let grant = || ModGrant {
+            pane_id: Some("pane".into()),
+            project_path: "/p".into(),
+            worktree_path: None,
+            claude_account_id: None,
+            cwd: "/p".into(),
+            hook_socket: Some("/hook.sock".into()),
+            resume_at: None,
+            permission_mode: None,
+            terminal_id: None,
+        };
+        let agents = AgentManager::default();
+        assert!(
+            agents.mod_env(grant()).unwrap().is_none(),
+            "no listener yet"
+        );
+        agents.bind_terminals(crate::terminal::TerminalManager::default(), 4321);
+        let (token, env) = agents.mod_env(grant()).unwrap().unwrap();
+        assert_eq!(
+            env,
+            [
+                ("WORKBENCH_MOD_URL", "http://127.0.0.1:4321".to_string()),
+                ("WORKBENCH_MOD_TOKEN", token.clone()),
+            ]
+        );
+        assert!(lock(&agents.mod_grants).contains_key(&token));
+        let (other, _) = agents.mod_env(grant()).unwrap().unwrap();
+        assert_ne!(token, other, "each terminal gets its own");
     }
 }

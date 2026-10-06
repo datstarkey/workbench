@@ -159,6 +159,10 @@ mod tests {
                         session_type: Some("claude".into()),
                         claude_session_id: Some("sess-123".into()),
                         view: Some("chat".into()),
+                        claude_account_id: Some("work".into()),
+                        new_claude_session: Some(crate::types::NewClaudeSession {
+                            prompt: Some("review".into()),
+                        }),
                     }],
                     session_type: None,
                 }],
@@ -186,6 +190,14 @@ mod tests {
             ws.terminal_tabs[0].panes[0].view.as_deref(),
             Some("chat"),
             "the chat view choice must survive save_workspaces"
+        );
+        let pane = &ws.terminal_tabs[0].panes[0];
+        assert_eq!(pane.claude_account_id.as_deref(), Some("work"));
+        assert_eq!(
+            pane.new_claude_session
+                .as_ref()
+                .and_then(|n| n.prompt.as_deref()),
+            Some("review")
         );
         assert_eq!(ws.worktree_path, Some("/Users/jake/project-wt".to_string()));
         assert_eq!(ws.branch, Some("feature/test".to_string()));

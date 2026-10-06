@@ -836,6 +836,51 @@ async fn terminal_claude_session_is_built_by_the_server() {
     .unwrap();
     assert!(res.status().is_server_error(), "a non-UUID id is refused");
 
+    // The fake `claude` records its arguments, one per line.
+    let args_file = tmp.path().join("args");
+    let fake = tmp.path().join("fake-claude");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            args_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    env.set("WORKBENCH_CLAUDE_BIN", &fake);
+    let meta: Value = create(json!({
+        "projectPath": project,
+        "claudeSession": {"id": sid, "resume": false, "prompt": "review it's $(state)"},
+    }))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        meta["claudeSessionId"], sid,
+        "a Claude terminal is listed as its session: {meta}"
+    );
+    let args = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match std::fs::read_to_string(&args_file) {
+                Ok(args) if args.ends_with('\n') => break args,
+                _ => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    })
+    .await
+    .expect("the terminal runs claude");
+    assert_eq!(args, format!("--session-id\n{sid}\nreview it's $(state)\n"));
+    http.delete(format!(
+        "{base}/remote/terminals/{}",
+        meta["id"].as_str().unwrap()
+    ))
+    .send()
+    .await
+    .unwrap();
+
     std::fs::write(
         cfg.path().join("settings.json"),
         json!({"sandboxRuntimeEnabled": true}).to_string(),
