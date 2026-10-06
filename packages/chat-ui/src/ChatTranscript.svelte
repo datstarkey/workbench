@@ -114,6 +114,23 @@
 				{/if}
 			</div>
 		</div>
+	{:else if chat.status === 'trust'}
+		<div class="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 text-center">
+			<p class="font-medium">Trust this folder?</p>
+			<p class="text-xs text-wb-ink-mute">
+				Claude Code asks once before working in a new folder. {name} will be able to read, edit and run
+				files in
+				<span class="font-mono break-all text-wb-ink">{chat.trustPath}</span>.
+			</p>
+			<div class="flex gap-2">
+				<button type="button" class="chat-btn primary" onclick={() => chat.trustFolder()}>
+					Trust folder
+				</button>
+				{#if onShowTerminal}
+					<button type="button" class="chat-btn" onclick={onShowTerminal}>Use the terminal</button>
+				{/if}
+			</div>
+		</div>
 	{:else if chat.status === 'starting' && chat.items.length === 0}
 		<div class="flex flex-col gap-3 pt-2" aria-label="Starting {name}">
 			<span class="skeleton h-9 w-2/5 self-end rounded-lg"></span>

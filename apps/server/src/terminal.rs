@@ -323,6 +323,23 @@ impl TerminalManager {
         out
     }
 
+    /// The terminal's recent output (its replay buffer), lossily decoded.
+    pub fn recent_output(&self, id: &str) -> Option<String> {
+        let session = self.get(id)?;
+        let buffer = lock(&session.buffer);
+        let (head, tail) = buffer.as_slices();
+        Some(String::from_utf8_lossy(&[head, tail].concat()).into_owned())
+    }
+
+    /// Type into the terminal as an attached client would.
+    pub fn type_keys(&self, id: &str, keys: &[u8]) -> bool {
+        let Some(session) = self.get(id) else {
+            return false;
+        };
+        let mut w = lock(&session.writer);
+        w.write_all(keys).and_then(|()| w.flush()).is_ok()
+    }
+
     fn get(&self, id: &str) -> Option<Arc<TerminalSession>> {
         lock(&self.inner).get(id).cloned()
     }
