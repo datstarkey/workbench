@@ -39,6 +39,8 @@
 
 	function openLink(event: MouseEvent, href: string) {
 		event.preventDefault();
+		// tauri-plugin-shell opens `target="_blank"` clicks from a body listener that ignores preventDefault.
+		event.stopPropagation();
 		platform.openLink(href);
 	}
 
