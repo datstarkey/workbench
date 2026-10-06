@@ -1,4 +1,4 @@
-import type { Register, TurnStepInput } from 'claude-code';
+import type { PermissionRequestDecision, Register, TurnStepInput } from 'claude-code';
 
 // Runs this interactive `claude` as a Workbench chat too: what `claude -p`
 // would print as stream-json is posted to the server (`/mod/out`), and what it
@@ -11,7 +11,10 @@ type Answer = {
 	behavior?: string;
 	message?: string;
 	updatedInput?: Record<string, unknown>;
-	updatedPermissions?: unknown[];
+	updatedPermissions?: Extract<
+		PermissionRequestDecision,
+		{ behavior: 'allow' }
+	>['updatedPermissions'];
 };
 
 interface Link {
@@ -64,9 +67,11 @@ const echoed = new Set<string>();
 // Questions and plans are asked from `tool.call` (an answer edits the input);
 // `tool.check` then lets the answered call through.
 const ASKED_IN_CALL = new Set(['AskUserQuestion', 'ExitPlanMode']);
-// Modes that settle an `ask` verdict without a dialog (bypass allows, dontAsk
-// denies): asking in chat would pre-empt them.
-const NO_DIALOG_MODES = new Set(['bypassPermissions', 'dontAsk']);
+// Calls core put to the mode's decider, by tool and input: the decider's
+// dialog (`PermissionRequest`) names no call. A rule, the mode or auto mode's
+// classifier settles most without one, so only the newest are kept.
+const pendingAsks = new Map<string, { id: string; reason?: string }>();
+const PENDING_ASKS_KEPT = 50;
 const answeredInChat = new Set<string>();
 // Approvals the terminal's own dialog asks (no chat was open): tool call id → request id.
 const askedInTerminal = new Map<string, string>();
@@ -152,9 +157,16 @@ function promptText(content: unknown): string {
 
 // A shell approval covers one command, never every later one.
 const NO_SESSION_ALLOW = new Set(['Bash', 'PowerShell']);
-// Tools the chat's Always allow covered for the rest of this session, as the
-// terminal's "allow for this session" does: a hook can't add the engine's rule.
-const sessionAllowed = new Set<string>();
+
+const askKey = (tool: string, input: unknown) => `${tool}\0${JSON.stringify(input)}`;
+
+/** The pending call a `PermissionRequest` is about. */
+function takeAsk(tool: string, input: unknown) {
+	const key = askKey(tool, input);
+	const ask = pendingAsks.get(key);
+	pendingAsks.delete(key);
+	return ask;
+}
 
 function askLine(
 	requestId: string,
@@ -386,9 +398,7 @@ export const register: Register = (on) => {
 								const set = await $.config
 									.set({ key: 'permissionMode', value: req.mode })
 									.catch((err: unknown) => ({ deny: String(err) }));
-								const denied = denial(set, 'Mode');
-								if (!denied) notePermissionMode(req.mode);
-								reply(line.request_id, denied);
+								reply(line.request_id, denial(set, 'Mode'));
 							} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
 								effort = req.settings.effortLevel as TurnStepInput['effort'];
 								reply(line.request_id);
@@ -685,14 +695,33 @@ export const register: Register = (on) => {
 	on('tool.check', async ($, e, next) => {
 		const verdict = await next(e);
 		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
-		if (verdict.decision !== 'ask' || !link || ASKED_IN_CALL.has(e.tool)) return verdict;
-		if (liveMode && NO_DIALOG_MODES.has(liveMode)) return verdict;
-		if (sessionAllowed.has(e.tool)) return { decision: 'allow' };
-		// Asked in chat while one is open; the server answers `fallback` when none is
-		// (or it closes), and the terminal asks instead. A held request in flight
-		// doesn't spend the hook's time budget, however long the person takes.
+		if (verdict.decision === 'ask' && link && e.tool_use_id && !ASKED_IN_CALL.has(e.tool)) {
+			const key = askKey(e.tool, e.input);
+			pendingAsks.delete(key);
+			pendingAsks.set(key, { id: e.tool_use_id, reason: verdict.reason });
+			if (pendingAsks.size > PENDING_ASKS_KEPT)
+				pendingAsks.delete(pendingAsks.keys().next().value!);
+		}
+		return verdict;
+	});
+
+	// Fires only when the mode's decider would show its dialog: rules, the mode
+	// and auto mode's classifier have all had their say. Asked in chat while one
+	// is open; the server answers `fallback` when none is (or it closes), and the
+	// terminal's dialog asks instead. A held request in flight doesn't spend the
+	// hook's time budget, however long the person takes.
+	on('classic.PermissionRequest', async ($, e, next) => {
+		notePermissionMode(e.permission_mode);
+		if (!link || ASKED_IN_CALL.has(e.tool_name)) return next(e);
+		const pending = takeAsk(e.tool_name, e.tool_input);
 		const requestId = `wbmod-ask-${++askSeq}`;
-		let line: Line | undefined = askLine(requestId, e.tool, e.input, e.tool_use_id, verdict.reason);
+		let line: Line | undefined = askLine(
+			requestId,
+			e.tool_name,
+			e.tool_input,
+			pending?.id,
+			pending?.reason
+		);
 		let answer: Answer | null | undefined;
 		while (answer === undefined && link && !next.signal.aborted) {
 			const res = await $.http
@@ -704,13 +733,13 @@ export const register: Register = (on) => {
 		if (next.signal.aborted) emit({ type: 'control_cancel_request', request_id: requestId });
 		if (!answer) {
 			// The terminal asks now; the server shows it waiting until it's answered.
-			if (e.tool_use_id && !next.signal.aborted) askedInTerminal.set(e.tool_use_id, requestId);
-			return verdict;
+			if (pending && !next.signal.aborted) askedInTerminal.set(pending.id, requestId);
+			return next(e);
 		}
-		if (answer.behavior === 'allow' && answer.updatedPermissions?.length)
-			sessionAllowed.add(e.tool);
-		return answer.behavior === 'allow'
-			? { decision: 'allow' }
-			: { decision: 'deny', reason: answer.message || 'Denied in Workbench chat' };
+		const decision: PermissionRequestDecision =
+			answer.behavior === 'allow'
+				? { behavior: 'allow', updatedPermissions: answer.updatedPermissions }
+				: { behavior: 'deny', message: answer.message || 'Denied in Workbench chat' };
+		return { decision };
 	});
 };
