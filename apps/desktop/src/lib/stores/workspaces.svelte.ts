@@ -185,7 +185,7 @@ export class WorkspaceStore {
 	private createAITab(
 		label: string,
 		type: SessionType,
-		pane: Pick<TerminalPaneState, 'claudeSessionId' | 'startupCommand' | 'newClaudeSession'>,
+		pane: Pick<TerminalPaneState, 'claudeSessionId' | 'startupCommand' | 'claudePrompt'>,
 		claudeAccountId?: string
 	): TerminalTabState {
 		return {
@@ -260,16 +260,9 @@ export class WorkspaceStore {
 	 * Persists the mapping so a webview reload can re-attach to the same PTY.
 	 */
 	setServerTerminalId(paneId: string, serverTerminalId: string): void {
-		this.noteClaudeLaunched(paneId);
 		if (this.serverTerminalIds[paneId] === serverTerminalId) return;
 		this.serverTerminalIds = { ...this.serverTerminalIds, [paneId]: serverTerminalId };
 		this.persist();
-	}
-
-	/** A pane's new Claude session has run: from now on its terminal resumes it. */
-	noteClaudeLaunched(paneId: string): void {
-		const pane = this.findPane(paneId);
-		if (pane?.newClaudeSession) this.patchPane(paneId, { newClaudeSession: undefined });
 	}
 
 	private findPane(paneId: string): TerminalPaneState | undefined {
@@ -654,10 +647,7 @@ export class WorkspaceStore {
 								? codexCommandWithPrompt(prompt, this.launchOptions)
 								: codexCommand(this.launchOptions)
 						}
-					: {
-							claudeSessionId: crypto.randomUUID(),
-							newClaudeSession: prompt ? { prompt } : {}
-						},
+					: { claudeSessionId: crypto.randomUUID(), ...(prompt && { claudePrompt: prompt }) },
 				this.settingsStore.activeClaudeAccountId
 			);
 			// A plain new Claude tab can open straight into chat; an agent action's
@@ -690,7 +680,6 @@ export class WorkspaceStore {
 					return {
 						...p,
 						claudeSessionId: sessionId,
-						newClaudeSession: undefined,
 						...(cmd && { startupCommand: cmd })
 					};
 				});
@@ -728,7 +717,6 @@ export class WorkspaceStore {
 				return;
 			}
 			const live = await liveChatFor(paneId, this.serverTerminalIds[paneId]);
-			if (!live) throw new Error(CLAUDE_NOT_IN_CHAT);
 			this.patchPane(paneId, { view, liveTerminal: true, claudeSessionId: live });
 			return;
 		}
@@ -910,9 +898,10 @@ export class WorkspaceStore {
 								? codexResumeCommand(codexId, this.launchOptions)
 								: codexCommand(this.launchOptions)
 						}
-					: old?.claudeSessionId
-						? { claudeSessionId: old.claudeSessionId, newClaudeSession: old.newClaudeSession }
-						: { claudeSessionId: crypto.randomUUID(), newClaudeSession: {} },
+					: {
+							claudeSessionId: old?.claudeSessionId || crypto.randomUUID(),
+							claudePrompt: old?.claudePrompt
+						},
 				old?.claudeAccountId
 			);
 			if (old?.view === 'chat') newTab.panes[0].view = 'chat';
@@ -1070,9 +1059,7 @@ export class WorkspaceStore {
 			if (pane.claudeSessionId && pane.startupCommand === undefined) return pane;
 			const next = { ...pane };
 			delete next.startupCommand;
-			return pane.claudeSessionId
-				? next
-				: { ...next, claudeSessionId: crypto.randomUUID(), newClaudeSession: {} };
+			return pane.claudeSessionId ? next : { ...next, claudeSessionId: crypto.randomUUID() };
 		}
 		if (pane.type !== 'codex') return pane;
 		let cmd: string;
@@ -1130,21 +1117,23 @@ export class WorkspaceStore {
 	}
 }
 
-/** As the phone says it: the terminal's `claude` hasn't attached through the plugin. */
+/** No `claude` in the pane's terminal has attached to chat through the plugin. */
 export const CLAUDE_NOT_IN_CHAT =
-	'Claude has not connected to Chat. Complete any login or trust prompt in its terminal, then try again.';
+	"Claude isn't running with chat attached in this pane. Start `claude` in the terminal, then switch to Chat.";
+export const CHAT_SERVER_UNREACHABLE = "Couldn't reach Workbench's chat server. Try again.";
 
-/** The session id of the chat the pane's terminal `claude` runs as, if it's live. */
-async function liveChatFor(paneId: string, terminalId: string | undefined): Promise<string | null> {
+/** The session id of the chat the pane's terminal `claude` runs as; throws when there is none. */
+async function liveChatFor(paneId: string, terminalId: string | undefined): Promise<string> {
 	const agents = await listAgents();
-	return (
-		agents?.find(
-			(a) =>
-				a.agent === 'claude' &&
-				!a.exited &&
-				(a.paneId === paneId || (terminalId !== undefined && a.terminalId === terminalId))
-		)?.sessionId ?? null
+	if (!agents) throw new Error(CHAT_SERVER_UNREACHABLE);
+	const live = agents.find(
+		(a) =>
+			a.agent === 'claude' &&
+			!a.exited &&
+			(a.paneId === paneId || (terminalId !== undefined && a.terminalId === terminalId))
 	);
+	if (!live) throw new Error(CLAUDE_NOT_IN_CHAT);
+	return live.sessionId;
 }
 
 /** A live terminal can't outlive the app: its chat view starts a new one on load. */

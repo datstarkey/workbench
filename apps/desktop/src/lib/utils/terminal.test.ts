@@ -56,7 +56,7 @@ describe('native terminal IPC wrappers', () => {
 	it('createNativeTerminal forwards a Claude session for Rust to build', async () => {
 		invokeSpy.mockResolvedValueOnce(undefined);
 		const { createNativeTerminal } = await import('./terminal');
-		const claudeSession = { id: '12345678-1234-1234-1234-123456789abc', resume: true };
+		const claudeSession = { id: '12345678-1234-1234-1234-123456789abc' };
 
 		await createNativeTerminal({
 			sessionId: 'ses-2',

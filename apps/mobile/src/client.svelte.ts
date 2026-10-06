@@ -348,21 +348,18 @@ export class MobileClient {
 
 	/** A new Claude conversation in the phone's default view. */
 	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) =>
-		this.openClaude(
-			{
-				sessionId: crypto.randomUUID(),
-				projectPath,
-				worktreePath,
-				name,
-				...(this.accountId ? { claudeAccountId: this.accountId } : {})
-			},
-			false
-		);
+		this.openClaude({
+			sessionId: crypto.randomUUID(),
+			projectPath,
+			worktreePath,
+			name,
+			...(this.accountId ? { claudeAccountId: this.accountId } : {})
+		});
 
-	/** A Claude conversation in the phone's default view: a new one, or `resume` one on disk. */
-	async openClaude(ref: ChatRef, resume: boolean): Promise<void> {
+	/** A Claude conversation, new or past (the server resumes one on disk), in the default view. */
+	async openClaude(ref: ChatRef): Promise<void> {
 		if (this.defaultView === 'chat') this.openChat(ref);
-		else await this.openClaudeTerminal(ref, resume);
+		else await this.openClaudeTerminal(ref);
 	}
 
 	/** A new Codex conversation; always a chat (Codex has no terminal handoff here). */
@@ -517,9 +514,9 @@ export class MobileClient {
 		this.switching = false;
 	}
 
-	private async openClaudeTerminal(ref: ChatRef, resume: boolean): Promise<void> {
+	private async openClaudeTerminal(ref: ChatRef): Promise<void> {
 		await this.createTerminal(ref.projectPath, ref.worktreePath, ref.name, {
-			claudeSession: { id: ref.sessionId, resume },
+			claudeSession: { id: ref.sessionId },
 			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
 		});
 	}

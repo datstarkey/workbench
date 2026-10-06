@@ -126,10 +126,14 @@ export class NotificationStore {
 	private async withdraw(target: AttentionTarget): Promise<void> {
 		await this.ready;
 		if (!this.native) return;
-		try {
-			await invoke('remove_native_notification', { identifier: targetId(target) });
-		} catch (e) {
-			console.warn('[NotificationStore] Failed to remove notification:', e);
+		// Posted under the pane, or under the session while no pane showed it.
+		const ids = 'paneId' in target ? [target.paneId, target.sessionId] : [target.id];
+		for (const identifier of ids) {
+			try {
+				await invoke('remove_native_notification', { identifier });
+			} catch (e) {
+				console.warn('[NotificationStore] Failed to remove notification:', e);
+			}
 		}
 	}
 

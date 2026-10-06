@@ -141,6 +141,8 @@ export async function listServerTerminals(): Promise<TerminalMeta[] | null> {
 export class TerminalConnection {
 	/** Server-assigned terminal id, available after `connect()` resolves. */
 	terminalId: string | null = null;
+	/** What the server said about how the PTY it created started, if anything. */
+	notice: string | null = null;
 
 	private ws: WebSocket | null = null;
 	/** Options from the last connect, reused by `takeControl()`. */
@@ -239,17 +241,6 @@ export class TerminalConnection {
 		await this.connect({ ...this.lastOpts, cols, rows }, this.terminalId ?? undefined);
 	}
 
-	/** Replace the PTY with a fresh one, `patch` over the last spec; the old one is killed. */
-	async relaunch(patch: Partial<ConnectOptions>): Promise<void> {
-		if (!this.lastOpts) throw new Error('terminal was never connected');
-		const old = this.terminalId;
-		this.detachSocket();
-		this.exitDelivered = false;
-		this.terminalId = null;
-		if (old) await deleteServerTerminal(old);
-		await this.connect({ ...this.lastOpts, ...patch });
-	}
-
 	/** Whether a server terminal with `id` still exists and is alive. */
 	private async isAlive(baseUrl: string, token: string | undefined, id: string): Promise<boolean> {
 		try {
@@ -291,6 +282,7 @@ export class TerminalConnection {
 		}
 		const meta: TerminalMeta = await resp.json();
 		claimedIds.add(meta.id);
+		this.notice = meta.notice ?? null;
 		return meta.id;
 	}
 

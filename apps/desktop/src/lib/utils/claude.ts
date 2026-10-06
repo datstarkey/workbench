@@ -14,8 +14,7 @@ import type {
  */
 export function claudeSessionLaunch(pane: TerminalPaneState): ClaudeSessionLaunch | undefined {
 	if (pane.type !== 'claude' || !pane.claudeSessionId) return undefined;
-	const prompt = pane.newClaudeSession?.prompt;
-	return { id: pane.claudeSessionId, resume: !pane.newClaudeSession, ...(prompt && { prompt }) };
+	return { id: pane.claudeSessionId, ...(pane.claudePrompt && { prompt: pane.claudePrompt }) };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

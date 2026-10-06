@@ -251,6 +251,23 @@ describe('ClaudeSessionStore', () => {
 			expect(mockWorkspaceStore.updateAISessionByPaneId).not.toHaveBeenCalled();
 		});
 
+		it('is not busy while waiting on someone, nor once its session is gone', () => {
+			setupClaudePane();
+			const waiting = { id: 'r1', tool: 'Bash', preview: 'ls' };
+
+			store.syncFromAgents([summary({ busy: true, waiting })]);
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+
+			store.syncFromAgents([summary({ busy: true })]);
+			expect(store.panesInProgress.has('pane-1')).toBe(true);
+			store.syncFromAgents([]);
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+
+			store.syncFromAgents([summary({ busy: true })]);
+			store.syncFromAgents([summary({ busy: true, exited: true })]);
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+		});
+
 		it('ignores exited sessions, Codex ones and panes that are not Claude', () => {
 			setupClaudePane();
 			store.syncFromAgents([summary({ exited: true, busy: true })]);
@@ -411,10 +428,11 @@ describe('ClaudeSessionStore', () => {
 
 			emitMockEvent('agent:attention', attention('turnEnded'));
 			expect(store.panesInProgress.has('pane-1')).toBe(false);
+			const pane = { paneId: 'pane-1', sessionId: 'sess-1' };
 			expect(notified).toEqual([
-				[{ paneId: 'pane-1' }, 'waiting'],
-				[{ paneId: 'pane-1' }, 'resolved'],
-				[{ paneId: 'pane-1' }, 'turnEnded']
+				[pane, 'waiting'],
+				[pane, 'resolved'],
+				[pane, 'turnEnded']
 			]);
 			expect(mockWorkspaceStore.paneForAgent).toHaveBeenCalledWith(
 				expect.objectContaining({ sessionId: 'sess-1', terminalId: 'term-1' })

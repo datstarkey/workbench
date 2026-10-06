@@ -327,27 +327,29 @@ describe('MobileClient', () => {
 			c.setDefaultView('terminal');
 			await c.startClaude('/repo', undefined, 'repo');
 			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
-			expect(create?.body).toMatchObject({ claudeSession: { resume: false } });
+			expect(create?.body).toMatchObject({
+				claudeSession: { id: expect.stringMatching(/^[0-9a-f-]{36}$/) }
+			});
 			expect((create?.body as { command?: string }).command).toBeUndefined();
 			expect(c.activeTerminalId).toBe('t1');
 			expect(new MobileClient().defaultView).toBe('terminal');
 		});
 
-		it('resumes a past session in the default view: a terminal resumes, chat opens it', async () => {
+		it('opens a past session in the default view; the server decides it resumes', async () => {
 			const c = await connected();
 			const calls = fakeServer();
 			const ref = { sessionId: SID, projectPath: '/repo', name: 'Old', claudeAccountId: 'work' };
 
 			c.setDefaultView('terminal');
-			await c.openClaude(ref, true);
+			await c.openClaude(ref);
 			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
 			expect(create?.body).toMatchObject({
-				claudeSession: { id: SID, resume: true },
+				claudeSession: { id: SID },
 				claudeAccountId: 'work'
 			});
 
 			c.setDefaultView('chat');
-			await c.openClaude(ref, true);
+			await c.openClaude(ref);
 			expect(c.activeChat).toEqual(ref);
 		});
 

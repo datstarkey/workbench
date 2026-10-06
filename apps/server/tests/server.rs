@@ -851,7 +851,7 @@ async fn terminal_claude_session_is_built_by_the_server() {
     env.set("WORKBENCH_CLAUDE_BIN", &fake);
     let meta: Value = create(json!({
         "projectPath": project,
-        "claudeSession": {"id": sid, "resume": false, "prompt": "review it's $(state)"},
+        "claudeSession": {"id": sid, "resume": true, "prompt": "review it's $(state)"},
     }))
     .await
     .unwrap()
@@ -872,7 +872,12 @@ async fn terminal_claude_session_is_built_by_the_server() {
     })
     .await
     .expect("the terminal runs claude");
-    assert_eq!(args, format!("--session-id\n{sid}\nreview it's $(state)\n"));
+    // A session with no transcript starts, whatever `resume` said; `--` keeps
+    // the prompt from ever being read as a flag.
+    assert_eq!(
+        args,
+        format!("--session-id\n{sid}\n--\nreview it's $(state)\n")
+    );
     http.delete(format!(
         "{base}/remote/terminals/{}",
         meta["id"].as_str().unwrap()

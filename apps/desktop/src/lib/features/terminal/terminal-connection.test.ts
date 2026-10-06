@@ -236,7 +236,7 @@ describe('TerminalConnection', () => {
 				paneId: 'pane-7',
 				shell: '/bin/zsh',
 				hookSocket: '127.0.0.1:6123',
-				claudeSession: { id: 'sid', resume: false, prompt: 'review' },
+				claudeSession: { id: 'sid', prompt: 'review' },
 				claudeAccountId: 'work'
 			});
 			await flushMicrotasks();
@@ -248,7 +248,7 @@ describe('TerminalConnection', () => {
 				paneId: 'pane-7',
 				shell: '/bin/zsh',
 				hookSocket: '127.0.0.1:6123',
-				claudeSession: { id: 'sid', resume: false, prompt: 'review' },
+				claudeSession: { id: 'sid', prompt: 'review' },
 				claudeAccountId: 'work'
 			});
 			expect(body).not.toHaveProperty('command');

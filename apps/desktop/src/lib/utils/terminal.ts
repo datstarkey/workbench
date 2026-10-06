@@ -58,6 +58,7 @@ export async function applyCodexIntegration(): Promise<boolean> {
 
 function ignoreSessionGone(): void {}
 
+/** Resolves to a notice about how it started (a Claude prompt left out), if any. */
 export async function createNativeTerminal(request: {
 	sessionId: string;
 	projectPath: string;
@@ -73,8 +74,8 @@ export async function createNativeTerminal(request: {
 	claudeAccountId?: string;
 	/** The registered project `projectPath` (the cwd, maybe a worktree) belongs to. */
 	projectRoot?: string;
-}): Promise<void> {
-	await invoke('create_native_terminal', {
+}): Promise<string | null> {
+	return invoke<string | null>('create_native_terminal', {
 		sessionId: request.sessionId,
 		projectPath: request.projectPath,
 		projectRoot: request.projectRoot ?? null,

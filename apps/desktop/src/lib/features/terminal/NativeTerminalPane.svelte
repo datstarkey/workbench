@@ -3,7 +3,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { TERMINAL_BG } from '$lib/terminal-config';
-	import { getWorkspaceStore } from '$stores/context';
+	import { toast } from 'svelte-sonner';
 	import {
 		createNativeTerminal,
 		killNativeTerminal,
@@ -31,8 +31,6 @@
 		claudeAccountId?: string;
 		cwd?: string;
 	} = $props();
-
-	const workspaceStore = getWorkspaceStore();
 
 	let container: HTMLDivElement;
 	let unlistenExit: (() => void) | null = null;
@@ -99,7 +97,7 @@
 			const rect = container.getBoundingClientRect();
 			const nsRect = domToNSView(rect);
 
-			await createNativeTerminal({
+			const notice = await createNativeTerminal({
 				sessionId,
 				projectPath: cwd ?? project.path,
 				projectRoot: project.path,
@@ -114,7 +112,7 @@
 			});
 
 			created = true;
-			workspaceStore.noteClaudeLaunched(sessionId);
+			if (notice) toast.warning(notice);
 
 			// Set initial visibility
 			if (!active) {

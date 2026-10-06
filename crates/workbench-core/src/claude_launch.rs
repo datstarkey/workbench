@@ -30,6 +30,9 @@ pub const SANDBOX_RUNTIME_PACKAGE: &str = "@anthropic-ai/sandbox-runtime@0.0.76"
 pub struct ClaudeSessionLaunch {
     pub id: String,
     /// `--resume` an existing conversation, else `--session-id` starts one.
+    /// A terminal create decides it from the session's history, whatever a
+    /// client sent.
+    #[serde(default)]
     pub resume: bool,
     /// With `resume`: continue from this entry, dropping what came after (a rewind).
     #[serde(default)]
@@ -117,29 +120,43 @@ pub fn terminal_command(
     {
         cmd.push_str(&format!(" --resume-session-at={at}"));
     }
-    if let Some(prompt) = session.prompt.as_deref().filter(|_| !session.resume) {
-        let prompt = prompt.replace("\r\n", "\n").replace('\r', "\n");
-        let prompt = prompt.trim();
-        if !prompt.is_empty() {
-            cmd.push(' ');
-            cmd.push_str(&prompt_arg(prompt)?);
-        }
+    // `--` ends Claude's options, so a prompt like `--dangerously-skip-permissions`
+    // is the prompt, never a flag (verified on Claude Code 2.1.292).
+    if let Some(arg) = new_prompt(session).as_deref().and_then(prompt_arg) {
+        cmd.push_str(" -- ");
+        cmd.push_str(&arg);
     }
     Ok(cmd)
 }
 
-/// A prompt as one argument for the terminal's shell.
-fn prompt_arg(prompt: &str) -> Result<String> {
+/// Why a new session's prompt was left out of its command, to tell the person.
+pub fn prompt_notice(session: &ClaudeSessionLaunch) -> Option<String> {
+    let prompt = new_prompt(session)?;
+    prompt_arg(&prompt).is_none().then(|| {
+        "Claude started without its prompt: on Windows a prompt can't contain \" % $ ` ! \
+         or line breaks. Paste it into Claude instead."
+            .to_string()
+    })
+}
+
+/// The prompt a new session starts with; a resumed one has its conversation.
+fn new_prompt(session: &ClaudeSessionLaunch) -> Option<String> {
+    let prompt = session.prompt.as_deref().filter(|_| !session.resume)?;
+    let prompt = prompt.replace("\r\n", "\n").replace('\r', "\n");
+    let prompt = prompt.trim();
+    (!prompt.is_empty()).then(|| prompt.to_string())
+}
+
+/// A prompt as one argument for the terminal's shell, or None when it can't be.
+fn prompt_arg(prompt: &str) -> Option<String> {
     if cfg!(windows) {
         // cmd.exe and PowerShell share only double quotes, and neither honours
-        // the other's escapes inside them: refuse whatever could end the argument
-        // or expand rather than run something else.
-        if prompt.contains(['"', '%', '$', '`', '!', '\n']) {
-            bail!("On Windows a prompt can't contain \" % $ ` ! or line breaks");
-        }
-        return Ok(format!("\"{prompt}\""));
+        // the other's escapes inside them: leave out whatever could end the
+        // argument or expand rather than run something else.
+        return (!prompt.contains(['"', '%', '$', '`', '!', '\n']))
+            .then(|| format!("\"{prompt}\""));
     }
-    Ok(shell_quote(prompt))
+    Some(shell_quote(prompt))
 }
 
 fn shell_quote(value: &str) -> String {
@@ -293,8 +310,26 @@ mod tests {
         };
         assert_eq!(
             command(&session, "default").unwrap(),
-            format!("claude --session-id {SID} 'it'\"'\"'s $(broken)\nfix it'")
+            format!("claude --session-id {SID} -- 'it'\"'\"'s $(broken)\nfix it'")
         );
+        assert_eq!(prompt_notice(&session), None);
+    }
+
+    #[test]
+    fn a_prompt_that_looks_like_a_flag_stays_the_prompt() {
+        for flag in [
+            "--dangerously-skip-permissions",
+            "--permission-mode=bypassPermissions",
+        ] {
+            let session = ClaudeSessionLaunch {
+                prompt: Some(flag.into()),
+                ..launch(false)
+            };
+            let cmd = command(&session, "default").unwrap();
+            let (options, prompt) = cmd.split_once(" -- ").expect("`--` ends the options");
+            assert!(!options.contains(flag), "{cmd}");
+            assert!(prompt.contains(flag), "{cmd}");
+        }
     }
 
     #[test]
@@ -319,20 +354,25 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_refuses_a_prompt_that_could_escape_its_quotes() {
+    fn windows_starts_without_a_prompt_that_could_escape_its_quotes() {
         let ok = ClaudeSessionLaunch {
             prompt: Some("review this PR".into()),
             ..launch(false)
         };
         assert!(command(&ok, "default")
             .unwrap()
-            .ends_with("\"review this PR\""));
+            .ends_with(" -- \"review this PR\""));
         for bad in ["a\" & calc", "%PATH%", "$(calc)", "a\nb"] {
             let session = ClaudeSessionLaunch {
                 prompt: Some(bad.into()),
                 ..launch(false)
             };
-            assert!(command(&session, "default").is_err(), "{bad}");
+            assert_eq!(
+                command(&session, "default").unwrap(),
+                format!("claude --session-id {SID}"),
+                "{bad}"
+            );
+            assert!(prompt_notice(&session).is_some(), "{bad}");
         }
     }
 

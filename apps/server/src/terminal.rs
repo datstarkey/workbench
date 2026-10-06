@@ -94,6 +94,9 @@ pub struct TerminalMeta {
     /// listed before its plugin attaches, so clients adopt it as the chat.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_session_id: Option<String>,
+    /// On a create only: something the person should know about how it started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 struct TerminalSession {
@@ -247,6 +250,7 @@ impl TerminalManager {
             created_at,
             alive: true,
             claude_session_id,
+            notice: None,
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
         let (done_tx, _done_rx) = watch::channel(false);
@@ -488,7 +492,7 @@ pub async fn terminal_create(
 pub fn create_from_body(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
-    body: CreateTerminalBody,
+    mut body: CreateTerminalBody,
 ) -> anyhow::Result<TerminalMeta> {
     let registered: Vec<String> = workbench_core::config::load_projects()?
         .into_iter()
@@ -501,6 +505,16 @@ pub fn create_from_body(
     )?;
     let claude_config_dir =
         workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    // Resume whatever has a transcript, as a chat start does: a client can't
+    // know whether its session ever got a message written.
+    if let Some(session) = body.claude_session.as_mut() {
+        session.resume =
+            crate::agent::claude_history_exists(claude_config_dir.as_deref(), &session.id);
+    }
+    let notice = body
+        .claude_session
+        .as_ref()
+        .and_then(workbench_core::claude_launch::prompt_notice);
     let command =
         workbench_core::claude_launch::startup_command(body.command, body.claude_session.as_ref())?;
     // The Workbench plugin in this pane's `claude` runs the session as a
@@ -547,7 +561,7 @@ pub fn create_from_body(
         (Err(_), Some(token)) => agents.revoke_grant(token),
         _ => {}
     }
-    created
+    created.map(|meta| TerminalMeta { notice, ..meta })
 }
 
 pub async fn terminal_kill(

@@ -97,7 +97,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 
 			// The pane id doubles as the replace key, so a repeat notification for the
@@ -134,8 +134,10 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE }, 'turnEnded');
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' }, 'turnEnded');
 			holder.fire?.({ id: 'sess-1', projectPath: '/repos/app', label: 'Phone' }, 'resolved');
+			// The phone's session is open here by now: withdraw what either id posted.
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-1' }, 'resolved');
 			await settle();
 
 			expect(invokeSpy).toHaveBeenCalledWith(
@@ -145,6 +147,7 @@ describe('NotificationStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('remove_native_notification', {
 				identifier: 'sess-1'
 			});
+			expect(invokeSpy).toHaveBeenCalledWith('remove_native_notification', { identifier: PANE });
 		});
 
 		it('focuses the pane when its notification is clicked', async () => {
@@ -169,7 +172,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining('not delivered'));
@@ -190,7 +193,7 @@ describe('NotificationStore', () => {
 			const { sessions, holder } = mockSessions();
 			new NotificationStore(mockWorkspaces(), sessions);
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 			expect(invokeSpy).not.toHaveBeenCalledWith('send_native_notification', expect.anything());
 
@@ -215,7 +218,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 
 			expect(sendNotification).toHaveBeenCalledWith(
@@ -231,7 +234,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE }, 'resolved');
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' }, 'resolved');
 			await settle();
 
 			expect(sendNotification).not.toHaveBeenCalled();
@@ -246,7 +249,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 
 			expect(sendNotification).not.toHaveBeenCalled();
@@ -260,7 +263,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 
 			expect(sendNotification).not.toHaveBeenCalled();
@@ -280,7 +283,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(workspaces, sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 
 			expect(invokeSpy).not.toHaveBeenCalledWith('send_native_notification', expect.anything());
@@ -300,7 +303,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(workspaces, sessions);
 			await settle();
 
-			holder.fire?.({ paneId: PANE });
+			holder.fire?.({ paneId: PANE, sessionId: 'sess-pane' });
 			await settle();
 
 			expect(invokeSpy).toHaveBeenCalledWith('send_native_notification', expect.anything());

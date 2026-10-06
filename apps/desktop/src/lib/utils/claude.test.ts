@@ -12,22 +12,11 @@ import {
 const validId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
 
 describe('claudeSessionLaunch', () => {
-	it('resumes a Claude pane whose session has run', () => {
-		expect(claudeSessionLaunch({ id: 'p', type: 'claude', claudeSessionId: validId })).toEqual({
-			id: validId,
-			resume: true
-		});
-	});
-
-	it('starts a new session on its id, with any first prompt', () => {
+	it("runs the pane's session, with an agent action's prompt", () => {
 		const pane = { id: 'p', type: 'claude' as const, claudeSessionId: validId };
-		expect(claudeSessionLaunch({ ...pane, newClaudeSession: {} })).toEqual({
+		expect(claudeSessionLaunch(pane)).toEqual({ id: validId });
+		expect(claudeSessionLaunch({ ...pane, claudePrompt: 'Review' })).toEqual({
 			id: validId,
-			resume: false
-		});
-		expect(claudeSessionLaunch({ ...pane, newClaudeSession: { prompt: 'Review' } })).toEqual({
-			id: validId,
-			resume: false,
 			prompt: 'Review'
 		});
 	});

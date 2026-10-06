@@ -80,10 +80,9 @@ export interface TerminalExitEvent {
  * can't be skipped.
  */
 export interface ClaudeSessionLaunch {
+	/** Resumed when it has a transcript, else started on this id (the server decides). */
 	id: string;
-	/** `--resume` an existing conversation, else `--session-id` starts one. */
-	resume: boolean;
-	/** A new session's first prompt (an agent action). */
+	/** A new session's first prompt (an agent action); ignored on a resume. */
 	prompt?: string;
 }
 
@@ -128,6 +127,8 @@ export interface ServerTerminalMeta {
 	alive: boolean;
 	/** The Claude session its `claude` runs, listed before its plugin attaches. */
 	claudeSessionId?: string;
+	/** On a create only: something to tell the person about how it started. */
+	notice?: string;
 }
 
 export interface TerminalActivityEvent {
@@ -183,12 +184,8 @@ export interface TerminalPaneState {
 	liveTerminal?: boolean;
 	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
 	claudeAccountId?: string;
-	/**
-	 * A Claude pane whose session hasn't run yet: its terminal starts it
-	 * (`--session-id`, with this first prompt) rather than resuming it. Cleared
-	 * once its terminal exists.
-	 */
-	newClaudeSession?: { prompt?: string };
+	/** An agent action's prompt: it starts the pane's Claude session if that is new. */
+	claudePrompt?: string;
 }
 
 export type PaneView = 'terminal' | 'chat';

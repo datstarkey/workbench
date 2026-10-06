@@ -106,16 +106,9 @@ pub struct TerminalPaneSnapshot {
     /// The saved Claude account the pane runs under; its transcript lives there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_account_id: Option<String>,
-    /// A Claude session not run yet: the terminal starts it rather than resuming.
+    /// An agent action's prompt, which starts the Claude session if it is new.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub new_claude_session: Option<NewClaudeSession>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NewClaudeSession {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
+    pub claude_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -817,7 +810,7 @@ mod tests {
                         claude_session_id: None,
                         view: None,
                         claude_account_id: None,
-                        new_claude_session: None,
+                        claude_prompt: None,
                     }],
                     session_type: None,
                 }],

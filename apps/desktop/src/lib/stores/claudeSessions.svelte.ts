@@ -32,7 +32,7 @@ const MAX_LABEL_DISCOVERY_ATTEMPTS = 6;
 
 /** Who to notify about: a pane here, or a session no pane shows (started on the phone). */
 export type AttentionTarget =
-	| { paneId: string }
+	| { paneId: string; sessionId: string }
 	| { id: string; projectPath: string; label: string };
 
 export class ClaudeSessionStore {
@@ -369,7 +369,7 @@ export class ClaudeSessionStore {
 				this.panesAwaitingInput.delete(paneId);
 				break;
 		}
-		this.emitAttention({ paneId }, event.kind);
+		this.emitAttention({ paneId, sessionId: event.sessionId }, event.kind);
 	}
 
 	/** Register a callback for a session that needs someone, or no longer does (`resolved`). */
@@ -402,13 +402,17 @@ export class ClaudeSessionStore {
 			if (!paneId || this.paneType(paneId) !== 'claude') continue;
 			if ((newest[paneId]?.updatedAt ?? -Infinity) < a.updatedAt) newest[paneId] = a;
 		}
-		for (const [paneId, a] of Object.entries(newest)) {
+		for (const [paneId, type] of Object.entries(this.paneTypeById)) {
+			if (type !== 'claude') continue;
+			const a = newest[paneId];
+			// Not busy while it waits on someone (that's `panesAwaitingInput`), or once gone.
+			if (a?.busy && !a.waiting) this.panesInProgress.add(paneId);
+			else this.panesInProgress.delete(paneId);
+			if (!a) continue;
 			if (a.paneId === paneId && !this.workspaces.isChatPane(paneId)) {
 				this.workspaces.updateAISessionByPaneId(paneId, a.sessionId, 'claude');
 			}
 			if (a.title) this.workspaces.updateAITabLabelByPaneId(paneId, a.title, 'claude');
-			if (a.busy) this.panesInProgress.add(paneId);
-			else this.panesInProgress.delete(paneId);
 		}
 	}
 

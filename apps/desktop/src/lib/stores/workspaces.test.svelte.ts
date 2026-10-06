@@ -1,6 +1,6 @@
 import { invokeSpy, clearInvokeMocks } from '../../test/tauri-mocks';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { CLAUDE_NOT_IN_CHAT, WorkspaceStore } from './workspaces.svelte';
+import { CHAT_SERVER_UNREACHABLE, CLAUDE_NOT_IN_CHAT, WorkspaceStore } from './workspaces.svelte';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { adoptableTerminals } from '$features/terminal/server-terminals';
 import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
@@ -876,7 +876,6 @@ describe('WorkspaceStore', () => {
 			expect(tab.panes[0].type).toBe('claude');
 			expect(tab.panes[0].startupCommand).toBeUndefined();
 			expect(tab.panes[0].claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-			expect(tab.panes[0].newClaudeSession).toEqual({});
 			expect(updated.activeTerminalTabId).toBe(tabId);
 		});
 
@@ -889,8 +888,6 @@ describe('WorkspaceStore', () => {
 			const pane = store.workspaces[0].terminalTabs[0].panes[0];
 			expect(pane.view).toBe('chat');
 			expect(pane.claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-			// Switching to the terminal before any message starts the same id.
-			expect(pane.newClaudeSession).toEqual({});
 		});
 
 		it("opens an agent action's tab as a terminal even when chat is the default", () => {
@@ -957,7 +954,7 @@ describe('WorkspaceStore', () => {
 
 			const tab = store.workspaces[0].terminalTabs[0];
 			expect(tab.label).toBe('Review PR');
-			expect(tab.panes[0].newClaudeSession).toEqual({ prompt: 'Review this PR for regressions' });
+			expect(tab.panes[0].claudePrompt).toBe('Review this PR for regressions');
 		});
 	});
 
@@ -1063,8 +1060,9 @@ describe('WorkspaceStore', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
 			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
-			vi.mocked(listAgents).mockResolvedValueOnce([summary({ paneId: 'other', exited: true })]);
-
+			vi.mocked(listAgents).mockResolvedValueOnce(null);
+			await expect(store.setPaneView(paneId, 'chat')).rejects.toThrow(CHAT_SERVER_UNREACHABLE);
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({ paneId, exited: true })]);
 			await expect(store.setPaneView(paneId, 'chat')).rejects.toThrow(CLAUDE_NOT_IN_CHAT);
 			expect(store.isChatPane(paneId)).toBe(false);
 
@@ -1133,7 +1131,6 @@ describe('WorkspaceStore', () => {
 			expect(tab.type).toBe('claude');
 			expect(tab.panes[0].claudeSessionId).toBe(sessionId);
 			expect(tab.panes[0].startupCommand).toBeUndefined();
-			expect(tab.panes[0].newClaudeSession).toBeUndefined();
 			expect(store.workspaces[0].activeTerminalTabId).toBe(tab.id);
 		});
 
@@ -1176,7 +1173,6 @@ describe('WorkspaceStore', () => {
 			expect(updated.terminalTabs[0].type).toBe('claude');
 			expect(updated.terminalTabs[0].panes[0].claudeSessionId).toBe(sessionId);
 			expect(updated.terminalTabs[0].panes[0].startupCommand).toBeUndefined();
-			expect(updated.terminalTabs[0].panes[0].newClaudeSession).toBeUndefined();
 			expect(updated.activeTerminalTabId).toBe(updated.terminalTabs[0].id);
 		});
 
@@ -1197,7 +1193,6 @@ describe('WorkspaceStore', () => {
 
 			const pane = store.workspaces[0].terminalTabs[0].panes[0];
 			expect(pane.claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-			expect(pane.newClaudeSession).toEqual({});
 		});
 
 		it('no-ops for non-AI tab', () => {
@@ -1677,7 +1672,6 @@ describe('WorkspaceStore', () => {
 			store.addAISession('ws-a', 'claude');
 
 			expect(pane().claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-			expect(pane().newClaudeSession).toEqual({});
 			expect(pane().startupCommand).toBeUndefined();
 		});
 
@@ -1686,7 +1680,7 @@ describe('WorkspaceStore', () => {
 
 			store.addAISession('ws-a', 'claude', { prompt: "  it's broken  " });
 
-			expect(pane().newClaudeSession).toEqual({ prompt: "it's broken" });
+			expect(pane().claudePrompt).toBe("it's broken");
 			expect(pane().view).toBeUndefined();
 		});
 
@@ -1698,12 +1692,17 @@ describe('WorkspaceStore', () => {
 			expect(pane().startupCommand).toBe("codex -c tui.alternate_screen=never 'audit'");
 		});
 
-		it('resumes once its terminal exists', () => {
-			seedPane({ id: 'pane-1', type: 'claude', claudeSessionId: sessionId, newClaudeSession: {} });
+		it('a restart keeps the session and its prompt', async () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				claudeSessionId: sessionId,
+				claudePrompt: 'Review'
+			});
 
-			store.setServerTerminalId('pane-1', 'srv-1');
+			await store.restartAISession('ws-a', 'tab-1');
 
-			expect(pane().newClaudeSession).toBeUndefined();
+			expect(pane()).toMatchObject({ claudeSessionId: sessionId, claudePrompt: 'Review' });
 		});
 
 		it('drops a command an older build saved', () => {
@@ -1735,7 +1734,6 @@ describe('WorkspaceStore', () => {
 			store.ensureShape();
 
 			expect(pane().claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
-			expect(pane().newClaudeSession).toEqual({});
 			expect(pane().startupCommand).toBeUndefined();
 		});
 	});

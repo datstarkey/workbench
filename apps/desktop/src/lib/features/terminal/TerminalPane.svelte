@@ -12,7 +12,7 @@
 	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
 	import { TerminalConnection } from './terminal-connection';
-	import { stripAnsi } from '$lib/utils/format';
+	import { toast } from 'svelte-sonner';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
 	import { TerminalInputDedup } from './input-dedup';
@@ -114,33 +114,6 @@
 
 	let removeCopyListener: (() => void) | null = null;
 	let removeResidueGuard: (() => void) | null = null;
-
-	// A resumed session with nothing on disk (its tab never got a message) fails
-	// at once: start it as a new session on the same id instead.
-	let earlyOutput = '';
-	let watchingResume = false;
-
-	function detectMissingSession(text: string): void {
-		earlyOutput += text;
-		if (earlyOutput.length > 2048) {
-			watchingResume = false;
-			return;
-		}
-		if (
-			!claudeSession ||
-			!stripAnsi(earlyOutput).includes('No conversation found with session ID:')
-		)
-			return;
-		watchingResume = false;
-		void conn
-			?.relaunch({ claudeSession: { ...claudeSession, resume: false } })
-			.then(() => {
-				if (conn?.terminalId) onServerTerminalIdChange?.(paneId, conn.terminalId);
-			})
-			.catch((e) => {
-				terminalError = `Couldn't start Claude: ${e instanceof Error ? e.message : e}`;
-			});
-	}
 
 	function canFitTerminal(): boolean {
 		if (!terminal || !fitAddon || !container) return false;
@@ -312,16 +285,10 @@
 
 		// Feed AI-pane output through the activity/quiescence tracker. Server-hosted
 		// panes stream over the WS and don't emit the terminal:data events the store
-		// listens to for local panes, so drive it here. Decode once (shell panes skip
-		// it) and reuse the decoded text for the missing-session scan.
-		const paneType = claudeSessionStore.paneType(paneId);
-		let decoded: string | null = null;
-		if (paneType !== null) {
-			decoded = new TextDecoder().decode(bytes);
-			claudeSessionStore.noteTerminalOutput(paneId, decoded);
+		// listens to for local panes, so drive it here (shell panes skip the decode).
+		if (claudeSessionStore.paneType(paneId) !== null) {
+			claudeSessionStore.noteTerminalOutput(paneId, new TextDecoder().decode(bytes));
 		}
-
-		if (watchingResume) detectMissingSession(decoded ?? new TextDecoder().decode(bytes));
 
 		if (inPerformanceMode()) {
 			// Offscreen: batch into queue, flush on timer
@@ -601,9 +568,7 @@
 				takenOver = true;
 			} else {
 				await conn.connect(connectOpts, existingServerTerminalId);
-				// Only a terminal opened here: a re-attached one replays old output.
-				watchingResume =
-					claudeSession?.resume === true && conn.terminalId !== existingServerTerminalId;
+				if (conn.notice) toast.warning(conn.notice);
 			}
 
 			// Notify workspace store of the assigned server terminal ID.
