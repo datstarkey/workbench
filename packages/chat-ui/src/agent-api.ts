@@ -7,9 +7,19 @@ import type {
 	UsageLimit
 } from '@workbench/types';
 
+/** Claude Code asks to trust the chat's folder before it starts; `path` is that folder. */
+export class NeedsTrustError extends Error {
+	constructor(readonly path: string) {
+		super(`Claude Code needs you to trust ${path} first`);
+	}
+}
+
 /** What an {@link AgentChat} needs from the server; injectable for tests. */
 export interface AgentApi {
-	/** Resolves to the session's id: a new Codex thread only gets one here. */
+	/**
+	 * Resolves to the session's id: a new Codex thread only gets one here.
+	 * Rejects with {@link NeedsTrustError} while Claude Code waits on its folder trust dialog.
+	 */
 	start(body: StartAgentBody): Promise<string>;
 	socketUrl(sessionId: string): Promise<string>;
 	/** The server terminal a started Claude chat runs in (its interactive `claude`). */
@@ -56,11 +66,12 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 
 	return {
 		async start(body: StartAgentBody): Promise<string> {
-			const res = await call<{ sessionId: string; terminalId?: string | null }>(
-				'POST',
-				`/agent/${body.agent ?? 'claude'}`,
-				body
-			);
+			const res = await call<{
+				sessionId: string;
+				terminalId?: string | null;
+				needsTrust?: string;
+			}>('POST', `/agent/${body.agent ?? 'claude'}`, body);
+			if (res?.needsTrust) throw new NeedsTrustError(res.needsTrust);
 			if (!res?.sessionId) throw new Error('The server did not return a session id');
 			if (res.terminalId) terminals.set(res.sessionId, res.terminalId);
 			return res.sessionId;

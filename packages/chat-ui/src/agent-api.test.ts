@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { agentClient } from './agent-api';
+import { agentClient, NeedsTrustError } from './agent-api';
 
 function stubFetch(body: unknown) {
 	const fetch = vi.fn(
@@ -24,6 +24,13 @@ describe('agentClient', () => {
 
 		await api.start({ projectPath: '/repo', sessionId: 'sid' });
 		expect(fetch.mock.calls[1][0]).toBe('http://box/agent/claude');
+	});
+
+	it('rejects with the folder when Claude Code asks to trust it', async () => {
+		stubFetch({ needsTrust: '/repo-feat' });
+		const start = api.start({ projectPath: '/repo', sessionId: 'sid' });
+		await expect(start).rejects.toBeInstanceOf(NeedsTrustError);
+		await expect(start).rejects.toMatchObject({ path: '/repo-feat' });
 	});
 
 	it('lists sessions of every agent', async () => {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StartAgentBody, TranscriptMeta } from '@workbench/types';
-import type { AgentApi } from './agent-api';
+import { NeedsTrustError, type AgentApi } from './agent-api';
 import { AgentChat } from './agent-chat.svelte';
 
 class FakeSocket {
@@ -273,6 +273,24 @@ describe('AgentChat', () => {
 
 		await chat.open();
 		expect(start).toHaveBeenCalledTimes(2);
+		expect(FakeSocket.last).not.toBeNull();
+		chat.dispose();
+	});
+
+	it('asks to trust the folder, then starts again answering Claude Code', async () => {
+		const start = vi
+			.fn<AgentApi['start']>()
+			.mockRejectedValueOnce(new NeedsTrustError('/repo'))
+			.mockResolvedValue('sid');
+		const chat = new AgentChat(body, fakeApi(start));
+		await vi.waitFor(() => expect(chat.status).toBe('trust'));
+		expect(chat.trustPath).toBe('/repo');
+		chat.reconnect();
+		expect(start).toHaveBeenCalledTimes(1);
+
+		await chat.trustFolder();
+		expect(start).toHaveBeenLastCalledWith({ ...body, trustFolder: true });
+		expect(chat.trustPath).toBeNull();
 		expect(FakeSocket.last).not.toBeNull();
 		chat.dispose();
 	});
