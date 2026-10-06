@@ -123,7 +123,6 @@
 	const branch = $derived(workspace && workspaceStore.resolvedBranch(workspace));
 	const pr = $derived(branch ? githubStore.getBranchStatus(project.path, branch)?.pr : null);
 
-	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
 	chat.onEnded = () => workspaceStore.closeEndedChat(paneId);
 	chat.onTerminal = (terminalId) => workspaceStore.linkLiveTerminal(paneId, terminalId);

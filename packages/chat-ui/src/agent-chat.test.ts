@@ -406,29 +406,8 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
-	it('tells the pane when Claude starts and stops waiting on you', async () => {
+	it('sends elicitation answers', async () => {
 		const { chat, ws } = await connected();
-		const calls: boolean[] = [];
-		chat.onNeedsYou = (waiting) => calls.push(waiting);
-		const approval = {
-			kind: 'approval',
-			id: 'r1',
-			tool: 'Bash',
-			input: { command: 'ls' },
-			canAlwaysAllow: false,
-			expired: false
-		} as const;
-		ws.emit({ t: 'update', changes: [[0, approval]], meta: meta(true) });
-		ws.emit({ t: 'update', changes: [[0, approval]], meta: meta(true) });
-		ws.emit({ t: 'update', changes: [[0, { ...approval, decision: 'allow' }]], meta: meta(true) });
-		expect(calls).toEqual([true, false]);
-		chat.dispose();
-	});
-
-	it('sends elicitation answers and counts them as waiting on you', async () => {
-		const { chat, ws } = await connected();
-		const calls: boolean[] = [];
-		chat.onNeedsYou = (waiting) => calls.push(waiting);
 		const item = {
 			kind: 'elicitation',
 			id: 'e1',
@@ -445,34 +424,13 @@ describe('AgentChat', () => {
 			{ t: 'elicit', requestId: 'e1', action: 'accept', content: { env: 'prod' } },
 			{ t: 'elicit', requestId: 'e2', action: 'decline' }
 		]);
-		ws.emit({ t: 'update', changes: [[0, { ...item, action: 'accept' }]], meta: meta(true) });
-		expect(calls).toEqual([true, false]);
 		chat.dispose();
 	});
 
-	it('stops flagging the pane when the process ends mid-approval', async () => {
+	it('closes the socket when the process ends', async () => {
 		const { chat, ws } = await connected();
-		const calls: boolean[] = [];
-		chat.onNeedsYou = (waiting) => calls.push(waiting);
-		ws.emit({
-			t: 'update',
-			changes: [
-				[
-					0,
-					{
-						kind: 'approval',
-						id: 'r1',
-						tool: 'Bash',
-						input: {},
-						canAlwaysAllow: false,
-						expired: false
-					}
-				]
-			],
-			meta: meta(true)
-		});
 		ws.emit({ t: 'exit', code: 1, message: null });
-		expect(calls).toEqual([true, false]);
+		expect(chat.status).toBe('exited');
 		expect(ws.readyState).toBe(3);
 		chat.dispose();
 	});

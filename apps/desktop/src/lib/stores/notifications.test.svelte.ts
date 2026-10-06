@@ -31,7 +31,7 @@ vi.mock('@tauri-apps/api/window', () => ({
 }));
 
 import { NotificationStore } from './notifications.svelte';
-import type { ClaudeSessionStore } from './claudeSessions.svelte';
+import type { AttentionTarget, ClaudeSessionStore } from './claudeSessions.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 
 const PANE = 'pane-1';
@@ -54,9 +54,9 @@ function mockWorkspaces() {
 
 /** Captures the store's awaiting-input callback so tests can drive it directly. */
 function mockSessions() {
-	const holder: { fire?: (paneId: string) => void } = {};
+	const holder: { fire?: (target: AttentionTarget) => void } = {};
 	const sessions = {
-		onAwaitingInput: (cb: (paneId: string) => void) => {
+		onAwaitingInput: (cb: (target: AttentionTarget) => void) => {
 			holder.fire = cb;
 		}
 	} as unknown as ClaudeSessionStore;
@@ -94,7 +94,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 
 			// The pane id doubles as the replace key, so a repeat notification for the
@@ -106,6 +106,22 @@ describe('NotificationStore', () => {
 			});
 			// The plugin's macOS path posts to an API macOS no longer delivers on.
 			expect(sendNotification).not.toHaveBeenCalled();
+		});
+
+		it('names a session no pane shows (started on the phone) by its project', async () => {
+			useNativePath();
+			const { sessions, holder } = mockSessions();
+			new NotificationStore(mockWorkspaces(), sessions);
+			await settle();
+
+			holder.fire?.({ id: 'sess-1', projectPath: '/repos/app', label: 'Fix the build' });
+			await settle();
+
+			expect(invokeSpy).toHaveBeenCalledWith('send_native_notification', {
+				identifier: 'sess-1',
+				title: 'app — needs input',
+				body: 'Fix the build is waiting for your response'
+			});
 		});
 
 		it('focuses the pane when its notification is clicked', async () => {
@@ -130,7 +146,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining('not delivered'));
@@ -151,7 +167,7 @@ describe('NotificationStore', () => {
 			const { sessions, holder } = mockSessions();
 			new NotificationStore(mockWorkspaces(), sessions);
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 			expect(invokeSpy).not.toHaveBeenCalledWith('send_native_notification', expect.anything());
 
@@ -176,7 +192,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 
 			expect(sendNotification).toHaveBeenCalledWith(
@@ -195,7 +211,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 
 			expect(sendNotification).not.toHaveBeenCalled();
@@ -209,7 +225,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(mockWorkspaces(), sessions);
 			await settle();
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 
 			expect(sendNotification).not.toHaveBeenCalled();
@@ -229,7 +245,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(workspaces, sessions);
 			await settle();
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 
 			expect(invokeSpy).not.toHaveBeenCalledWith('send_native_notification', expect.anything());
@@ -249,7 +265,7 @@ describe('NotificationStore', () => {
 			new NotificationStore(workspaces, sessions);
 			await settle();
 
-			holder.fire?.(PANE);
+			holder.fire?.({ paneId: PANE });
 			await settle();
 
 			expect(invokeSpy).toHaveBeenCalledWith('send_native_notification', expect.anything());

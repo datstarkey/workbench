@@ -895,12 +895,34 @@ export interface AgentSummary {
 	updatedAt: number;
 	/** Unix ms when the last turn went idle; null before one ends, absent from older servers. */
 	turnEndedAt?: number | null;
-	/** The oldest unanswered approval, question or MCP elicitation (`tool: 'Elicitation'`). */
-	waiting: { id: string; tool: string; preview: string } | null;
+	/**
+	 * The oldest unanswered approval, question or MCP elicitation (`tool: 'Elicitation'`).
+	 * `inTerminal`: asked in the terminal's own dialog (no chat was open), so only answerable there.
+	 */
+	waiting: { id: string; tool: string; preview: string; inTerminal?: boolean } | null;
 	/** The newest tool call still running in this turn. */
 	running: { name: string; detail: string } | null;
 	/** Ids it ran under before a `/clear`, so a client holding one follows the re-key. */
 	previousIds: string[];
 	/** The server terminal whose interactive `claude` this chat is. */
 	terminalId?: string;
+}
+
+/**
+ * `agent:attention` (desktop): a session on this machine started or stopped waiting
+ * on someone, or finished a turn. Mirrors `workbench_server::attention::Attention`.
+ */
+export interface AgentAttention {
+	kind: 'waiting' | 'resolved' | 'turnEnded';
+	agent: AgentKind;
+	sessionId: string;
+	previousIds: string[];
+	paneId: string | null;
+	terminalId: string | null;
+	projectPath: string;
+	worktreePath: string | null;
+	title: string | null;
+	waiting: AgentSummary['waiting'];
+	/** Still mid-turn (an answered approval lets the turn go on). */
+	busy: boolean;
 }

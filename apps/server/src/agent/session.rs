@@ -14,7 +14,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
 use workbench_core::claude_transcript::{
-    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem, TranscriptMeta, KEEPALIVE_PROMPT,
+    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem, TranscriptMeta, WaitingSummary,
+    KEEPALIVE_PROMPT,
 };
 
 use super::cache::{self, CachePolicy, PolicyStore, Upkeep};
@@ -57,6 +58,8 @@ pub struct AgentSession {
     updated_at: AtomicU64,
     /// When the last turn went idle, so a poller catches turns shorter than its interval.
     turn_ended_at: Mutex<Option<u64>>,
+    /// The running (or next) turn is a cache keep-alive, so its end isn't recorded.
+    keepalive_turn: AtomicBool,
     tx: broadcast::Sender<String>,
     stdin: Mutex<Option<Sink>>,
     /// `None` for a session fed by a terminal's plugin: there is no process of ours.
@@ -248,6 +251,7 @@ impl AgentSession {
             busy_since: Mutex::new(None),
             updated_at: AtomicU64::new(now_ms()),
             turn_ended_at: Mutex::new(None),
+            keepalive_turn: AtomicBool::new(false),
             tx,
             stdin: Mutex::new(Some(sink)),
             pid: child.as_ref().map(Child::id),
@@ -390,6 +394,18 @@ impl AgentSession {
         }
     }
 
+    /// The approval or question `request_id` as the session list shows it.
+    pub fn waiting_for(&self, request_id: &str) -> Option<WaitingSummary> {
+        let d = lock(&self.driver);
+        let item = d.view().items().iter().find(|i| i.id() == request_id)?;
+        item.waiting_summary()
+    }
+
+    /// An approval the terminal's own dialog asks (see [`ModLink::fall_back`]).
+    fn terminal_waiting(&self) -> Option<WaitingSummary> {
+        self.link.as_ref()?.terminal_waiting()
+    }
+
     pub fn summary(&self) -> AgentSummary {
         let d = lock(&self.driver);
         let view = d.view();
@@ -408,7 +424,10 @@ impl AgentSession {
             busy_since: *lock(&self.busy_since),
             updated_at: self.updated_at.load(Ordering::SeqCst),
             turn_ended_at: *lock(&self.turn_ended_at),
-            waiting: view.waiting_on().and_then(TranscriptItem::waiting_summary),
+            waiting: view
+                .waiting_on()
+                .and_then(TranscriptItem::waiting_summary)
+                .or_else(|| self.terminal_waiting()),
             running: view
                 .running_tool()
                 .and_then(TranscriptItem::running_summary),
@@ -452,11 +471,19 @@ impl AgentSession {
     }
 
     pub fn prompt(&self, text: &str, images: &[PromptImage], files: &[PromptFile]) -> Result<()> {
-        if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
-            let text = super::modlink::attachments_as_mentions(&self.id(), text, images, files)?;
-            return self.run(|d| d.prompt(&text, &[], &[]));
+        self.keepalive_turn
+            .store(text == KEEPALIVE_PROMPT, Ordering::SeqCst);
+        let sent = if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
+            super::modlink::attachments_as_mentions(&self.id(), text, images, files)
+                .and_then(|text| self.run(|d| d.prompt(&text, &[], &[])))
+        } else {
+            self.run(|d| d.prompt(text, images, files))
+        };
+        // No turn started, so the flag must not swallow the next one's end.
+        if sent.is_err() {
+            self.keepalive_turn.store(false, Ordering::SeqCst);
         }
-        self.run(|d| d.prompt(text, images, files))
+        sent
     }
 
     pub fn approve(
@@ -747,7 +774,8 @@ impl AgentSession {
         self.updated_at.store(now, Ordering::SeqCst);
         let busy = t.meta().busy;
         let mut since = lock(&self.busy_since);
-        if since.is_some() && !busy {
+        // A keep-alive turn isn't work anyone waits on: no "turn complete".
+        if since.is_some() && !busy && !self.keepalive_turn.swap(false, Ordering::SeqCst) {
             *lock(&self.turn_ended_at) = Some(now);
         }
         *since = busy.then(|| since.unwrap_or(now));

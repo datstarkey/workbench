@@ -65,6 +65,8 @@ const echoed = new Set<string>();
 // `tool.check` then lets the answered call through.
 const ASKED_IN_CALL = new Set(['AskUserQuestion', 'ExitPlanMode']);
 const answeredInChat = new Set<string>();
+// Approvals the terminal's own dialog asks (no chat was open): tool call id → request id.
+const askedInTerminal = new Map<string, string>();
 // Background jobs reported to the tasks panel, by id, with their last status.
 const backgroundJobs = new Map<string, string>();
 // `/clear` ends the session and the process carries on under a new id.
@@ -219,6 +221,21 @@ export function notePermissionMode(mode: string | undefined) {
 	if (!link || mode === reportedMode) return;
 	reportedMode = mode;
 	emit({ type: 'permission-mode', permissionMode: mode });
+}
+
+/**
+ * The terminal shows an MCP elicitation, which never comes through `tool.check`:
+ * the server lists the session as waiting on it (`workbench_terminal_waiting`)
+ * until the call returns. Called from the Notification hook.
+ */
+export function noteTerminalElicitation(message: string | undefined) {
+	if (!link) return;
+	emit({
+		type: 'workbench_terminal_waiting',
+		id: `wbmod-elicit-${++askSeq}`,
+		tool: 'Elicitation',
+		preview: message ?? ''
+	});
 }
 
 /** Report background jobs that finished; called from the Stop hook with its job list. */
@@ -543,6 +560,12 @@ export const register: Register = (on) => {
 	on('tool.call', async ($, e, next) => {
 		if (!link) return next(e);
 		const id = e.tool_use_id;
+		// Approved in the terminal's dialog: it no longer waits, however long the call runs.
+		const asked = id ? askedInTerminal.get(id) : undefined;
+		if (id && asked) {
+			askedInTerminal.delete(id);
+			emit({ type: 'control_cancel_request', request_id: asked });
+		}
 		if (ASKED_IN_CALL.has(e.tool) && !e.agentId && id) {
 			const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
 			const requestId = `wbmod-ask-${++askSeq}`;
@@ -666,7 +689,11 @@ export const register: Register = (on) => {
 			answer = askAnswer(res?.ok ? res.text : undefined);
 		}
 		if (next.signal.aborted) emit({ type: 'control_cancel_request', request_id: requestId });
-		if (!answer) return verdict;
+		if (!answer) {
+			// The terminal asks now; the server shows it waiting until it's answered.
+			if (e.tool_use_id && !next.signal.aborted) askedInTerminal.set(e.tool_use_id, requestId);
+			return verdict;
+		}
 		if (answer.behavior === 'allow' && answer.updatedPermissions?.length)
 			sessionAllowed.add(e.tool);
 		return answer.behavior === 'allow'

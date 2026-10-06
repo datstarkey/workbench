@@ -1,5 +1,10 @@
 import type { AnyEventHook, Register } from 'claude-code';
-import { noteBackgroundTasks, notePermissionMode, register as registerChat } from './chat';
+import {
+	noteBackgroundTasks,
+	notePermissionMode,
+	noteTerminalElicitation,
+	register as registerChat
+} from './chat';
 
 const REFRESH_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
 
@@ -30,7 +35,14 @@ export const register: Register = (on, options) => {
 		noteBackgroundTasks(e.background_tasks);
 		return forward($, e, next);
 	});
-	on('classic.Notification', forward);
+	// Approvals reach both devices through the mod link; only an MCP form the
+	// terminal shows needs naming here (the desktop isn't sent Notification).
+	on('classic.Notification', ($, e, next) => {
+		const n = e as { notification_type?: string; message?: string; permission_mode?: string };
+		notePermissionMode(n.permission_mode);
+		if (n.notification_type === 'elicitation_dialog') noteTerminalElicitation(n.message);
+		return next(e);
+	});
 	// The bridge only needs the tool and a Bash command; a Write's input and any
 	// tool's response can be whole files.
 	on('classic.PostToolUse', ($, e, next) => {

@@ -19,11 +19,14 @@
 //!
 //! Terminals live in the shared managers, so they survive LAN stop/start.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::Emitter;
+use workbench_server::attention::AttentionTracker;
 use workbench_server::{Managers, ServerHandle};
 
 struct Loopback {
@@ -46,6 +49,105 @@ pub struct ServerControl {
     loopback: Mutex<Option<Loopback>>,
     /// Async mutex held across start/stop, so concurrent commands serialize.
     lan: AsyncMutex<Option<Lan>>,
+    /// Mod tokens issued to native terminals, by pane id.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    native_grants: Mutex<HashMap<String, String>>,
+}
+
+/// How often the desktop looks for chat sessions that need someone.
+const ATTENTION_TICK: Duration = Duration::from_secs(1);
+
+impl ServerControl {
+    /// Emits `agent:attention` when a session on this machine starts or stops
+    /// waiting on someone, or finishes a turn. It reads the same summaries the
+    /// phone's notification service polls, so a session started on either
+    /// device notifies both.
+    pub fn watch_attention(&self, app: tauri::AppHandle) {
+        let agents = self.managers.agents.clone();
+        std::thread::spawn(move || {
+            let mut tracker = AttentionTracker::default();
+            loop {
+                for attention in tracker.update(&agents.summaries(None)) {
+                    if let Err(e) = app.emit("agent:attention", &attention) {
+                        log::warn!("failed to emit agent:attention: {e}");
+                    }
+                }
+                std::thread::sleep(ATTENTION_TICK);
+            }
+        });
+    }
+
+    /// The env that runs a native terminal's `claude` as a chat over the
+    /// loopback server, as a server terminal's is (`terminal::create_from_body`),
+    /// so its approvals and finished turns reach the desktop and the phone alike.
+    #[cfg(target_os = "macos")]
+    pub fn grant_native_terminal(
+        &self,
+        pane_id: &str,
+        project_path: &str,
+        cwd: &str,
+        claude_account_id: Option<String>,
+        hook_socket: Option<String>,
+    ) -> Vec<(&'static str, String)> {
+        let agents = &self.managers.agents;
+        let Some(port) = agents.mod_port() else {
+            return Vec::new();
+        };
+        let grant = workbench_server::agent::ModGrant {
+            pane_id: Some(pane_id.to_string()),
+            project_path: project_path.to_string(),
+            worktree_path: (cwd != project_path).then(|| cwd.to_string()),
+            claude_account_id,
+            cwd: cwd.to_string(),
+            hook_socket,
+            resume_at: None,
+            terminal_id: None,
+        };
+        let token = match agents.grant_mod(grant) {
+            Ok(token) => token,
+            Err(e) => {
+                log::warn!("could not issue a native terminal's chat token: {e:#}");
+                return Vec::new();
+            }
+        };
+        let old = self
+            .native_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pane_id.to_string(), token.clone());
+        if let Some(old) = old {
+            agents.revoke_grant(&old);
+        }
+        vec![
+            ("WORKBENCH_MOD_URL", format!("http://127.0.0.1:{port}")),
+            ("WORKBENCH_MOD_TOKEN", token),
+        ]
+    }
+
+    /// Withdraw a closed native terminal's chat token.
+    #[cfg(target_os = "macos")]
+    pub fn revoke_native_terminal(&self, pane_id: &str) {
+        let token = self
+            .native_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(pane_id);
+        if let Some(token) = token {
+            self.managers.agents.revoke_grant(&token);
+        }
+    }
+
+    /// Withdraw `token` once its native terminal's shell exited, unless the
+    /// pane has since been issued another.
+    #[cfg(target_os = "macos")]
+    pub fn revoke_native_token(&self, pane_id: &str, token: &str) {
+        let mut grants = self.native_grants.lock().unwrap_or_else(|e| e.into_inner());
+        if grants.get(pane_id).map(String::as_str) == Some(token) {
+            grants.remove(pane_id);
+        }
+        drop(grants);
+        self.managers.agents.revoke_grant(token);
+    }
 }
 
 impl ServerControl {

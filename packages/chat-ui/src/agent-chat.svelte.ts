@@ -107,15 +107,12 @@ export class AgentChat {
 	private threadStart: Promise<string> | null = null;
 	/** Bumped by every connect; an older one still awaiting the server gives up. */
 	private generation = 0;
-	/** Called when the agent starts or stops waiting on the person (approval, question). */
-	onNeedsYou: ((waiting: boolean) => void) | null = null;
 	/** An `attachOnly` chat that ended was restarted here: this device now owns it. */
 	onTakeOver: (() => void) | null = null;
 	/** The session was ended (e.g. End on another device), so its view can close. */
 	onEnded: (() => void) | null = null;
 	/** The server terminal this Claude chat's `claude` runs in, once started. */
 	onTerminal: ((terminalId: string) => void) | null = null;
-	private waitingOnYou = false;
 	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
@@ -230,7 +227,6 @@ export class AgentChat {
 				this.setMeta(msg.meta);
 				this.status = msg.exited ? 'exited' : 'live';
 				this.settlePending();
-				this.reportWaiting();
 				break;
 			case 'update':
 				this.items = applyChanges(this.items, this.start, msg.changes);
@@ -242,18 +238,12 @@ export class AgentChat {
 				this.setMeta(msg.meta);
 				this.notice = null;
 				this.settlePending();
-				this.reportWaiting();
 				break;
 			case 'exit':
 				this.status = 'exited';
 				this.error = msg.message;
 				this.pending = [];
 				this.busySince = null;
-				// Nothing can be answered now: stop flagging the pane as waiting.
-				if (this.waitingOnYou) {
-					this.waitingOnYou = false;
-					this.onNeedsYou?.(false);
-				}
 				this.ws?.close();
 				if (msg.ended) this.onEnded?.();
 				break;
@@ -304,13 +294,6 @@ export class AgentChat {
 		if (unseen.length === 0) return;
 		const now = Date.now();
 		this.seenAt = { ...this.seenAt, ...Object.fromEntries(unseen.map((id) => [id, now])) };
-	}
-
-	private reportWaiting(): void {
-		const waiting = this.items.some(awaitsAnswer);
-		if (waiting === this.waitingOnYou) return;
-		this.waitingOnYou = waiting;
-		this.onNeedsYou?.(waiting);
 	}
 
 	/** Drop optimistic prompts the agent has echoed back. */
@@ -548,7 +531,6 @@ export class AgentChat {
 	}
 
 	dispose(): void {
-		if (this.waitingOnYou) this.onNeedsYou?.(false);
 		this.disposed = true;
 		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close();

@@ -198,6 +198,7 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(sc.start_loopback()) {
                 log::error!("failed to start loopback embedded server: {e}");
             }
+            sc.watch_attention(app.handle().clone());
 
             Ok(())
         });

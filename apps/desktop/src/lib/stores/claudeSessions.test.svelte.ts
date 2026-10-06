@@ -7,14 +7,14 @@ import {
 	clearListeners,
 	listenSpy
 } from '../../test/tauri-mocks';
-import { ClaudeSessionStore } from './claudeSessions.svelte';
+import { ClaudeSessionStore, type AttentionTarget } from './claudeSessions.svelte';
 vi.mock('./context', () => ({
 	getWorkbenchSettingsStore: () => ({ claudePermissionMode: 'default' })
 }));
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
-import type { AgentAction, DiscoveredClaudeSession } from '$types/workbench';
+import type { AgentAction, AgentAttention, DiscoveredClaudeSession } from '$types/workbench';
 
 function createMockWorkspaceStore(workspaces: unknown[] = []) {
 	return {
@@ -24,7 +24,8 @@ function createMockWorkspaceStore(workspaces: unknown[] = []) {
 		updateAISessionByPaneId: vi.fn(),
 		updateAITabLabelByPaneId: vi.fn(),
 		findAIPaneContext: vi.fn(),
-		isChatPane: vi.fn(() => false)
+		isChatPane: vi.fn(() => false),
+		paneForAgent: vi.fn((): string | null => null)
 	} as unknown as WorkspaceStore;
 }
 
@@ -63,8 +64,12 @@ describe('ClaudeSessionStore', () => {
 	});
 
 	describe('constructor', () => {
-		it('registers 4 event listeners', () => {
-			expect(listenSpy).toHaveBeenCalledTimes(4);
+		it('registers 5 event listeners', () => {
+			expect(listenSpy).toHaveBeenCalledTimes(5);
+		});
+
+		it('registers an agent:attention listener', () => {
+			expect(listenSpy).toHaveBeenCalledWith('agent:attention', expect.any(Function));
 		});
 
 		it('registers a claude:hook listener', () => {
@@ -246,16 +251,22 @@ describe('ClaudeSessionStore', () => {
 			expect(store.panesInProgress.has('pane-1')).toBe(false);
 		});
 
-		it('chat panes report waiting through setAwaitingInput, notifying once', () => {
+		it('Stop and Notification hooks never notify: agent:attention does', () => {
 			setupClaudePane();
-			const notified: string[] = [];
-			store.onAwaitingInput((paneId) => notified.push(paneId));
-			store.setAwaitingInput('pane-1', true);
-			store.setAwaitingInput('pane-1', true);
-			expect(store.panesAwaitingInput.has('pane-1')).toBe(true);
-			expect(notified).toEqual(['pane-1']);
-			store.setAwaitingInput('pane-1', false);
-			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
+			const notified: AttentionTarget[] = [];
+			store.onAwaitingInput((target) => notified.push(target));
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				hookEventName: 'UserPromptSubmit',
+				hookPayload: {}
+			});
+			emitMockEvent('claude:hook', {
+				paneId: 'pane-1',
+				hookEventName: 'Notification',
+				hookPayload: { notification_type: 'permission_prompt' }
+			});
+			emitMockEvent('claude:hook', { paneId: 'pane-1', hookEventName: 'Stop', hookPayload: {} });
+			expect(notified).toEqual([]);
 		});
 
 		it("leaves a chat pane's session id to its chat", () => {
@@ -479,75 +490,59 @@ describe('ClaudeSessionStore', () => {
 
 			expect(store.panesInProgress.has('pane-1')).toBe(false);
 		});
-
-		it('Notification with idle_prompt removes pane from panesInProgress', () => {
-			setupClaudePane();
-
-			emitMockEvent('claude:hook', {
-				paneId: 'pane-1',
-				hookEventName: 'UserPromptSubmit',
-				hookPayload: {}
-			});
-			expect(store.panesInProgress.has('pane-1')).toBe(true);
-
-			emitMockEvent('claude:hook', {
-				paneId: 'pane-1',
-				hookEventName: 'Notification',
-				hookPayload: { notification_type: 'idle_prompt' }
-			});
-
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
-		});
 	});
 
-	describe('terminal:data events for Claude panes', () => {
-		function setupClaudePane() {
-			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
-				{
-					id: 'ws-1',
-					projectPath: '/test',
-					projectName: 'Test',
-					terminalTabs: [
-						{
-							id: 'tab-1',
-							label: 'Claude 1',
-							split: 'horizontal',
-							type: 'claude',
-							panes: [{ id: 'pane-1', type: 'claude' }]
-						}
-					],
-					activeTerminalTabId: 'tab-1'
-				}
-			];
-		}
+	describe('agent:attention events', () => {
+		const attention = (kind: AgentAttention['kind'], over: Partial<AgentAttention> = {}) => ({
+			kind,
+			agent: 'claude',
+			sessionId: 'sess-1',
+			previousIds: [],
+			paneId: null,
+			terminalId: 'term-1',
+			projectPath: '/repos/app',
+			worktreePath: null,
+			title: 'Fix the build',
+			waiting: null,
+			busy: false,
+			...over
+		});
+		let notified: AttentionTarget[];
 
-		it('clears awaitingInput on non-empty output', () => {
-			setupClaudePane();
-			store.panesAwaitingInput.add('pane-1');
-
-			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: 'Working on it...' });
-
-			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
-			expect(store.panesInProgress.has('pane-1')).toBe(true);
+		beforeEach(() => {
+			notified = [];
+			store.onAwaitingInput((target) => notified.push(target));
 		});
 
-		it('does not clear awaitingInput on ANSI-only output', () => {
-			setupClaudePane();
-			store.panesAwaitingInput.add('pane-1');
+		it("flags and notifies the session's pane, then clears it", () => {
+			(mockWorkspaceStore.paneForAgent as ReturnType<typeof vi.fn>).mockReturnValue('pane-1');
+			store.panesInProgress.add('pane-1');
 
-			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: '\x1b[2K\x1b[1G\r' });
-
+			emitMockEvent('agent:attention', attention('waiting'));
 			expect(store.panesAwaitingInput.has('pane-1')).toBe(true);
 			expect(store.panesInProgress.has('pane-1')).toBe(false);
+
+			// Answered mid-turn: the turn goes on.
+			emitMockEvent('agent:attention', attention('resolved', { busy: true }));
+			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
+			expect(store.panesInProgress.has('pane-1')).toBe(true);
+
+			emitMockEvent('agent:attention', attention('turnEnded'));
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+			expect(notified).toEqual([{ paneId: 'pane-1' }, { paneId: 'pane-1' }]);
+			expect(mockWorkspaceStore.paneForAgent).toHaveBeenCalledWith(
+				expect.objectContaining({ sessionId: 'sess-1', terminalId: 'term-1' })
+			);
 		});
 
-		it('does nothing when pane is not awaiting input', () => {
-			setupClaudePane();
-
-			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: 'Some output' });
-
-			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
+		it('notifies about a session no pane shows, by its title', () => {
+			emitMockEvent('agent:attention', attention('waiting'));
+			emitMockEvent('agent:attention', attention('resolved'));
+			emitMockEvent('agent:attention', attention('turnEnded', { title: null }));
+			expect(notified).toEqual([
+				{ id: 'sess-1', projectPath: '/repos/app', label: 'Fix the build' },
+				{ id: 'sess-1', projectPath: '/repos/app', label: 'Session sess-1' }
+			]);
 		});
 	});
 

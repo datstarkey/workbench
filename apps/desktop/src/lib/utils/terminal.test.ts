@@ -36,7 +36,8 @@ describe('native terminal IPC wrappers', () => {
 			y: 0,
 			width: 800,
 			height: 600,
-			fontSize: 14
+			fontSize: 14,
+			projectRoot: '/projects/test'
 		});
 
 		expect(invokeSpy).toHaveBeenCalledWith(
@@ -44,6 +45,7 @@ describe('native terminal IPC wrappers', () => {
 			expect.objectContaining({
 				sessionId: 'ses-1',
 				projectPath: '/projects/test',
+				projectRoot: '/projects/test',
 				shell: '/bin/zsh',
 				fontSize: 14,
 				startupCommand: null
