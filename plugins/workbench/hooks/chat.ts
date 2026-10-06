@@ -301,6 +301,12 @@ export const register: Register = (on) => {
 							} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
 								effort = req.settings.effortLevel as TurnStepInput['effort'];
 								reply(line.request_id);
+							} else if (sub === 'rewind_files') {
+								// A plugin has no way to restore Claude's file checkpoints.
+								reply(
+									line.request_id,
+									"Files can't be restored in a terminal chat yet. Rewind the conversation only, or undo the changes with git."
+								);
 							} else {
 								reply(
 									line.request_id,
