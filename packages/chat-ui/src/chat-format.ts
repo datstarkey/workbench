@@ -1,4 +1,6 @@
+import { replaceToken, tokenAtCaret, type CaretToken } from './composer-tokens';
 import type { ElicitationItem } from './elicitation-form';
+import { isArtifactTool } from './artifacts';
 import { contextUsage } from './usage-format';
 import type {
 	AgentKind,
@@ -20,6 +22,9 @@ export type ApprovalItem = Extract<TranscriptItem, { kind: 'approval' }>;
 
 /** Tools that only look around. Runs of these collapse into one row of chips. */
 const QUIET_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'ToolSearch']);
+
+/** Tools the plan panel shows (`latestTodos`) rather than the transcript. */
+const PLAN_TOOLS = new Set(['TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList']);
 
 export type StepBlock =
 	| { kind: 'item'; item: TranscriptItem }
@@ -63,7 +68,7 @@ export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
 		if (item.kind === 'tool' && QUIET_TOOLS.has(item.name) && item.status !== 'error') {
 			if (last?.kind === 'quiet') last.tools.push(item);
 			else blocks.push({ kind: 'quiet', id: item.id, tools: [item] });
-		} else if (item.kind !== 'tool' || item.name !== 'TodoWrite') {
+		} else if (item.kind !== 'tool' || !PLAN_TOOLS.has(item.name) || item.status === 'error') {
 			blocks.push({ kind: 'item', item });
 		}
 	}
@@ -73,7 +78,12 @@ export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
 function stepTools(block: StepBlock): ToolItem[] | null {
 	if (block.kind === 'quiet') return block.tools;
 	if (block.item.kind === 'thinking') return [];
-	return block.item.kind === 'tool' && block.item.status === 'ok' ? [block.item] : null;
+	// An artifact card carries a link, so it stays in view.
+	return block.item.kind === 'tool' &&
+		block.item.status === 'ok' &&
+		!isArtifactTool(block.item.name)
+		? [block.item]
+		: null;
 }
 
 /** Runs with two or more finished calls fold; running and failed calls stay in view. */
@@ -201,17 +211,82 @@ export function patchStats(patch: TranscriptPatchHunk[] | undefined): {
 export interface TodoStep {
 	content: string;
 	status: 'pending' | 'in_progress' | 'completed';
+	activeForm?: string;
 }
 
-/** The plan from the most recent TodoWrite call, if any. */
+const STEP_STATUSES = new Set<string>(['pending', 'in_progress', 'completed']);
+
+const optionalString = (v: unknown) => (typeof v === 'string' ? v : undefined);
+
+/**
+ * The plan as of the last call: TodoWrite and a TaskList result replace it,
+ * TaskCreate and TaskUpdate edit it. A task counts once its TaskCreate has a
+ * result (an interrupted one never made it), whose text carries the id; items
+ * hold only that text, so if its wording changes the next number is assumed
+ * (the CLI numbers tasks 1, 2, …).
+ */
 export function latestTodos(items: TranscriptItem[]): TodoStep[] {
-	for (let i = items.length - 1; i >= 0; i--) {
-		const item = items[i];
-		if (item.kind !== 'tool' || item.name !== 'TodoWrite') continue;
-		const todos = item.input?.todos;
-		return Array.isArray(todos) ? (todos as TodoStep[]) : [];
+	let plan = new Map<string, TodoStep>();
+	let next = 1;
+	const seen = (id: string) => {
+		if (/^\d+$/.test(id)) next = Math.max(next, Number(id) + 1);
+	};
+	for (const item of items) {
+		// A null input is still streaming.
+		if (item.kind !== 'tool' || item.status === 'error' || !item.input) continue;
+		const input = item.input;
+		if (item.name === 'TodoWrite') {
+			if (Array.isArray(input.todos))
+				plan = new Map((input.todos as TodoStep[]).map((t, i) => [`todo:${i}`, t]));
+		} else if (item.name === 'TaskCreate' && item.output != null) {
+			const id = /^Task #(\S+) created successfully/.exec(item.output)?.[1] ?? String(next);
+			plan.set(id, {
+				content: String(input.subject ?? ''),
+				status: 'pending',
+				activeForm: optionalString(input.activeForm)
+			});
+			seen(id);
+		} else if (item.name === 'TaskUpdate') {
+			const id = String(input.taskId ?? '');
+			const step = plan.get(id);
+			if (!step) continue;
+			if (input.status === 'deleted') plan.delete(id);
+			else
+				plan.set(id, {
+					content: optionalString(input.subject) ?? step.content,
+					status: STEP_STATUSES.has(input.status as string)
+						? (input.status as TodoStep['status'])
+						: step.status,
+					activeForm: optionalString(input.activeForm) ?? step.activeForm
+				});
+		} else if (item.name === 'TaskList' && item.output != null && !item.fullOutputBytes) {
+			plan = taskListPlan(item.output, plan);
+			for (const id of plan.keys()) seen(id);
+		}
 	}
-	return [];
+	return [...plan.values()];
+}
+
+/**
+ * TaskList prints `#<id> [<status>] <subject>[ (owner)][ [blocked by #…]]` per
+ * task. The owner can't be told from a subject ending in parentheses, so a
+ * known subject the line starts with is kept as is.
+ */
+function taskListPlan(output: string, known: Map<string, TodoStep>): Map<string, TodoStep> {
+	const plan = new Map<string, TodoStep>();
+	for (const line of output.split('\n')) {
+		const m = /^#(\S+) \[(\w+)\] (.*)$/.exec(line);
+		if (!m || !STEP_STATUSES.has(m[2])) continue;
+		const [, id, status, rest] = m;
+		const listed = rest.replace(/ \[blocked by [^\]]*\]$/, '');
+		const step = known.get(id);
+		plan.set(id, {
+			content: step && listed.startsWith(step.content) ? step.content : listed,
+			status: status as TodoStep['status'],
+			activeForm: step?.activeForm
+		});
+	}
+	return plan;
 }
 
 export function formatTokens(n: number | null): string {
@@ -410,6 +485,18 @@ export function pickTasks(
 	return { agents, jobs, tab, selected: list.find((t) => t.id === pickedId) ?? list[0] ?? null };
 }
 
+export type TaskView = 'conversation' | 'output';
+
+/** A subagent opens on its own conversation; other tasks only have output. */
+export function taskViews(task: TaskInfo): TaskView[] {
+	return task.kind === 'agent' ? ['conversation', 'output'] : ['output'];
+}
+
+export function pickTaskView(task: TaskInfo, picked: TaskView | null): TaskView {
+	const views = taskViews(task);
+	return picked && views.includes(picked) ? picked : views[0];
+}
+
 /** `1.8k tokens`, `24k tokens`. */
 export function formatCount(n: number, unit: string): string {
 	const value =
@@ -479,10 +566,31 @@ export function effortLabel(level: EffortLevel | null): string {
 	return level ? EFFORT_LABELS[level] : 'Default effort';
 }
 
-/** The `/` command being typed, if the draft is just `/` plus a name so far. */
-export function slashQuery(draft: string): string | null {
-	const match = /^\/(\S*)$/.exec(draft);
-	return match ? match[1].toLowerCase() : null;
+/** A `/` command being typed: where its `/` is and the name after it, lowercased. */
+export type SlashQuery = CaretToken;
+
+/**
+ * The `/name` word ending at the caret, at the start or after whitespace, as
+ * Claude Code's prompt offers commands mid-line; a path like `src/x` isn't one.
+ */
+export function slashQuery(draft: string, caret = draft.length): SlashQuery | null {
+	const token = tokenAtCaret(draft, caret, '/');
+	return token && { ...token, query: token.query.toLowerCase() };
+}
+
+/** Only whitespace around the `/name` being typed: it can run or send on its own. */
+export function isWholeCommand(draft: string, slash: SlashQuery, caret: number): boolean {
+	return !draft.slice(0, slash.start).trim() && !draft.slice(caret).replace(/^\S*/, '').trim();
+}
+
+/** The draft with the `/name` being typed replaced by `/<name> `, and the caret after it. */
+export function insertCommand(
+	draft: string,
+	slash: SlashQuery,
+	caret: number,
+	name: string
+): { text: string; caret: number } {
+	return replaceToken(draft, slash.start, caret, `/${name} `);
 }
 
 /** Commands for the `/` menu: name prefix matches, then name, then description matches. */

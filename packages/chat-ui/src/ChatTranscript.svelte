@@ -1,16 +1,21 @@
 <script lang="ts">
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import HistoryIcon from '@lucide/svelte/icons/history';
 	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import { cn } from '@workbench/ui';
 	import type { AgentChat } from './agent-chat.svelte';
 	import ChatActivity from './ChatActivity.svelte';
 	import ChatApproval from './ChatApproval.svelte';
+	import ChatElicitation from './ChatElicitation.svelte';
+	import ChatArtifactCard from './ChatArtifactCard.svelte';
+	import ChatEvent from './ChatEvent.svelte';
 	import ChatMarkdown from './ChatMarkdown.svelte';
 	import ChatQuestion from './ChatQuestion.svelte';
-	import ChatElicitation from './ChatElicitation.svelte';
+	import ChatRewind from './ChatRewind.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
+	import { artifactFor } from './artifacts';
 	import {
 		activity,
 		agentName,
@@ -77,13 +82,18 @@
 			</details>
 		{/if}
 	{:else if block.item.kind === 'tool'}
-		<ChatToolCard
-			tool={block.item}
-			{cwd}
-			startedAt={chat.seenAt[block.item.id]}
-			fetchFullOutput={(id) => chat.fullOutput(id)}
-			fetchArtifacts={(id) => chat.artifacts(id)}
-		/>
+		{@const artifact = artifactFor(chat.meta, block.item.id)}
+		{#if artifact}
+			<ChatArtifactCard {artifact} />
+		{:else}
+			<ChatToolCard
+				tool={block.item}
+				{cwd}
+				startedAt={chat.seenAt[block.item.id]}
+				fetchFullOutput={(id) => chat.fullOutput(id)}
+				fetchArtifacts={(id) => chat.artifacts(id)}
+			/>
+		{/if}
 	{/if}
 {/snippet}
 
@@ -99,6 +109,23 @@
 			<div class="flex gap-2">
 				<button type="button" class="chat-btn primary" onclick={() => chat.open()}>
 					Try again
+				</button>
+				{#if onShowTerminal}
+					<button type="button" class="chat-btn" onclick={onShowTerminal}>Use the terminal</button>
+				{/if}
+			</div>
+		</div>
+	{:else if chat.status === 'trust'}
+		<div class="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 text-center">
+			<p class="font-medium">Trust this folder?</p>
+			<p class="text-xs text-wb-ink-mute">
+				Claude Code asks once before working in a new folder. {name} will be able to read, edit and run
+				files in
+				<span class="font-mono break-all text-wb-ink">{chat.trustPath}</span>.
+			</p>
+			<div class="flex gap-2">
+				<button type="button" class="chat-btn primary" onclick={() => chat.trustFolder()}>
+					Trust folder
 				</button>
 				{#if onShowTerminal}
 					<button type="button" class="chat-btn" onclick={onShowTerminal}>Use the terminal</button>
@@ -169,6 +196,7 @@
 			{@render step(block)}
 		{:else if block.item.kind === 'user'}
 			{@const previews = chat.imagePreviews[block.item.id] ?? []}
+			{@const user = block.item}
 			<div class="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
 				{#if previews.length > 0}
 					<div class="flex flex-wrap justify-end gap-1.5">
@@ -186,10 +214,28 @@
 					</span>
 				{/if}
 				{@render attachedFiles(block.item.files ?? [])}
-				{#if block.item.text}
-					<div class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap">
-						{block.item.text}
+				{#if block.item.text || chat.canRewind}
+					<div class="user-row flex items-center gap-1.5">
+						{#if chat.canRewind && chat.rewind?.messageId !== user.id}
+							<button
+								type="button"
+								class="rewind-btn rounded-md p-1 text-wb-ink-soft hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+								title="Rewind to here"
+								aria-label="Rewind to before this message"
+								onclick={() => chat.beginRewind(user.id, user.text)}
+							>
+								<HistoryIcon class="size-3.5" />
+							</button>
+						{/if}
+						{#if user.text}
+							<div class="rounded-2xl rounded-br-md bg-wb-panel2 px-3.5 py-2 whitespace-pre-wrap">
+								{user.text}
+							</div>
+						{/if}
 					</div>
+				{/if}
+				{#if chat.rewind?.messageId === block.item.id}
+					<ChatRewind {chat} {cwd} onRestorePrompt={onStarter} />
 				{/if}
 			</div>
 		{:else if block.item.kind === 'text'}
@@ -226,6 +272,8 @@
 					onAnswer={(action, content) => chat.elicit(elicitation.id, action, content)}
 				/>
 			{/if}
+		{:else if block.item.kind === 'event'}
+			<ChatEvent item={block.item} />
 		{:else}
 			<p class="text-center text-xs whitespace-pre-wrap text-wb-ink-soft">
 				{block.item.text}
@@ -358,6 +406,13 @@
 	.chat-btn:focus-visible {
 		outline: 2px solid var(--wb-accent);
 		outline-offset: 1px;
+	}
+
+	/* Shown on hover or focus with a mouse; always shown on touch screens. */
+	@media (hover: hover) {
+		.user-row:not(:hover) .rewind-btn:not(:focus-visible) {
+			opacity: 0;
+		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {

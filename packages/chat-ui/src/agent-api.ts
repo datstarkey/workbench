@@ -1,13 +1,33 @@
 import { agentWsUrl } from '@workbench/transport';
-import type { AgentClientMsg, AgentSummary, StartAgentBody, UsageLimit } from '@workbench/types';
+import type {
+	AgentClientMsg,
+	AgentSummary,
+	StartAgentBody,
+	TaskTranscript,
+	UsageLimit
+} from '@workbench/types';
+
+/** Claude Code asks to trust the chat's folder before it starts; `path` is that folder. */
+export class NeedsTrustError extends Error {
+	constructor(readonly path: string) {
+		super(`Claude Code needs you to trust ${path} first`);
+	}
+}
 
 /** What an {@link AgentChat} needs from the server; injectable for tests. */
 export interface AgentApi {
-	/** Resolves to the session's id: a new Codex thread only gets one here. */
+	/**
+	 * Resolves to the session's id: a new Codex thread only gets one here.
+	 * Rejects with {@link NeedsTrustError} while Claude Code waits on its folder trust dialog.
+	 */
 	start(body: StartAgentBody): Promise<string>;
 	socketUrl(sessionId: string): Promise<string>;
+	/** The server terminal a started Claude chat runs in (its interactive `claude`). */
+	terminalId?(sessionId: string): string | undefined;
 	/** The chat cwd's files for `@` mentions; absent leaves the menu out. */
 	files?(where: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]>;
+	/** A subagent's own conversation; null until the CLI writes it. */
+	taskTranscript?(sessionId: string, taskId: string): Promise<TaskTranscript | null>;
 }
 
 export interface AgentServer {
@@ -42,17 +62,21 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		return resp.status === 204 ? null : ((await resp.json()) as T);
 	}
 	const path = (id: string) => `/agent/claude/${encodeURIComponent(id)}`;
+	const terminals = new Map<string, string>();
 
 	return {
 		async start(body: StartAgentBody): Promise<string> {
-			const res = await call<{ sessionId: string }>(
-				'POST',
-				`/agent/${body.agent ?? 'claude'}`,
-				body
-			);
+			const res = await call<{
+				sessionId: string;
+				terminalId?: string | null;
+				needsTrust?: string;
+			}>('POST', `/agent/${body.agent ?? 'claude'}`, body);
+			if (res?.needsTrust) throw new NeedsTrustError(res.needsTrust);
 			if (!res?.sessionId) throw new Error('The server did not return a session id');
+			if (res.terminalId) terminals.set(res.sessionId, res.terminalId);
 			return res.sessionId;
 		},
+		terminalId: (sessionId: string) => terminals.get(sessionId),
 		async socketUrl(sessionId: string): Promise<string> {
 			const { baseUrl, token } = await server();
 			return agentWsUrl(baseUrl, sessionId, token ?? undefined);
@@ -67,9 +91,18 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 			}).toString();
 			return (await call<string[]>('GET', `/agent/files?${query}`)) ?? [];
 		},
-		/** Stop a session's process, e.g. before a terminal takes it over. */
-		async stop(sessionId: string): Promise<void> {
-			await call('DELETE', path(sessionId));
+		taskTranscript(sessionId: string, taskId: string): Promise<TaskTranscript | null> {
+			return call<TaskTranscript>(
+				'GET',
+				`${path(sessionId)}/tasks/${encodeURIComponent(taskId)}/transcript`
+			);
+		},
+		/**
+		 * Stop a session's process, e.g. before a terminal takes it over. `end`:
+		 * the person ended the chat, so other devices close it too.
+		 */
+		async stop(sessionId: string, opts?: { end?: boolean }): Promise<void> {
+			await call('DELETE', `${path(sessionId)}${opts?.end ? '?end=true' : ''}`);
 		},
 		/** Stop whatever chat session a closed pane owned. */
 		async stopPane(paneId: string): Promise<void> {

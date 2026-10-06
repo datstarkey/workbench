@@ -46,6 +46,11 @@ pub fn router(state: AppState) -> Router {
             "/remote/terminals/:id",
             delete(crate::terminal::terminal_kill),
         )
+        .route("/mod/hello", post(crate::mod_routes::hello))
+        .route("/mod/out", post(crate::mod_routes::out))
+        .route("/mod/in", get(crate::mod_routes::poll))
+        .route("/mod/ask", post(crate::mod_routes::ask))
+        .route("/mod/bye", post(crate::mod_routes::bye))
         .route("/agent", get(crate::agent_routes::agent_list))
         .route(
             "/agent/claude",
@@ -64,6 +69,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agent/claude/:id/message",
             post(crate::agent_routes::agent_message),
+        )
+        .route(
+            "/agent/claude/:id/tasks/:task_id/transcript",
+            get(crate::agent_routes::agent_task_transcript),
         )
         .route("/agent/claude/:id", delete(crate::agent_routes::agent_stop))
         .route(

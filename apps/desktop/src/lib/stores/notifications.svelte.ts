@@ -9,7 +9,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap } from 'svelte/reactivity';
 import { visibleSplit } from '$features/terminal/split-view';
-import type { ClaudeSessionStore } from './claudeSessions.svelte';
+import { baseName } from '$lib/utils/path';
+import type { AttentionTarget, ClaudeSessionStore } from './claudeSessions.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 
 export class NotificationStore {
@@ -32,8 +33,8 @@ export class NotificationStore {
 		this.workspaces = workspaces;
 		this.ready = this.init();
 
-		sessions.onAwaitingInput((paneId) => {
-			this.notifyAwaitingInput(paneId);
+		sessions.onAwaitingInput((target) => {
+			void this.notifyAwaitingInput(target);
 		});
 	}
 
@@ -109,12 +110,18 @@ export class NotificationStore {
 		return shown.some((tab) => tab.panes.some((p) => p.id === paneId));
 	}
 
-	private async notifyAwaitingInput(paneId: string): Promise<void> {
+	private async notifyAwaitingInput(target: AttentionTarget): Promise<void> {
 		await this.ready;
+		// A session no pane shows here (started on the phone) is routed by its id;
+		// a click on it just brings the window forward.
+		const paneId = 'paneId' in target ? target.paneId : target.id;
 		// Suppress only when the user is actively looking at THIS pane —
 		// other panes still get notified even when the window is focused.
 		if ((await this.isWindowFocused()) && this.isPaneActive(paneId)) return;
-		const ctx = this.findContext(paneId);
+		const ctx =
+			'paneId' in target
+				? this.findContext(paneId)
+				: { projectName: baseName(target.projectPath), tabLabel: target.label };
 		if (!ctx) return;
 
 		const title = `${ctx.projectName} — needs input`;

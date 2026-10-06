@@ -1,0 +1,8 @@
+{
+	"$schema": "../gen/schemas/mobile-schema.json",
+	"identifier": "speech-input",
+	"description": "Native voice input for Claude and Codex chat drafts on Android.",
+	"windows": ["main"],
+	"platforms": ["android"],
+	"permissions": ["speech-input:default"]
+}

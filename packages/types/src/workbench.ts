@@ -167,6 +167,12 @@ export interface TerminalPaneState {
 	serverTerminalId?: string;
 	/** Claude panes can show their session as chat; the terminal keeps running underneath. */
 	view?: PaneView;
+	/**
+	 * The chat view is the terminal's own `claude`, bridged by the Workbench
+	 * plugin: switching views keeps the one process. Cleared on load (the
+	 * terminal died with the app; the chat starts a new one, resumed).
+	 */
+	liveTerminal?: boolean;
 	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
 	claudeAccountId?: string;
 }
@@ -458,7 +464,6 @@ export interface WorkbenchSettings {
 	terminalTelemetryEnabled: boolean;
 	terminalRenderer: TerminalRenderer;
 	agentActions: AgentAction[];
-	claudeHooksApproved?: boolean | null;
 	codexConfigApproved?: boolean | null;
 	claudePermissionMode: ClaudePermissionMode;
 	codexApprovalPolicy: CodexApprovalPolicy;
@@ -627,7 +632,28 @@ export type TranscriptItem =
 			/** What an accepted form sent. */
 			content?: Record<string, unknown>;
 	  }
-	| { kind: 'notice'; id: string; text: string };
+	| { kind: 'notice'; id: string; text: string }
+	/** Something around the conversation: a denied tool, a hook that failed or blocked, recalled memories, a refusal. */
+	| {
+			kind: 'event';
+			id: string;
+			event: TranscriptEventKind;
+			title: string;
+			detail?: string;
+			/** Memory files (paths or URLs) for `memory`. */
+			files?: string[];
+	  };
+
+export type TranscriptEventKind = 'permissionDenied' | 'hook' | 'memory' | 'refusal';
+
+/** An artifact on claude.ai an `Artifact` call published or opened (mirror of core `ArtifactInfo`). */
+export interface ArtifactInfo {
+	toolUseId: string;
+	url: string;
+	title?: string;
+	action: 'created' | 'updated' | 'opened' | 'published';
+	version?: string;
+}
 
 export type ElicitationAction = 'accept' | 'decline' | 'cancel';
 
@@ -648,6 +674,15 @@ export interface TaskInfo {
 	activity?: string;
 	lastTool?: string;
 	summary?: string;
+	/** Whose `<id>.output` file holds the live output, when not `id` itself. */
+	outputId?: string;
+}
+
+/** A subagent's own conversation (`GET /agent/claude/:id/tasks/:taskId/transcript`). */
+export interface TaskTranscript {
+	/** How many earlier items were left out. */
+	start: number;
+	items: TranscriptItem[];
 }
 
 /** A slash command the session accepts (built-ins, custom commands, skills). */
@@ -697,6 +732,10 @@ export interface TranscriptMeta {
 	/** A `CodexMode` in a Codex chat; null there when Codex's own config is in charge. */
 	permissionMode: PermissionMode | CodexMode | null;
 	contextTokens: number | null;
+	/** Claude only: unix ms when the prompt cache the latest API call used expires. */
+	cacheExpiresAt?: number;
+	/** Claude only: that cache's lifetime in seconds (3600 or 300). */
+	cacheTtlSecs?: number;
 	busy: boolean;
 	tasks: TaskInfo[];
 	retry: RetryInfo | null;
@@ -711,6 +750,18 @@ export interface TranscriptMeta {
 	/** Codex only: plan limits as the stream reports them (Claude's come from `GET /agent/usage`). */
 	usageLimits?: UsageLimit[];
 	codex?: CodexState;
+	/** Claude only: artifacts this conversation's `Artifact` calls touched, in call order. */
+	artifacts?: ArtifactInfo[];
+	/** Claude only: a likely next prompt, until the next turn starts. */
+	promptSuggestion?: string;
+}
+
+/** A chat's prompt cache upkeep, run by the server (Claude only). */
+export interface CachePolicy {
+	/** Unix ms; hidden keep-alive turns refresh the cache until then (at most 24h ahead). */
+	keepWarmUntil?: number;
+	/** Compact just before the cache expires (once keep-warm has ended). */
+	compactOnExpiry: boolean;
 }
 
 export type CodexAction =
@@ -790,11 +841,14 @@ export type AgentServerMsg =
 			items: TranscriptItem[];
 			meta: TranscriptMeta;
 			commands: SlashCommand[];
+			cachePolicy?: CachePolicy;
 			exited: boolean;
 	  }
+	| { t: 'cachePolicy'; policy: CachePolicy }
 	/** `[index, item]` pairs that were added or changed. */
 	| { t: 'update'; changes: [number, TranscriptItem][]; meta: TranscriptMeta }
-	| { t: 'exit'; code: number | null; message: string | null }
+	/** `ended`: the person ended it (End session), not a crash, `/exit` or a handoff. */
+	| { t: 'exit'; code: number | null; message: string | null; ended?: boolean }
 	| { t: 'error'; message: string }
 	/** The slash command list changed (sent apart from meta: it's large). */
 	| { t: 'commands'; commands: SlashCommand[] }
@@ -802,7 +856,27 @@ export type AgentServerMsg =
 	| { t: 'output'; toolId: string; text: string | null }
 	/** Reply to `taskOutput`: the end of a background task's output, null until it exists. */
 	| { t: 'taskOutput'; taskId: string; text: string | null; bytes: number | null }
+	/** Reply to `rewind`: the file restore (or its preview, when `dryRun`), or why it failed. */
+	| {
+			t: 'rewind';
+			messageId: string;
+			dryRun: boolean;
+			files: RewindFiles | null;
+			error: string | null;
+	  }
+	/** The process restarted under the same id (a conversation rewind): attach again. */
+	| { t: 'replaced' }
 	| { t: 'revoked' };
+
+/** Claude's answer to a file rewind (the Agent SDK's `RewindFilesResult`). */
+export interface RewindFiles {
+	canRewind: boolean;
+	error?: string;
+	/** Absolute paths; only on a dry run. */
+	filesChanged?: string[];
+	insertions?: number;
+	deletions?: number;
+}
 
 /** An image attached to a chat message: base64 data the Claude API accepts. */
 export interface ChatImage {
@@ -845,7 +919,15 @@ export type AgentClientMsg =
 	| { t: 'model'; model: string }
 	| { t: 'effort'; effort: EffortLevel }
 	| { t: 'output'; toolId: string }
-	| { t: 'taskOutput'; taskId: string };
+	| { t: 'taskOutput'; taskId: string }
+	/** Refresh the prompt cache now with a hidden keep-alive turn. */
+	| { t: 'cachePing' }
+	| { t: 'cachePolicy'; policy: CachePolicy }
+	/**
+	 * Go back to before the prompt `messageId` (Claude only): restore the files
+	 * changed since (`code`) and/or restart the conversation from there.
+	 */
+	| { t: 'rewind'; messageId: string; code: boolean; conversation: boolean; dryRun: boolean };
 
 export interface StartAgentBody {
 	/** Picks the route (`/agent/claude` or `/agent/codex`); absent is Claude. */
@@ -868,6 +950,8 @@ export interface StartAgentBody {
 	claudeAccountId?: string;
 	/** Join the running session only (another device's chat); 404 instead of spawning. */
 	attachOnly?: boolean;
+	/** Claude: the person trusted the folder, so the server answers Claude Code's trust dialog. */
+	trustFolder?: boolean;
 }
 
 /** A running chat session, as `GET /agent` lists it (phone home screen). */
@@ -889,10 +973,34 @@ export interface AgentSummary {
 	updatedAt: number;
 	/** Unix ms when the last turn went idle; null before one ends, absent from older servers. */
 	turnEndedAt?: number | null;
-	/** The oldest unanswered approval, question or MCP elicitation (`tool: 'Elicitation'`). */
-	waiting: { id: string; tool: string; preview: string } | null;
+	/**
+	 * The oldest unanswered approval, question or MCP elicitation (`tool: 'Elicitation'`).
+	 * `inTerminal`: asked in the terminal's own dialog (no chat was open), so only answerable there.
+	 */
+	waiting: { id: string; tool: string; preview: string; inTerminal?: boolean } | null;
 	/** The newest tool call still running in this turn. */
 	running: { name: string; detail: string } | null;
 	/** Ids it ran under before a `/clear`, so a client holding one follows the re-key. */
 	previousIds: string[];
+	/** The server terminal whose interactive `claude` this chat is. */
+	terminalId?: string;
+}
+
+/**
+ * `agent:attention` (desktop): a session on this machine started or stopped waiting
+ * on someone, or finished a turn. Mirrors `workbench_server::attention::Attention`.
+ */
+export interface AgentAttention {
+	kind: 'waiting' | 'resolved' | 'turnEnded';
+	agent: AgentKind;
+	sessionId: string;
+	previousIds: string[];
+	paneId: string | null;
+	terminalId: string | null;
+	projectPath: string;
+	worktreePath: string | null;
+	title: string | null;
+	waiting: AgentSummary['waiting'];
+	/** Still mid-turn (an answered approval lets the turn go on). */
+	busy: boolean;
 }

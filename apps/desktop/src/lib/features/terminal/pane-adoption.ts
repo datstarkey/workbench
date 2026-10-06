@@ -37,6 +37,8 @@ export class PaneAdoption {
 	 * later continuation on that device can be adopted again.
 	 */
 	private closedChats = new Set<string>();
+	/** Workspaces opened in the background to host an adopted chat. */
+	private createdWorkspaces = new Set<string>();
 
 	isAdopted(paneId: string): boolean {
 		return this.adopted.has(paneId);
@@ -47,8 +49,43 @@ export class PaneAdoption {
 		return this.adopted.delete(paneId);
 	}
 
+	/** A workspace opened only to host an adopted chat. */
+	markCreated(workspaceId: string): void {
+		this.createdWorkspaces.add(workspaceId);
+	}
+
+	/** Opened for adoption and now empty: it closes rather than linger. */
+	isAbandoned(ws: ProjectWorkspace): boolean {
+		return this.createdWorkspaces.has(ws.id) && ws.terminalTabs.length === 0;
+	}
+
+	/**
+	 * Workspaces without adopted panes, for persisting. One opened for adoption
+	 * is left out until it holds something of this window's own: re-adoption
+	 * rebuilds it after a reload.
+	 */
 	persistable(workspaces: ProjectWorkspace[]): ProjectWorkspace[] {
-		return withoutPanes(workspaces, this.adopted);
+		return withoutPanes(workspaces, this.adopted).filter(
+			(w) => !this.createdWorkspaces.has(w.id) || w.terminalTabs.length > 0
+		);
+	}
+
+	/** Adopted panes whose tab label lags the chat's title on the server. */
+	relabels(
+		workspaces: ProjectWorkspace[],
+		list: AgentSummary[]
+	): { paneId: string; label: string; type: AgentKind }[] {
+		const titles = new Map(list.flatMap((c) => (c.title ? [[c.sessionId, c.title]] : [])));
+		return workspaces.flatMap((w) =>
+			w.terminalTabs.flatMap((t) =>
+				t.panes.flatMap((p) => {
+					const title = p.claudeSessionId && titles.get(p.claudeSessionId);
+					return this.adopted.has(p.id) && title && title !== t.label
+						? [{ paneId: p.id, label: title, type: paneAgent(p) }]
+						: [];
+				})
+			)
+		);
 	}
 
 	/** Server terminal ids the poller must skip: mapped to panes or released. */

@@ -5,10 +5,6 @@
 
 	const store = getIntegrationApprovalStore();
 
-	let title = $derived(
-		store.sessionType === 'codex' ? 'Configure Codex Integration' : 'Configure Claude Integration'
-	);
-
 	function onOpenChange(open: boolean) {
 		if (!open) store.dismiss();
 	}
@@ -17,7 +13,7 @@
 <Dialog.Root open={store.open} {onOpenChange}>
 	<Dialog.Content class="sm:max-w-md">
 		<Dialog.Header>
-			<Dialog.Title>{title}</Dialog.Title>
+			<Dialog.Title>Configure Codex Integration</Dialog.Title>
 			<Dialog.Description>{store.description}</Dialog.Description>
 		</Dialog.Header>
 		{#if store.error}

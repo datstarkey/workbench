@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { tick, type Snippet } from 'svelte';
+	import { onDestroy, tick, type Snippet } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import ImagePlusIcon from '@lucide/svelte/icons/image-plus';
+	import MicIcon from '@lucide/svelte/icons/mic';
 	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -22,7 +23,9 @@
 	} from '@workbench/types';
 	import {
 		agentName,
+		insertCommand,
 		isRiskyMode,
+		isWholeCommand,
 		matchCommands,
 		modeLabel,
 		modeOptions,
@@ -38,6 +41,7 @@
 	} from './attachment-intake';
 	import { insertMention, matchFiles, mentionQuery } from './file-mentions';
 	import { getChatPlatform } from './platform';
+	import { Dictation, insertDictation } from './dictation.svelte';
 
 	let {
 		id,
@@ -96,6 +100,8 @@
 
 	const platform = getChatPlatform();
 	const enterSends = platform.enterSends ?? true;
+	const dictation = platform.dictate ? new Dictation(platform.dictate) : null;
+	onDestroy(() => dictation?.dispose());
 
 	let attachError = $state('');
 	/** A file is being dragged over this composer. */
@@ -106,22 +112,28 @@
 	/** The `/` and `@` menus: matches for what's being typed, unless dismissed with Esc. */
 	let menuIndex = $state(0);
 	let dismissedAt = $state<string | null>(null);
-	const query = $derived(slashQuery(draft));
-	const matches = $derived(query === null ? [] : matchCommands(commands, query));
-	const menuOpen = $derived(matches.length > 0 && dismissedAt !== draft && !disabledReason);
+	/** The caret, read on input/keyup/click, counts only for the draft it was read on. */
+	let caretAt = $state({ draft: '', caret: 0 });
+	const caret = $derived(caretAt.draft === draft ? caretAt.caret : draft.length);
+	/** Esc dismisses the menu for this text and caret only. */
+	const menuKey = $derived(`${caret}:${draft}`);
+	const slash = $derived(slashQuery(draft, caret));
+	/** A command typed after other text: Enter sends the message, Tab or a click picks. */
+	const midLine = $derived(slash !== null && !isWholeCommand(draft, slash, caret));
+	const matches = $derived(slash ? matchCommands(commands, slash.query) : []);
+	const menuOpen = $derived(matches.length > 0 && dismissedAt !== menuKey && !disabledReason);
 
-	let caret = $state(0);
 	let paths = $state.raw<string[]>([]);
 	const mention = $derived(loadFiles && !menuOpen ? mentionQuery(draft, caret) : null);
 	const fileMatches = $derived(mention ? matchFiles(paths, mention.query) : []);
-	const filesOpen = $derived(fileMatches.length > 0 && dismissedAt !== draft && !disabledReason);
+	const filesOpen = $derived(fileMatches.length > 0 && dismissedAt !== menuKey && !disabledReason);
 	const options = $derived(menuOpen ? matches.length : filesOpen ? fileMatches.length : 0);
 	const active = $derived(Math.min(menuIndex, options - 1));
 
 	/** Track the caret and fetch the file list (cached by the chat) once `@` is typed. */
 	function onCaret(node: HTMLTextAreaElement) {
-		caret = node.selectionStart;
-		if (loadFiles && mentionQuery(node.value, caret)) {
+		caretAt = { draft: node.value, caret: node.selectionStart };
+		if (loadFiles && mentionQuery(node.value, node.selectionStart)) {
 			void loadFiles().then((list) => (paths = list));
 		}
 	}
@@ -130,24 +142,44 @@
 		if (!mention || !textarea) return;
 		const next = insertMention(draft, mention, caret, path);
 		menuIndex = 0;
-		draft = next.text;
-		caret = next.caret;
-		await tick();
-		textarea.setSelectionRange(next.caret, next.caret);
+		await place(next);
 	}
 
-	function pick(command: SlashCommand, sendNow: boolean) {
+	/** Set the draft and put the caret where an inserted token ends. */
+	async function place(next: { text: string; caret: number }) {
+		draft = next.text;
+		caretAt = { draft: next.text, caret: next.caret };
+		await tick();
+		textarea?.setSelectionRange(next.caret, next.caret);
+	}
+
+	function dictate() {
+		if (!dictation || disabledReason !== null) return;
+		void dictation.start(async (text) => {
+			if (disabledReason !== null) return;
+			await place(insertDictation(draft, text, textarea?.selectionStart, textarea?.selectionEnd));
+			textarea?.focus();
+		});
+	}
+
+	/**
+	 * A command that is the whole draft can be handled here or sent at once;
+	 * one typed mid-line is inserted where it stands, for Claude to expand.
+	 */
+	async function pick(command: SlashCommand, sendNow: boolean) {
+		if (!slash) return;
 		menuIndex = 0;
-		if (onCommand?.(command.name)) {
+		const whole = !midLine;
+		if (whole && onCommand?.(command.name)) {
 			draft = '';
 			return;
 		}
-		if (command.argumentHint || !sendNow) {
-			draft = `/${command.name} `;
+		if (whole && sendNow && !command.argumentHint) {
+			draft = `/${command.name}`;
+			send();
 			return;
 		}
-		draft = `/${command.name}`;
-		send();
+		await place(insertCommand(draft, slash, caret, command.name));
 	}
 
 	const canSend = $derived(
@@ -224,16 +256,17 @@
 				menuIndex = (active + step + options) % options;
 				return;
 			}
-			if ((event.key === 'Enter' && !event.shiftKey && !event.isComposing) || event.key === 'Tab') {
+			const enter = event.key === 'Enter' && !event.shiftKey && !event.isComposing;
+			if ((enter && !(menuOpen && midLine)) || event.key === 'Tab') {
 				event.preventDefault();
-				if (menuOpen) pick(matches[active], event.key === 'Enter' && enterSends);
+				if (menuOpen) void pick(matches[active], event.key === 'Enter' && enterSends);
 				else void pickFile(fileMatches[active]);
 				return;
 			}
 			if (event.key === 'Escape') {
 				event.preventDefault();
 				event.stopPropagation(); // Esc here closes the menu, not the turn
-				dismissedAt = draft;
+				dismissedAt = menuKey;
 				return;
 			}
 		}
@@ -259,7 +292,7 @@
 			items={matches}
 			key={(command) => command.name}
 			{active}
-			onPick={(command) => pick(command, true)}
+			onPick={(command) => void pick(command, true)}
 			onHover={(i) => (menuIndex = i)}
 		>
 			{#snippet row(command)}
@@ -282,10 +315,10 @@
 			onHover={(i) => (menuIndex = i)}
 		>
 			{#snippet row(path)}
-				{@const slash = path.lastIndexOf('/')}
-				<span class="shrink-0 font-mono text-wb-ink">{path.slice(slash + 1)}</span>
+				{@const cut = path.lastIndexOf('/')}
+				<span class="shrink-0 font-mono text-wb-ink">{path.slice(cut + 1)}</span>
 				<span class="min-w-0 truncate font-mono text-[11px] text-wb-ink-soft">
-					{path.slice(0, slash + 1)}
+					{path.slice(0, cut + 1)}
 				</span>
 			{/snippet}
 		</ChatMenu>
@@ -367,6 +400,9 @@
 	{#if attachError}
 		<p class="px-3.5 pb-1 text-[11px] text-wb-err" role="alert">{attachError}</p>
 	{/if}
+	{#if dictation?.error}
+		<p class="px-3.5 pb-1 text-[11px] text-wb-err" role="alert">{dictation.error}</p>
+	{/if}
 	<div class="flex items-center gap-1.5 px-2 pb-2">
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
@@ -431,6 +467,18 @@
 			}}
 		/>
 		<span class="flex-1"></span>
+		{#if dictation}
+			<button
+				type="button"
+				class="flex size-9 shrink-0 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
+				aria-label={dictation.busy ? 'Listening…' : 'Dictate message'}
+				title={dictation.busy ? 'Listening…' : 'Dictate message'}
+				disabled={disabledReason !== null || dictation.busy}
+				onclick={dictate}
+			>
+				<MicIcon class={cn('size-4', dictation.busy && 'text-wb-accent')} />
+			</button>
+		{/if}
 		{#if busy}
 			<button
 				type="button"

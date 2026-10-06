@@ -3,7 +3,7 @@ use tokio::sync::watch;
 use crate::agent::AgentManager;
 use crate::spawn::RemoteControlManager;
 use crate::terminal::TerminalManager;
-use crate::usage::UsageCache;
+use crate::usage::{ModelsCache, UsageCache};
 
 /// The long-lived session managers. Both are `Arc`-backed, so clones share the
 /// same terminals and spawned sessions — which is how the desktop's loopback and
@@ -14,6 +14,7 @@ pub struct Managers {
     pub terminals: TerminalManager,
     pub agents: AgentManager,
     pub usage: UsageCache,
+    pub models: ModelsCache,
 }
 
 impl Managers {
@@ -31,6 +32,7 @@ pub struct AppState {
     pub terminals: TerminalManager,
     pub agents: AgentManager,
     pub usage: UsageCache,
+    pub models: ModelsCache,
     /// When `Some`, requests must present this as a bearer token. Only the
     /// standalone binary on a loopback bind (or with `--insecure-no-token`) runs
     /// with `None`; embedded listeners always carry one.
@@ -39,6 +41,9 @@ pub struct AppState {
     /// listener's graceful shutdown (they run in detached tasks), so each attach
     /// watches this and disconnects — otherwise a revoked token keeps typing.
     pub revoked: watch::Receiver<bool>,
+    /// The port this listener is bound to, so a terminal's plugin can reach
+    /// it on loopback (`mod_routes`). `None` in tests that build state by hand.
+    pub local_port: Option<u16>,
 }
 
 impl AppState {
@@ -48,9 +53,19 @@ impl AppState {
             terminals: managers.terminals,
             agents: managers.agents,
             usage: managers.usage,
+            models: managers.models,
             token,
             revoked,
+            local_port: None,
         }
+    }
+
+    pub fn with_local_port(mut self, port: u16) -> Self {
+        self.local_port = Some(port);
+        // Terminal plugins reach the first listener (the desktop's loopback one),
+        // which outlives a LAN listener that server mode turns off.
+        self.agents.bind_terminals(self.terminals.clone(), port);
+        self
     }
 }
 

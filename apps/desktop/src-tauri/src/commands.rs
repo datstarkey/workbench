@@ -30,7 +30,8 @@ pub async fn read_chat_attachment(
     path: String,
 ) -> Result<workbench_core::chat_attachment::ChatAttachment, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        workbench_core::chat_attachment::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
+        workbench_core::chat_attachment::read(std::path::Path::new(&path))
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -159,7 +160,8 @@ pub fn save_workspaces(
     Ok(true)
 }
 
-#[tauri::command]
+// Async: it reads every session file of every account, off the main thread.
+#[tauri::command(async)]
 pub fn discover_claude_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
@@ -442,11 +444,6 @@ pub fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
 // Integration check/apply commands
 
 #[tauri::command]
-pub fn check_claude_integration() -> IntegrationStatus {
-    settings::check_workbench_hook_integration()
-}
-
-#[tauri::command]
 pub async fn codex_supports_no_daemon() -> bool {
     tauri::async_runtime::spawn_blocking(codex_config::supports_no_daemon)
         .await
@@ -456,12 +453,6 @@ pub async fn codex_supports_no_daemon() -> bool {
 #[tauri::command]
 pub fn check_codex_integration() -> IntegrationStatus {
     codex_config::check_codex_config_status()
-}
-
-#[tauri::command]
-pub fn apply_claude_integration() -> Result<bool, String> {
-    settings::ensure_workbench_hook_integration().map_err(|e| e.to_string())?;
-    Ok(true)
 }
 
 #[tauri::command]

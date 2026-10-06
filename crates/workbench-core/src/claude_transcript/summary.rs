@@ -24,6 +24,9 @@ pub struct WaitingSummary {
     pub id: String,
     pub tool: String,
     pub preview: String,
+    /// Asked in the terminal's own dialog (no chat was open), so only answerable there.
+    #[serde(rename = "inTerminal", skip_serializing_if = "std::ops::Not::not")]
+    pub in_terminal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -47,6 +50,7 @@ impl TranscriptItem {
                 id: id.clone(),
                 tool: "Elicitation".into(),
                 preview: truncate_chars(&format!("{server}: {message}"), MAX_CHARS),
+                in_terminal: false,
             });
         }
         let Self::Approval {
@@ -62,6 +66,7 @@ impl TranscriptItem {
             id: id.clone(),
             tool: tool.clone(),
             preview: truncate_chars(&preview, MAX_CHARS),
+            in_terminal: false,
         })
     }
 
@@ -124,7 +129,8 @@ mod tests {
             WaitingSummary {
                 id: "perm-1".into(),
                 tool: "Bash".into(),
-                preview: "ls".into()
+                preview: "ls".into(),
+                in_terminal: false,
             }
         );
         let w = approval(json!({"command": " ", "file_path": "/a.rs"}))

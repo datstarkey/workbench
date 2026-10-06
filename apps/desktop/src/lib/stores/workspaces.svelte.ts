@@ -26,7 +26,7 @@ import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { visibleSplit } from '$features/terminal/split-view';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
-import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
+import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
 import { paneAgent, terminalAfterChat } from '$features/chat/pane-handoff';
 import {
 	chatHasHistory,
@@ -233,9 +233,15 @@ export class WorkspaceStore {
 		try {
 			const snapshot = await invoke<WorkspaceSnapshot>('load_workspaces');
 			if (snapshot.workspaces.length > 0) {
-				this.workspaces = snapshot.workspaces;
+				const live = snapshot.workspaces.flatMap((w) =>
+					w.terminalTabs.flatMap((t) => t.panes.filter((p) => p.liveTerminal).map((p) => p.id))
+				);
+				this.workspaces = snapshot.workspaces.map(withoutLiveTerminalViews);
 				this.selectedId = snapshot.selectedId;
-				this.serverTerminalIds = snapshot.serverTerminalIds ?? {};
+				// Their terminals died with the app: the chat starts a fresh one, resumed.
+				this.serverTerminalIds = Object.fromEntries(
+					Object.entries(snapshot.serverTerminalIds ?? {}).filter(([pane]) => !live.includes(pane))
+				);
 			}
 		} catch (e) {
 			console.warn('[WorkspaceStore] No saved workspaces:', e);
@@ -270,9 +276,34 @@ export class WorkspaceStore {
 		return this.adoption.isAdopted(paneId);
 	}
 
+	/** A Claude chat started in its own server terminal: keep that xterm attached underneath. */
+	linkLiveTerminal(paneId: string, terminalId: string): void {
+		if (this.adoption.isAdopted(paneId)) return;
+		this.setServerTerminalId(paneId, terminalId);
+		if (!this.isLiveTerminalPane(paneId)) this.patchPane(paneId, { liveTerminal: true });
+	}
+
+	/** The pane's chat view is its terminal's own `claude` (attach, never start one). */
+	isLiveTerminalPane(paneId: string): boolean {
+		return this.workspaces.some((w) =>
+			w.terminalTabs.some((t) => t.panes.some((p) => p.id === paneId && p.liveTerminal))
+		);
+	}
+
 	/** An adopted chat that ended was restarted here: the pane now owns its session. */
 	takeOverPane(paneId: string): void {
 		if (this.adoption.takeOver(paneId)) this.persist();
+	}
+
+	/** The pane's chat was ended elsewhere (End on the phone): close it here too. */
+	closeEndedChat(paneId: string): void {
+		const at = this.findPaneLocation(paneId);
+		if (!at) return;
+		const tab = this.workspaces
+			.find((w) => w.id === at.workspaceId)
+			?.terminalTabs.find((t) => t.id === at.tabId);
+		if (tab && tab.panes.length > 1) this.removePane(at.workspaceId, paneId);
+		else this.closeTerminalTab(at.workspaceId, at.tabId);
 	}
 
 	/** Readable server-side name for a pane, e.g. `app [feat] · Claude 1`. */
@@ -301,18 +332,55 @@ export class WorkspaceStore {
 		for (const { paneId, sessionId, type } of this.adoption.rekeys(this.workspaces, list)) {
 			this.updateAISessionByPaneId(paneId, sessionId, type);
 		}
+		for (const { paneId, label, type } of this.adoption.relabels(this.workspaces, list)) {
+			this.updateAITabLabelByPaneId(paneId, label, type);
+		}
 		return this.adoption.adoptableChats(this.workspaces, list, isChatClaimed);
 	}
 
 	/**
 	 * Add a background chat tab for a session started on another device. Its
-	 * chat attaches only, never starting a process of its own. Returns false
-	 * when no open workspace runs in its cwd.
+	 * chat attaches only, never starting a process of its own. With no
+	 * workspace open in its cwd, one is opened in the background for it (left
+	 * unselected, unsaved while it only hosts adopted chats, closed once empty).
+	 * Returns false for a project this window doesn't know.
 	 */
-	adoptServerChat(chat: AgentSummary): boolean {
-		const adopted = this.adoption.chatTab(this.workspaces, chat);
+	adoptServerChat(chat: AgentSummary, project: ProjectConfig | undefined): boolean {
+		let adopted = this.adoption.chatTab(this.workspaces, chat);
+		if (!adopted && project) {
+			this.workspaces = [
+				...this.workspaces,
+				this.adoptionHost(project, chat.worktreePath ?? undefined)
+			];
+			adopted = this.adoption.chatTab(this.workspaces, chat);
+		}
 		if (adopted) this.addBackgroundTab(adopted);
 		return adopted !== null;
+	}
+
+	/** A background workspace for an adopted chat (server terminals need xterm). */
+	private adoptionHost(project: ProjectConfig, worktreePath?: string): ProjectWorkspace {
+		const worktree = worktreePath && worktreePath !== project.path ? worktreePath : undefined;
+		const branch = worktree
+			? this.gitStore.worktreesByProject[project.path]?.find((w) => w.path === worktree)?.branch
+			: undefined;
+		const ws: ProjectWorkspace = {
+			id: uid(),
+			projectPath: project.path,
+			projectName: project.name,
+			terminalTabs: [],
+			activeTerminalTabId: '',
+			renderer: 'xterm',
+			...(worktree && { worktreePath: worktree, ...(branch && { branch }) })
+		};
+		this.adoption.markCreated(ws.id);
+		return ws;
+	}
+
+	/** Close a workspace opened for adoption once its last tab is gone. */
+	private dropIfAbandoned(workspaceId: string): void {
+		const ws = this.workspaces.find((w) => w.id === workspaceId);
+		if (ws && this.adoption.isAbandoned(ws)) this.close(workspaceId);
 	}
 
 	private addBackgroundTab({ workspaceId, tab }: AdoptedTab): void {
@@ -481,6 +549,7 @@ export class WorkspaceStore {
 				splitView: w.splitView?.tabIds.includes(tabId) ? undefined : w.splitView
 			};
 		});
+		this.dropIfAbandoned(workspaceId);
 	}
 
 	setActiveTab(workspaceId: string, tabId: string) {
@@ -655,10 +724,17 @@ export class WorkspaceStore {
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
 		if (!pane || (pane.view ?? 'terminal') === view) return;
-		// Claude chat can't run inside the sandbox runtime (which never wraps Codex):
-		// refuse before killing the terminal.
-		if (view === 'chat' && paneAgent(pane) === 'claude' && this.settingsStore.sandboxRuntimeEnabled)
+		if (view === 'terminal' && pane.liveTerminal) {
+			releaseChat(paneId);
+			this.patchPane(paneId, { view, liveTerminal: undefined });
 			return;
+		}
+		// The terminal's own `claude` is already a chat through the Workbench plugin: show it, no restart.
+		const live = view === 'chat' && paneAgent(pane) === 'claude' ? await liveChatFor(paneId) : null;
+		if (live) {
+			this.patchPane(paneId, { view, liveTerminal: true, claudeSessionId: live });
+			return;
+		}
 		this.adoption.takeOver(paneId);
 		let patch: Partial<TerminalPaneState> = { view };
 		if (view === 'chat') {
@@ -694,11 +770,9 @@ export class WorkspaceStore {
 		}));
 	}
 
-	/** New Claude tabs open as chat: the setting, and never inside the sandbox runtime. */
+	/** New Claude tabs open as chat (the setting). */
 	private get opensAsChat(): boolean {
-		return (
-			this.settingsStore.defaultClaudeView === 'chat' && !this.settingsStore.sandboxRuntimeEnabled
-		);
+		return this.settingsStore.defaultClaudeView === 'chat';
 	}
 
 	/**
@@ -723,6 +797,26 @@ export class WorkspaceStore {
 		return this.workspaces.some((w) =>
 			w.terminalTabs.some((t) => t.panes.some((p) => p.id === paneId && p.view === 'chat'))
 		);
+	}
+
+	/**
+	 * The pane showing a chat session: the pane that started it, else one on its
+	 * session id (or an id it had before a `/clear`), else one on its terminal.
+	 * Sessions started on the phone carry no pane id.
+	 */
+	paneForAgent(a: {
+		paneId: string | null;
+		sessionId: string;
+		previousIds: string[];
+		terminalId: string | null;
+	}): string | null {
+		const ids = [a.sessionId, ...a.previousIds];
+		const panes = this.workspaces.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes));
+		const match =
+			panes.find((p) => p.id === a.paneId) ??
+			panes.find((p) => p.claudeSessionId !== undefined && ids.includes(p.claudeSessionId)) ??
+			panes.find((p) => a.terminalId !== null && this.serverTerminalIds[p.id] === a.terminalId);
+		return match?.id ?? null;
 	}
 
 	/** Activate the workspace and tab containing the given pane. */
@@ -818,9 +912,8 @@ export class WorkspaceStore {
 				type,
 				tab.panes[0]?.claudeAccountId
 			);
-			// Codex chat needs no id (a new thread) and never runs inside the sandbox runtime.
-			const chatAllowed =
-				type === 'codex' || (sessionId && !this.settingsStore.sandboxRuntimeEnabled);
+			// Codex chat needs no id (a new thread).
+			const chatAllowed = type === 'codex' || Boolean(sessionId);
 			if (tab.panes[0]?.view === 'chat' && chatAllowed) newTab.panes[0].view = 'chat';
 			const splitView = w.splitView && {
 				...w.splitView,
@@ -1023,4 +1116,23 @@ export class WorkspaceStore {
 			this.workspaces = normalized;
 		}
 	}
+}
+
+/** The session id of the chat the pane's terminal `claude` runs as, if it's live. */
+async function liveChatFor(paneId: string): Promise<string | null> {
+	const agents = await listAgents().catch(() => null);
+	return (
+		agents?.find((a) => a.paneId === paneId && a.agent === 'claude' && !a.exited)?.sessionId ?? null
+	);
+}
+
+/** A live terminal can't outlive the app: its chat view starts a new one on load. */
+function withoutLiveTerminalViews(w: ProjectWorkspace): ProjectWorkspace {
+	return {
+		...w,
+		terminalTabs: w.terminalTabs.map((t) => ({
+			...t,
+			panes: t.panes.map((p) => (p.liveTerminal ? { ...p, liveTerminal: undefined } : p))
+		}))
+	};
 }

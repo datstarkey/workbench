@@ -42,16 +42,8 @@ export async function onSessionTerminalExit(
 
 // ── Integration checks / apply ─────────────────────────────────────────────
 
-export async function checkClaudeIntegration(): Promise<IntegrationStatus> {
-	return invoke<IntegrationStatus>('check_claude_integration');
-}
-
 export async function checkCodexIntegration(): Promise<IntegrationStatus> {
 	return invoke<IntegrationStatus>('check_codex_integration');
-}
-
-export async function applyClaudeIntegration(): Promise<boolean> {
-	return invoke<boolean>('apply_claude_integration');
 }
 
 export async function applyCodexIntegration(): Promise<boolean> {
@@ -77,10 +69,13 @@ export async function createNativeTerminal(request: {
 	fontSize: number;
 	startupCommand?: string;
 	claudeAccountId?: string;
+	/** The registered project `projectPath` (the cwd, maybe a worktree) belongs to. */
+	projectRoot?: string;
 }): Promise<void> {
 	await invoke('create_native_terminal', {
 		sessionId: request.sessionId,
 		projectPath: request.projectPath,
+		projectRoot: request.projectRoot ?? null,
 		shell: request.shell,
 		x: request.x,
 		y: request.y,

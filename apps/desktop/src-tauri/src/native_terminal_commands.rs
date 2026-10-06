@@ -7,6 +7,7 @@
 
 use crate::hook_bridge::HookBridgeState;
 use crate::native_terminal::NativeTerminalManager;
+use crate::server_control::ServerControl;
 
 #[tauri::command]
 pub async fn create_native_terminal(
@@ -20,19 +21,27 @@ pub async fn create_native_terminal(
     font_size: f64,
     startup_command: Option<String>,
     claude_account_id: Option<String>,
+    project_root: Option<String>,
     manager: tauri::State<'_, NativeTerminalManager>,
     window: tauri::WebviewWindow,
     app_handle: tauri::AppHandle,
     hook_bridge: tauri::State<'_, HookBridgeState>,
+    server: tauri::State<'_, ServerControl>,
 ) -> Result<(), String> {
     let ns_view = window.ns_view().map_err(|e| e.to_string())?;
     let hook_socket = hook_bridge.socket_path().map(str::to_string);
     let claude_config_dir = crate::claude_accounts::resolve_saved(claude_account_id.as_deref())
         .map_err(|e| e.to_string())?;
+    let mod_env = server.grant_native_terminal(
+        &session_id,
+        project_root.as_deref().unwrap_or(&project_path),
+        &project_path,
+        claude_account_id,
+        hook_socket.clone(),
+    );
 
-    manager
-        .spawn(
-            session_id,
+    let spawned = manager.spawn(
+        session_id.clone(),
             project_path,
             shell,
             x,
@@ -43,10 +52,14 @@ pub async fn create_native_terminal(
             startup_command,
             hook_socket,
             claude_config_dir,
-            ns_view,
-            app_handle,
-        )
-        .map_err(|e| e.to_string())
+        mod_env,
+        ns_view,
+        app_handle,
+    );
+    if spawned.is_err() {
+        server.revoke_native_terminal(&session_id);
+    }
+    spawned.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -78,7 +91,9 @@ pub async fn set_native_terminal_visible(
 pub async fn kill_native_terminal(
     session_id: String,
     manager: tauri::State<'_, NativeTerminalManager>,
+    server: tauri::State<'_, ServerControl>,
 ) -> Result<(), String> {
+    server.revoke_native_terminal(&session_id);
     manager.kill(&session_id).map_err(|e| e.to_string())
 }
 

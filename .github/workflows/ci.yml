@@ -46,6 +46,7 @@ jobs:
               - '**/Cargo.toml'
               - 'Cargo.lock'
               - 'crates/**'
+              - 'plugins/**'
               - 'apps/server/**'
               - 'apps/*/src-tauri/**'
               - '.github/workflows/ci.yml'
@@ -128,8 +129,27 @@ jobs:
       - name: Check Rust compiles on Windows
         run: cargo test --workspace --no-run
 
-  # Smoke-tests the built app over WebDriver (apps/desktop/e2e). Not a required
-  # check: WebKitGTK under xvfb is new here, so it earns that once it's stable.
+  # macOS-only code (`#[cfg(target_os = "macos")]`: native terminals, the
+  # SwiftTerm bridge) compiles nowhere else, so without this the release build
+  # is its first compile.
+  rust-macos:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check Rust compiles on macOS
+        run: cargo test --workspace --no-run
+
+  # Smoke-tests the built app over WebDriver (apps/desktop/e2e). A required check.
   e2e:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.rust == 'true') }}

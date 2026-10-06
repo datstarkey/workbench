@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StartAgentBody, TranscriptMeta } from '@workbench/types';
-import type { AgentApi } from './agent-api';
+import { NeedsTrustError, type AgentApi } from './agent-api';
 import { AgentChat } from './agent-chat.svelte';
 
 class FakeSocket {
@@ -107,6 +107,56 @@ describe('AgentChat', () => {
 			meta: meta(true)
 		});
 		expect(chat.pending).toEqual([]);
+		chat.dispose();
+	});
+
+	it('matches a slash command alias echoed under its hyphenated name', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('/design consent');
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'user', id: 'u1', text: '/design-consent', timestamp: '' }]],
+			meta: meta()
+		});
+		expect(chat.pending).toEqual([]);
+		chat.dispose();
+	});
+
+	it('drops a slash command the CLI only answers with a notice', async () => {
+		const { chat, ws } = await connected();
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'notice', id: 'n0', text: 'Conversation compacted' }]],
+			meta: meta()
+		});
+		chat.prompt('/design-login');
+		chat.prompt('fix the build');
+		ws.emit({ t: 'update', changes: [], meta: meta() });
+		expect(chat.pending.map((p) => p.text)).toEqual(['/design-login', 'fix the build']);
+
+		ws.emit({
+			t: 'update',
+			changes: [
+				[
+					1,
+					{ kind: 'notice', id: 'n1', text: "/design-login isn't available in this environment." }
+				]
+			],
+			meta: meta()
+		});
+		expect(chat.pending.map((p) => p.text)).toEqual(['fix the build']);
+		chat.dispose();
+	});
+
+	it('keeps a slash command queued behind a busy turn until the turn ends', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('/design-login');
+		ws.emit({
+			t: 'update',
+			changes: [[0, { kind: 'notice', id: 'n1', text: 'Interrupted' }]],
+			meta: meta(true)
+		});
+		expect(chat.pending.map((p) => p.text)).toEqual(['/design-login']);
 		chat.dispose();
 	});
 
@@ -227,6 +277,24 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('asks to trust the folder, then starts again answering Claude Code', async () => {
+		const start = vi
+			.fn<AgentApi['start']>()
+			.mockRejectedValueOnce(new NeedsTrustError('/repo'))
+			.mockResolvedValue('sid');
+		const chat = new AgentChat(body, fakeApi(start));
+		await vi.waitFor(() => expect(chat.status).toBe('trust'));
+		expect(chat.trustPath).toBe('/repo');
+		chat.reconnect();
+		expect(start).toHaveBeenCalledTimes(1);
+
+		await chat.trustFolder();
+		expect(start).toHaveBeenLastCalledWith({ ...body, trustFolder: true });
+		expect(chat.trustPath).toBeNull();
+		expect(FakeSocket.last).not.toBeNull();
+		chat.dispose();
+	});
+
 	it('re-attaches an attach-only chat, and only a restart after it ended starts it here', async () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const attach = { ...body, attachOnly: true };
@@ -263,6 +331,17 @@ describe('AgentChat', () => {
 		ws.readyState = 3;
 		expect(chat.prompt('hello?')).toBe(false);
 		expect(chat.notice).toBeTruthy();
+		chat.dispose();
+	});
+
+	it('reports an End, but not a crash, as ended', async () => {
+		const { chat, ws } = await connected();
+		const onEnded = vi.fn();
+		chat.onEnded = onEnded;
+		ws.emit({ t: 'exit', code: 1, message: 'boom' });
+		expect(onEnded).not.toHaveBeenCalled();
+		ws.emit({ t: 'exit', code: null, message: null, ended: true });
+		expect(onEnded).toHaveBeenCalledOnce();
 		chat.dispose();
 	});
 
@@ -345,29 +424,8 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
-	it('tells the pane when Claude starts and stops waiting on you', async () => {
+	it('sends elicitation answers', async () => {
 		const { chat, ws } = await connected();
-		const calls: boolean[] = [];
-		chat.onNeedsYou = (waiting) => calls.push(waiting);
-		const approval = {
-			kind: 'approval',
-			id: 'r1',
-			tool: 'Bash',
-			input: { command: 'ls' },
-			canAlwaysAllow: false,
-			expired: false
-		} as const;
-		ws.emit({ t: 'update', changes: [[0, approval]], meta: meta(true) });
-		ws.emit({ t: 'update', changes: [[0, approval]], meta: meta(true) });
-		ws.emit({ t: 'update', changes: [[0, { ...approval, decision: 'allow' }]], meta: meta(true) });
-		expect(calls).toEqual([true, false]);
-		chat.dispose();
-	});
-
-	it('sends elicitation answers and counts them as waiting on you', async () => {
-		const { chat, ws } = await connected();
-		const calls: boolean[] = [];
-		chat.onNeedsYou = (waiting) => calls.push(waiting);
 		const item = {
 			kind: 'elicitation',
 			id: 'e1',
@@ -384,34 +442,13 @@ describe('AgentChat', () => {
 			{ t: 'elicit', requestId: 'e1', action: 'accept', content: { env: 'prod' } },
 			{ t: 'elicit', requestId: 'e2', action: 'decline' }
 		]);
-		ws.emit({ t: 'update', changes: [[0, { ...item, action: 'accept' }]], meta: meta(true) });
-		expect(calls).toEqual([true, false]);
 		chat.dispose();
 	});
 
-	it('stops flagging the pane when the process ends mid-approval', async () => {
+	it('closes the socket when the process ends', async () => {
 		const { chat, ws } = await connected();
-		const calls: boolean[] = [];
-		chat.onNeedsYou = (waiting) => calls.push(waiting);
-		ws.emit({
-			t: 'update',
-			changes: [
-				[
-					0,
-					{
-						kind: 'approval',
-						id: 'r1',
-						tool: 'Bash',
-						input: {},
-						canAlwaysAllow: false,
-						expired: false
-					}
-				]
-			],
-			meta: meta(true)
-		});
 		ws.emit({ t: 'exit', code: 1, message: null });
-		expect(calls).toEqual([true, false]);
+		expect(chat.status).toBe('exited');
 		expect(ws.readyState).toBe(3);
 		chat.dispose();
 	});
@@ -432,6 +469,22 @@ describe('AgentChat', () => {
 		ws.emit({ t: 'taskOutput', taskId: 'b1', text: 'compiling…', bytes: 40_000 });
 		await expect(out).resolves.toEqual({ text: 'compiling…', bytes: 40_000 });
 		chat.dispose();
+	});
+
+	it("reads a subagent's transcript for the session, null when it can't", async () => {
+		const taskTranscript = vi
+			.fn<NonNullable<AgentApi['taskTranscript']>>()
+			.mockResolvedValueOnce({ start: 0, items: [] })
+			.mockRejectedValueOnce(new Error('gone'));
+		const { chat } = await connected({ ...fakeApi(), taskTranscript });
+		await expect(chat.taskTranscript('toolu_1')).resolves.toEqual({ start: 0, items: [] });
+		expect(taskTranscript).toHaveBeenCalledWith('sid', 'toolu_1');
+		await expect(chat.taskTranscript('toolu_1')).resolves.toBeNull();
+		chat.dispose();
+
+		const bare = await connected();
+		await expect(bare.chat.taskTranscript('toolu_1')).resolves.toBeNull();
+		bare.chat.dispose();
 	});
 
 	it('keeps the slash command list up to date', async () => {
@@ -520,28 +573,8 @@ describe('AgentChat', () => {
 		await rejected;
 		chat.dispose();
 	});
-	it('disposal releases outstanding native actions and optional questions do not block', async () => {
-		const { chat, ws } = await connected();
-		const needs = vi.fn();
-		chat.onNeedsYou = needs;
-		ws.emit({
-			t: 'update',
-			changes: [
-				[
-					0,
-					{
-						kind: 'approval',
-						id: 'q',
-						tool: 'AskUserQuestion',
-						input: { isBlocking: false, questions: [] },
-						canAlwaysAllow: false,
-						expired: false
-					}
-				]
-			],
-			meta: meta(true)
-		});
-		expect(needs).not.toHaveBeenCalled();
+	it('disposal releases outstanding native actions', async () => {
+		const { chat } = await connected();
 		const action = chat.codexAction('inspect', { section: 'account' });
 		const rejected = expect(action).rejects.toThrow('Chat closed');
 		chat.dispose();
@@ -623,5 +656,29 @@ describe('AgentChat', () => {
 		});
 		expect(chat.pending).toHaveLength(0);
 		chat.dispose();
+	});
+});
+
+describe('AgentChat prompt cache', () => {
+	beforeEach(() => {
+		vi.stubGlobal('WebSocket', FakeSocket);
+		FakeSocket.last = null;
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('follows the server cache policy and sends pings and changes', async () => {
+		const { chat, ws } = await connected();
+		expect(chat.cachePolicy).toEqual({ compactOnExpiry: false });
+
+		ws.emit({ t: 'cachePolicy', policy: { compactOnExpiry: true, keepWarmUntil: 5 } });
+		expect(chat.cachePolicy).toEqual({ compactOnExpiry: true, keepWarmUntil: 5 });
+
+		chat.pingCache();
+		chat.setCachePolicy({ compactOnExpiry: false });
+		expect(ws.sent).toEqual([
+			{ t: 'cachePing' },
+			{ t: 'cachePolicy', policy: { compactOnExpiry: false } }
+		]);
+		expect(chat.cachePolicy).toEqual({ compactOnExpiry: false });
 	});
 });

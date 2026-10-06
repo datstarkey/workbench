@@ -12,6 +12,8 @@ import { hostOf, LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './mac
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
+import { baseName } from './home-format.ts';
+import { ProjectPrefs } from './project-prefs.svelte.ts';
 import { Drafts } from './drafts.svelte';
 import { SessionNotifications } from './session-notifications.svelte';
 import { ProjectReview, type ReviewFolder } from './project-review.svelte';
@@ -34,15 +36,6 @@ function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
 }
 
-export function baseName(path: string): string {
-	return (
-		path
-			.replace(/[\\/]+$/, '')
-			.split(/[\\/]/)
-			.pop() || path
-	);
-}
-
 /** Uses the system URL handler without the opener plugin's inAppBrowser mode. */
 export function openExternal(url: string): void {
 	openUrl(url).catch((e) => console.warn('[mobile] open url', url, e));
@@ -63,6 +56,7 @@ export class MobileClient {
 	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
 	drafts = new Drafts('disconnected');
+	projectPrefs = $state.raw(new ProjectPrefs('disconnected'));
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
 	accountId = $state<string | undefined>(undefined);
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
@@ -199,6 +193,7 @@ export class MobileClient {
 			this.connection = { url: base, token };
 			this.machineId = machine.id;
 			this.drafts = new Drafts(machine.id);
+			this.projectPrefs = new ProjectPrefs(machine.id);
 			this.controlPlane = createHttpTransport({ baseUrl: base, token });
 			this.claudeTerminals = readLinks(machine.id);
 			this.online = true;
@@ -278,6 +273,7 @@ export class MobileClient {
 		this.accounts = [];
 		this.accountId = undefined;
 		this.machineId = null;
+		this.projectPrefs = new ProjectPrefs('disconnected');
 		this.claudeTerminals = {};
 		this.terminals = [];
 		this.chats = [];
@@ -390,7 +386,7 @@ export class MobileClient {
 		// A Codex chat that never got a thread id has nothing running to stop.
 		this.notice = null;
 		try {
-			if (sessionId) await this.agents.stop(sessionId);
+			if (sessionId) await this.agents.stop(sessionId, { end: true });
 		} catch (e) {
 			if (live()) this.notice = `Couldn't end the session: ${errorText(e)}`;
 			return;

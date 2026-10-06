@@ -1,12 +1,14 @@
 import { invoke } from '$lib/transport';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { KEEPALIVE_PROMPT } from '@workbench/chat-ui';
 import { stripAnsi } from '$lib/utils/format';
 import { newSessionCommandWithPrompt, type LaunchOptions } from '$lib/utils/claude';
 import { getWorkbenchSettingsStore } from './context';
 import {
 	isAISessionType,
 	type ActiveClaudeSession,
+	type AgentAttention,
 	type AgentAction,
 	type ClaudeHookEvent,
 	type CodexNotifyEvent,
@@ -30,6 +32,11 @@ const LOCAL_VIEWPORT_SUPPRESS_MS = 700;
 /** Bound on session-label discovery retries, so a session that genuinely never gets a
  *  label (no user message on disk) stops rescanning the session directory. */
 const MAX_LABEL_DISCOVERY_ATTEMPTS = 6;
+
+/** Who to notify about: a pane here, or a session no pane shows (started on the phone). */
+export type AttentionTarget =
+	| { paneId: string }
+	| { id: string; projectPath: string; label: string };
 
 export class ClaudeSessionStore {
 	/** Set of terminal pane IDs currently producing output (clears from backend activity events) */
@@ -76,8 +83,8 @@ export class ClaudeSessionStore {
 		return this.settingsStore.launchOptions;
 	}
 
-	/** Callbacks invoked when a pane transitions into awaiting-input state */
-	private awaitingInputCallbacks: Array<(paneId: string) => void> = [];
+	/** Callbacks invoked when a session needs someone (an answer, or its turn ended) */
+	private awaitingInputCallbacks: Array<(target: AttentionTarget) => void> = [];
 
 	/** Active Claude sessions grouped by project path */
 	readonly activeSessionsByProject = $derived.by((): Record<string, ActiveClaudeSession[]> => {
@@ -292,17 +299,12 @@ export class ClaudeSessionStore {
 	 * Feed PTY output for a pane through the same activity/quiescence logic the
 	 * `terminal:data` + `terminal:activity` Tauri events drive for local PtyManager
 	 * panes. Server-hosted xterm panes stream output over the WebSocket and never
-	 * emit those events, so TerminalPane calls this directly to keep Claude
-	 * resume-detection and Codex in-progress/quiescence working. Mirrors the
-	 * listeners in registerListeners().
+	 * emit those events, so TerminalPane calls this directly to keep Codex
+	 * in-progress/quiescence working. Claude panes don't need it: their state
+	 * comes from the plugin (`claude:hook`, `agent:attention`).
 	 */
 	noteTerminalOutput(paneId: string, data: string): void {
-		const paneType = this.paneType(paneId);
-		if (paneType === 'claude') {
-			this.handleClaudeTerminalData(paneId, data);
-			return;
-		}
-		if (paneType !== 'codex') return;
+		if (this.paneType(paneId) !== 'codex') return;
 		if (this.classifyTerminalData(paneId, data)) return;
 		// Real output → mark active and clear the submit fallback.
 		this.panesInProgress.add(paneId);
@@ -325,16 +327,6 @@ export class ClaudeSessionStore {
 				this.clearSubmitFallback(paneId);
 			}, OUTPUT_QUIESCENCE_MS)
 		);
-	}
-
-	/** Clear awaiting-input state when real output arrives on a Claude pane. */
-	private handleClaudeTerminalData(paneId: string, data: string): void {
-		if (!this.panesAwaitingInput.has(paneId)) return;
-		const plain = stripAnsi(data).replace(/\r/g, '').trim();
-		if (plain.length > 0) {
-			this.panesAwaitingInput.delete(paneId);
-			this.panesInProgress.add(paneId);
-		}
 	}
 
 	private classifyTerminalData(paneId: string, data: string): boolean {
@@ -380,62 +372,51 @@ export class ClaudeSessionStore {
 		}
 	}
 
-	private applyNotification(paneId: string, payload: Record<string, unknown>): void {
-		if (this.isInputRequiredNotification(payload)) {
-			this.panesInProgress.delete(paneId);
-			const wasAwaiting = this.panesAwaitingInput.has(paneId);
-			this.panesAwaitingInput.add(paneId);
-			if (!wasAwaiting) this.emitAwaitingInput(paneId);
-		} else if (this.isIdlePromptNotification(payload)) {
-			this.panesInProgress.delete(paneId);
-			this.panesAwaitingInput.delete(paneId);
-		}
-	}
-
 	/**
-	 * Chat panes report pending approvals and questions here: they arrive as
-	 * control requests, so no Notification hook announces them.
+	 * A chat session on this machine (Claude via the plugin's mod link, or a
+	 * Codex chat) started or stopped waiting on someone, or finished a turn: the
+	 * same server state the phone's notifications poll, so both devices notify.
 	 */
-	setAwaitingInput(paneId: string, awaiting: boolean): void {
-		if (!awaiting) {
-			this.panesAwaitingInput.delete(paneId);
+	private onAgentAttention(event: AgentAttention): void {
+		const paneId = this.workspaces.paneForAgent(event);
+		if (!paneId) {
+			// Not open here (yet): a session started on the phone.
+			if (event.kind === 'resolved') return;
+			const label = event.title ?? `Session ${event.sessionId.slice(0, 8)}`;
+			this.emitAwaitingInput({ id: event.sessionId, projectPath: event.projectPath, label });
 			return;
 		}
-		if (this.panesAwaitingInput.has(paneId)) return;
-		this.panesAwaitingInput.add(paneId);
-		this.emitAwaitingInput(paneId);
+		switch (event.kind) {
+			case 'waiting':
+				this.panesInProgress.delete(paneId);
+				this.panesAwaitingInput.add(paneId);
+				this.emitAwaitingInput({ paneId });
+				break;
+			case 'resolved':
+				this.panesAwaitingInput.delete(paneId);
+				if (event.busy) this.panesInProgress.add(paneId);
+				break;
+			case 'turnEnded':
+				this.panesInProgress.delete(paneId);
+				this.panesAwaitingInput.delete(paneId);
+				this.emitAwaitingInput({ paneId });
+				break;
+		}
 	}
 
-	/** Register a callback that fires when a pane transitions into awaiting-input. */
-	onAwaitingInput(callback: (paneId: string) => void): void {
+	/** Register a callback that fires when a session needs someone. */
+	onAwaitingInput(callback: (target: AttentionTarget) => void): void {
 		this.awaitingInputCallbacks.push(callback);
 	}
 
-	private emitAwaitingInput(paneId: string): void {
+	private emitAwaitingInput(target: AttentionTarget): void {
 		for (const cb of this.awaitingInputCallbacks) {
 			try {
-				cb(paneId);
+				cb(target);
 			} catch (e) {
 				console.warn('[ClaudeSessionStore] awaiting-input callback error:', e);
 			}
 		}
-	}
-
-	private isInputRequiredNotification(payload: Record<string, unknown>): boolean {
-		const notificationType = (
-			this.payloadString(payload, 'notification_type') || this.payloadString(payload, 'type')
-		).toLowerCase();
-		return notificationType === 'permission_prompt' || notificationType === 'elicitation_dialog';
-	}
-
-	private isIdlePromptNotification(payload: Record<string, unknown>): boolean {
-		const notificationType = (
-			this.payloadString(payload, 'notification_type') || this.payloadString(payload, 'type')
-		).toLowerCase();
-		if (notificationType === 'idle_prompt') return true;
-
-		const message = this.payloadString(payload, 'message').toLowerCase();
-		return message.includes('waiting for your input') || message.includes('waiting for input');
 	}
 
 	private onClaudeHookEvent(event: ClaudeHookEvent): void {
@@ -459,27 +440,16 @@ export class ClaudeSessionStore {
 
 		switch (event.hookEventName) {
 			case 'UserPromptSubmit':
+				// A cache keep-alive turn isn't work to report: its Stop then flags nothing.
+				if (this.payloadString(event.hookPayload, 'prompt') === KEEPALIVE_PROMPT) break;
 				this.panesInProgress.add(paneId);
 				this.panesAwaitingInput.delete(paneId);
 				break;
-			case 'Stop': {
-				const wasInProgress = this.panesInProgress.has(paneId);
-				this.panesInProgress.delete(paneId);
-				this.panesAwaitingInput.delete(paneId);
-				if (wasInProgress) this.emitAwaitingInput(paneId);
-				break;
-			}
+			// What needs someone (and the notification) comes from `agent:attention`.
+			case 'Stop':
 			case 'SessionStart':
 				this.panesInProgress.delete(paneId);
 				this.panesAwaitingInput.delete(paneId);
-				break;
-			default:
-				if (
-					event.hookEventName === 'Notification' ||
-					event.hookEventName?.startsWith('Notification:')
-				) {
-					this.applyNotification(paneId, event.hookPayload);
-				}
 				break;
 		}
 	}
@@ -568,7 +538,7 @@ export class ClaudeSessionStore {
 			const wasInProgress = this.panesInProgress.has(paneId);
 			this.panesInProgress.delete(paneId);
 			this.clearSubmitFallback(paneId);
-			if (wasInProgress) this.emitAwaitingInput(paneId);
+			if (wasInProgress) this.emitAwaitingInput({ paneId });
 		}
 	}
 
@@ -587,17 +557,13 @@ export class ClaudeSessionStore {
 		listen<CodexNotifyEvent>('codex:notify', (event) => {
 			this.onCodexNotifyEvent(event.payload);
 		});
+		listen<AgentAttention>('agent:attention', (event) => {
+			this.onAgentAttention(event.payload);
+		});
 
 		listen<TerminalDataEvent>('terminal:data', (event) => {
 			const paneId = event.payload.sessionId;
-			const paneType = this.paneType(paneId);
-
-			if (paneType === 'claude') {
-				this.handleClaudeTerminalData(paneId, event.payload.data);
-				return;
-			}
-
-			if (paneType !== 'codex') return;
+			if (this.paneType(paneId) !== 'codex') return;
 			if (this.classifyTerminalData(paneId, event.payload.data)) return;
 
 			// Output received — mark as active and clear submit fallback.

@@ -112,6 +112,27 @@ pub enum TranscriptItem {
         id: String,
         text: String,
     },
+    /// Something the CLI did around the conversation worth a line in it: a
+    /// denied tool, a hook that failed or blocked, recalled memories, a refusal.
+    Event {
+        id: String,
+        event: EventKind,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        /// Memory files (paths or URLs) for [`EventKind::Memory`].
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        files: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventKind {
+    PermissionDenied,
+    Hook,
+    Memory,
+    Refusal,
 }
 
 impl TranscriptItem {
@@ -123,7 +144,8 @@ impl TranscriptItem {
             | Self::Tool { id, .. }
             | Self::Approval { id, .. }
             | Self::Elicitation { id, .. }
-            | Self::Notice { id, .. } => id,
+            | Self::Notice { id, .. }
+            | Self::Event { id, .. } => id,
         }
     }
 }
@@ -208,6 +230,24 @@ pub struct TaskInfo {
     pub last_tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Whose `<id>.output` file holds the live output, when not `id` itself
+    /// (a terminal plugin's agent task is keyed by its tool call).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_id: Option<String>,
+}
+
+/// An artifact on claude.ai that an `Artifact` call published or opened.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactInfo {
+    pub tool_use_id: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// `created` | `updated` | `opened` | `published`.
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -218,6 +258,13 @@ pub struct TranscriptMeta {
     pub permission_mode: Option<String>,
     /// Prompt size of the latest API call (input + cache read + cache write).
     pub context_tokens: Option<u64>,
+    /// Unix ms when the prompt cache the latest API call read or wrote
+    /// expires (Claude only); cleared by a compact, which leaves nothing worth keeping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_expires_at: Option<u64>,
+    /// That cache's lifetime in seconds: 3600 or 300, from what the calls wrote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_secs: Option<u64>,
     /// A turn is in progress: set by a prompt or the first model event,
     /// cleared by `result`, the JSONL `turn_duration` line or an interrupt.
     pub busy: bool,
@@ -241,6 +288,13 @@ pub struct TranscriptMeta {
     pub usage_limits: Option<Vec<crate::claude_accounts::UsageLimit>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex: Option<crate::codex_controls::State>,
+    /// Artifacts this conversation's `Artifact` calls touched, in call order.
+    /// Kept here because their links only arrive in the tool's structured result.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ArtifactInfo>,
+    /// The CLI's guess at the next prompt; cleared when a turn starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_suggestion: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {

@@ -187,13 +187,21 @@
 
 	// Terminals and chats opened from another device appear as background tabs. Started
 	// only once workspaces are loaded, or every persisted pane's session would look foreign.
+	// A Claude chat runs in a server terminal of its own: it's adopted as the chat, not twice.
+	let chatTerminalIds = new Set<string>();
 	const adoption = new AdoptionPoller([
 		adoptionRound({
-			list: listServerTerminals,
+			list: async () => {
+				const [terminals, chats] = await Promise.all([listServerTerminals(), listAgents()]);
+				// A failed listing keeps the last set rather than adopting chats' terminals.
+				if (chats)
+					chatTerminalIds = new Set(chats.flatMap((c) => (c.terminalId ? [c.terminalId] : [])));
+				return terminals;
+			},
 			adoptable: (list) =>
 				adoptableTerminals(
 					list,
-					new Set(workspaceStore.knownServerTerminalIds()),
+					new Set([...workspaceStore.knownServerTerminalIds(), ...chatTerminalIds]),
 					isClaimedLocally
 				),
 			adopt: (t) => workspaceStore.adoptServerTerminal(t),
@@ -202,7 +210,7 @@
 		adoptionRound({
 			list: listAgents,
 			adoptable: (list) => workspaceStore.adoptableServerChats(list),
-			adopt: (c) => workspaceStore.adoptServerChat(c),
+			adopt: (c) => workspaceStore.adoptServerChat(c, projectStore.getByPath(c.projectPath)),
 			onAdopted: (c) => toast.info(`Chat opened on another device: ${c.title ?? 'chat'}`)
 		})
 	]);

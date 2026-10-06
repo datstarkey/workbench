@@ -16,6 +16,7 @@ log = "0.4"
 getrandom = "0.4"
 if-addrs = "0.15"
 base64 = "0.22"
+chrono = { workspace = true }
 open = { version = "5.3", features = ["shellexecute-on-windows"] }
 toml_edit = "0.20"
 

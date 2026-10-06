@@ -7,15 +7,24 @@
 import type { AgentSummary, ProjectWorkspace } from '$types/workbench';
 import type { TerminalMeta } from './terminal-connection';
 
-export type AdoptableTerminal = Pick<TerminalMeta, 'id' | 'name' | 'cwd' | 'alive'>;
+export type AdoptableTerminal = Pick<
+	TerminalMeta,
+	'id' | 'name' | 'cwd' | 'alive' | 'claudeSessionId'
+>;
 
-/** Live terminals the desktop neither tracks in a pane nor created/killed itself. */
+/**
+ * Live terminals the desktop neither tracks in a pane nor created/killed itself.
+ * A chat's terminal is listed seconds before its chat is, so it's skipped by
+ * its Claude session id rather than waiting on the agent list.
+ */
 export function adoptableTerminals<T extends AdoptableTerminal>(
 	list: T[],
 	knownIds: ReadonlySet<string>,
 	isClaimed: (id: string) => boolean
 ): T[] {
-	return list.filter((t) => t.alive && !knownIds.has(t.id) && !isClaimed(t.id));
+	return list.filter(
+		(t) => t.alive && !t.claudeSessionId && !knownIds.has(t.id) && !isClaimed(t.id)
+	);
 }
 
 /**
@@ -40,7 +49,8 @@ export function adoptableChats(
 /**
  * The xterm workspace a terminal running in `cwd` belongs to: a worktree
  * workspace first, then the project's main one. Native-renderer workspaces
- * can't host server terminals, and no workspace is ever created for adoption.
+ * can't host server terminals. A terminal with no host isn't adopted; a chat
+ * gets a background workspace (`WorkspaceStore.adoptServerChat`).
  */
 export function adoptionWorkspace(
 	workspaces: ProjectWorkspace[],

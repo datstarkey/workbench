@@ -29,6 +29,71 @@ fn user_texts(t: &Transcript) -> Vec<&str> {
 }
 
 #[test]
+fn title_falls_back_to_the_first_real_prompt_live_and_on_resume() {
+    let lines = [
+        json!({"type":"user","isMeta":true,"message":{"content":"Injected context"}}),
+        user("command", json!("<command-name>/model</command-name>")),
+        user("first", json!("Fix the keyboard inset\nDetails below")),
+        user("second", json!("Now add tests")),
+    ];
+    let mut live = Transcript::default();
+    for line in &lines[..2] {
+        live.apply(line);
+    }
+    assert_eq!(live.meta().title, None);
+    assert!(live.apply(&lines[2]).meta);
+    live.apply(&lines[3]);
+    assert_eq!(live.meta().title.as_deref(), Some("Fix the keyboard inset"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    fs::write(&path, lines.map(|l| l.to_string()).join("\n")).unwrap();
+    let resumed = Transcript::load(&path);
+    assert_eq!(resumed.meta().title, live.meta().title);
+    assert!(!resumed.meta().busy);
+
+    live.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
+    assert_eq!(live.meta().title, None);
+    live.apply(&user("new", json!("A different task")));
+    assert_eq!(live.meta().title.as_deref(), Some("A different task"));
+}
+
+#[test]
+fn resume_restores_the_latest_saved_title_and_preserves_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    let lines = [
+        user("u", json!("The original prompt")),
+        json!({"type":"ai-title","aiTitle":"First generated title","sessionId":SID}),
+        json!({"type":"ai-title","aiTitle":"Updated generated title","sessionId":SID}),
+    ];
+    let mut contents = lines.map(|l| l.to_string()).join("\n");
+    fs::write(&path, &contents).unwrap();
+    let mut resumed = Transcript::load(&path);
+    assert_eq!(
+        resumed.meta().title.as_deref(),
+        Some("Updated generated title")
+    );
+    let rename = json!({"type":"custom-title","customTitle":"My session name","sessionId":SID});
+    assert!(resumed.apply(&rename).meta);
+    contents.push_str(&format!("\n{rename}"));
+    fs::write(&path, contents).unwrap();
+    let mut resumed = Transcript::load(&path);
+    for line in [
+        json!({"type":"ai-title","aiTitle":"Later generated title"}),
+        json!({"type":"custom-title","customTitle":" "}),
+        json!({"type":"ai-title"}),
+        json!({"type":"custom-title","customTitle":"Subagent name","isSidechain":true}),
+    ] {
+        resumed.apply(&line);
+    }
+    assert_eq!(resumed.meta().title.as_deref(), Some("My session name"));
+    resumed.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
+    resumed.apply(&json!({"type":"ai-title","aiTitle":"New conversation"}));
+    assert_eq!(resumed.meta().title.as_deref(), Some("New conversation"));
+}
+
+#[test]
 fn folds_a_jsonl_turn_into_chat_items() {
     let mut t = Transcript::default();
     t.apply(&user("u1", json!("Fix the keyboard inset")));
@@ -383,6 +448,27 @@ fn skill_body_becomes_its_cards_output() {
 }
 
 #[test]
+fn an_unflagged_skill_body_still_goes_to_its_card() {
+    let body = "Base directory for this skill: /s\n\n## `$state`";
+    let mut t = Transcript::default();
+    t.apply(&assistant(
+        "a",
+        "m",
+        json!({"type":"tool_use","id":"toolu_s","name":"Skill","input":{"skill":"svelte"}}),
+    ));
+    t.apply(&user(
+        "r",
+        json!([{"type":"tool_result","tool_use_id":"toolu_s","content":"Launching skill: svelte"}]),
+    ));
+    t.apply(&json!({"type":"user","uuid":"b",
+        "message":{"role":"user","content":[{"type":"text","text":body}]}}));
+    assert!(user_texts(&t).is_empty(), "{:?}", user_texts(&t));
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::Tool { output, .. } if output.as_deref() == Some(body))
+    );
+}
+
+#[test]
 fn stream_skill_bodies_go_to_launched_calls_in_order() {
     let skill_output = |t: &Transcript, i: usize| match &t.items()[i] {
         TranscriptItem::Tool { output, .. } => output.clone(),
@@ -573,6 +659,52 @@ fn load_reads_history_and_never_reports_a_turn_in_flight() {
     assert!(Transcript::load(&dir.path().join("missing.jsonl"))
         .items()
         .is_empty());
+}
+
+#[test]
+fn finds_and_loads_a_subagent_transcript_beside_its_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("-repo");
+    let session = project.join(format!("{SID}.jsonl"));
+    let subagents = project.join(SID).join("subagents");
+    fs::create_dir_all(&subagents).unwrap();
+    fs::write(&session, "").unwrap();
+    let side = |mut row: Value| {
+        row["isSidechain"] = json!(true);
+        row
+    };
+    let agent = subagents.join("agent-a6ee299a623b37fc4.jsonl");
+    fs::write(
+        &agent,
+        format!(
+            "{}\n{}\n",
+            side(user("u1", json!("Find the bug"))),
+            side(assistant(
+                "a1",
+                "m1",
+                json!({"type":"text","text":"Found it"})
+            ))
+        ),
+    )
+    .unwrap();
+    fs::write(project.join("secret.jsonl"), "").unwrap();
+
+    assert_eq!(
+        find_subagent_transcript(&session, "a6ee299a623b37fc4"),
+        Some(agent.clone())
+    );
+    assert_eq!(find_subagent_transcript(&session, "missing"), None);
+    for bad in ["", "../../secret", "a/b", "..", "a.b", "a\\b"] {
+        assert_eq!(find_subagent_transcript(&session, bad), None, "{bad:?}");
+    }
+
+    let t = Transcript::load_subagent(&agent);
+    assert_eq!(user_texts(&t), ["Find the bug"]);
+    assert_eq!(t.items().len(), 2);
+    assert!(
+        Transcript::load(&agent).items().is_empty(),
+        "a session's own history still skips sidechain rows"
+    );
 }
 
 #[test]
@@ -870,6 +1002,62 @@ fn the_initialize_reply_lists_models_to_pick_from() {
 }
 
 #[test]
+fn pinned_models_outlast_a_plugin_list_and_its_choice_and_effort_show() {
+    let real = |value: &str, resolved: &str| ModelOption {
+        value: value.into(),
+        display_name: value.into(),
+        description: String::new(),
+        resolved_model: Some(resolved.into()),
+        effort_levels: vec!["low".into(), "high".into()],
+    };
+    let mut t = Transcript::default();
+    t.pin_models(vec![
+        real("default", "claude-opus-5-5"),
+        real("sonnet", "claude-sonnet-5-5"),
+    ]);
+    // A terminal's plugin: guessed list, plus the pick `/config` holds.
+    let a = t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[{"value":"sonnet","displayName":"Sonnet"}],"modelChoice":"sonnet"}}}),
+    );
+    assert!(a.meta);
+    assert_eq!(t.meta().models.len(), 2);
+    assert_eq!(t.meta().model_choice.as_deref(), Some("sonnet"));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
+
+    t.set_permission_mode("plan");
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-sonnet-5-5","effort":"high"}));
+    assert_eq!(t.meta().effort.as_deref(), Some("high"));
+    assert_eq!(t.meta().permission_mode.as_deref(), Some("plan"));
+}
+
+#[test]
+fn a_prompt_put_into_a_running_turn_shows_as_typed() {
+    let mut t = Transcript::default();
+    let framed = format!(
+        "{QUEUED_PROMPT_PREFIX}look at @/tmp/a.png\n\nAttached files (read each with the Read tool):\n- /tmp/a.png\n\nIMPORTANT: do it"
+    );
+    t.apply(&json!({"type":"user","uuid":"q","isMeta":true,"message":{"content":framed}}));
+    assert!(
+        matches!(&t.items()[..], [TranscriptItem::User { text, .. }] if text == "look at @/tmp/a.png"),
+        "{:?}",
+        t.items()
+    );
+}
+
+#[test]
+fn a_task_can_name_the_agent_whose_file_holds_its_output() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"task_started","task_id":"toolu_1","description":"Track"}));
+    t.apply(&json!({"type":"system","subtype":"task_updated","task_id":"toolu_1","output_id":"a6ee299a623b37fc4"}));
+    assert_eq!(
+        t.meta().tasks[0].output_id.as_deref(),
+        Some("a6ee299a623b37fc4")
+    );
+    assert_eq!(t.meta().tasks[0].status, "running");
+}
+
+#[test]
 fn slash_commands_come_from_initialize_and_updates() {
     let mut t = Transcript::default();
     let a = t.apply(&json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
@@ -883,4 +1071,24 @@ fn slash_commands_come_from_initialize_and_updates() {
     assert_eq!(t.commands().len(), 1);
     t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
     assert_eq!(t.commands().len(), 1, "/clear keeps the command list");
+}
+
+#[test]
+fn control_responses_reach_the_host() {
+    let mut t = Transcript::default();
+    let ok = t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success",
+        "request_id":"rw-1","response":{"canRewind":true,"filesChanged":["/a"]}}}),
+    );
+    let (id, result) = ok.response.unwrap();
+    assert_eq!(id, "rw-1");
+    assert_eq!(result.unwrap()["filesChanged"], json!(["/a"]));
+    let err = t.apply(
+        &json!({"type":"control_response","response":{"subtype":"error",
+        "request_id":"rw-2","error":"No file checkpoint found"}}),
+    );
+    assert_eq!(
+        err.response,
+        Some(("rw-2".into(), Err("No file checkpoint found".into())))
+    );
 }

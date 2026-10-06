@@ -1,19 +1,19 @@
-//! The Claude driver: `claude -p` speaking stream-json, events folded by
-//! [`Transcript`]. The session id is the Claude session id, so the same
-//! conversation can move between chat and a terminal running
-//! `claude --resume <id>` — one process at a time.
+//! The Claude driver: the stream-json a Claude session speaks, folded by
+//! [`Transcript`]. The process is an interactive `claude` in a server
+//! terminal; the Workbench plugin translates it to and from stream-json
+//! (`modlink`), so the chat and the terminal are one process. The session id
+//! is the Claude session id.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
 use workbench_core::chat_attachment::PDF_TYPE;
-use workbench_core::claude_accounts;
 use workbench_core::claude_launch::PERMISSION_MODES;
 use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript};
 
-use super::driver::{Driver, Effects, Launch};
-use super::{PromptFile, PromptImage, StartAgent};
+use super::driver::{Driver, Effects};
+use super::{PromptFile, PromptImage};
 
 /// Effort levels `effortLevel` accepts.
 const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -30,54 +30,32 @@ pub(super) fn validate(session_id: &str, permission_mode: Option<&str>) -> Resul
     Ok(())
 }
 
-pub(super) fn launch(
-    req: &StartAgent,
-    session_id: &str,
-    permission_mode: Option<&str>,
-    config_dir: Option<&Path>,
-) -> Launch {
+/// The session's JSONL, once the CLI has written one.
+pub(super) fn history(config_dir: Option<&Path>, session_id: &str) -> Option<PathBuf> {
     let projects = config_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(workbench_core::paths::claude_user_dir)
         .join("projects");
-    let history = claude_transcript::find_transcript(&projects, session_id);
-    let transcript = history.as_deref().map(Transcript::load).unwrap_or_default();
+    claude_transcript::find_transcript(&projects, session_id)
+}
 
-    let mut cmd = super::session::base_command(claude_accounts::claude_binary(), req);
-    cmd.args([
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-        "--replay-user-messages",
-        // Undocumented but what the Agent SDK passes: permission prompts
-        // arrive as `can_use_tool` control requests on stdout.
-        "--permission-prompt-tool",
-        "stdio",
-    ]);
-    if let Some(mode) = permission_mode {
-        cmd.args(["--permission-mode", mode]);
-    }
-    let id_flag = if history.is_some() {
-        "--resume"
-    } else {
-        "--session-id"
-    };
-    cmd.args([id_flag, session_id]);
-    if let Some(dir) = config_dir {
-        cmd.env(claude_accounts::CONFIG_DIR_ENV, dir);
-    }
-    Launch {
-        cmd,
-        driver: Driver::Claude(transcript),
-        // The SDK handshake: without it the CLI won't route permission prompts here.
-        hello: vec![control(json!({"subtype": "initialize"}))],
-        ready: Some(session_id.to_string()),
-        program: "claude",
-    }
+/// A driver holding the session's history, for a terminal's `claude` the
+/// plugin feeds (no process is started).
+pub(super) fn history_driver(
+    config_dir: Option<&Path>,
+    session_id: &str,
+    resume_at: Option<&str>,
+) -> Driver {
+    let transcript = history(config_dir, session_id)
+        .as_deref()
+        .map(|path| Transcript::load_at(path, resume_at))
+        .unwrap_or_default();
+    Driver::Claude(transcript)
+}
+
+/// The SDK handshake; its reply lists the models the chat's picker offers.
+pub(super) fn hello() -> Value {
+    control(json!({"subtype": "initialize", "promptSuggestions": true}))
 }
 
 fn control(request: Value) -> Value {
@@ -99,6 +77,7 @@ pub(super) fn apply_line(t: &mut Transcript, line: &str) -> Effects {
         meta: applied.meta,
         commands: applied.commands,
         new_id: applied.new_session_id,
+        response: applied.response,
         ..Effects::default()
     }
 }
@@ -141,6 +120,8 @@ pub(super) fn prompt(
             "type": "user",
             "message": {"role": "user", "content": content},
             "parent_tool_use_id": null,
+            // File checkpoints are keyed by this id; the CLI echoes it back.
+            "uuid": uuid::Uuid::new_v4().to_string(),
             // Hosts relaying typed input must say so; unattributed input fails
             // closed at the CLI's isHuman() trust gates.
             "origin": {"kind": "human"},
@@ -172,6 +153,23 @@ pub(super) fn interrupt() -> Effects {
         send: vec![control(json!({"subtype": "interrupt"}))],
         ..Effects::default()
     }
+}
+
+pub(super) fn rewind_files(message_id: &str, dry_run: bool) -> Result<(String, Effects)> {
+    if !claude_transcript::is_uuid(message_id) {
+        bail!("message id must be a UUID");
+    }
+    let msg = control(json!({
+        "subtype": "rewind_files", "user_message_id": message_id, "dry_run": dry_run,
+    }));
+    let id = msg["request_id"].as_str().unwrap_or_default().to_string();
+    Ok((
+        id,
+        Effects {
+            send: vec![msg],
+            ..Effects::default()
+        },
+    ))
 }
 
 pub(super) fn set_mode(t: &mut Transcript, mode: &str) -> Result<Effects> {
@@ -252,5 +250,29 @@ mod tests {
 
         let plain = prompt(&mut t, "hi", &[], &[]).unwrap();
         assert_eq!(plain.send[0]["message"]["content"], "hi");
+    }
+
+    const MSG: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn rewind_files_is_the_sdks_control_request() {
+        let (id, effects) = rewind_files(MSG, true).unwrap();
+        let [msg] = effects.send.as_slice() else {
+            panic!("one line");
+        };
+        assert_eq!(msg["type"], "control_request");
+        assert_eq!(msg["request_id"], id.as_str());
+        assert_eq!(
+            msg["request"],
+            json!({"subtype": "rewind_files", "user_message_id": MSG, "dry_run": true})
+        );
+        assert!(rewind_files("../etc", false).is_err());
+    }
+
+    #[test]
+    fn prompts_carry_the_id_checkpoints_are_keyed_by() {
+        let effects = prompt(&mut Transcript::default(), "hi", &[], &[]).unwrap();
+        let id = effects.send[0]["uuid"].as_str().unwrap();
+        assert!(claude_transcript::is_uuid(id));
     }
 }

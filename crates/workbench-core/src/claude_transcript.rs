@@ -14,30 +14,35 @@
 //! answers.
 
 use std::collections::{HashMap, VecDeque};
-use std::fs;
-use std::io::BufRead;
 use std::path::Path;
 
 use serde_json::{json, Value};
 
+mod branch;
+mod cache;
 mod elicitation;
+mod events;
 mod items;
 mod parse;
 mod protocol;
 mod summary;
+mod title;
 
+pub use branch::fork_point;
+pub use cache::{written_cache_ttl, KEEPALIVE_PROMPT};
 pub use elicitation::ElicitationAction;
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use summary::{RunningSummary, WaitingSummary};
+pub(crate) use title::SavedTitle;
 
 pub use items::{
-    ApprovalDecision, ModelOption, RateLimitInfo, RetryInfo, SlashCommand, TaskInfo, ToolStatus,
-    TranscriptItem, TranscriptMeta,
+    ApprovalDecision, ArtifactInfo, EventKind, ModelOption, RateLimitInfo, RetryInfo, SlashCommand,
+    TaskInfo, ToolStatus, TranscriptItem, TranscriptMeta,
 };
 
 pub(crate) use parse::{clip, clip_patch, clip_value, str_at, MAX_TEXT_BYTES};
 use parse::{document_names, tool_output_text, user_visible_text, UserText};
-pub use parse::{find_transcript, is_uuid};
+pub use parse::{find_subagent_transcript, find_transcript, is_uuid};
 
 /// What a server reads from a chat transcript, whichever CLI it folds.
 pub trait ChatView {
@@ -91,6 +96,9 @@ impl ChatView for Transcript {
 }
 
 /// What one [`Transcript::apply`] changed.
+/// How the CLI opens every skill body it injects after a `Skill` call.
+const SKILL_BODY_PREFIX: &str = "Base directory for this skill:";
+
 #[derive(Debug, Default, PartialEq)]
 pub struct Applied {
     /// Indices into [`Transcript::items`] that were added or updated.
@@ -105,6 +113,9 @@ pub struct Applied {
     pub unknown_kind: Option<String>,
     /// The slash command list changed (kept out of meta: it's large).
     pub commands: bool,
+    /// The CLI's answer to a host request: its `request_id`, and the payload
+    /// or the error.
+    pub response: Option<(String, Result<Value, String>)>,
 }
 
 /// What an approval needs to be answered: the input to echo back and the
@@ -121,6 +132,7 @@ pub struct Transcript {
     items: Vec<TranscriptItem>,
     index: HashMap<String, usize>,
     meta: TranscriptMeta,
+    saved_title: SavedTitle,
     /// Message id of the assistant message currently streaming.
     streaming_message: Option<String>,
     /// Streamed text/thinking items, in block order, awaiting their final block.
@@ -133,6 +145,13 @@ pub struct Transcript {
     commands: Vec<SlashCommand>,
     /// Skill calls that launched and still await their body, oldest first.
     skill_bodies_due: VecDeque<String>,
+    /// A keep-alive turn is running: its reply stays out of the chat.
+    keepalive: bool,
+    /// `meta.models` came from the server's own `initialize` probe, which a
+    /// terminal plugin's guessed list must not replace.
+    models_pinned: bool,
+    /// Folding a subagent's own transcript, whose every row is a sidechain.
+    sidechain: bool,
 }
 
 /// Largest tool output kept whole for "show full output".
@@ -142,10 +161,30 @@ impl Transcript {
     /// History from a session JSONL. A missing or unreadable file is an empty
     /// transcript: a brand-new session has no file yet.
     pub fn load(path: &Path) -> Self {
-        let mut t = Self::default();
-        if let Ok(file) = fs::File::open(path) {
-            for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
-                t.apply_line(&line);
+        Self::load_at(path, None)
+    }
+
+    /// History along the branch that ends at `leaf` (the newest entry when
+    /// `None`), as `claude --resume-session-at <leaf>` continues it.
+    pub fn load_at(path: &Path, leaf: Option<&str>) -> Self {
+        Self::load_from(path, leaf, false)
+    }
+
+    /// A subagent's transcript (see [`find_subagent_transcript`]).
+    pub fn load_subagent(path: &Path) -> Self {
+        Self::load_from(path, None, true)
+    }
+
+    fn load_from(path: &Path, leaf: Option<&str>, sidechain: bool) -> Self {
+        let mut t = Self {
+            sidechain,
+            ..Self::default()
+        };
+        let entries = branch::read_entries(path);
+        let dead = branch::abandoned(&entries, leaf);
+        for entry in &entries {
+            if str_at(entry, "uuid").is_none_or(|id| !dead.contains(id)) {
+                t.apply(entry);
             }
         }
         // History never has a turn in flight: the process that wrote it is gone.
@@ -163,8 +202,9 @@ impl Transcript {
     pub fn apply(&mut self, obj: &Value) -> Applied {
         // Subagent turns belong to their own transcript; the Task tool card
         // already stands for them here.
-        if obj.get("isSidechain").and_then(Value::as_bool) == Some(true)
-            || obj.get("parent_tool_use_id").is_some_and(|v| !v.is_null())
+        if !self.sidechain
+            && (obj.get("isSidechain").and_then(Value::as_bool) == Some(true)
+                || obj.get("parent_tool_use_id").is_some_and(|v| !v.is_null()))
         {
             return Applied::default();
         }
@@ -186,28 +226,57 @@ impl Transcript {
             Some("control_response") => {
                 self.apply_control_response(obj);
                 applied.commands = self.read_commands(obj.pointer("/response/response/commands"));
+                applied.response = control_reply(obj);
             }
             Some("conversation_reset") => {
                 let next = str_at(obj, "new_conversation_id").map(String::from);
                 self.reset();
                 applied.new_session_id = next;
             }
-            Some("attachment") => self.apply_queued_prompt(obj, &mut changed),
+            Some("attachment") => {
+                self.apply_queued_prompt(obj, &mut changed);
+                if let Some(item) = obj
+                    .get("attachment")
+                    .and_then(|att| events::attachment_event(att, self.event_id(obj)))
+                {
+                    self.upsert(item, &mut changed);
+                }
+            }
+            Some("prompt_suggestion") => {
+                self.meta.prompt_suggestion = str_at(obj, "suggestion")
+                    .filter(|s| !s.trim().is_empty())
+                    .map(String::from)
+            }
             Some("result") => self.apply_result(obj, &mut changed),
             Some("rate_limit_event") => self.apply_rate_limit(obj),
-            Some("ai-title") => self.meta.title = str_at(obj, "aiTitle").map(String::from),
+            Some("ai-title" | "custom-title") => {
+                self.saved_title.apply(obj);
+                if let Some(title) = self.saved_title.get() {
+                    self.meta.title = Some(title.to_string());
+                }
+            }
             Some("permission-mode") => {
                 self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from)
             }
             Some("system") => match str_at(obj, "subtype") {
+                // A terminal's plugin sends one per request, with the effort
+                // the engine resolved; it knows no permission mode to report.
                 Some("init") => {
                     self.set_model(str_at(obj, "model").map(String::from));
-                    self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from);
+                    if let Some(mode) = str_at(obj, "permissionMode") {
+                        self.meta.permission_mode = Some(mode.to_string());
+                    }
+                    if let Some(effort) = str_at(obj, "effort") {
+                        self.meta.effort = Some(effort.to_string());
+                    }
                 }
                 Some("status") if str_at(obj, "status") == Some("requesting") => {
                     self.meta.busy = true
                 }
-                Some("turn_duration") => self.meta.busy = false,
+                Some("turn_duration") => {
+                    self.meta.busy = false;
+                    self.keepalive = false;
+                }
                 // Output of a slash command run in chat (`/cost`, `/context`).
                 Some("local_command_output") => {
                     if let Some(text) = str_at(obj, "content").filter(|t| !t.trim().is_empty()) {
@@ -250,10 +319,19 @@ impl Transcript {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
                     let text = "Conversation compacted".to_string();
                     self.upsert(TranscriptItem::Notice { id, text }, &mut changed);
+                    self.meta.context_tokens = None;
+                    self.meta.cache_expires_at = None;
                 }
-                _ => {}
+                _ => {
+                    if let Some(item) = events::system_event(obj, self.event_id(obj)) {
+                        self.upsert(item, &mut changed);
+                    }
+                }
             },
             _ => {}
+        }
+        if self.meta.busy && !before.busy {
+            self.meta.prompt_suggestion = None;
         }
         applied.items = changed;
         applied.meta = self.meta != before;
@@ -354,6 +432,9 @@ impl Transcript {
         if let Some(t) = text("last_tool_name") {
             task.last_tool = Some(t);
         }
+        if let Some(t) = text("output_id") {
+            task.output_id = Some(t);
+        }
         if let Some(t) = text("summary") {
             task.summary = Some(clip(&t));
         }
@@ -409,7 +490,10 @@ impl Transcript {
             busy: false,
             title: None,
             context_tokens: None,
+            cache_expires_at: None,
             tasks: Vec::new(),
+            artifacts: Vec::new(),
+            prompt_suggestion: None,
             ..self.meta.clone()
         };
         *self = Self {
@@ -442,6 +526,14 @@ impl Transcript {
     /// turn starting at once.
     pub fn set_busy(&mut self) {
         self.meta.busy = true;
+        self.meta.prompt_suggestion = None;
+    }
+
+    /// The line's uuid; lines without one get a position-based id.
+    fn event_id(&self, obj: &Value) -> String {
+        str_at(obj, "uuid")
+            .map(String::from)
+            .unwrap_or_else(|| format!("event-{}", self.items.len()))
     }
 
     /// The mode just requested with `set_permission_mode`.
@@ -469,39 +561,31 @@ impl Transcript {
         self.meta.effort = Some(level.to_string());
     }
 
+    /// The models the CLI really offers (see `claude_accounts::models`), kept
+    /// over any list an `initialize` reply brings later.
+    pub fn pin_models(&mut self, models: Vec<ModelOption>) {
+        self.meta.models = models;
+        self.models_pinned = true;
+        if let Some(choice) = self.meta.model_choice.clone() {
+            self.set_model_choice(&choice);
+        }
+    }
+
     /// Replies to the host's own requests; the `initialize` reply lists the
-    /// models the session can switch to.
+    /// models the session can switch to. A terminal's plugin also names the
+    /// current pick (`modelChoice`), which `-p` has no way to say.
     fn apply_control_response(&mut self, obj: &Value) {
-        let Some(models) = obj
-            .pointer("/response/response/models")
-            .and_then(Value::as_array)
-        else {
+        let Some(reply) = obj.pointer("/response/response") else {
             return;
         };
-        self.meta.models = models
-            .iter()
-            .filter_map(|m| {
-                Some(ModelOption {
-                    value: str_at(m, "value")?.to_string(),
-                    default_effort: None,
-                    input_modalities: Vec::new(),
-                    service_tiers: Vec::new(),
-                    display_name: str_at(m, "displayName").unwrap_or_default().to_string(),
-                    description: str_at(m, "description").unwrap_or_default().to_string(),
-                    resolved_model: str_at(m, "resolvedModel").map(String::from),
-                    effort_levels: m
-                        .get("supportedEffortLevels")
-                        .and_then(Value::as_array)
-                        .map(|l| {
-                            l.iter()
-                                .filter_map(Value::as_str)
-                                .map(String::from)
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                })
-            })
-            .collect();
+        if let Some(models) = reply.get("models").and_then(Value::as_array) {
+            if !self.models_pinned {
+                self.meta.models = model_options(models);
+            }
+        }
+        if let Some(choice) = str_at(reply, "modelChoice") {
+            self.set_model_choice(choice);
+        }
     }
 
     /// Record the answer to an approval and build the `control_response` for
@@ -661,6 +745,7 @@ impl Transcript {
 
     fn apply_result(&mut self, obj: &Value, changed: &mut Vec<usize>) {
         self.meta.busy = false;
+        self.keepalive = false;
         self.meta.retry = None;
         self.streaming_message = None;
         // `modelUsage` is keyed by init's model id, `[1m]` included (CLI 2.1.286);
@@ -695,7 +780,7 @@ impl Transcript {
         }
         // JSONL marks text the CLI injected (skill bodies, reminders) isMeta;
         // stream-json marks it isSynthetic.
-        let injected = obj.get("isMeta").and_then(Value::as_bool) == Some(true)
+        let flagged = obj.get("isMeta").and_then(Value::as_bool) == Some(true)
             || obj.get("isSynthetic").and_then(Value::as_bool) == Some(true);
         let id = str_at(obj, "uuid").unwrap_or_default().to_string();
         // JSONL spells it toolUseResult; stream-json, tool_use_result.
@@ -744,8 +829,17 @@ impl Transcript {
             );
             return;
         }
-        if injected {
+        // Some turns stream a skill body with neither flag (seen on CLI
+        // 2.1.286 beside prompts sent mid-turn), so the body is also known by
+        // its opening line, which no prompt starts with.
+        // A prompt a terminal's plugin put into a running turn: show what was typed.
+        let queued = queued_prompt(text);
+        let text = queued.unwrap_or(text);
+        if (flagged && queued.is_none()) || text.starts_with(SKILL_BODY_PREFIX) {
             self.attach_skill_body(obj, text, changed);
+            return;
+        }
+        if self.start_keepalive(id.clone(), text, changed) {
             return;
         }
         let text = match if text.is_empty() {
@@ -755,6 +849,10 @@ impl Transcript {
         } {
             Some(UserText::Prompt(text)) => {
                 self.meta.busy = true;
+                self.keepalive = false;
+                if self.meta.title.is_none() && !text.is_empty() {
+                    self.meta.title = Some(crate::session_utils::truncate_label(&text));
+                }
                 text
             }
             Some(UserText::Command(text)) => text,
@@ -809,6 +907,11 @@ impl Transcript {
         if text.is_empty() && images == 0 && files.is_empty() {
             return;
         }
+        // A prompt sent during a keep-alive turn joins it: its reply must show.
+        self.keepalive = false;
+        if self.meta.title.is_none() && !text.is_empty() {
+            self.meta.title = Some(crate::session_utils::truncate_label(&text));
+        }
         let item = TranscriptItem::User {
             id: str_at(obj, "uuid").unwrap_or_default().to_string(),
             text,
@@ -853,6 +956,14 @@ impl Transcript {
             self.skill_bodies_due.push_back(tool_id.to_string());
         }
         let text = tool_output_text(block.get("content"));
+        if name == "Artifact" && !is_error {
+            if let Some(found) = result.and_then(|r| events::artifact(tool_id, r, text.as_deref()))
+            {
+                let list = &mut self.meta.artifacts;
+                list.retain(|a| a.tool_use_id != tool_id);
+                list.push(found);
+            }
+        }
         self.set_tool_output(i, tool_id, text);
         changed.push(i);
     }
@@ -881,7 +992,7 @@ impl Transcript {
     /// stream-json doesn't, so there bodies go to launched calls in order. A
     /// skill run as a slash command has no card, and its body stays hidden.
     fn attach_skill_body(&mut self, obj: &Value, text: &str, changed: &mut Vec<usize>) {
-        if !text.starts_with("Base directory for this skill:") {
+        if !text.starts_with(SKILL_BODY_PREFIX) {
             return;
         }
         let id = match str_at(obj, "sourceToolUseID") {
@@ -918,7 +1029,7 @@ impl Transcript {
                     self.note_model(model);
                 }
             }
-            Some("content_block_start") => {
+            Some("content_block_start") if !self.keepalive => {
                 let (Some(msg), Some(index), Some(block)) = (
                     self.streaming_message.clone(),
                     event.get("index").and_then(Value::as_u64),
@@ -1022,6 +1133,11 @@ impl Transcript {
             if total > 0 {
                 self.meta.context_tokens = Some(total);
             }
+            self.note_cache(obj, usage);
+        }
+        if self.keepalive {
+            self.meta.busy = true;
+            return;
         }
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
             return;
@@ -1120,6 +1236,60 @@ impl Transcript {
         };
         changed.push(i);
     }
+}
+
+/// `{"response": {"subtype": "success"|"error", "request_id", "response"|"error"}}`.
+fn control_reply(obj: &Value) -> Option<(String, Result<Value, String>)> {
+    let r = obj.get("response")?;
+    let id = str_at(r, "request_id")?.to_string();
+    let result = match str_at(r, "subtype") {
+        Some("success") => Ok(r.get("response").cloned().unwrap_or(Value::Null)),
+        _ => Err(str_at(r, "error").unwrap_or("request failed").to_string()),
+    };
+    Some((id, result))
+}
+
+/// How a terminal's plugin frames a chat prompt it puts into a running turn
+/// (the CLI's own wording for a prompt typed mid-turn).
+pub const QUEUED_PROMPT_PREFIX: &str = "The user sent a new message while you were working:\n";
+
+/// The typed text of a [`QUEUED_PROMPT_PREFIX`] row, without the framing.
+fn queued_prompt(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix(QUEUED_PROMPT_PREFIX)?;
+    let end = ["\n\nAttached files", "\n\nIMPORTANT:"]
+        .iter()
+        .filter_map(|m| rest.find(m))
+        .min()
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// The models an `initialize` reply lists, as the chat's picker offers them.
+pub fn model_options(models: &[Value]) -> Vec<ModelOption> {
+    models
+        .iter()
+        .filter_map(|m| {
+            Some(ModelOption {
+                value: str_at(m, "value")?.to_string(),
+                display_name: str_at(m, "displayName").unwrap_or_default().to_string(),
+                description: str_at(m, "description").unwrap_or_default().to_string(),
+                resolved_model: str_at(m, "resolvedModel").map(String::from),
+                default_effort: None,
+                input_modalities: Vec::new(),
+                service_tiers: Vec::new(),
+                effort_levels: m
+                    .get("supportedEffortLevels")
+                    .and_then(Value::as_array)
+                    .map(|l| {
+                        l.iter()
+                            .filter_map(Value::as_str)
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

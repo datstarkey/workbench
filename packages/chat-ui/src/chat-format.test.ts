@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskInfo, TranscriptItem, TranscriptMeta } from '@workbench/types';
+import type { ToolItem } from './chat-format';
 import {
 	activity,
 	agentName,
@@ -13,7 +14,11 @@ import {
 	limitNotice,
 	matchCommands,
 	slashQuery,
+	isWholeCommand,
+	insertCommand,
 	pickTasks,
+	pickTaskView,
+	taskViews,
 	approvalPreview,
 	formatElapsed,
 	formatTokens,
@@ -170,15 +175,19 @@ describe('tool output', () => {
 describe('groupBlocks', () => {
 	it('collapses runs of read-only tools and hides TodoWrite', () => {
 		const running = { ...tool('b1', 'Bash'), status: 'running' as const };
+		const failedPlan = { ...tool('tu', 'TaskUpdate'), status: 'error' as const };
 		const blocks = groupBlocks([
 			tool('r1', 'Read'),
 			tool('todo', 'TodoWrite'),
+			tool('tc', 'TaskCreate'),
+			failedPlan,
 			running,
 			tool('g1', 'Grep'),
 			text('a', 'Found it.')
 		]);
 		expect(blocks).toEqual([
 			{ kind: 'quiet', id: 'r1', tools: [tool('r1', 'Read')] },
+			{ kind: 'item', item: failedPlan },
 			{ kind: 'item', item: running },
 			{ kind: 'quiet', id: 'g1', tools: [tool('g1', 'Grep')] },
 			{ kind: 'item', item: text('a', 'Found it.') }
@@ -203,6 +212,11 @@ describe('groupBlocks', () => {
 		expect(steps.id).toBe('r1');
 		expect(steps.tools.map((t) => t.id)).toEqual(['r1', 'b1', 'e1']);
 		expect(stepNames(steps.tools)).toBe('Read, Bash, Edit');
+	});
+
+	it('never folds an artifact card away', () => {
+		const blocks = groupBlocks([tool('b1', 'Bash'), tool('a1', 'Artifact'), tool('b2', 'Bash')]);
+		expect(blocks.map((b) => b.kind)).toEqual(['item', 'item', 'item']);
 	});
 
 	it('keeps a failed read as its own card', () => {
@@ -256,6 +270,77 @@ describe('latestTodos', () => {
 		];
 		expect(latestTodos(items)).toEqual([{ content: 'new', status: 'completed' }]);
 		expect(latestTodos([text('a', 'x')])).toEqual([]);
+	});
+
+	const result = (item: ToolItem, output: string): ToolItem => ({ ...item, output });
+	const create = (id: string, subject: string, output?: string): ToolItem => {
+		const item = tool(id, 'TaskCreate', { subject, description: 'd', activeForm: `${subject}ing` });
+		return output === undefined ? { ...item, status: 'running' } : result(item, output);
+	};
+
+	it('builds the plan from TaskCreate and TaskUpdate', () => {
+		const items: TranscriptItem[] = [
+			create('c1', 'Read', 'Task #1 created successfully: Read'),
+			create('c2', 'Write', 'Task #2 created successfully: Write'),
+			create('c3', 'Ship', 'Task #3 created successfully: Ship'),
+			tool('u1', 'TaskUpdate', { taskId: '1', status: 'completed' }),
+			tool('u2', 'TaskUpdate', { taskId: '2', status: 'in_progress', subject: 'Write it' }),
+			tool('u3', 'TaskUpdate', { taskId: '3', status: 'deleted' }),
+			tool('u4', 'TaskUpdate', { taskId: '9', status: 'completed' }),
+			{ ...tool('u5', 'TaskUpdate', { taskId: '1', status: 'pending' }), status: 'error' }
+		];
+		expect(latestTodos(items)).toEqual([
+			{ content: 'Read', status: 'completed', activeForm: 'Reading' },
+			{ content: 'Write it', status: 'in_progress', activeForm: 'Writeing' }
+		]);
+	});
+
+	it('counts a TaskCreate once it has a result, by the id in it', () => {
+		const items: TranscriptItem[] = [
+			create('c1', 'A', 'Task #7 created successfully: A'),
+			create('c2', 'B', 'some other wording'),
+			create('c3', 'Pending'),
+			{ ...tool('c4', 'TaskCreate'), input: null, status: 'running' },
+			tool('u1', 'TaskUpdate', { taskId: '8', status: 'completed' })
+		];
+		expect(latestTodos(items).map((s) => [s.content, s.status])).toEqual([
+			['A', 'pending'],
+			['B', 'completed']
+		]);
+	});
+
+	it('keeps the plan while a TodoWrite streams', () => {
+		const plan = tool('t1', 'TodoWrite', { todos: [{ content: 'a', status: 'pending' }] });
+		const streaming: TranscriptItem = { ...plan, id: 't2', input: null, status: 'running' };
+		expect(latestTodos([plan, streaming])).toEqual([{ content: 'a', status: 'pending' }]);
+	});
+
+	it('replaces the plan with a TaskList result or a newer TodoWrite', () => {
+		const list = result(
+			tool('l1', 'TaskList'),
+			'#1 [completed] Read (agent)\n#2 [in_progress] Renamed [blocked by #1]\n#5 [pending] Test (x) [blocked by #2]'
+		);
+		const items: TranscriptItem[] = [
+			create('c1', 'Read', 'Task #1 created successfully: Read'),
+			create('c2', 'Old', 'Task #2 created successfully: Old'),
+			create('c3', 'Gone', 'Task #3 created successfully: Gone'),
+			list,
+			create('c4', 'Next', 'oops')
+		];
+		expect(latestTodos(items)).toEqual([
+			{ content: 'Read', status: 'completed', activeForm: 'Reading' },
+			{ content: 'Renamed', status: 'in_progress', activeForm: 'Olding' },
+			{ content: 'Test (x)', status: 'pending', activeForm: undefined },
+			{ content: 'Next', status: 'pending', activeForm: 'Nexting' }
+		]);
+		expect(latestTodos([...items, result(tool('l2', 'TaskList'), 'No tasks found')])).toEqual([]);
+		expect(
+			latestTodos([
+				...items,
+				tool('t', 'TodoWrite', { todos: [{ content: 'only', status: 'pending' }] })
+			])
+		).toEqual([{ content: 'only', status: 'pending' }]);
+		expect(latestTodos([...items.slice(0, 3), { ...list, output: undefined }])).toHaveLength(3);
 	});
 });
 
@@ -338,6 +423,16 @@ describe('tasks panel', () => {
 		const onlyJobs = [task('shell', 'local_bash', 'running')];
 		expect(pickTasks(onlyJobs, 'agents', null).tab).toBe('jobs');
 		expect(pickTasks([], null, null).selected).toBeNull();
+	});
+
+	it('opens an agent on its conversation and a shell on its output', () => {
+		const agent = task('a1', 'agent', 'running');
+		const shell = task('shell', 'local_bash', 'running');
+		expect(taskViews(agent)).toEqual(['conversation', 'output']);
+		expect(pickTaskView(agent, null)).toBe('conversation');
+		expect(pickTaskView(agent, 'output')).toBe('output');
+		expect(taskViews(shell)).toEqual(['output']);
+		expect(pickTaskView(shell, 'conversation')).toBe('output');
 	});
 
 	it('abbreviates counts', () => {
@@ -426,11 +521,31 @@ describe('slash menu', () => {
 		{ name: 'security-review', description: 'Find vulnerabilities' }
 	];
 
-	it('opens only while the draft is a bare command name', () => {
-		expect(slashQuery('/')).toBe('');
-		expect(slashQuery('/Com')).toBe('com');
+	it('opens for a command name at the caret, at the start or mid-line', () => {
+		expect(slashQuery('/')).toEqual({ start: 0, query: '' });
+		expect(slashQuery('/Com')).toEqual({ start: 0, query: 'com' });
 		expect(slashQuery('/compact focus on tests')).toBe(null);
-		expect(slashQuery('fix /this')).toBe(null);
+		expect(slashQuery('fix it then /rev')).toEqual({ start: 12, query: 'rev' });
+		expect(slashQuery('fix it then /rev and more', 16)).toEqual({ start: 12, query: 'rev' });
+		expect(slashQuery('see src/lib')).toBe(null);
+		expect(slashQuery('open /usr/bin')).toBe(null);
+	});
+
+	it('treats a command as the whole draft only with nothing but whitespace around it', () => {
+		const at = (draft: string, caret = draft.length) => slashQuery(draft, caret)!;
+		expect(isWholeCommand('/res', at('/res'), 4)).toBe(true);
+		expect(isWholeCommand('/resume', at('/resume', 4), 4)).toBe(true);
+		expect(isWholeCommand('  /res', at('  /res'), 6)).toBe(true);
+		expect(isWholeCommand('fix it /rev', at('fix it /rev'), 11)).toBe(false);
+		expect(isWholeCommand('/rev then more', at('/rev then more', 4), 4)).toBe(false);
+	});
+
+	it('inserts a picked command where it was typed', () => {
+		const draft = 'fix it then /re and push';
+		expect(insertCommand(draft, slashQuery(draft, 15)!, 15, 'review')).toEqual({
+			text: 'fix it then /review and push',
+			caret: 20
+		});
 	});
 
 	it('ranks prefix matches before other matches', () => {

@@ -1,29 +1,25 @@
 import type { SessionType } from '$types/workbench';
-import {
-	applyClaudeIntegration,
-	applyCodexIntegration,
-	checkClaudeIntegration,
-	checkCodexIntegration
-} from '$lib/utils/terminal';
+import { applyCodexIntegration, checkCodexIntegration } from '$lib/utils/terminal';
 import { getWorkbenchSettingsStore } from '$stores/context';
 
 export class IntegrationApprovalStore {
 	open = $state(false);
 	description = $state('');
-	sessionType: SessionType = $state('claude');
 	error = $state('');
 
 	private resolve: ((approved: boolean) => void) | null = null;
 	private settings = getWorkbenchSettingsStore();
 
 	async ensureIntegration(type: SessionType): Promise<boolean> {
-		if (type === 'shell') return true;
+		// Claude needs no settings changes: Workbench loads its own plugin into
+		// every Claude process (`workbench_core::claude_plugin`).
+		if (type !== 'codex') return true;
 
 		const approval = this.settings.getApproval(type);
 
 		if (approval === true) {
 			try {
-				await this.applyForType(type);
+				await applyCodexIntegration();
 			} catch {
 				// Best-effort; don't block session creation
 			}
@@ -35,8 +31,7 @@ export class IntegrationApprovalStore {
 		}
 
 		// Never asked (null) — check if changes are actually needed
-		const status =
-			type === 'claude' ? await checkClaudeIntegration() : await checkCodexIntegration();
+		const status = await checkCodexIntegration();
 
 		if (!status.needsChanges) {
 			await this.settings.setApproval(type, true);
@@ -44,13 +39,13 @@ export class IntegrationApprovalStore {
 		}
 
 		// Show dialog and wait for user choice
-		return this.showDialog(type, status.description);
+		return this.showDialog(status.description);
 	}
 
 	async approve() {
 		try {
-			await this.applyForType(this.sessionType);
-			await this.settings.setApproval(this.sessionType, true);
+			await applyCodexIntegration();
+			await this.settings.setApproval('codex', true);
 			this.error = '';
 			this.open = false;
 			this.resolve?.(true);
@@ -61,7 +56,7 @@ export class IntegrationApprovalStore {
 	}
 
 	skip() {
-		this.settings.setApproval(this.sessionType, false);
+		this.settings.setApproval('codex', false);
 		this.error = '';
 		this.open = false;
 		this.resolve?.(true);
@@ -76,18 +71,12 @@ export class IntegrationApprovalStore {
 		this.resolve = null;
 	}
 
-	private showDialog(type: SessionType, description: string): Promise<boolean> {
-		this.sessionType = type;
+	private showDialog(description: string): Promise<boolean> {
 		this.description = description;
 		this.error = '';
 		this.open = true;
 		return new Promise<boolean>((resolve) => {
 			this.resolve = resolve;
 		});
-	}
-
-	private async applyForType(type: SessionType): Promise<void> {
-		if (type === 'claude') await applyClaudeIntegration();
-		else if (type === 'codex') await applyCodexIntegration();
 	}
 }

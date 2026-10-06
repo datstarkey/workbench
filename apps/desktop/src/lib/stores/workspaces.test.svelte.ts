@@ -42,6 +42,7 @@ vi.mock('$features/chat/chat-registry', async (importOriginal) => ({
 // Mock context so getGitStore() and getWorkbenchSettingsStore() work outside a component
 const mockGitStore = {
 	branchByProject: {} as Record<string, string>,
+	worktreesByProject: {} as Record<string, { path: string; branch: string }[]>,
 	statusByProject: {} as Record<string, { branch: string }>
 };
 const mockWorkbenchSettingsStore = {
@@ -614,6 +615,36 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
+	describe('closeEndedChat', () => {
+		it('closes the tab of a single-pane chat', () => {
+			const tab1 = makeTab({ id: 'tab-1', panes: [{ id: 'chat' }] });
+			const tab2 = makeTab({ id: 'tab-2' });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab1, tab2] })];
+
+			store.closeEndedChat('chat');
+
+			expect(store.workspaces[0].terminalTabs.map((t) => t.id)).toEqual(['tab-2']);
+		});
+
+		it('removes only the pane from a split', () => {
+			const tab = makeTab({ id: 'tab-1', panes: [{ id: 'chat' }, { id: 'shell' }] });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab] })];
+
+			store.closeEndedChat('chat');
+
+			expect(store.workspaces[0].terminalTabs[0].panes.map((p) => p.id)).toEqual(['shell']);
+		});
+
+		it('ignores a pane that is already gone', () => {
+			const tab = makeTab({ id: 'tab-1' });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab] })];
+
+			store.closeEndedChat('missing');
+
+			expect(store.workspaces[0].terminalTabs).toHaveLength(1);
+		});
+	});
+
 	describe('setActiveTab', () => {
 		it('updates the active terminal tab id', () => {
 			const tab1 = makeTab({ id: 'tab-1' });
@@ -874,14 +905,13 @@ describe('WorkspaceStore', () => {
 			expect(pane.startupCommand).toBe(`claude --session-id ${pane.claudeSessionId}`);
 		});
 
-		it('keeps terminals while the sandbox runtime is on, and for explicit commands', () => {
+		it('opens chat even with the sandbox runtime on (the terminal is what srt wraps), not for explicit commands', () => {
 			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
 			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.addAISession('ws-a', 'claude');
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
 
-			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = false;
 			store.addAISession('ws-a', 'claude', { startupCommand: 'claude "fix the build"' });
 			expect(store.workspaces[0].terminalTabs[1].panes[0].view).toBeUndefined();
 		});
@@ -1004,16 +1034,16 @@ describe('WorkspaceStore', () => {
 	describe('chat view guards', () => {
 		const id = '32345678-1234-1234-1234-123456789abc';
 
-		it('refuses to move a pane to chat while the sandbox runtime is on', async () => {
+		it('moves a pane to chat with the sandbox runtime on', async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
 			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
 			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
 			await store.setPaneView(paneId, 'chat');
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
 		});
 
-		it('keeps a restarted chat tab in chat, unless the sandbox runtime is on', async () => {
+		it('keeps a restarted chat tab in chat, sandbox runtime or not', async () => {
 			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
@@ -1025,7 +1055,7 @@ describe('WorkspaceStore', () => {
 
 			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
 			await store.restartAISession('ws-a', restarted.id);
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
 		});
 	});
 
@@ -2195,6 +2225,9 @@ describe('WorkspaceStore', () => {
 			running: null,
 			previousIds: []
 		};
+		const project = { name: 'test', path: '/projects/test' };
+		const adopt = (chat: AgentSummary = remote) =>
+			store.adoptServerChat(chat, chat.projectPath === project.path ? project : undefined);
 		const adoptable = (list = [remote]) => store.adoptableServerChats(list);
 		const lastSnapshot = () =>
 			invokeSpy.mock.calls.filter((c) => c[0] === 'save_workspaces').slice(-1)[0]?.[1] as {
@@ -2213,7 +2246,7 @@ describe('WorkspaceStore', () => {
 				makeWorkspace({ terminalTabs: [active], activeTerminalTabId: 'tab-active' })
 			];
 
-			expect(store.adoptServerChat(remote)).toBe(true);
+			expect(adopt()).toBe(true);
 
 			const tab = store.workspaces[0].terminalTabs[1];
 			expect(tab).toMatchObject({ label: 'Fix the login bug', type: 'claude' });
@@ -2231,7 +2264,7 @@ describe('WorkspaceStore', () => {
 
 		it('follows a /clear re-key instead of adopting the new id as a second tab', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.adoptServerChat(remote);
+			adopt();
 			const rekeyed = { ...remote, sessionId: 'sess-cleared', previousIds: ['sess-phone'] };
 
 			expect(adoptable([rekeyed])).toEqual([]);
@@ -2241,14 +2274,50 @@ describe('WorkspaceStore', () => {
 			expect(tabs[0].panes[0].claudeSessionId).toBe('sess-cleared');
 		});
 
+		it('opens a background workspace when none hosts the chat, unsaved until it holds its own tab', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a', projectPath: '/projects/other' })];
+			store.selectedId = 'ws-a';
+
+			expect(adopt()).toBe(true);
+
+			const host = store.workspaces.find((w) => w.projectPath === '/projects/test')!;
+			expect(host).toMatchObject({ renderer: 'xterm', projectName: 'test' });
+			expect(host.terminalTabs[0].panes[0].claudeSessionId).toBe('sess-phone');
+			expect(store.selectedId).toBe('ws-a');
+			expect(lastSnapshot().snapshot.workspaces.map((w) => w.id)).toEqual(['ws-a']);
+
+			store.closeTerminalTab(host.id, host.terminalTabs[0].id);
+			expect(store.workspaces.map((w) => w.id)).toEqual(['ws-a']);
+		});
+
+		it('opens a worktree chat its own worktree workspace', () => {
+			store.workspaces = [];
+			mockGitStore.worktreesByProject = {
+				'/projects/test': [{ path: '/projects/test-feat', branch: 'feat' }]
+			};
+			adopt({ ...remote, worktreePath: '/projects/test-feat' });
+			expect(store.workspaces[0]).toMatchObject({
+				worktreePath: '/projects/test-feat',
+				branch: 'feat'
+			});
+			mockGitStore.worktreesByProject = {};
+		});
+
+		it('keeps adopted tab labels in step with the chat title', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			adopt({ ...remote, title: null });
+			adoptable([{ ...remote, title: 'Named later' }]);
+			expect(store.workspaces[0].terminalTabs[0].label).toBe('Named later');
+		});
+
 		it('routes a worktree chat to the worktree workspace and skips unknown cwds', () => {
 			store.workspaces = [
 				makeWorkspace({ id: 'main' }),
 				makeWorkspace({ id: 'wt', worktreePath: '/projects/test-feat', branch: 'feat' })
 			];
 
-			store.adoptServerChat({ ...remote, worktreePath: '/projects/test-feat' });
-			expect(store.adoptServerChat({ ...remote, projectPath: '/elsewhere' })).toBe(false);
+			adopt({ ...remote, worktreePath: '/projects/test-feat' });
+			expect(adopt({ ...remote, projectPath: '/elsewhere' })).toBe(false);
 
 			expect(store.workspaces.find((w) => w.id === 'wt')!.terminalTabs).toHaveLength(1);
 			expect(store.workspaces.find((w) => w.id === 'main')!.terminalTabs).toHaveLength(0);
@@ -2256,7 +2325,7 @@ describe('WorkspaceStore', () => {
 
 		it('falls back to a generic label for an untitled chat', () => {
 			store.workspaces = [makeWorkspace()];
-			store.adoptServerChat({ ...remote, title: null });
+			adopt({ ...remote, title: null });
 			expect(store.workspaces[0].terminalTabs[0].label).toBe('Remote chat');
 		});
 
@@ -2265,7 +2334,7 @@ describe('WorkspaceStore', () => {
 			store.workspaces = [
 				makeWorkspace({ id: 'ws-a', terminalTabs: [own], activeTerminalTabId: 'tab-own' })
 			];
-			store.adoptServerChat(remote);
+			adopt();
 			store.setActiveTab('ws-a', store.workspaces[0].terminalTabs[1].id);
 
 			const { snapshot } = lastSnapshot();
@@ -2275,7 +2344,7 @@ describe('WorkspaceStore', () => {
 
 		it('closing an adopted chat only detaches and is not re-adopted', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.adoptServerChat(remote);
+			adopt();
 			const tab = store.workspaces[0].terminalTabs[0];
 
 			store.closeTerminalTab('ws-a', tab.id);
@@ -2288,7 +2357,7 @@ describe('WorkspaceStore', () => {
 
 		it('adopts a closed chat again once it ended and the other device continued it', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.adoptServerChat(remote);
+			adopt();
 			store.closeTerminalTab('ws-a', store.workspaces[0].terminalTabs[0].id);
 
 			expect(adoptable()).toEqual([]);
@@ -2298,7 +2367,7 @@ describe('WorkspaceStore', () => {
 
 		it('restarting an adopted chat re-attaches it instead of stopping the process', async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.adoptServerChat(remote);
+			adopt();
 			const tab = store.workspaces[0].terminalTabs[0];
 
 			await store.restartAISession('ws-a', tab.id);
@@ -2310,7 +2379,7 @@ describe('WorkspaceStore', () => {
 
 		it('a takeover makes the pane its own: persisted, and stopped on close', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.adoptServerChat(remote);
+			adopt();
 			const tab = store.workspaces[0].terminalTabs[0];
 			const paneId = tab.panes[0].id;
 
@@ -2338,7 +2407,7 @@ describe('WorkspaceStore', () => {
 
 		it('switching an adopted chat to the terminal takes it over', async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.adoptServerChat(remote);
+			adopt();
 			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
 
 			await store.setPaneView(paneId, 'terminal');
@@ -2448,7 +2517,7 @@ describe('WorkspaceStore', () => {
 			};
 
 			expect(store.adoptableServerChats([summary])).toEqual([summary]);
-			expect(store.adoptServerChat(summary)).toBe(true);
+			expect(store.adoptServerChat(summary, undefined)).toBe(true);
 
 			const tab = store.workspaces[0].terminalTabs[1];
 			expect(tab.type).toBe('codex');

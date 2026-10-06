@@ -88,10 +88,8 @@ macro_rules! build_invoke_handler {
             commands::clone_repo,
             commands::delete_branch,
             commands::open_url,
-            commands::check_claude_integration,
             commands::check_codex_integration,
             commands::codex_supports_no_daemon,
-            commands::apply_claude_integration,
             commands::apply_codex_integration,
             commands::get_hook_logs,
             commands::clear_hook_logs,
@@ -163,6 +161,12 @@ pub fn run() {
         .manage(RefreshDispatcher::new())
         .manage(server_control::ServerControl::new())
         .setup(|app| {
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            app.handle().plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ))?;
+
             let handle = app.handle().clone();
             #[cfg(target_os = "macos")]
             menu::build(&handle).expect("failed to build menu");
@@ -171,6 +175,13 @@ pub fn run() {
             // loopback port, which is ephemeral and only known once it is bound.
             commands::refresh_sandbox_runtime_settings(None, &bridge);
             app.manage(bridge);
+            // Activity now comes from the `workbench` Claude Code plugin; drop the
+            // hook script older versions registered so events aren't reported twice.
+            std::thread::spawn(|| {
+                if let Err(e) = settings::remove_workbench_hook_integration() {
+                    log::warn!("failed to remove the old Claude hook script: {e}");
+                }
+            });
             let git_watcher = GitWatcher::new(handle);
             app.manage(git_watcher);
             let github_poller = GitHubPoller::new(app.handle().clone());
@@ -194,6 +205,7 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(sc.start_loopback()) {
                 log::error!("failed to start loopback embedded server: {e}");
             }
+            sc.watch_attention(app.handle().clone());
 
             Ok(())
         });

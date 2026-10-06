@@ -27,6 +27,8 @@ pub fn run() {
             #[cfg(target_os = "android")]
             _app.handle()
                 .plugin(tauri_plugin_session_notifications::init())?;
+            #[cfg(target_os = "android")]
+            _app.handle().plugin(tauri_plugin_speech_input::init())?;
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -4,15 +4,21 @@
 	import { OverlayScrollbars } from 'overlayscrollbars';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import BotIcon from '@lucide/svelte/icons/bot';
+	import PanelsTopLeftIcon from '@lucide/svelte/icons/panels-top-left';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import {
 		activity,
 		agentName,
+		ChatArtifacts,
+		chatArtifacts,
 		ChatComposer,
 		CodexControls,
+		ChatCache,
+		ChatCacheHint,
 		ChatContext,
 		ChatModelPicker,
 		ChatPlan,
+		ChatSuggestions,
 		ChatTasks,
 		ChatTranscript,
 		ChatUsage,
@@ -20,6 +26,7 @@
 		latestTodos,
 		limitNotice,
 		metaUsageChips,
+		promptSuggestions,
 		setChatPlatform,
 		usePlanUsage
 	} from '@workbench/chat-ui';
@@ -45,6 +52,8 @@
 	import { acquireChat } from './chat-registry';
 	import { desktopChatPlatform } from './chat-platform';
 	import ChatResumePicker from './ChatResumePicker.svelte';
+	import PanelResizeHandle from './PanelResizeHandle.svelte';
+	import { tasksPanelWidth } from './panel-width.svelte';
 
 	let {
 		agent,
@@ -101,8 +110,11 @@
 						? { permissionMode: settingsStore.claudePermissionMode }
 						: {})
 				}),
-		// Another device's chat: join its process, never start one behind its back.
-		...(workspaceStore.isAdoptedPane(paneId) ? { attachOnly: true } : {})
+		// Another device's chat, or this pane's own terminal `claude`: join its
+		// process, never start one behind its back.
+		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)
+			? { attachOnly: true }
+			: {})
 	});
 	const workspace = $derived(
 		cwd && cwd !== project.path
@@ -112,8 +124,9 @@
 	const branch = $derived(workspace && workspaceStore.resolvedBranch(workspace));
 	const pr = $derived(branch ? githubStore.getBranchStatus(project.path, branch)?.pr : null);
 
-	chat.onNeedsYou = (waiting) => claudeSessionStore.setAwaitingInput(paneId, waiting);
 	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
+	chat.onEnded = () => workspaceStore.closeEndedChat(paneId);
+	chat.onTerminal = (terminalId) => workspaceStore.linkLiveTerminal(paneId, terminalId);
 
 	watch(
 		() => chat.sessionId,
@@ -156,6 +169,7 @@
 	let stickToBottom = true;
 	/** The tasks panel as an overlay, for panes too narrow to dock it. */
 	let tasksOpen = $state(false);
+	let artifactsOpen = $state(false);
 	/** Wide enough to dock the tasks panel; one panel is mounted, since it polls task output. */
 	let wide = $state(false);
 	const measureWidth: Attachment<HTMLElement> = (node) => {
@@ -172,8 +186,10 @@
 	const tasks = $derived(chat.meta?.tasks ?? []);
 	const runningTasks = $derived(tasks.filter(isRunning).length);
 	const todos = $derived(latestTodos(chat.items));
+	const artifacts = $derived(chatArtifacts(chat.meta?.artifacts));
 	const now = $derived(activity(chat.items, chat.meta));
 	const live = $derived(chat.status === 'live');
+	const suggestions = $derived(promptSuggestions(chat.meta, live && !chat.rewind, draft));
 	// Codex reports its limits in the stream; Claude's come from the server's `/usage` check.
 	// svelte-ignore state_referenced_locally
 	const planLimits =
@@ -191,6 +207,8 @@
 				return `Starting ${agentLabel}…`;
 			case 'reconnecting':
 				return 'Reconnecting…';
+			case 'trust':
+				return 'Trust the folder to start';
 			case 'exited':
 			case 'failed':
 				return 'Restart the session to send messages';
@@ -266,6 +284,18 @@
 		<div class="ml-auto flex shrink-0 items-center gap-3">
 			<ChatUsage {chips} chipClass="h-6 px-2 text-[11px]" />
 			<ChatContext meta={chat.meta} class="h-6 px-2 text-[11px]" />
+			<ChatCache {chat} class="h-6 px-2 text-[11px]" />
+			{#if artifacts.length > 0}
+				<button
+					type="button"
+					class="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-wb-ink-mute hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"
+					aria-expanded={artifactsOpen}
+					onclick={() => (artifactsOpen = !artifactsOpen)}
+				>
+					<PanelsTopLeftIcon class="size-3.5" />
+					{artifacts.length === 1 ? '1 artifact' : `${artifacts.length} artifacts`}
+				</button>
+			{/if}
 			{#if tasks.length > 0 && !wide}
 				<button
 					type="button"
@@ -339,6 +369,8 @@
 							workspaceStore.resumeAISession(workspace.id, id, label, 'codex', undefined, 'chat');
 					}}
 				/>
+				<ChatCacheHint {chat} />
+				<ChatSuggestions {suggestions} onPick={(text) => (draft = text)} />
 				<ChatComposer
 					id="chat-draft-{paneId}"
 					{agent}
@@ -374,16 +406,35 @@
 			</div>
 		</div>
 		{#if tasks.length > 0 && wide}
-			<ChatTasks {tasks} seenAt={chat.seenAt} fetchOutput={(id) => chat.taskOutput(id)} />
+			<!-- The saved width is shared by every pane; a narrower pane keeps half for the chat. -->
+			<div class="relative flex max-w-1/2 shrink-0" style:width="{tasksPanelWidth.width}px">
+				<PanelResizeHandle size={tasksPanelWidth} label="Resize agents and tasks panel" />
+				<ChatTasks
+					{tasks}
+					seenAt={chat.seenAt}
+					cwd={workdir}
+					fetchOutput={(id) => chat.taskOutput(id)}
+					fetchTranscript={(id) => chat.taskTranscript(id)}
+					class="w-full"
+				/>
+			</div>
 		{/if}
 	</div>
+
+	{#if artifactsOpen && artifacts.length > 0}
+		<div class="absolute inset-y-0 right-0 z-30 flex shadow-2xl">
+			<ChatArtifacts {artifacts} onClose={() => (artifactsOpen = false)} />
+		</div>
+	{/if}
 
 	{#if tasksOpen && tasks.length > 0 && !wide}
 		<div class="absolute inset-y-0 right-0 z-20 flex shadow-2xl">
 			<ChatTasks
 				{tasks}
 				seenAt={chat.seenAt}
+				cwd={workdir}
 				fetchOutput={(id) => chat.taskOutput(id)}
+				fetchTranscript={(id) => chat.taskTranscript(id)}
 				onClose={() => (tasksOpen = false)}
 			/>
 		</div>

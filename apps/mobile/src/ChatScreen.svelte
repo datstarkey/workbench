@@ -5,19 +5,25 @@
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import EllipsisVerticalIcon from '@lucide/svelte/icons/ellipsis-vertical';
+	import PanelsTopLeftIcon from '@lucide/svelte/icons/panels-top-left';
 	import {
 		activity,
 		AgentChat,
 		agentName,
 		awaitsAnswer,
 		ChatApproval,
+		ChatArtifacts,
+		chatArtifacts,
 		ChatComposer,
 		CodexControls,
+		ChatCache,
+		ChatCacheHint,
 		ChatContext,
 		ChatElicitation,
 		ChatModelPicker,
 		ChatPlan,
 		ChatQuestion,
+		ChatSuggestions,
 		ChatTasks,
 		ChatTranscript,
 		ChatUsage,
@@ -26,22 +32,29 @@
 		latestTodos,
 		limitNotice,
 		metaUsageChips,
+		promptSuggestions,
 		setChatPlatform,
 		usePlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import type { ChatFile, ChatImage, TranscriptItem } from '@workbench/types';
-	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
+	import { openExternal, type MobileClient } from './client.svelte.ts';
+	import { baseName } from './home-format.ts';
 	import type { ChatRef } from './types.ts';
 	import Sheet from './Sheet.svelte';
 	import ViewSwitch from './ViewSwitch.svelte';
 	import { useBack } from './back-navigation';
 	import ProjectReviewSheet from './ProjectReviewSheet.svelte';
+	import { dictate, supportsDictation } from './dictation';
 
 	let { client, ref }: { client: MobileClient; ref: ChatRef } = $props();
 
-	setChatPlatform({ openLink: openExternal, enterSends: false });
+	setChatPlatform({
+		openLink: openExternal,
+		enterSends: false,
+		...(supportsDictation() ? { dictate } : {})
+	});
 
 	// svelte-ignore state_referenced_locally
 	const chat = new AgentChat(
@@ -80,6 +93,7 @@
 	const tasks = $derived(chat.meta?.tasks ?? []);
 	const runningTasks = $derived(tasks.filter(isRunning).length);
 	const todos = $derived(latestTodos(chat.items));
+	const artifacts = $derived(chatArtifacts(chat.meta?.artifacts));
 	const limit = $derived(
 		limitNotice(chat.meta?.rateLimit ?? null, (secs) =>
 			new Date(secs * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -101,10 +115,12 @@
 	let sheetHiddenFor = $state<string | null>(null);
 	const sheetOpen = $derived(waiting !== null && sheetHiddenFor !== waiting.id && live);
 	let tasksOpen = $state(false);
+	let artifactsOpen = $state(false);
 	// svelte-ignore state_referenced_locally
 	const drafts = client.drafts;
 	// svelte-ignore state_referenced_locally
 	const draft = drafts.get(ref);
+	const suggestions = $derived(promptSuggestions(chat.meta, live && !chat.rewind, draft.text));
 	let reviewOpen = $state<'history' | 'changes' | null>(null);
 	useBack(() => client.closeChat());
 	watch(
@@ -131,6 +147,8 @@
 				return `Starting ${name}…`;
 			case 'reconnecting':
 				return 'Reconnecting…';
+			case 'trust':
+				return 'Trust the folder to start';
 			case 'exited':
 			case 'failed':
 				return 'Restart the session to send messages';
@@ -279,7 +297,7 @@
 		</button>
 	{/if}
 
-	{#if tasks.length > 0 || contextShare > 0 || usageChips.length > 0}
+	{#if tasks.length > 0 || artifacts.length > 0 || contextShare > 0 || usageChips.length > 0}
 		<div class="flex shrink-0 gap-1.5 overflow-x-auto border-t border-wb-hair-soft px-3 py-1.5">
 			{#if tasks.length > 0}
 				<button
@@ -294,7 +312,18 @@
 					{runningTasks > 0 ? `${runningTasks} running` : `${tasks.length} tasks`}
 				</button>
 			{/if}
+			{#if artifacts.length > 0}
+				<button
+					type="button"
+					class="flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-wb-hair bg-wb-panel px-2.5 text-[11.5px] text-wb-ink-mute"
+					onclick={() => (artifactsOpen = true)}
+				>
+					<PanelsTopLeftIcon class="size-3.5" />
+					{artifacts.length === 1 ? '1 artifact' : `${artifacts.length} artifacts`}
+				</button>
+			{/if}
 			<ChatContext meta={chat.meta} />
+			<ChatCache {chat} />
 			<ChatUsage chips={usageChips} chipClass="h-7 px-2.5 text-[11.5px]" />
 		</div>
 	{/if}
@@ -325,6 +354,8 @@
 			{chat}
 			onThread={(sessionId, name) => client.openChat({ ...ref, sessionId, name, agent: 'codex' })}
 		/>
+		<ChatCacheHint {chat} />
+		<ChatSuggestions {suggestions} onPick={(text) => (draft.text = text)} />
 		<ChatComposer
 			id="chat-draft-{ref.sessionId}"
 			agent={chat.agent}
@@ -387,8 +418,20 @@
 		<ChatTasks
 			{tasks}
 			seenAt={chat.seenAt}
+			{cwd}
 			fetchOutput={(id) => chat.taskOutput(id)}
+			fetchTranscript={(id) => chat.taskTranscript(id)}
 			onClose={() => (tasksOpen = false)}
+			class="h-auto w-full rounded-lg border border-wb-hair"
+		/>
+	</Sheet>
+{/if}
+
+{#if artifactsOpen && artifacts.length > 0}
+	<Sheet label="Artifacts" onClose={() => (artifactsOpen = false)}>
+		<ChatArtifacts
+			{artifacts}
+			onClose={() => (artifactsOpen = false)}
 			class="h-auto w-full rounded-lg border border-wb-hair"
 		/>
 	</Sheet>

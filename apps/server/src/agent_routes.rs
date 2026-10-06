@@ -3,7 +3,8 @@
 //!   newest change first; `GET /agent/:kind` only that kind's (older phone
 //!   builds read `/agent/claude`).
 //! - `POST /agent/claude` starts (or returns) the session for a Claude session
-//!   id; `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
+//!   id: a server terminal running `claude`, answered once the plugin attaches
+//!   (`{sessionId, terminalId}`); `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
 //!   resumes one, and answers once codex has its id. With `attachOnly` either
 //!   only returns a running session (404 otherwise).
 //! - `DELETE /agent/:kind/:id` stops it; `DELETE /agent/:kind?paneId=` stops
@@ -14,6 +15,8 @@
 //! - `POST /agent/:kind/:id/message` applies one of those messages without a
 //!   socket (an approval from the phone's home screen): 200 with the reply
 //!   frame when there is one, else 204.
+//! - `GET /agent/claude/:id/tasks/:taskId/transcript` is a subagent's own
+//!   conversation as chat items, from the CLI's `subagents/` transcript.
 //!
 //! Ids are global, so the stop/message/WS routes of either kind reach any session.
 //! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
@@ -22,6 +25,7 @@
 //!   (git-tracked and untracked, not ignored) for the composer's `@` mentions.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -32,11 +36,12 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 use workbench_core::claude_accounts::{self, UsageLimit};
+use workbench_core::claude_launch;
 use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
-    AgentKind, AgentSession, AgentSummary, Launch, PromptFile, PromptImage, StartAgent, MAX_FILES,
-    MAX_IMAGES,
+    AgentKind, AgentManager, AgentSession, AgentSummary, CachePolicy, Launch, PromptFile,
+    PromptImage, StartAgent, MAX_FILES, MAX_IMAGES,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::spawn::RemoteControlManager;
@@ -57,6 +62,9 @@ pub struct StartBody {
     /// Join the running session only, never spawn one (a chat another device owns).
     #[serde(default)]
     pub attach_only: bool,
+    /// The person trusted the folder in chat: answer Claude Code's trust dialog.
+    #[serde(default)]
+    pub trust_folder: bool,
 }
 
 pub async fn agent_start(
@@ -68,34 +76,112 @@ pub async fn agent_start(
         return attach_only(&state, &body.session_id);
     }
     let agents = state.agents.clone();
-    crate::routes::blocking(move || {
-        // Sandboxed Claude runs through srt's launcher; chat mode spawns the CLI
-        // directly, so refuse rather than silently run it unsandboxed.
-        if workbench_core::config::load_workbench_settings()?.sandbox_runtime_enabled {
-            anyhow::bail!(
-                "Chat mode doesn't run inside the sandbox runtime yet. Use the terminal, or turn the sandbox off in Settings."
-            );
-        }
-        let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
-        let config_dir =
-            workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
-        let session = agents.start(StartAgent {
-            cwd,
+    let terminals = state.terminals.clone();
+    crate::routes::blocking(move || claude_start(&agents, &terminals, body))
+        .await
+        .map(Json)
+}
+
+/// How long a new terminal's `claude` gets to start and attach through the plugin.
+const TERMINAL_START: Duration = Duration::from_secs(30);
+/// Between Claude Code's trust dialog appearing and it reading keys.
+const TRUST_SETTLE: Duration = Duration::from_secs(1);
+/// After answering the trust dialog, how long before answering once more.
+const TRUST_RETRY: Duration = Duration::from_secs(5);
+
+/// A Claude chat is always an interactive `claude` in a server terminal, run
+/// as a chat by the Workbench plugin (`mod_routes`): the terminal and the chat
+/// are one process. Blocking: waits for the plugin to attach.
+fn claude_start(
+    agents: &AgentManager,
+    terminals: &crate::terminal::TerminalManager,
+    body: StartBody,
+) -> anyhow::Result<Value> {
+    claude_validate(&body.session_id, body.permission_mode.as_deref())?;
+    let starting = agents.start_lock(&body.session_id);
+    let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = agents.get(&body.session_id) {
+        return Ok(start_reply(&existing));
+    }
+    let config_dir =
+        workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    let resume = crate::agent::claude_history_exists(config_dir.as_deref(), &body.session_id);
+    let cwd = body
+        .worktree_path
+        .clone()
+        .unwrap_or_else(|| body.project_path.clone());
+    let trust_folder = body.trust_folder;
+    let terminal = crate::terminal::create_from_body(
+        terminals,
+        agents,
+        crate::terminal::CreateTerminalBody {
             project_path: body.project_path,
             worktree_path: body.worktree_path,
+            name: None,
+            command: None,
+            claude_session: Some(crate::terminal::ClaudeSessionLaunch {
+                id: body.session_id.clone(),
+                resume,
+                resume_at: None,
+                permission_mode: None,
+            }),
+            cols: 120,
+            rows: 40,
             pane_id: body.pane_id,
             hook_socket: body.hook_socket,
+            shell: None,
             claude_account_id: body.claude_account_id,
-            launch: Launch::Claude {
-                session_id: body.session_id,
-                permission_mode: body.permission_mode,
-                config_dir,
-            },
-        })?;
-        Ok(json!({"sessionId": session.id()}))
-    })
-    .await
-    .map(Json)
+        },
+    )?;
+    let deadline = Instant::now() + TERMINAL_START;
+    // When the trust dialog was answered; again once if `claude` still hasn't attached.
+    let mut trust_answers: Vec<Instant> = Vec::new();
+    while Instant::now() < deadline {
+        if let Some(session) = agents.get(&body.session_id) {
+            return Ok(start_reply(&session));
+        }
+        let answer_again = trust_answers.len() == 1 && trust_answers[0].elapsed() > TRUST_RETRY;
+        if (trust_answers.is_empty() || answer_again)
+            && terminals
+                .recent_output(&terminal.id)
+                .is_some_and(|out| claude_launch::shows_trust_prompt(&out))
+        {
+            if !trust_folder {
+                // The chat asks instead; trusting starts it again with `trustFolder`.
+                terminals.kill(&terminal.id);
+                return Ok(json!({ "needsTrust": cwd }));
+            }
+            // Keys typed as the dialog first draws are lost.
+            std::thread::sleep(TRUST_SETTLE);
+            for keys in claude_launch::TRUST_ACCEPT_KEYS {
+                terminals.type_keys(&terminal.id, keys);
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            trust_answers.push(Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    terminals.kill(&terminal.id);
+    anyhow::bail!(
+        "Claude didn't start in its terminal within {}s. Open it as a terminal to see why (a login, an error).",
+        TERMINAL_START.as_secs()
+    )
+}
+
+fn claude_validate(session_id: &str, permission_mode: Option<&str>) -> anyhow::Result<()> {
+    if !workbench_core::claude_transcript::is_uuid(session_id) {
+        anyhow::bail!("session id must be a UUID");
+    }
+    if let Some(mode) = permission_mode {
+        if !workbench_core::claude_launch::PERMISSION_MODES.contains(&mode) {
+            anyhow::bail!("unknown permission mode: {mode}");
+        }
+    }
+    Ok(())
+}
+
+fn start_reply(session: &AgentSession) -> Value {
+    json!({"sessionId": session.id(), "terminalId": session.summary().terminal_id})
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,7 +241,7 @@ fn attach_only(state: &AppState, id: &str) -> ApiResult<Json<Value>> {
         status: StatusCode::NOT_FOUND,
         message: "This chat ended on the other device.".into(),
     })?;
-    Ok(Json(json!({"sessionId": session.id()})))
+    Ok(Json(start_reply(&session)))
 }
 
 /// The cwd a chat may run in: a registered project or one of its worktrees.
@@ -185,13 +271,30 @@ pub async fn agent_message(
     body: String,
 ) -> Result<Response, ApiError> {
     let session = find(&state, &id)?;
-    let reply = crate::routes::blocking(move || Ok(handle(&session, &body)))
+    let reply = crate::routes::blocking(move || Ok(handle(&state, &session, &body)))
         .await?
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(match reply {
         Some(reply) => Json(reply).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     })
+}
+
+/// A subagent's own conversation as chat items (`{start, items}`), or null
+/// until the CLI has written its transcript. Read-only.
+pub async fn agent_task_transcript(
+    State(state): State<AppState>,
+    Path((id, task_id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    let session = find(&state, &id)?;
+    crate::routes::blocking(move || {
+        Ok(match session.task_transcript(&task_id) {
+            Some((start, items)) => json!({"start": start, "items": items}),
+            None => Value::Null,
+        })
+    })
+    .await
+    .map(Json)
 }
 
 fn find(state: &AppState, id: &str) -> Result<Arc<AgentSession>, ApiError> {
@@ -201,12 +304,29 @@ fn find(state: &AppState, id: &str) -> Result<Arc<AgentSession>, ApiError> {
     })
 }
 
+#[derive(Debug, Deserialize)]
+pub struct StopQuery {
+    #[serde(default)]
+    end: bool,
+}
+
 pub async fn agent_stop(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<StopQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop(&id))).await?;
+    let terminals = state.terminals.clone();
+    crate::routes::blocking(move || {
+        // A Claude chat's process is its terminal `claude`: stopping it ends that.
+        let terminal = agents.get(&id).and_then(|s| s.summary().terminal_id);
+        let stopped = agents.stop(&id, q.end);
+        if let Some(terminal) = terminal {
+            terminals.kill(&terminal);
+        }
+        Ok(stopped)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -221,7 +341,21 @@ pub async fn agent_stop_pane(
     Query(q): Query<PaneQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop_pane(&q.pane_id))).await?;
+    let terminals = state.terminals.clone();
+    crate::routes::blocking(move || {
+        let owned: Vec<String> = agents
+            .summaries(None)
+            .into_iter()
+            .filter(|s| s.pane_id.as_deref() == Some(q.pane_id.as_str()))
+            .filter_map(|s| s.terminal_id)
+            .collect();
+        let stopped = agents.stop_pane(&q.pane_id);
+        for terminal in owned {
+            terminals.kill(&terminal);
+        }
+        Ok(stopped)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -261,7 +395,7 @@ pub async fn agent_attach(
     Ok(ws
         .max_frame_size(MAX_PROMPT_BYTES)
         .max_message_size(MAX_PROMPT_BYTES)
-        .on_upgrade(move |socket| stream(socket, session, revoked)))
+        .on_upgrade(move |socket| stream(socket, state, session, revoked)))
 }
 
 const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
@@ -313,6 +447,12 @@ enum ClientMsg {
     Effort {
         effort: String,
     },
+    /// Refresh the prompt cache now (a hidden keep-alive turn).
+    CachePing,
+    /// Keep the cache warm until a time and/or compact before it expires.
+    CachePolicy {
+        policy: CachePolicy,
+    },
     /// Fetch the whole output of a tool shown as a preview.
     #[serde(rename_all = "camelCase")]
     Output {
@@ -323,10 +463,27 @@ enum ClientMsg {
     TaskOutput {
         task_id: String,
     },
+    /// Go back to before the prompt `message_id`: restore the files Claude
+    /// changed since (`code`), restart the conversation from there
+    /// (`conversation`), or with `dry_run` only report which files would change.
+    #[serde(rename_all = "camelCase")]
+    Rewind {
+        message_id: String,
+        #[serde(default)]
+        code: bool,
+        #[serde(default)]
+        conversation: bool,
+        #[serde(default)]
+        dry_run: bool,
+    },
 }
 
 /// Apply a client message; `Some` is a reply for that client alone.
-fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
+fn handle(
+    state: &AppState,
+    session: &Arc<AgentSession>,
+    text: &str,
+) -> anyhow::Result<Option<Value>> {
     let reply = match serde_json::from_str::<ClientMsg>(text)? {
         ClientMsg::Artifacts { id } => {
             return Ok(Some(
@@ -356,6 +513,22 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
                 ));
             }
             Ok(())
+        }
+        ClientMsg::Rewind {
+            message_id,
+            code,
+            conversation,
+            dry_run,
+        } => {
+            let result = rewind(state, session, &message_id, code, conversation, dry_run);
+            let (files, error) = match result {
+                Ok(files) => (files, None),
+                Err(e) => (None, Some(e.to_string())),
+            };
+            return Ok(Some(json!({
+                "t": "rewind", "messageId": message_id, "dryRun": dry_run,
+                "files": files, "error": error,
+            })));
         }
         ClientMsg::TaskOutput { task_id } => {
             let (text, bytes) = session.task_output(&task_id).unzip();
@@ -400,15 +573,56 @@ fn handle(session: &AgentSession, text: &str) -> anyhow::Result<Option<Value>> {
             content,
         } => session.elicit(&request_id, action, content.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
+        // A Claude terminal session restarts in the mode; Codex switches in place.
+        ClientMsg::Mode { mode } if session.mod_link().is_some_and(|l| l.terminal_id.is_some()) => {
+            state.agents.mode_terminal(&state.terminals, session, &mode)
+        }
         ClientMsg::Mode { mode } => session.set_mode(&mode),
         ClientMsg::Model { model } => session.set_model(&model),
         ClientMsg::Effort { effort } => session.set_effort(&effort),
+        ClientMsg::CachePing => session.keep_cache_warm(),
+        ClientMsg::CachePolicy { policy } => state.agents.set_cache_policy(session, policy),
     };
     reply.map(|()| None)
 }
 
+/// Files first, while the process that tracked them still runs; a file
+/// restore that fails leaves the conversation alone.
+fn rewind(
+    state: &AppState,
+    session: &Arc<AgentSession>,
+    message_id: &str,
+    code: bool,
+    conversation: bool,
+    dry_run: bool,
+) -> anyhow::Result<Option<Value>> {
+    let files = if code {
+        Some(session.rewind_files(message_id, dry_run)?)
+    } else {
+        None
+    };
+    if dry_run {
+        return Ok(files);
+    }
+    if let Some(f) = &files {
+        if f["canRewind"] != true {
+            let why = f["error"]
+                .as_str()
+                .unwrap_or("Claude couldn't restore the files.");
+            anyhow::bail!("{why}");
+        }
+    }
+    if conversation {
+        state
+            .agents
+            .rewind_terminal(&state.terminals, session, message_id)?;
+    }
+    Ok(files)
+}
+
 async fn stream(
     mut socket: WebSocket,
+    state: AppState,
     session: Arc<AgentSession>,
     mut revoked: watch::Receiver<bool>,
 ) {
@@ -433,7 +647,7 @@ async fn stream(
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
-                let ended = frame.contains(r#""t":"exit""#);
+                let ended = frame.contains(r#""t":"exit""#) || frame.contains(r#""t":"replaced""#);
                 if socket.send(Message::Text(frame)).await.is_err() {
                     return;
                 }
@@ -447,7 +661,9 @@ async fn stream(
                     // Pipe writes (a prompt full of images) and the task-output
                     // directory walk block, so keep them off the async workers.
                     let worker = session.clone();
-                    let result = tokio::task::spawn_blocking(move || handle(&worker, &text)).await;
+                    let state = state.clone();
+                    let result =
+                        tokio::task::spawn_blocking(move || handle(&state, &worker, &text)).await;
                     let frame = match result {
                         Ok(Ok(reply)) => reply,
                         Ok(Err(e)) => Some(json!({"t": "error", "message": e.to_string()})),

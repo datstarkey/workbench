@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { Button } from '@workbench/ui/button';
+	import { AutostartStore } from '$stores/autostart.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 	import { selectFolder } from '$lib/utils/dialog';
 	import type { AccentColor } from '$types/workbench';
@@ -8,6 +10,10 @@
 	import SettingsToggle from './SettingsToggle.svelte';
 
 	const store = getWorkbenchSettingsStore();
+	const autostart = new AutostartStore();
+	onMount(() => {
+		void autostart.load();
+	});
 
 	// Swatch values mirror the --wb-accent token for each [data-accent] preset in theme.css.
 	const accentOptions: { value: AccentColor; label: string; swatch: string }[] = [
@@ -26,6 +32,31 @@
 		if (dir !== null) store.set('cloneBaseDir', dir);
 	}
 </script>
+
+{#if autostart.supported}
+	<SettingsSection title="Startup">
+		<SettingsToggle
+			label="Start on startup"
+			description="Launch Workbench when you sign in to your computer. Changes apply immediately."
+			checked={autostart.enabled ?? false}
+			disabled={autostart.disabled}
+			onCheckedChange={(v) => {
+				void autostart.setEnabled(v);
+			}}
+		/>
+		{#if autostart.error}
+			<div class="flex items-center justify-between gap-3">
+				<p class="text-xs text-destructive" role="alert">{autostart.error}</p>
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={autostart.busy}
+					onclick={() => autostart.load()}>Retry</Button
+				>
+			</div>
+		{/if}
+	</SettingsSection>
+{/if}
 
 <SettingsSection title="Appearance">
 	<SettingsRow

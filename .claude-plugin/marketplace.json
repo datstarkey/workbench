@@ -1,0 +1,11 @@
+{
+	"name": "workbench",
+	"owner": { "name": "datstarkey" },
+	"plugins": [
+		{
+			"name": "workbench",
+			"source": "./plugins/workbench",
+			"description": "Reports Claude Code session activity to the Workbench desktop app"
+		}
+	]
+}

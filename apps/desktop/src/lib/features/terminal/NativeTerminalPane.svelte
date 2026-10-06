@@ -96,6 +96,7 @@
 			await createNativeTerminal({
 				sessionId,
 				projectPath: cwd ?? project.path,
+				projectRoot: project.path,
 				shell: project.shell || '',
 				x: nsRect.x,
 				y: nsRect.y,
