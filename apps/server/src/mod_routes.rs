@@ -162,6 +162,7 @@ pub async fn ask(
         }
         if !session.has_viewers() {
             link.fall_back(&body.request_id, session.waiting_for(&body.request_id));
+            session.refresh_attention();
             feed(json!({"type": "control_cancel_request", "request_id": body.request_id})).await?;
             return Ok(Json(json!({ "fallback": true })));
         }

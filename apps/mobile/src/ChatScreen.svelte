@@ -62,10 +62,14 @@
 			projectPath: ref.projectPath,
 			...(ref.worktreePath ? { worktreePath: ref.worktreePath } : {}),
 			...(ref.sessionId ? { sessionId: ref.sessionId } : {}),
+			...(ref.attachOnly ? { attachOnly: true } : {}),
 			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
 		},
 		client.agents
 	);
+	// svelte-ignore state_referenced_locally
+	const screenKey = client.chatScreenKey;
+	chat.onTerminal = (terminalId) => client.linkChatTerminal(screenKey, chat.sessionId, terminalId);
 	const name = agentName(chat.agent);
 	const isClaude = chat.agent === 'claude';
 
@@ -158,7 +162,7 @@
 
 	/** `/clear` may have moved the conversation to a new id since this screen opened. */
 	function showTerminal() {
-		void client.showAsTerminal({ ...ref, sessionId: chat.sessionId }, chat.hasHistory);
+		void client.showAsTerminal({ ...ref, sessionId: chat.sessionId });
 	}
 
 	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean {
@@ -228,7 +232,7 @@
 			</span>
 		</div>
 		{#if isClaude}
-			<ViewSwitch view="chat" disabled={client.switching} onSwitch={showTerminal} />
+			<ViewSwitch view="chat" disabled={client.switching || !live} onSwitch={showTerminal} />
 		{/if}
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>

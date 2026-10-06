@@ -278,8 +278,10 @@ export class WorkspaceStore {
 
 	/** A Claude chat started in its own server terminal: keep that xterm attached underneath. */
 	linkLiveTerminal(paneId: string, terminalId: string): void {
-		if (this.adoption.isAdopted(paneId)) return;
 		this.setServerTerminalId(paneId, terminalId);
+		// Keep an adopted chat's PTY available without attaching a hidden xterm
+		// that would take terminal control from the phone.
+		if (this.adoption.isAdopted(paneId)) return;
 		if (!this.isLiveTerminalPane(paneId)) this.patchPane(paneId, { liveTerminal: true });
 	}
 
@@ -354,7 +356,11 @@ export class WorkspaceStore {
 			];
 			adopted = this.adoption.chatTab(this.workspaces, chat);
 		}
-		if (adopted) this.addBackgroundTab(adopted);
+		if (adopted) {
+			this.addBackgroundTab(adopted);
+			if (chat.agent === 'claude' && chat.terminalId)
+				this.setServerTerminalId(adopted.tab.panes[0].id, chat.terminalId);
+		}
 		return adopted !== null;
 	}
 
@@ -712,18 +718,21 @@ export class WorkspaceStore {
 		return null;
 	}
 
-	/**
-	 * Move an AI pane's session between its terminal and chat. Only one process
-	 * may own a session, so the current one stops first: the PTY (and the TUI in
-	 * it) is killed before chat resumes the session, and the chat process is
-	 * stopped before the terminal reopens it. A Codex pane with no session yet
-	 * starts a new thread in chat, whose id the chat hands back to the pane.
-	 */
+	/** Claude views share one terminal process; Codex changes between TUI and app-server. */
 	async setPaneView(paneId: string, view: PaneView): Promise<void> {
 		const pane = this.workspaces
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
 		if (!pane || (pane.view ?? 'terminal') === view) return;
+		if (
+			paneAgent(pane) === 'claude' &&
+			this.adoption.isAdopted(paneId) &&
+			this.serverTerminalIds[paneId]
+		) {
+			if (view === 'terminal') releaseChat(paneId);
+			this.patchPane(paneId, { view, liveTerminal: undefined });
+			return;
+		}
 		if (view === 'terminal' && pane.liveTerminal) {
 			releaseChat(paneId);
 			this.patchPane(paneId, { view, liveTerminal: undefined });

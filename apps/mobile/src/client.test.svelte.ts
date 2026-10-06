@@ -41,6 +41,42 @@ describe('MobileClient', () => {
 		return c;
 	}
 
+	it('a Codex terminal notification attaches its existing terminal without creating a chat', async () => {
+		const c = await connected({
+			'/remote/terminals': () => jsonResponse([{ id: 't1', cwd: '/p', createdAt: 0, alive: true }])
+		});
+		const start = vi.spyOn(c.agents, 'start');
+		await c.openNotification({
+			agent: 'codex',
+			sessionId: 'thread',
+			projectPath: '/p',
+			worktreePath: null,
+			title: null,
+			claudeAccountId: null,
+			terminalOnly: true,
+			terminalId: 't1'
+		});
+		expect(c.activeTerminalId).toBe('t1');
+		expect(c.activeChat).toBeNull();
+		expect(start).not.toHaveBeenCalled();
+	});
+
+	it('a desktop-only Codex terminal notification keeps Home open rather than starting another process', async () => {
+		const c = await connected();
+		await c.openNotification({
+			agent: 'codex',
+			sessionId: 'thread',
+			projectPath: '/p',
+			worktreePath: null,
+			title: null,
+			claudeAccountId: null,
+			terminalOnly: true
+		});
+		expect(c.activeChat).toBeNull();
+		expect(c.activeTerminalId).toBeNull();
+		expect(c.notice).toContain('desktop');
+	});
+
 	it('connect() normalizes the url, sets the store, and loads terminals', async () => {
 		const c = await connected({
 			'/remote/terminals': () => jsonResponse([{ id: 't1', cwd: '/p', createdAt: 0, alive: true }])
@@ -208,7 +244,7 @@ describe('MobileClient', () => {
 		};
 
 		/** A fake server recording each call; terminals it creates are listed until killed. */
-		function fakeServer({ failKill = false } = {}) {
+		function fakeServer({ failKill = false, withTerminal = false, failAttach = false } = {}) {
 			const calls: { method: string; path: string; body: unknown }[] = [];
 			const terminals: {
 				id: string;
@@ -216,7 +252,9 @@ describe('MobileClient', () => {
 				cwd: string;
 				createdAt: number;
 				alive: boolean;
-			}[] = [];
+			}[] = withTerminal
+				? [{ id: 't1', name: 'Claude', cwd: '/repo-wt', createdAt: 0, alive: true }]
+				: [];
 			vi.stubGlobal(
 				'fetch',
 				vi.fn((input: string, init?: RequestInit) => {
@@ -226,7 +264,18 @@ describe('MobileClient', () => {
 					const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 					calls.push({ method, path, body });
 					if (path === '/agent' && method === 'GET')
-						return Promise.resolve(jsonResponse([summary, codexSummary]));
+						return Promise.resolve(
+							jsonResponse([
+								withTerminal ? { ...summary, terminalId: 't1' } : summary,
+								codexSummary
+							])
+						);
+					if (path === '/agent/claude' && method === 'POST')
+						return Promise.resolve(
+							failAttach
+								? jsonResponse({ error: 'Not attached' }, 404)
+								: jsonResponse({ sessionId: SID, terminalId: 't1' })
+						);
 					if (path === '/remote/terminals' && method === 'POST') {
 						const meta = {
 							id: `t${terminals.length + 1}`,
@@ -285,33 +334,158 @@ describe('MobileClient', () => {
 			expect(new MobileClient().defaultView).toBe('terminal');
 		});
 
-		it('moves a chat to the terminal and back', async () => {
+		it('shows a desktop Claude session as chat or terminal without stopping or spawning it', async () => {
+			const c = await connected();
+			const calls = fakeServer({ withTerminal: true });
+			const ref = c.chatRef(summary);
+			c.openChat(ref);
+
+			await c.showAsTerminal(ref);
+			expect(c.activeChat).toBeNull();
+			expect(c.activeTerminalId).toBe('t1');
+			expect(c.claudeTerminals).toEqual({}); // discovered entirely from the server
+
+			await c.showAsChat('t1');
+			expect(c.activeChat).toEqual(ref);
+			expect(c.terminals).toHaveLength(1);
+			expect(c.terminalChats.t1).toEqual(ref);
+			expect(calls.filter((x) => x.method !== 'GET')).toEqual([
+				{
+					method: 'POST',
+					path: '/agent/claude',
+					body: {
+						projectPath: '/repo',
+						worktreePath: '/repo-wt',
+						sessionId: SID,
+						claudeAccountId: 'work',
+						attachOnly: true
+					}
+				}
+			]);
+		});
+
+		it('keeps the chat open when its backing terminal is missing instead of launching another', async () => {
 			const c = await connected();
 			const calls = fakeServer();
 			const ref = c.chatRef(summary);
 			c.openChat(ref);
+			await c.showAsTerminal(ref);
+			expect(c.activeChat).toEqual(ref);
+			expect(c.activeTerminalId).toBeNull();
+			expect(c.notice).toMatch(/no running terminal/);
+			expect(c.switching).toBe(false);
+			expect(calls.every((x) => x.method === 'GET')).toBe(true);
+		});
 
-			await c.showAsTerminal(ref, true);
-			const order = calls.map((x) => `${x.method} ${x.path}`);
-			expect(order.indexOf(`DELETE /agent/claude/${SID}`)).toBeLessThan(
-				order.indexOf('POST /remote/terminals')
-			);
-			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
-			expect(create?.body).toMatchObject({
-				projectPath: '/repo',
-				worktreePath: '/repo-wt',
-				claudeSession: { id: SID, resume: true },
+		it('counts a Claude session once, including when it is waiting for approval', async () => {
+			const c = await connected();
+			c.terminals = [
+				{ id: 't1', cwd: '/repo', createdAt: 0, alive: true },
+				{ id: 'shell', cwd: '/repo', createdAt: 0, alive: true }
+			];
+			c.chats = [{ ...summary, terminalId: 't1' }, codexSummary];
+			expect(c.standaloneTerminals.map((t) => t.id)).toEqual(['shell']);
+			c.chats[0].waiting = { id: 'a', tool: 'Bash', preview: 'ls', inTerminal: false };
+			expect(c.standaloneTerminals.map((t) => t.id)).toEqual(['shell']);
+			c.chats[0].exited = true;
+			expect(c.standaloneTerminals.map((t) => t.id)).toEqual(['t1', 'shell']);
+		});
+
+		it('learns terminal associations from chat startup and replacements, ignoring old screens', async () => {
+			const c = await connected();
+			c.openChat(c.chatRef(summary));
+			const key = c.chatScreenKey;
+			c.linkChatTerminal(key, SID, 't1');
+			expect(c.terminalChats.t1.sessionId).toBe(SID);
+			c.linkChatTerminal(key, 'after-clear', 'replacement');
+			expect(c.terminalChats.replacement).toMatchObject({
+				sessionId: 'after-clear',
+				attachOnly: true
+			});
+			c.openChat(c.chatRef(codexSummary));
+			c.linkChatTerminal(key, SID, 'late');
+			c.linkChatTerminal(c.chatScreenKey, 'thread-1', 'codex-terminal');
+			expect(c.claudeTerminals.late).toBeUndefined();
+			expect(c.claudeTerminals['codex-terminal']).toBeUndefined();
+		});
+
+		it('recognizes a Claude terminal before its plugin attaches without starting another process', async () => {
+			const c = await connected();
+			const terminal = {
+				id: 'early',
+				cwd: '/repo',
+				createdAt: 0,
+				alive: true,
+				claudeSessionId: SID
+			};
+			const calls = routeFetch({
+				'/agent': () => jsonResponse([]),
+				'/remote/terminals': () => jsonResponse([terminal]),
+				'/agent/claude': () => jsonResponse({ error: 'Not attached' }, 404)
+			});
+			await c.refreshTerminals();
+			c.selectTerminal('early');
+			expect(c.terminalChats.early.sessionId).toBe(SID);
+			expect(c.standaloneTerminals).toHaveLength(1);
+			await c.showAsChat('early');
+			expect(c.activeTerminalId).toBe('early');
+			expect(c.activeChat).toBeNull();
+			expect(c.notice).toMatch(/login or trust prompt/);
+			const post = calls.mock.calls.find(([, init]) => init?.method === 'POST');
+			expect(JSON.parse(String(post?.[1]?.body)).attachOnly).toBe(true);
+			expect(calls.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+		});
+
+		it('follows /clear aliases to the same terminal and its current session id', async () => {
+			const c = await connected();
+			const current = {
+				...summary,
+				sessionId: 'after-clear',
+				terminalId: 't1',
+				previousIds: [SID]
+			};
+			routeFetch({
+				'/agent': () => jsonResponse([current]),
+				'/remote/terminals': () =>
+					jsonResponse([{ id: 't1', cwd: '/repo-wt', createdAt: 0, alive: true }]),
+				'/agent/claude': () => jsonResponse({ sessionId: 'after-clear', terminalId: 't1' })
+			});
+			c.openChat(c.chatRef(summary));
+			await c.showAsTerminal(c.activeChat!);
+			expect(c.activeTerminalId).toBe('t1');
+			await c.showAsChat('t1');
+			expect(c.activeChat).toMatchObject({
+				sessionId: 'after-clear',
+				attachOnly: true,
 				claudeAccountId: 'work'
 			});
-			expect(c.activeChat).toBeNull();
-			expect(c.activeTerminalId).toBe('t1');
+		});
 
-			await c.showAsChat('t1');
-			expect(
-				calls.some((x) => x.method === 'DELETE' && x.path === '/remote/terminals/t1?wait=true')
-			).toBe(true);
-			expect(c.activeChat).toEqual(ref);
-			expect(c.claudeTerminals).toEqual({});
+		it('does not reopen a chat after Back while its attach request is still pending', async () => {
+			const c = await connected();
+			fakeServer({ withTerminal: true });
+			await c.refreshTerminals();
+			c.selectTerminal('t1');
+			let finish!: () => void;
+			let attachStarted = false;
+			const fetchServer = vi.mocked(fetch).getMockImplementation()!;
+			vi.mocked(fetch).mockImplementation((input, init) => {
+				if (init?.method === 'POST') {
+					attachStarted = true;
+					return new Promise((resolve) => {
+						finish = () => resolve(jsonResponse({ sessionId: SID, terminalId: 't1' }));
+					});
+				}
+				return fetchServer(input, init);
+			});
+			const opening = c.showAsChat('t1');
+			await vi.waitFor(() => expect(attachStarted).toBe(true));
+			c.closeTerminal();
+			finish();
+			await opening;
+			expect(c.activeChat).toBeNull();
+			expect(c.activeTerminalId).toBeNull();
+			expect(c.switching).toBe(false);
 		});
 
 		it('answers an approval from the home screen', async () => {
@@ -325,15 +499,22 @@ describe('MobileClient', () => {
 			});
 		});
 
-		it('stays in the terminal and says why when it cannot be stopped', async () => {
+		it('keeps the terminal running when Claude has not attached to Chat yet', async () => {
 			const c = await connected();
-			fakeServer({ failKill: true });
+			const calls = fakeServer({ withTerminal: true, failAttach: true });
 			const ref = c.chatRef(summary);
-			await c.showAsTerminal(ref, true);
+			c.openChat(ref);
+			await c.showAsTerminal(ref);
 			await c.showAsChat('t1');
 			expect(c.activeChat).toBeNull();
 			expect(c.activeTerminalId).toBe('t1');
-			expect(c.notice).toMatch(/Couldn't stop the terminal/);
+			expect(c.notice).toMatch(/login or trust prompt/);
+			expect(c.switching).toBe(false);
+			expect(
+				calls.some(
+					(x) => x.method === 'DELETE' || (x.path === '/remote/terminals' && x.method === 'POST')
+				)
+			).toBe(false);
 		});
 
 		it('starts a Codex chat with no id, so the server picks the thread', async () => {
@@ -354,6 +535,7 @@ describe('MobileClient', () => {
 			const c = await connected();
 			expect(c.chatRef(codexSummary)).toEqual({
 				sessionId: 'thread-1',
+				attachOnly: true,
 				agent: 'codex',
 				projectPath: '/repo',
 				worktreePath: undefined,

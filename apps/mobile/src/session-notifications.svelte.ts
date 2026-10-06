@@ -2,6 +2,11 @@ import { invoke, isTauri, addPluginListener } from '@tauri-apps/api/core';
 import type { AgentSummary } from '@workbench/types';
 import { lsGet, lsSet } from './storage';
 
+export type NotificationSession = Pick<
+	AgentSummary,
+	'sessionId' | 'agent' | 'projectPath' | 'worktreePath' | 'title' | 'claudeAccountId'
+> & { terminalId?: string | null; terminalOnly?: boolean };
+
 export interface NotificationConnection {
 	url: string;
 	token: string;
@@ -62,7 +67,7 @@ export class SessionNotifications {
 	}
 
 	async listen(
-		open: (machineId: string, chat: AgentSummary) => Promise<void>
+		open: (machineId: string, chat: NotificationSession) => Promise<void>
 	): Promise<() => void> {
 		if (!this.supported) return () => {};
 		let closed = false;

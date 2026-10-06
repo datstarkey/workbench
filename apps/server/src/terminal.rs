@@ -97,6 +97,7 @@ pub struct TerminalMeta {
 }
 
 struct TerminalSession {
+    pane_id: Option<String>,
     meta: Mutex<TerminalMeta>,
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -140,6 +141,13 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl TerminalManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn terminal_for_pane(&self, pane_id: &str) -> Option<TerminalMeta> {
+        lock(&self.inner)
+            .values()
+            .find(|s| s.pane_id.as_deref() == Some(pane_id))
+            .map(|s| lock(&s.meta).clone())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -245,6 +253,7 @@ impl TerminalManager {
         let (attacher_kick_tx, _epoch_rx_keeper) = watch::channel::<u64>(0);
 
         let session = Arc::new(TerminalSession {
+            pane_id,
             meta: Mutex::new(meta.clone()),
             writer: Mutex::new(writer),
             master: Mutex::new(master),

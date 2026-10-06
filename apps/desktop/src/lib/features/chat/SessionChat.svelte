@@ -45,7 +45,6 @@
 		getWorkspaceStore
 	} from '$stores/context';
 	import PRStatusBadge from '$features/projects/PRStatusBadge.svelte';
-	import { codexChatMode } from '$lib/utils/claude';
 	import { openUrl } from '$lib/utils/open-url';
 	import { planUsage } from './agent-api';
 	import { acquireChat } from './chat-registry';
@@ -89,10 +88,6 @@
 	const githubStore = getGitHubStore();
 	// svelte-ignore state_referenced_locally
 	const agentLabel = agentName(agent);
-	const codexMode = codexChatMode(
-		settingsStore.codexApprovalPolicy,
-		settingsStore.codexSandboxMode
-	);
 	// svelte-ignore state_referenced_locally
 	const { chat } = acquireChat(paneId, {
 		agent,
@@ -100,15 +95,13 @@
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 		...(sessionId ? { sessionId } : {}),
 		paneId,
-		// The same launch settings terminal sessions get from Settings.
-		...(agent === 'codex'
-			? codexMode && { codexMode }
-			: {
-					...(claudeAccountId ? { claudeAccountId } : {}),
-					...(settingsStore.claudePermissionMode !== 'default'
-						? { permissionMode: settingsStore.claudePermissionMode }
-						: {})
-				}),
+		// Codex launch defaults are resolved on the server for both hosts.
+		...(agent === 'claude' && {
+			...(claudeAccountId ? { claudeAccountId } : {}),
+			...(settingsStore.claudePermissionMode !== 'default'
+				? { permissionMode: settingsStore.claudePermissionMode }
+				: {})
+		}),
 		// Another device's chat, or this pane's own terminal `claude`: join its
 		// process, never start one behind its back.
 		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)

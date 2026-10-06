@@ -397,10 +397,20 @@ impl CodexDriver {
         if self.thread_id.is_none() {
             bail!("Codex is still starting");
         }
-        // app-server input has no document kind (0.160: text, image, audio, skill, mention).
-        if !files.is_empty() {
-            bail!("Codex can't read attached files. Mention them with @ instead.");
-        }
+        // app-server has no document input kind. Upload files to the same
+        // private attachment folder Claude uses, and ask Codex to read them
+        // with its tools. Images still use native image input below.
+        let text = super::attachment::attachments_as_mentions(
+            self.thread_id.as_deref().expect("ready thread"),
+            text,
+            &[],
+            files,
+        )?;
+        let text = if files.is_empty() {
+            text
+        } else {
+            format!("{text}\n\nThe attached files above are local files on this machine. Read them with your tools; extract PDF text or pages as needed.")
+        };
         let mut input = Vec::new();
         if !text.trim().is_empty() {
             let trimmed = text.trim_start();
@@ -549,6 +559,34 @@ mod tests {
             skills: HashMap::new(),
             skills_revision: 0,
         }
+    }
+
+    #[test]
+    fn uploaded_files_can_steer_an_active_turn_without_changing_its_mode() {
+        let mut d = driver();
+        let thread = uuid::Uuid::new_v4().to_string();
+        d.thread_id = Some(thread.clone());
+        d.mode = Some("read-only".into());
+        d.apply_line(r#"{"method":"turn/started","params":{"turn":{"id":"turn-1"}}}"#);
+        let fx = d
+            .prompt(
+                "",
+                &[],
+                &[PromptFile {
+                    name: "notes.txt".into(),
+                    media_type: "text/plain".into(),
+                    data: "hello".into(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(fx.send[0]["method"], "turn/steer");
+        assert_eq!(fx.send[0]["params"]["expectedTurnId"], "turn-1");
+        assert_eq!(d.mode.as_deref(), Some("read-only"));
+        let text = fx.send[0]["params"]["input"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with('@'), "a file-only prompt has input");
+        assert!(text.contains("notes.txt"));
+        assert!(text.contains("Read them with your tools"));
+        std::fs::remove_dir_all(super::super::attachment::attachment_dir(&thread)).unwrap();
     }
 
     #[test]

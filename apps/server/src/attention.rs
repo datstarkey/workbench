@@ -1,9 +1,5 @@
-//! Which chat sessions just started waiting on someone, stopped waiting, or
-//! finished a turn, from successive [`AgentManager::summaries`] lists: what
-//! the desktop notifies about. The phone's `AlertTracker` (Kotlin) applies the
-//! same rules to `GET /agent`, so both devices react to the same events.
-//!
-//! [`AgentManager::summaries`]: crate::agent::AgentManager::summaries
+//! Shared notification rules for desktop and Android, applied once by the
+//! server's cursor-based attention feed.
 
 use std::collections::HashMap;
 
@@ -34,10 +30,14 @@ pub struct Attention {
     pub terminal_id: Option<String>,
     pub project_path: String,
     pub worktree_path: Option<String>,
+    pub claude_account_id: Option<String>,
     pub title: Option<String>,
     pub waiting: Option<WaitingSummary>,
     /// Still mid-turn (an answered approval lets the turn go on).
     pub busy: bool,
+    /// A Codex TUI completion: open its terminal, never spawn a chat behind it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub terminal_only: bool,
 }
 
 struct Seen {
@@ -121,9 +121,11 @@ fn attention(kind: AttentionKind, s: &AgentSummary) -> Attention {
         terminal_id: s.terminal_id.clone(),
         project_path: s.project_path.clone(),
         worktree_path: s.worktree_path.clone(),
+        claude_account_id: s.claude_account_id.clone(),
         title: s.title.clone(),
         waiting: s.waiting.clone(),
         busy: s.busy && !s.exited,
+        terminal_only: false,
     }
 }
 

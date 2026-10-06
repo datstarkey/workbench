@@ -21,12 +21,10 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde::Serialize;
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::Emitter;
-use workbench_server::attention::AttentionTracker;
 use workbench_server::{Managers, ServerHandle};
 
 struct Loopback {
@@ -54,27 +52,57 @@ pub struct ServerControl {
     native_grants: Mutex<HashMap<String, String>>,
 }
 
-/// How often the desktop looks for chat sessions that need someone.
-const ATTENTION_TICK: Duration = Duration::from_secs(1);
-
 impl ServerControl {
     /// Emits `agent:attention` when a session on this machine starts or stops
-    /// waiting on someone, or finishes a turn. It reads the same summaries the
-    /// phone's notification service polls, so a session started on either
-    /// device notifies both.
+    /// waiting on someone, or finishes a turn. Both hosts consume the same
+    /// server notification feed, including sessions started on either device.
     pub fn watch_attention(&self, app: tauri::AppHandle) {
-        let agents = self.managers.agents.clone();
+        let feed = self.managers.agents.attention.clone();
         std::thread::spawn(move || {
-            let mut tracker = AttentionTracker::default();
+            let mut changes = feed.subscribe();
+            let mut cursor = feed.since(None).cursor;
             loop {
-                for attention in tracker.update(&agents.summaries(None)) {
+                let batch = feed.since(Some(&cursor));
+                cursor = batch.cursor;
+                for attention in batch.events {
                     if let Err(e) = app.emit("agent:attention", &attention) {
                         log::warn!("failed to emit agent:attention: {e}");
                     }
                 }
-                std::thread::sleep(ATTENTION_TICK);
+                match changes.blocking_recv() {
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
+    }
+
+    /// Mirror a terminal Codex `notify` into the same cross-device feed.
+    /// Chat completions are already published by the app-server driver.
+    pub fn codex_notified(&self, pane_id: &str, session_id: &str, cwd: &str) {
+        if self.managers.agents.get(session_id).is_some() {
+            return;
+        }
+        let terminal = self.managers.terminals.terminal_for_pane(pane_id);
+        let title = terminal.as_ref().and_then(|t| t.name.clone());
+        self.managers
+            .agents
+            .attention
+            .publish(workbench_server::attention::Attention {
+                kind: workbench_server::attention::AttentionKind::TurnEnded,
+                agent: workbench_server::agent::AgentKind::Codex,
+                session_id: session_id.into(),
+                previous_ids: Vec::new(),
+                pane_id: Some(pane_id.into()),
+                terminal_id: terminal.map(|t| t.id),
+                project_path: cwd.into(),
+                worktree_path: None,
+                claude_account_id: None,
+                title,
+                waiting: None,
+                busy: false,
+                terminal_only: true,
+            });
     }
 
     /// The env that runs a native terminal's `claude` as a chat over the
@@ -351,6 +379,19 @@ mod tests {
     use tauri::Manager;
 
     const LAN_TOKEN: &str = "lan-token-0123456789abcdef0123456789";
+
+    #[test]
+    fn codex_terminal_notify_reaches_the_shared_feed_without_starting_a_chat() {
+        let sc = ServerControl::new();
+        let feed = sc.managers.agents.attention.clone();
+        let cursor = feed.since(None).cursor;
+        sc.codex_notified("pane", "thread", "/project");
+        let batch = feed.since(Some(&cursor));
+        assert_eq!(batch.events.len(), 1);
+        assert!(batch.events[0].terminal_only);
+        assert_eq!(batch.events[0].session_id, "thread");
+        assert!(sc.managers.agents.summaries(None).is_empty());
+    }
 
     /// Build a headless mock Tauri app (no webview) holding the ServerControl state.
     fn mock_app() -> tauri::App<tauri::test::MockRuntime> {

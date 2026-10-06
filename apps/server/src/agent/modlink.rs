@@ -7,14 +7,11 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use base64::Engine;
 use serde_json::Value;
 use tokio::sync::Notify;
-use workbench_core::chat_attachment::PDF_TYPE;
 use workbench_core::claude_transcript::WaitingSummary;
 
-use super::{lock, PromptFile, PromptImage};
+use super::lock;
 
 /// No poll for this long: the terminal's `claude` has gone.
 const STALE: Duration = Duration::from_secs(45);
@@ -208,72 +205,6 @@ impl ModLink {
     }
 }
 
-/// Where a session's attachments are saved; removed when the session ends.
-pub fn attachment_dir(session_id: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join("workbench-chat").join(session_id)
-}
-
-/// A terminal `claude` takes a prompt as text, so attachments are saved to a
-/// temp folder and mentioned as `@path`, which Claude Code reads (images
-/// included). Returns the prompt with the mentions appended.
-pub fn attachments_as_mentions(
-    session_id: &str,
-    text: &str,
-    images: &[PromptImage],
-    files: &[PromptFile],
-) -> Result<String> {
-    if images.is_empty() && files.is_empty() {
-        return Ok(text.to_string());
-    }
-    let dir = attachment_dir(session_id).join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    // Other local users can read a world-readable temp dir.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for d in [dir.parent().unwrap_or(&dir), &dir] {
-            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let mut paths = Vec::new();
-    for (i, image) in images.iter().enumerate() {
-        let ext = image.media_type.rsplit('/').next().unwrap_or("png");
-        let path = dir.join(format!("image-{}.{ext}", i + 1));
-        std::fs::write(&path, b64.decode(&image.data).context("decode image")?)?;
-        paths.push(path);
-    }
-    for (i, file) in files.iter().enumerate() {
-        let name: String = std::path::Path::new(&file.name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file")
-            .to_string();
-        let path = dir.join(format!("{}-{name}", i + 1));
-        let bytes = if file.media_type == PDF_TYPE {
-            b64.decode(&file.data).context("decode PDF")?
-        } else {
-            file.data.clone().into_bytes()
-        };
-        std::fs::write(&path, bytes)?;
-        paths.push(path);
-    }
-    let mentions: Vec<String> = paths
-        .iter()
-        .map(|p| {
-            let p = p.to_string_lossy();
-            if p.contains(' ') {
-                format!("@\"{p}\"")
-            } else {
-                format!("@{p}")
-            }
-        })
-        .collect();
-    Ok(format!("{text}\n\n{}", mentions.join(" "))
-        .trim_start()
-        .to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,36 +217,6 @@ mod tests {
         link.push(json!({"a": 1}));
         link.push(json!({"b": 2}));
         assert_eq!(link.take(Duration::from_secs(5)).await.len(), 2);
-    }
-
-    #[test]
-    fn attachments_become_mentions_of_saved_files() {
-        let image = PromptImage {
-            media_type: "image/png".into(),
-            data: "aGk=".into(),
-        };
-        let file = PromptFile {
-            name: "../notes.txt".into(),
-            media_type: "text/plain".into(),
-            data: "hello".into(),
-        };
-        let text = attachments_as_mentions("s1", "look", &[image], &[file]).unwrap();
-        let (prompt, mentions) = text.split_once("\n\n").unwrap();
-        assert_eq!(prompt, "look");
-        let paths: Vec<&str> = mentions
-            .split(' ')
-            .map(|m| m.trim_start_matches('@'))
-            .collect();
-        assert_eq!(std::fs::read(paths[0]).unwrap(), b"hi");
-        assert!(
-            paths[1].ends_with("notes.txt"),
-            "a name can't climb out of the folder"
-        );
-        assert_eq!(std::fs::read_to_string(paths[1]).unwrap(), "hello");
-        assert_eq!(
-            attachments_as_mentions("s1", "plain", &[], &[]).unwrap(),
-            "plain"
-        );
     }
 
     fn waiting(id: &str) -> WaitingSummary {

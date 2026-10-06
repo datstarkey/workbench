@@ -4,7 +4,6 @@ import {
 	CODEX_NEW_SESSION_COMMAND,
 	claudeNewSessionWithIdCommand,
 	claudeResumeCommand,
-	codexChatMode,
 	codexResumeCommand,
 	extractPromptArg,
 	newSessionCommandWithPrompt,
@@ -531,19 +530,5 @@ describe('claudeNewSessionWithIdCommand', () => {
 		const id = '7b3c54f4-ba22-4654-9af9-037d1cd8e555';
 		expect(claudeNewSessionWithIdCommand(id)).toBe(`claude --session-id ${id}`);
 		expect(() => claudeNewSessionWithIdCommand('x; rm -rf /')).toThrow();
-	});
-});
-
-describe('codexChatMode', () => {
-	it('maps the launch settings onto the chat presets', () => {
-		expect(codexChatMode('on-request', 'read-only')).toBe('read-only');
-		expect(codexChatMode('on-request', 'workspace-write')).toBe('auto');
-		expect(codexChatMode('never', 'danger-full-access')).toBe('full-access');
-	});
-
-	it('leaves Codex config in charge for anything else', () => {
-		expect(codexChatMode('default', 'default')).toBeUndefined();
-		expect(codexChatMode('never', 'read-only')).toBeUndefined();
-		expect(codexChatMode('on-request', 'default')).toBeUndefined();
 	});
 });

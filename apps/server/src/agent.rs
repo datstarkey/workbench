@@ -155,6 +155,7 @@ fn prune_grants(grants: &Mutex<HashMap<String, ModGrant>>, terminals: &Terminals
 
 #[derive(Clone, Default)]
 pub struct AgentManager {
+    pub attention: crate::attention_feed::AttentionFeed,
     inner: session::Registry,
     /// Held across a start's check-spawn-insert and a stop's whole shutdown, so
     /// two starts for one id can't both spawn, and a start can't slip in while
@@ -239,8 +240,13 @@ impl AgentManager {
 
     /// Spawn a session (with the cache policy its id had) and make sure upkeep runs.
     fn spawn(&self, req: StartAgent, launch: driver::Launch) -> Result<Arc<AgentSession>> {
-        let session =
-            AgentSession::spawn(req, launch, self.inner.clone(), self.cache_policies.clone())?;
+        let session = AgentSession::spawn(
+            req,
+            launch,
+            self.inner.clone(),
+            self.cache_policies.clone(),
+            self.attention.clone(),
+        )?;
         self.start_upkeep();
         Ok(session)
     }
@@ -339,7 +345,13 @@ impl AgentManager {
             },
         };
         let link = Arc::new(ModLink::new(token.to_string(), grant.terminal_id));
-        let session = AgentSession::attach_mod(req, driver, link, &self.cache_policies);
+        let session = AgentSession::attach_mod(
+            req,
+            driver,
+            link,
+            &self.cache_policies,
+            self.attention.clone(),
+        );
         session.queue(&claude::hello())?;
         lock(&self.inner).insert(session_id.to_string(), session.clone());
         self.start_upkeep();
@@ -484,6 +496,7 @@ impl AgentManager {
         }
         for line in lines {
             if link.is_some_and(|link| !link.note_line(line)) {
+                session.refresh_attention();
                 continue;
             }
             session.feed(&line.to_string(), |new_id| {

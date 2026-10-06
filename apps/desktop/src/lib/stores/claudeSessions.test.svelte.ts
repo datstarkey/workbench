@@ -668,6 +668,28 @@ describe('ClaudeSessionStore', () => {
 			];
 		}
 
+		it('Codex notify metadata and the shared attention event raise one completion alert', () => {
+			setupCodexPane();
+			const alert = vi.fn();
+			store.onAwaitingInput(alert);
+			(mockWorkspaceStore.paneForAgent as ReturnType<typeof vi.fn>).mockReturnValue('pane-1');
+			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: 'working' });
+			emitMockEvent('codex:notify', {
+				paneId: 'pane-1',
+				sessionId: 'thread',
+				notifyEvent: 'agent-turn-complete'
+			});
+			expect(alert).not.toHaveBeenCalled();
+			emitMockEvent('agent:attention', {
+				kind: 'turnEnded',
+				agent: 'codex',
+				sessionId: 'thread',
+				paneId: 'pane-1',
+				terminalOnly: true
+			});
+			expect(alert).toHaveBeenCalledTimes(1);
+		});
+
 		it('codex:notify with sessionId sets fallback label then resolves to discovered label', async () => {
 			setupCodexPane();
 
