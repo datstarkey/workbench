@@ -22,6 +22,9 @@ let polling = false;
 let model = '';
 // The model and effort last reported, so a change is sent once.
 let lastSettings = '';
+// The live permission mode, and the one the chat was last told.
+let liveMode: string | undefined;
+let reportedMode = '';
 let messageSeq = 0;
 let currentMessage = '';
 const startedBlocks = new Set<number>();
@@ -177,6 +180,19 @@ function askAnswer(text: string | undefined): Answer | null | undefined {
 		: (response.response ?? { behavior: 'deny' });
 }
 
+/**
+ * The session's live permission mode, from a classic hook's input: the
+ * `/config` row holds only the settings default (`defaultMode`), not a mode
+ * the session was launched in or switched to.
+ */
+export function notePermissionMode(mode: string | undefined) {
+	if (!mode) return;
+	liveMode = mode;
+	if (!link || mode === reportedMode) return;
+	reportedMode = mode;
+	emit({ type: 'permission-mode', permissionMode: mode });
+}
+
 /** Report background jobs that finished; called from the Stop hook with its job list. */
 export function noteBackgroundTasks(tasks: readonly { id: string; status: string }[] = []) {
 	if (!link) return;
@@ -213,7 +229,9 @@ export const register: Register = (on) => {
 			return result;
 		}
 		const rows = await $.config.list();
-		const permissionMode = rows.find((r) => r.key === 'permissionMode')?.value;
+		const configMode = rows.find((r) => r.key === 'permissionMode')?.value;
+		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);
+		reportedMode = permissionMode ?? '';
 		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
 
 		$.clock.every(50, () => {
@@ -244,6 +262,7 @@ export const register: Register = (on) => {
 				needsHello = false;
 				lastHello = Date.now();
 				lastSettings = '';
+				reportedMode = '';
 				void $.http
 					.fetch(`${link.url}/mod/hello`, init('POST', { sessionId: link.sessionId }))
 					.then((res) => {
