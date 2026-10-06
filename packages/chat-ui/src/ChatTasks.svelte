@@ -175,9 +175,11 @@
 					class="flex min-h-0 flex-1 flex-col"
 					aria-label="{title(selected)} details"
 				>
-					<div class="shrink-0 px-3 pt-2.5">
+					<div class="scrollbar-thin max-h-[40%] shrink-0 overflow-y-auto px-3 pt-2.5">
 						{@render summary(selected, live)}
-						{#if views.length > 1}
+					</div>
+					{#if views.length > 1}
+						<div class="shrink-0 px-3">
 							<div
 								class="mt-2 flex gap-0.5 rounded-md border border-wb-hair p-0.5"
 								role="group"
@@ -199,8 +201,8 @@
 									</button>
 								{/each}
 							</div>
-						{/if}
-					</div>
+						</div>
+					{/if}
 					{#key `${selected.id}:${detailView}`}
 						{#if detailView === 'conversation'}
 							<ChatTaskTranscript

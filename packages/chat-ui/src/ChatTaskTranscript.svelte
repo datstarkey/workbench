@@ -84,7 +84,7 @@
 		<span class="text-[11px] text-wb-ink-soft">Loading conversation…</span>
 	{:else if !poll.value || poll.value.items.length === 0}
 		<span class="text-[11px] text-wb-ink-soft">
-			{live ? 'No conversation yet.' : "This agent's conversation wasn't saved."}
+			{live ? 'No conversation yet.' : 'No conversation to show for this agent.'}
 		</span>
 	{:else}
 		{#if poll.value.start > 0}

@@ -397,7 +397,8 @@
 			</div>
 		</div>
 		{#if tasks.length > 0 && wide}
-			<div class="relative flex shrink-0" style:width="{tasksPanelWidth.width}px">
+			<!-- The saved width is shared by every pane; a narrower pane keeps half for the chat. -->
+			<div class="relative flex max-w-1/2 shrink-0" style:width="{tasksPanelWidth.width}px">
 				<PanelResizeHandle size={tasksPanelWidth} label="Resize agents and tasks panel" />
 				<ChatTasks
 					{tasks}

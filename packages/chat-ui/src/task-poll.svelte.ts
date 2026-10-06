@@ -20,8 +20,13 @@ export class TaskPoll<T> {
 	start(): () => void {
 		let stopped = false;
 		let inFlight = false;
+		/** A tick came while a fetch was out: fetch again once it lands, or the final one is lost. */
+		let again = false;
 		const load = async () => {
-			if (inFlight) return;
+			if (inFlight) {
+				again = true;
+				return;
+			}
 			inFlight = true;
 			try {
 				const next = await this.fetch();
@@ -30,6 +35,10 @@ export class TaskPoll<T> {
 				this.loaded = true;
 			} finally {
 				inFlight = false;
+				if (again && !stopped) {
+					again = false;
+					void load();
+				}
 			}
 		};
 		void load();

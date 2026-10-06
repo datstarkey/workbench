@@ -33,13 +33,30 @@ describe('TaskPoll', () => {
 		stop();
 	});
 
-	it('skips a tick while a fetch is still out, and drops a reply after stop', async () => {
+	it('runs one more fetch when the task ends while a slow one is out', async () => {
+		let live = true;
+		let resolve: (v: string) => void = () => {};
+		const fetch = vi.fn(() => new Promise<string | null>((r) => (resolve = r)));
+		const poll = new TaskPoll(fetch, () => live, 1000);
+		const stop = poll.start();
+		live = false;
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		resolve('stale');
+		await vi.advanceTimersByTimeAsync(0);
+		expect(fetch).toHaveBeenCalledTimes(2);
+		resolve('final');
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(poll.value).toBe('final');
+		expect(fetch).toHaveBeenCalledTimes(2);
+		stop();
+	});
+
+	it('drops a reply that lands after stop', async () => {
 		let resolve: (v: string) => void = () => {};
 		const fetch = vi.fn(() => new Promise<string | null>((r) => (resolve = r)));
 		const poll = new TaskPoll(fetch, () => true, 1000);
 		const stop = poll.start();
-		await vi.advanceTimersByTimeAsync(3000);
-		expect(fetch).toHaveBeenCalledTimes(1);
 		stop();
 		resolve('late');
 		await vi.advanceTimersByTimeAsync(0);

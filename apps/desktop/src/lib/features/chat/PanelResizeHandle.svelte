@@ -23,9 +23,10 @@
 	tabindex="0"
 	class="absolute inset-y-0 -left-1 z-10 w-2 cursor-col-resize touch-none after:absolute after:inset-y-0 after:left-1 after:w-px after:transition-colors hover:after:bg-wb-accent focus-visible:outline-none focus-visible:after:bg-wb-accent"
 	{onpointerdown}
-	onpointermove={(e) => size.dragTo(e.clientX)}
+	onpointermove={(e) => (e.buttons & 1 ? size.dragTo(e.clientX) : size.endDrag())}
 	onpointerup={() => size.endDrag()}
 	onpointercancel={() => size.endDrag()}
+	onlostpointercapture={() => size.endDrag()}
 	onkeydown={(e) => {
 		if (size.key(e.key, e.shiftKey)) e.preventDefault();
 	}}
