@@ -16,6 +16,7 @@
 		chat,
 		id,
 		notice,
+		answerHint,
 		onResume,
 		onThread,
 		popover,
@@ -26,6 +27,8 @@
 		id: string;
 		/** A host error shown in place of the chat's own notice. */
 		notice?: string | null;
+		/** The composer's placeholder while a request waits on the person; says where to answer it. */
+		answerHint?: string;
 		/** `/resume` is a terminal picker the CLI doesn't offer in chat, so the host provides it. */
 		onResume: () => void;
 		/** Open another Codex thread (CodexControls' thread list). */
@@ -59,7 +62,7 @@
 			case 'failed':
 				return 'Restart the session to send messages';
 			default:
-				return chat.waiting ? `Answer ${name} first` : null;
+				return chat.waiting ? (answerHint ?? `Answer ${name} first`) : null;
 		}
 	});
 

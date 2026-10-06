@@ -1,5 +1,5 @@
 import type { ArtifactInfo, TranscriptMeta } from '@workbench/types';
-import { safeExternalUrl } from './codex-helpers';
+import { safeExternalUrl } from './url';
 
 /** One artifact this chat touched, however many calls published to it. */
 export interface ChatArtifact {

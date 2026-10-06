@@ -10,7 +10,8 @@ function fakeChat() {
 	const chat = $state({
 		items: [] as TranscriptItem[],
 		pending: [] as PendingPrompt[],
-		now: { kind: 'idle' } as Activity
+		now: { kind: 'idle' } as Activity,
+		sends: 0
 	});
 	return chat;
 }
@@ -42,6 +43,7 @@ describe('followLatest', () => {
 		expect(node.scrollTop).toBe(200);
 
 		chat.pending = [prompt('p')];
+		chat.sends++;
 		flushSync();
 		expect(node.scrollTop).toBe(1000);
 		cleanup();

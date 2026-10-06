@@ -1,5 +1,5 @@
 import type { StartAgentBody } from '$types/workbench';
-import { AgentChat } from '@workbench/chat-ui';
+import { AgentChat, ChatDraft } from '@workbench/chat-ui';
 import { loopbackAgentApi } from './agent-api';
 
 /**
@@ -9,6 +9,12 @@ import { loopbackAgentApi } from './agent-api';
  * Released when the pane goes back to the terminal or is closed.
  */
 const chats = new Map<string, AgentChat>();
+/**
+ * Composer drafts by pane. They outlive the chat (Terminal | Chat toggles
+ * release it); an emptied one is dropped on release, so a closed pane leaves
+ * at most its unsent draft in memory until the app restarts.
+ */
+const drafts = new Map<string, ChatDraft>();
 
 /** The pane's chat, created on first use or when the pane moved to another session. */
 export function acquireChat(
@@ -24,7 +30,9 @@ export function acquireChat(
 			: existing?.sessionId === body.sessionId;
 	if (existing && same) return { chat: existing, created: false };
 	existing?.dispose();
-	const chat = new AgentChat(body, loopbackAgentApi);
+	let draft = drafts.get(paneId);
+	if (!draft) drafts.set(paneId, (draft = new ChatDraft()));
+	const chat = new AgentChat(body, loopbackAgentApi, { draft });
 	chats.set(paneId, chat);
 	return { chat, created: true };
 }
@@ -45,6 +53,9 @@ export function reopenChat(paneId: string): void {
 export function releaseChat(paneId: string): void {
 	chats.get(paneId)?.dispose();
 	chats.delete(paneId);
+	const draft = drafts.get(paneId);
+	if (draft && !draft.text && draft.images.length === 0 && draft.files.length === 0)
+		drafts.delete(paneId);
 }
 
 /**

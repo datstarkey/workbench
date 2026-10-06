@@ -54,7 +54,7 @@
 			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
 		},
 		client.agents,
-		drafts.get(ref)
+		{ draft: drafts.get(ref), reconnectOnWake: true }
 	);
 	const draft = chat.draft;
 	const name = agentName(chat.agent);
@@ -176,7 +176,7 @@
 				<DropdownMenu.Item onSelect={() => (reviewOpen = 'changes')}
 					>Review changes</DropdownMenu.Item
 				>
-				<DropdownMenu.Item onSelect={() => chat.restart()}>Restart {name}</DropdownMenu.Item>
+				<DropdownMenu.Item onSelect={() => chat.open()}>Reconnect</DropdownMenu.Item>
 				<DropdownMenu.Item class="text-wb-err" onSelect={() => client.endChat(chat.sessionId)}>
 					End session
 				</DropdownMenu.Item>

@@ -160,20 +160,32 @@ export class AgentChat {
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
 	private fileList: { at: number; files: Promise<string[]> } | null = null;
 	private rewindWaiters: Record<string, (reply: RewindReply | null) => void> = {};
+	/** Prompts sent from here; the transcript scrolls back to the newest on each. */
+	sends = $state(0);
+	readonly draft: ChatDraft;
 	private hiddenAt = 0;
+	private readonly reconnectOnWake: boolean;
 
-	/** `draft` is passed in by hosts that keep it beyond this chat (a phone's saved drafts). */
+	/**
+	 * `draft`: hosts that keep the composer beyond this chat pass their own.
+	 * `reconnectOnWake`: re-attach when the page shows again after a long sleep
+	 * (a phone), since the socket can read open after the server let it go.
+	 */
 	constructor(
 		body: StartAgentBody,
 		api: AgentApi,
-		readonly draft = new ChatDraft()
+		opts: { draft?: ChatDraft; reconnectOnWake?: boolean } = {}
 	) {
 		this.body = body;
 		this.api = api;
 		this.agent = body.agent ?? 'claude';
 		this.sessionId = body.sessionId ?? '';
-		if (typeof document !== 'undefined')
+		this.draft = opts.draft ?? new ChatDraft();
+		this.reconnectOnWake = !!opts.reconnectOnWake && typeof document !== 'undefined';
+		if (this.reconnectOnWake) {
+			if (document.hidden) this.hiddenAt = Date.now();
 			document.addEventListener('visibilitychange', this.onVisibility);
+		}
 		void this.open();
 	}
 
@@ -183,30 +195,20 @@ export class AgentChat {
 	};
 
 	/**
-	 * Start (or resume) the process, then attach. Also the "Try again" action: an
+	 * Start (or resume) the process, then attach. Also the "Restart" action: an
 	 * `attachOnly` chat re-attaches while it runs, and once ended it starts here.
 	 */
 	open(): Promise<void> {
-		if (this.status === 'exited' || this.status === 'failed') this.takeOver();
+		if (this.body.attachOnly && (this.status === 'exited' || this.status === 'failed')) {
+			this.body = { ...this.body, attachOnly: false };
+			this.onTakeOver?.();
+		}
+		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close(); // a Restart must not leave the old socket behind
 		this.ws = null;
 		this.status = 'starting';
 		this.error = null;
 		return this.connect();
-	}
-
-	/** Stop the process, then start it again here with the conversation resumed. */
-	async restart(): Promise<void> {
-		if (this.sessionId) await this.api.stop?.(this.sessionId).catch(() => {});
-		this.takeOver();
-		return this.open();
-	}
-
-	/** An `attachOnly` chat starts its own process from now on: this device owns it. */
-	private takeOver(): void {
-		if (!this.body.attachOnly) return;
-		this.body = { ...this.body, attachOnly: false };
-		this.onTakeOver?.();
 	}
 
 	/** The person trusted the folder: start again, answering Claude Code's dialog. */
@@ -257,9 +259,11 @@ export class AgentChat {
 				this.trustPath = e.path;
 				return;
 			}
-			// Waking phones lose the network for a moment; keep retrying rather than give up.
-			if (this.status === 'reconnecting') return this.scheduleReconnect();
-			this.status = 'failed';
+			// Waking phones lose the network for a moment; keep retrying rather than give up,
+			// unless a joined session is gone (it ended on the other device).
+			const gone = this.body.attachOnly && (e as { status?: number }).status === 404;
+			if (this.status === 'reconnecting' && !gone) return this.scheduleReconnect();
+			this.status = this.status === 'reconnecting' ? 'exited' : 'failed';
 			this.error = e instanceof Error ? e.message : String(e);
 			return;
 		}
@@ -493,7 +497,10 @@ export class AgentChat {
 				images: images.map(({ mediaType, data }) => ({ mediaType, data })),
 				files
 			}).then(
-				() => true,
+				() => {
+					this.sends++;
+					return true;
+				},
 				() => false
 			);
 		}
@@ -514,6 +521,7 @@ export class AgentChat {
 			}
 		];
 		this.busySince ??= Date.now();
+		this.sends++;
 		return true;
 	}
 
@@ -784,6 +792,9 @@ export class AgentChat {
 		if (old) {
 			old.onclose = null;
 			old.close();
+			// No reply comes over the old socket now.
+			this.rejectControls('Connection lost');
+			this.settleRewinds();
 		}
 		this.status = 'reconnecting';
 		void this.connect();
@@ -792,8 +803,7 @@ export class AgentChat {
 	dispose(): void {
 		this.rejectControls('Chat closed');
 		this.disposed = true;
-		if (typeof document !== 'undefined')
-			document.removeEventListener('visibilitychange', this.onVisibility);
+		if (this.reconnectOnWake) document.removeEventListener('visibilitychange', this.onVisibility);
 		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close();
 		this.ws = null;

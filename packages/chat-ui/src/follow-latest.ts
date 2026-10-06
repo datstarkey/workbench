@@ -1,5 +1,4 @@
 import { watch } from 'runed';
-import { untrack } from 'svelte';
 import type { Attachment } from 'svelte/attachments';
 import type { AgentChat } from './agent-chat.svelte';
 
@@ -12,22 +11,26 @@ const STICK_PX = 48;
  * (e.g. the one a custom scrollbar library generates inside the host).
  */
 export function followLatest(
-	chat: Pick<AgentChat, 'items' | 'pending' | 'now'>,
+	chat: Pick<AgentChat, 'items' | 'pending' | 'now' | 'sends'>,
 	viewport: (host: HTMLElement) => HTMLElement = (host) => host
 ): Attachment<HTMLElement> {
 	return (host) => {
 		const node = viewport(host);
 		let stick = true;
-		let sent = untrack(() => chat.pending.length);
 		const onScroll = () => {
 			stick = node.scrollHeight - node.scrollTop - node.clientHeight < STICK_PX;
 		};
 		node.addEventListener('scroll', onScroll);
 		watch(
-			() => [chat.items, chat.pending, chat.now.kind],
+			() => chat.sends,
 			() => {
-				if (chat.pending.length > sent) stick = true;
-				sent = chat.pending.length;
+				stick = true;
+			},
+			{ lazy: true }
+		);
+		watch(
+			() => [chat.items, chat.pending, chat.now.kind, chat.sends],
+			() => {
 				if (stick) node.scrollTop = node.scrollHeight;
 			}
 		);

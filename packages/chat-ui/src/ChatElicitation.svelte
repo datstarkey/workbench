@@ -14,7 +14,7 @@
 		type ElicitationValue
 	} from './elicitation-form';
 	import { getChatPlatform } from './platform';
-	import { safeExternalUrl } from './codex-helpers';
+	import { safeExternalUrl } from './url';
 
 	let {
 		elicitation,

@@ -3,7 +3,7 @@
 	import PanelsTopLeftIcon from '@lucide/svelte/icons/panels-top-left';
 	import type { ArtifactInfo } from '@workbench/types';
 	import { artifactActionLabel, artifactName } from './artifacts';
-	import { safeExternalUrl } from './codex-helpers';
+	import { safeExternalUrl } from './url';
 	import { getChatPlatform } from './platform';
 
 	let { artifact }: { artifact: ArtifactInfo } = $props();

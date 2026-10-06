@@ -252,6 +252,7 @@
 			<ChatDock
 				{chat}
 				id="chat-draft-{paneId}"
+				answerHint="Answer {agentLabel} above first"
 				onResume={() => (resumeOpen = true)}
 				onThread={(id, label) => {
 					if (workspace)
