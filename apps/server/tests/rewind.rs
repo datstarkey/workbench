@@ -30,7 +30,7 @@ while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_CLAUDE_LOG"
   case "$line" in
     *'"content":"/resume"'*)
-      echo '{"type":"conversation_reset","new_conversation_id":"5e5e5e5e-0000-4000-8000-000000000002"}'
+      echo '{"type":"conversation_reset","new_conversation_id":"5e5e5e5e-0000-4000-8000-000000000002","resumed":true}'
       ;;
   esac
 done
@@ -194,9 +194,18 @@ async fn rewind_restarts_before_the_prompt_and_says_files_stay() {
     };
     assert_eq!(snapshot["sessionId"], OTHER);
     assert_eq!(prompts(&snapshot), ["from the other session"]);
+    // Another conversation, not a continuation: the old id is free again.
+    let old = reqwest::Client::new()
+        .post(format!("{base}/agent/claude"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "projectPath": project, "sessionId": SID, "attachOnly": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old.status(), 404);
 
     let res = reqwest::Client::new()
-        .delete(format!("{base}/agent/claude/{SID}"))
+        .delete(format!("{base}/agent/claude/{OTHER}"))
         .bearer_auth(TOKEN)
         .send()
         .await

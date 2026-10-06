@@ -103,16 +103,24 @@ pub struct Applied {
     pub meta: bool,
     /// The session continued under a new id (`/clear`, `/resume`); items were reset.
     pub new_session_id: Option<String>,
+    /// That id is another conversation (`/resume`), not this one's continuation.
+    pub resumed: bool,
     /// First sighting of a message kind not in [`protocol`]'s inventory.
     pub unknown_kind: Option<String>,
     /// The slash command list changed (kept out of meta: it's large).
     pub commands: bool,
 }
 
-/// A model switch asked of the CLI and not yet answered, to undo if it refuses.
+/// A model switch asked of the CLI and not yet answered, with what was shown
+/// before it, to put back if it refuses.
 #[derive(Debug)]
 struct ModelRequest {
     request_id: String,
+    before: ShownModel,
+}
+
+#[derive(Debug, Clone)]
+struct ShownModel {
     choice: Option<String>,
     model: Option<String>,
     context_window: Option<u64>,
@@ -140,7 +148,8 @@ pub struct Transcript {
     approvals: HashMap<String, PendingApproval>,
     /// Elicitations the terminal asks that have no answer yet, by id.
     terminal_elicitations: HashMap<String, usize>,
-    model_request: Option<ModelRequest>,
+    /// Oldest first.
+    model_requests: Vec<ModelRequest>,
     unknown_seen: std::collections::HashSet<String>,
     /// Whole outputs of tools whose item only carries a preview.
     full_outputs: HashMap<String, String>,
@@ -235,6 +244,7 @@ impl Transcript {
                 let next = str_at(obj, "new_conversation_id").map(String::from);
                 self.reset();
                 applied.new_session_id = next;
+                applied.resumed = obj.get("resumed").and_then(Value::as_bool) == Some(true);
             }
             Some("attachment") => {
                 self.apply_queued_prompt(obj, &mut changed);
@@ -510,15 +520,46 @@ impl Transcript {
     }
 
     /// Show the model asked for with `set_model` (control request
-    /// `request_id`) until the CLI answers; a refusal puts the old one back.
+    /// `request_id`) until the CLI answers; a refusal puts back what it replaced.
     pub fn request_model(&mut self, request_id: &str, value: &str) {
-        self.model_request = Some(ModelRequest {
+        self.model_requests.push(ModelRequest {
             request_id: request_id.to_string(),
-            choice: self.meta.model_choice.clone(),
-            model: self.meta.model.clone(),
-            context_window: self.meta.context_window,
+            before: ShownModel {
+                choice: self.meta.model_choice.clone(),
+                model: self.meta.model.clone(),
+                context_window: self.meta.context_window,
+            },
         });
         self.set_model_choice(value);
+    }
+
+    /// The CLI's answer to a `set_model`. A refused pick that a later one
+    /// already replaced only hands its `before` on, so that one's refusal
+    /// can't bring the refused model back.
+    fn answer_model_request(&mut self, obj: &Value, changed: &mut Vec<usize>) {
+        let id = obj.pointer("/response/request_id").and_then(Value::as_str);
+        let Some(i) = self
+            .model_requests
+            .iter()
+            .position(|r| Some(r.request_id.as_str()) == id)
+        else {
+            return;
+        };
+        let asked = self.model_requests.remove(i);
+        if obj.pointer("/response/subtype").and_then(Value::as_str) != Some("error") {
+            return;
+        }
+        match self.model_requests.get_mut(i) {
+            Some(later) => later.before = asked.before,
+            None => {
+                self.meta.model_choice = asked.before.choice;
+                self.meta.model = asked.before.model;
+                self.meta.context_window = asked.before.context_window;
+            }
+        }
+        let why = obj.pointer("/response/error").and_then(Value::as_str);
+        let text = why.unwrap_or("Claude didn't switch the model.").to_string();
+        self.upsert(TranscriptItem::Notice { id: asked.request_id, text }, changed);
     }
 
     fn set_model_choice(&mut self, value: &str) {
@@ -554,20 +595,7 @@ impl Transcript {
     /// models the session can switch to and names the current pick
     /// (`modelChoice`); a refused `set_model` undoes the switch it showed.
     fn apply_control_response(&mut self, obj: &Value, changed: &mut Vec<usize>) {
-        let id = obj.pointer("/response/request_id").and_then(Value::as_str);
-        if let Some(asked) = self
-            .model_request
-            .take_if(|r| Some(r.request_id.as_str()) == id)
-        {
-            if obj.pointer("/response/subtype").and_then(Value::as_str) == Some("error") {
-                self.meta.model_choice = asked.choice;
-                self.meta.model = asked.model;
-                self.meta.context_window = asked.context_window;
-                let why = obj.pointer("/response/error").and_then(Value::as_str);
-                let text = why.unwrap_or("Claude didn't switch the model.").to_string();
-                self.upsert(TranscriptItem::Notice { id: asked.request_id, text }, changed);
-            }
-        }
+        self.answer_model_request(obj, changed);
         let Some(reply) = obj.pointer("/response/response") else {
             return;
         };

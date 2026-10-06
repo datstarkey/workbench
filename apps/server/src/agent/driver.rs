@@ -36,6 +36,8 @@ pub(super) struct Effects {
     pub commands: bool,
     /// The conversation continues under a new id (Claude's `/clear`).
     pub new_id: Option<String>,
+    /// That id is another conversation (`/resume`), not a continuation.
+    pub resumed: bool,
     /// Items were replaced wholesale (history loaded): send a fresh snapshot.
     pub snapshot: bool,
     /// The session is ready under this id, or failed to start.
@@ -47,6 +49,8 @@ pub(super) struct Launch {
     pub cmd: Command,
     pub driver: Driver,
     pub hello: Vec<Value>,
+    /// The CLI, for messages.
+    pub program: &'static str,
 }
 
 impl Driver {

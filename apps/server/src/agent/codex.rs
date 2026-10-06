@@ -149,6 +149,7 @@ pub(super) fn launch(
         cmd,
         driver: Driver::Codex(driver),
         hello: vec![hello],
+        program: "codex",
     }
 }
 

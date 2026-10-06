@@ -183,7 +183,7 @@ pub async fn bye(
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
         agents.feed_mod(&session, &body.lines);
-        agents.detach(&session.id());
+        agents.detach(&session);
         Ok(())
     })
     .await?;

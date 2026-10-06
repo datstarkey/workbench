@@ -572,8 +572,8 @@ impl AgentManager {
             if let Some(link) = link {
                 link.note_line(line);
             }
-            session.apply_line(&line.to_string(), |new_id| {
-                lock(&self.inner).insert(new_id.to_string(), session.clone());
+            session.apply_line(&line.to_string(), |new_id, resumed| {
+                session::rekey(&self.inner, session, new_id, resumed)
             });
             if line.get("type").and_then(serde_json::Value::as_str) == Some("result") {
                 session.learn_cache_ttl();
@@ -650,10 +650,10 @@ impl AgentManager {
 
     /// The terminal's `claude` left (it exited, or `/exit`): drop its chat and
     /// keep the terminal, which is the person's shell again.
-    pub fn detach(&self, session_id: &str) {
+    pub fn detach(&self, session: &Arc<AgentSession>) {
         let _lifecycle = lock(&self.lifecycle);
-        if let Some(session) = self.get(session_id) {
-            self.forget(&session);
+        if self.sessions(|_| true).iter().any(|s| Arc::ptr_eq(s, session)) {
+            self.forget(session);
             session.shutdown();
         }
     }

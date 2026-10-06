@@ -67,6 +67,7 @@ pub(super) fn apply_line(t: &mut Transcript, line: &str) -> Effects {
         meta: applied.meta,
         commands: applied.commands,
         new_id: applied.new_session_id,
+        resumed: applied.resumed,
         ..Effects::default()
     }
 }

@@ -1057,6 +1057,19 @@ fn a_refused_model_switch_puts_the_old_model_back() {
 }
 
 #[test]
+fn each_refused_model_switch_undoes_only_its_own_pick() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5","modelChoice":"opus"}));
+    t.request_model("a", "sonnet");
+    t.request_model("b", "haiku");
+    let refuse = |id: &str| json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"no"}});
+    t.apply(&refuse("a"));
+    assert_eq!(t.meta().model_choice.as_deref(), Some("haiku"), "the later pick stays");
+    t.apply(&refuse("b"));
+    assert_eq!(t.meta().model_choice.as_deref(), Some("opus"), "not the refused sonnet");
+}
+
+#[test]
 fn a_model_switch_in_the_terminal_names_its_pick() {
     let mut t = Transcript::default();
     t.apply(&json!({"type":"system","subtype":"init","model":"claude-sonnet-5-5","modelChoice":"sonnet"}));

@@ -29,8 +29,6 @@ pub(super) const SNAPSHOT_ITEMS: usize = 500;
 const STOP_GRACE: Duration = Duration::from_secs(3);
 /// How much of a background task's output the panel shows.
 const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
-/// The only CLI run over pipes: a Claude chat is a terminal `claude`.
-const PIPED: &str = "codex";
 
 pub(super) type Registry = Arc<Mutex<HashMap<String, Arc<AgentSession>>>>;
 
@@ -74,6 +72,8 @@ pub struct AgentSession {
     exited: AtomicBool,
     task_files: Mutex<HashMap<String, PathBuf>>,
     stderr_tail: Mutex<String>,
+    /// The CLI, for messages: `codex`, or `claude` in a terminal.
+    program: &'static str,
     /// Set once the session has an id clients can use, or failed to get one.
     ready: Mutex<Option<Result<String, String>>>,
     ready_cv: Condvar,
@@ -118,6 +118,15 @@ pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgen
     cmd
 }
 
+/// Register `session` under `new_id`; a resumed conversation drops its old ids.
+pub(super) fn rekey(registry: &Registry, session: &Arc<AgentSession>, new_id: &str, resumed: bool) {
+    let mut registry = lock(registry);
+    if resumed {
+        registry.retain(|_, s| !Arc::ptr_eq(s, session));
+    }
+    registry.insert(new_id.to_string(), session.clone());
+}
+
 impl AgentSession {
     /// Start the process and its reader threads, registered under its id (or a
     /// pending key) before the reader can see it exit. `registry` is also
@@ -134,10 +143,11 @@ impl AgentSession {
             mut cmd,
             driver,
             hello,
+            program,
         } = launch;
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("failed to start `{PIPED}` (is the {PIPED} CLI installed?)"))?;
+        let mut child = cmd.spawn().with_context(|| {
+            format!("failed to start `{program}` (is the {program} CLI installed?)")
+        })?;
         let stdout = child.stdout.take().context("stdout")?;
         let stderr = child.stderr.take().context("stderr")?;
         let stdin = child.stdin.take().context("stdin")?;
@@ -149,6 +159,7 @@ impl AgentSession {
             driver,
             (Some(stdin), None),
             Some(child),
+            program,
             None,
             &cache_policies,
             attention,
@@ -172,7 +183,7 @@ impl AgentSession {
             loop {
                 match bounded_line(&mut lines, 64 * 1024) {
                     Ok(Some(line)) => {
-                        tracing::warn!("{PIPED} stderr: {line}");
+                        tracing::warn!("{} stderr: {line}", reader.program);
                         *lock(&reader.stderr_tail) = strip_ansi(&line);
                     }
                     Ok(None) => break,
@@ -195,8 +206,8 @@ impl AgentSession {
                         break;
                     }
                 };
-                reader.apply_line(&line, |new_id| {
-                    lock(&registry).insert(new_id.to_string(), reader.clone());
+                reader.apply_line(&line, |new_id, resumed| {
+                    rekey(&registry, &reader, new_id, resumed)
                 });
             }
             reader.finish();
@@ -221,6 +232,7 @@ impl AgentSession {
             driver,
             (None, Some(link)),
             None,
+            "claude",
             ready,
             cache_policies,
             attention,
@@ -235,6 +247,7 @@ impl AgentSession {
         driver: Driver,
         io: (Option<ChildStdin>, Option<Arc<ModLink>>),
         child: Option<Child>,
+        program: &'static str,
         ready: Option<String>,
         cache_policies: &Arc<PolicyStore>,
         attention: crate::attention_feed::AttentionFeed,
@@ -278,6 +291,7 @@ impl AgentSession {
             exited: AtomicBool::new(false),
             task_files: Mutex::new(HashMap::new()),
             stderr_tail: Mutex::new(String::new()),
+            program,
             ready: Mutex::new(ready.map(Ok)),
             ready_cv: Condvar::new(),
             relaunch,
@@ -406,7 +420,8 @@ impl AgentSession {
             Some(Ok(id)) => Ok(id.clone()),
             Some(Err(e)) => bail!("{e}"),
             None => bail!(
-                "`{PIPED}` didn't start within {}s{}",
+                "`{}` didn't start within {}s{}",
+                self.program,
                 timeout.as_secs(),
                 self.stderr_suffix()
             ),
@@ -519,13 +534,14 @@ impl AgentSession {
         let Some(pipe) = stdin.as_mut() else {
             bail!("the session has stopped");
         };
-        writeln!(pipe, "{msg}").with_context(|| format!("write to {PIPED}"))?;
-        pipe.flush().with_context(|| format!("flush to {PIPED}"))
+        writeln!(pipe, "{msg}").with_context(|| format!("write to {}", self.program))?;
+        pipe.flush()
+            .with_context(|| format!("flush to {}", self.program))
     }
 
     fn fail_io(&self, what: &str, error: impl std::fmt::Display) {
         let _ = self.tx.send(
-            json!({"t":"error","message":format!("Invalid {PIPED} {what}: {error}")})
+            json!({"t":"error","message":format!("Invalid {} {what}: {error}", self.program)})
                 .to_string(),
         );
         if let Some(pid) = self.pid {
@@ -813,10 +829,10 @@ impl AgentSession {
     }
 
     /// Apply one line (codex's stdout, or a terminal plugin's post). `alias`
-    /// registers the new id when `/clear` or `/resume` moves the conversation —
-    /// before any client hears of it, so a start or attach with the new id
-    /// can never open a second process.
-    pub(super) fn apply_line(&self, line: &str, alias: impl FnOnce(&str)) {
+    /// registers the new id when `/clear` or `/resume` (`true`) moves the
+    /// conversation — before any client hears of it, so a start or attach
+    /// with the new id can never open a second process.
+    pub(super) fn apply_line(&self, line: &str, alias: impl FnOnce(&str, bool)) {
         let mut d = lock(&self.driver);
         let effects = d.apply_line(line);
         for frame in &effects.frames {
@@ -824,7 +840,7 @@ impl AgentSession {
         }
         for msg in &effects.send {
             if let Err(e) = self.send(msg) {
-                tracing::warn!("could not answer {PIPED}: {e}");
+                tracing::warn!("could not answer {}: {e}", self.program);
                 if self.pid.is_some() {
                     self.fail_io("write", e);
                 }
@@ -836,16 +852,23 @@ impl AgentSession {
         }
         if let Some(new_id) = effects.new_id {
             let old_id = self.id();
-            if !old_id.is_empty() && old_id != new_id {
-                lock(&self.previous_ids).push(old_id);
-            }
             *lock(&self.session_id) = new_id.clone();
-            // The policy follows the conversation to its new id.
-            let policy = self.cache_policy();
-            if policy != CachePolicy::default() {
-                self.cache_policies.set(&new_id, &policy);
+            if effects.resumed {
+                // Another conversation: the old ids are free to start again,
+                // and the policy is the resumed one's own.
+                lock(&self.previous_ids).clear();
+                *lock(&self.cache_policy) = self.cache_policies.get(&new_id);
+            } else {
+                if !old_id.is_empty() && old_id != new_id {
+                    lock(&self.previous_ids).push(old_id);
+                }
+                // The policy follows the conversation to its new id.
+                let policy = self.cache_policy();
+                if policy != CachePolicy::default() {
+                    self.cache_policies.set(&new_id, &policy);
+                }
             }
-            alias(&new_id);
+            alias(&new_id, effects.resumed);
             // `/resume` continues a conversation that has history; `/clear`'s has none yet.
             if let (Driver::Claude(t), Some(path)) = (&mut *d, self.history_path()) {
                 t.resume_history(&path);
@@ -922,7 +945,8 @@ impl AgentSession {
         self.attention.forget(self.attention_source, &self.id());
         let tail = lock(&self.stderr_tail).clone();
         self.set_ready(Err(format!(
-            "`{PIPED}` exited before it was ready{}",
+            "`{}` exited before it was ready{}",
+            self.program,
             self.stderr_suffix()
         )));
         let frame = if self.replaced.load(Ordering::SeqCst) {

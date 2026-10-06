@@ -52,8 +52,10 @@
 		switch (elicitation.action) {
 			case 'accept':
 				if (!isUrl) return `Sent to ${elicitation.server}`;
-				return elicitation.completed
-					? `Finished with ${elicitation.server}`
+				if (elicitation.completed) return `Finished with ${elicitation.server}`;
+				// A terminal never says when the browser flow is done.
+				return elicitation.inTerminal
+					? `Finish with ${elicitation.server} in the browser`
 					: `Waiting for ${elicitation.server} to finish in the browser`;
 			case 'decline':
 				return `You declined ${elicitation.server}'s request`;
