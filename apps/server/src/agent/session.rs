@@ -606,7 +606,15 @@ impl AgentSession {
         }
         let known = lock(&self.task_files).get(task_id).cloned();
         let path = known.or_else(|| {
-            let found = workbench_core::task_output::find(task_id)?;
+            let file_id = lock(&self.driver)
+                .view()
+                .meta()
+                .tasks
+                .iter()
+                .find(|t| t.id == task_id)
+                .and_then(|t| t.output_id.clone())
+                .unwrap_or_else(|| task_id.to_string());
+            let found = workbench_core::task_output::find(&file_id)?;
             lock(&self.task_files).insert(task_id.to_string(), found.clone());
             Some(found)
         })?;

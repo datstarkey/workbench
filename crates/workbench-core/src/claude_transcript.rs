@@ -417,6 +417,9 @@ impl Transcript {
         if let Some(t) = text("last_tool_name") {
             task.last_tool = Some(t);
         }
+        if let Some(t) = text("output_id") {
+            task.output_id = Some(t);
+        }
         if let Some(t) = text("summary") {
             task.summary = Some(clip(&t));
         }
