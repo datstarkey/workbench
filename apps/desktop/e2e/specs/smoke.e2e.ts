@@ -43,7 +43,8 @@ describe('Workbench smoke', () => {
 		await browser.switchToWindow(settings);
 
 		const sections = $('nav[aria-label="Settings sections"]');
-		await expect(sections).toBeDisplayed();
+		// A fresh WebKitGTK window can take longer than expect's 3s default to load.
+		await expect(sections).toBeDisplayed({ wait: 15_000 });
 		await sections.$('button=Permissions').click();
 		await expect($('h1=Permissions')).toBeDisplayed();
 		await expect($('[role="group"][aria-label="Settings scope"]')).toBeDisplayed();
