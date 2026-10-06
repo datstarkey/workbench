@@ -578,6 +578,51 @@ export const register: Register = (on) => {
 		return next(e);
 	});
 
+	// A command that runs no model turn (`/cost`, a forked skill like `/code-review`)
+	// prints instead: a chat that sent it waits for that and a `result`, as `-p`
+	// prints them. A forked skill's agent has no `agent.spawn`, so it joins the
+	// tasks panel here; its own `turn.complete` ends the task.
+	on('command.run', async ($, e, next) => {
+		if (!link) return next(e);
+		const before = new Set((await $.agent.list()).map((a) => a.id));
+		const result = await next(e);
+		if (!link) return result;
+		for (const agent of await $.agent.list()) {
+			if (before.has(agent.id) || agent.parentId || agentTasks.has(agent.id)) continue;
+			linkAgent(agent.id, agent.id);
+			asyncAgents.add(agent.id);
+			emit(
+				{
+					type: 'system',
+					subtype: 'task_started',
+					task_id: agent.id,
+					description: agent.description || `/${e.command}`,
+					subagent_type: agent.type,
+					task_type: 'local_agent',
+					uuid: `wbmod-task-${agent.id}`
+				},
+				{
+					type: 'system',
+					subtype: 'task_updated',
+					task_id: agent.id,
+					output_id: agent.id,
+					uuid: `wbmod-task-out-${agent.id}`
+				}
+			);
+		}
+		if (result.text !== undefined) {
+			emit({
+				type: 'system',
+				subtype: 'local_command_output',
+				content: result.text,
+				uuid: `wbmod-command-${++askSeq}`
+			});
+			const fromChat = e.origin.kind === 'plugin' && e.origin.name === 'workbench';
+			if (fromChat && !runningTurn) emit({ type: 'result', subtype: 'success', is_error: false });
+		}
+		return result;
+	});
+
 	// Structured results (an Artifact's link) and subagents for the tasks panel.
 	on('tool.call', async ($, e, next) => {
 		if (!link) return next(e);
