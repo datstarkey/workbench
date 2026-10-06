@@ -68,7 +68,7 @@ export function groupBlocks(items: TranscriptItem[]): ChatBlock[] {
 		if (item.kind === 'tool' && QUIET_TOOLS.has(item.name) && item.status !== 'error') {
 			if (last?.kind === 'quiet') last.tools.push(item);
 			else blocks.push({ kind: 'quiet', id: item.id, tools: [item] });
-		} else if (item.kind !== 'tool' || !PLAN_TOOLS.has(item.name)) {
+		} else if (item.kind !== 'tool' || !PLAN_TOOLS.has(item.name) || item.status === 'error') {
 			blocks.push({ kind: 'item', item });
 		}
 	}
@@ -220,9 +220,10 @@ const optionalString = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
 /**
  * The plan as of the last call: TodoWrite and a TaskList result replace it,
- * TaskCreate and TaskUpdate edit it. Items carry only a result's text, so a
- * created task's id is read from it, or until it arrives taken as the next
- * number (the CLI numbers tasks 1, 2, …).
+ * TaskCreate and TaskUpdate edit it. A task counts once its TaskCreate has a
+ * result (an interrupted one never made it), whose text carries the id; items
+ * hold only that text, so if its wording changes the next number is assumed
+ * (the CLI numbers tasks 1, 2, …).
  */
 export function latestTodos(items: TranscriptItem[]): TodoStep[] {
 	let plan = new Map<string, TodoStep>();
@@ -231,13 +232,14 @@ export function latestTodos(items: TranscriptItem[]): TodoStep[] {
 		if (/^\d+$/.test(id)) next = Math.max(next, Number(id) + 1);
 	};
 	for (const item of items) {
-		if (item.kind !== 'tool' || item.status === 'error') continue;
-		const input = item.input ?? {};
+		// A null input is still streaming.
+		if (item.kind !== 'tool' || item.status === 'error' || !item.input) continue;
+		const input = item.input;
 		if (item.name === 'TodoWrite') {
-			const todos = Array.isArray(input.todos) ? (input.todos as TodoStep[]) : [];
-			plan = new Map(todos.map((t, i) => [`todo:${i}`, t]));
-		} else if (item.name === 'TaskCreate') {
-			const id = /^Task #(\S+) created successfully/.exec(item.output ?? '')?.[1] ?? String(next);
+			if (Array.isArray(input.todos))
+				plan = new Map((input.todos as TodoStep[]).map((t, i) => [`todo:${i}`, t]));
+		} else if (item.name === 'TaskCreate' && item.output != null) {
+			const id = /^Task #(\S+) created successfully/.exec(item.output)?.[1] ?? String(next);
 			plan.set(id, {
 				content: String(input.subject ?? ''),
 				status: 'pending',
@@ -265,16 +267,21 @@ export function latestTodos(items: TranscriptItem[]): TodoStep[] {
 	return [...plan.values()];
 }
 
-/** TaskList prints `#<id> [<status>] <subject>[ (owner)][ [blocked by #…]]` per task. */
+/**
+ * TaskList prints `#<id> [<status>] <subject>[ (owner)][ [blocked by #…]]` per
+ * task. The owner can't be told from a subject ending in parentheses, so a
+ * known subject the line starts with is kept as is.
+ */
 function taskListPlan(output: string, known: Map<string, TodoStep>): Map<string, TodoStep> {
 	const plan = new Map<string, TodoStep>();
 	for (const line of output.split('\n')) {
 		const m = /^#(\S+) \[(\w+)\] (.*)$/.exec(line);
 		if (!m || !STEP_STATUSES.has(m[2])) continue;
 		const [, id, status, rest] = m;
+		const listed = rest.replace(/ \[blocked by [^\]]*\]$/, '');
 		const step = known.get(id);
 		plan.set(id, {
-			content: step?.content ?? rest.replace(/ \[blocked by [^\]]*\]$/, ''),
+			content: step && listed.startsWith(step.content) ? step.content : listed,
 			status: status as TodoStep['status'],
 			activeForm: step?.activeForm
 		});

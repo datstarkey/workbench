@@ -7,6 +7,7 @@
 
 	const done = $derived(steps.filter((s) => s.status === 'completed').length);
 	const current = $derived(steps.find((s) => s.status === 'in_progress'));
+	const label = $derived(current?.activeForm ?? current?.content ?? '');
 </script>
 
 <details class="group rounded-lg border border-wb-hair bg-wb-panel text-xs">
@@ -20,7 +21,7 @@
 				style:width="{(done / steps.length) * 100}%"
 			></span>
 		</span>
-		<span class="min-w-0 truncate text-wb-ink">{current?.content ?? ''}</span>
+		<span class="min-w-0 truncate text-wb-ink">{label}</span>
 	</summary>
 	<ol class="flex flex-col gap-1 border-t border-wb-hair px-3 py-2">
 		{#each steps as step, i (i)}

@@ -173,16 +173,19 @@ describe('tool output', () => {
 describe('groupBlocks', () => {
 	it('collapses runs of read-only tools and hides TodoWrite', () => {
 		const running = { ...tool('b1', 'Bash'), status: 'running' as const };
+		const failedPlan = { ...tool('tu', 'TaskUpdate'), status: 'error' as const };
 		const blocks = groupBlocks([
 			tool('r1', 'Read'),
 			tool('todo', 'TodoWrite'),
 			tool('tc', 'TaskCreate'),
+			failedPlan,
 			running,
 			tool('g1', 'Grep'),
 			text('a', 'Found it.')
 		]);
 		expect(blocks).toEqual([
 			{ kind: 'quiet', id: 'r1', tools: [tool('r1', 'Read')] },
+			{ kind: 'item', item: failedPlan },
 			{ kind: 'item', item: running },
 			{ kind: 'quiet', id: 'g1', tools: [tool('g1', 'Grep')] },
 			{ kind: 'item', item: text('a', 'Found it.') }
@@ -268,16 +271,16 @@ describe('latestTodos', () => {
 	});
 
 	const result = (item: ToolItem, output: string): ToolItem => ({ ...item, output });
-	const create = (id: string, subject: string, output?: string) => {
+	const create = (id: string, subject: string, output?: string): ToolItem => {
 		const item = tool(id, 'TaskCreate', { subject, description: 'd', activeForm: `${subject}ing` });
-		return output === undefined ? { ...item, status: 'running' as const } : result(item, output);
+		return output === undefined ? { ...item, status: 'running' } : result(item, output);
 	};
 
 	it('builds the plan from TaskCreate and TaskUpdate', () => {
 		const items: TranscriptItem[] = [
 			create('c1', 'Read', 'Task #1 created successfully: Read'),
 			create('c2', 'Write', 'Task #2 created successfully: Write'),
-			create('c3', 'Ship'),
+			create('c3', 'Ship', 'Task #3 created successfully: Ship'),
 			tool('u1', 'TaskUpdate', { taskId: '1', status: 'completed' }),
 			tool('u2', 'TaskUpdate', { taskId: '2', status: 'in_progress', subject: 'Write it' }),
 			tool('u3', 'TaskUpdate', { taskId: '3', status: 'deleted' }),
@@ -290,10 +293,12 @@ describe('latestTodos', () => {
 		]);
 	});
 
-	it('takes ids from the result text, else the next number', () => {
+	it('counts a TaskCreate once it has a result, by the id in it', () => {
 		const items: TranscriptItem[] = [
 			create('c1', 'A', 'Task #7 created successfully: A'),
-			create('c2', 'B'),
+			create('c2', 'B', 'some other wording'),
+			create('c3', 'Pending'),
+			{ ...tool('c4', 'TaskCreate'), input: null, status: 'running' },
 			tool('u1', 'TaskUpdate', { taskId: '8', status: 'completed' })
 		];
 		expect(latestTodos(items).map((s) => [s.content, s.status])).toEqual([
@@ -302,21 +307,28 @@ describe('latestTodos', () => {
 		]);
 	});
 
+	it('keeps the plan while a TodoWrite streams', () => {
+		const plan = tool('t1', 'TodoWrite', { todos: [{ content: 'a', status: 'pending' }] });
+		const streaming: TranscriptItem = { ...plan, id: 't2', input: null, status: 'running' };
+		expect(latestTodos([plan, streaming])).toEqual([{ content: 'a', status: 'pending' }]);
+	});
+
 	it('replaces the plan with a TaskList result or a newer TodoWrite', () => {
 		const list = result(
 			tool('l1', 'TaskList'),
-			'#1 [completed] Read\n#4 [in_progress] Fix (agent) [blocked by #1]\n#5 [pending] Test [blocked by #4]'
+			'#1 [completed] Read (agent)\n#2 [in_progress] Renamed [blocked by #1]\n#5 [pending] Test (x) [blocked by #2]'
 		);
 		const items: TranscriptItem[] = [
 			create('c1', 'Read', 'Task #1 created successfully: Read'),
-			create('c2', 'Gone', 'Task #2 created successfully: Gone'),
+			create('c2', 'Old', 'Task #2 created successfully: Old'),
+			create('c3', 'Gone', 'Task #3 created successfully: Gone'),
 			list,
-			create('c3', 'Next')
+			create('c4', 'Next', 'oops')
 		];
 		expect(latestTodos(items)).toEqual([
 			{ content: 'Read', status: 'completed', activeForm: 'Reading' },
-			{ content: 'Fix (agent)', status: 'in_progress', activeForm: undefined },
-			{ content: 'Test', status: 'pending', activeForm: undefined },
+			{ content: 'Renamed', status: 'in_progress', activeForm: 'Olding' },
+			{ content: 'Test (x)', status: 'pending', activeForm: undefined },
 			{ content: 'Next', status: 'pending', activeForm: 'Nexting' }
 		]);
 		expect(latestTodos([...items, result(tool('l2', 'TaskList'), 'No tasks found')])).toEqual([]);
@@ -326,7 +338,7 @@ describe('latestTodos', () => {
 				tool('t', 'TodoWrite', { todos: [{ content: 'only', status: 'pending' }] })
 			])
 		).toEqual([{ content: 'only', status: 'pending' }]);
-		expect(latestTodos([...items.slice(0, 2), { ...list, output: undefined }])).toHaveLength(2);
+		expect(latestTodos([...items.slice(0, 3), { ...list, output: undefined }])).toHaveLength(3);
 	});
 });
 
