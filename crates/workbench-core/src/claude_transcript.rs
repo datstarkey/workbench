@@ -2,16 +2,16 @@
 //!
 //! Two sources feed the same [`Transcript`]: the session JSONL the CLI writes
 //! (`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, one content block
-//! per line) for history, and the `--output-format stream-json` events of a
-//! live `claude -p` process. Both shapes are internal to the CLI, so unknown
-//! lines are ignored rather than treated as errors.
+//! per line) for history, and the stream-json lines the Workbench plugin
+//! translates a live terminal `claude` into (the SDK's shapes, plus a few of
+//! its own). Both shapes are internal to the CLI, so unknown lines are ignored
+//! rather than treated as errors.
 //!
-//! Tool results update the call they answer; with `--include-partial-messages`
-//! text streams into an item before the final block replaces it in place; a
-//! `can_use_tool` control request becomes an approval item whose answer
-//! [`Transcript::resolve_approval`] turns back into a control response, and
-//! an MCP `elicitation` request an item [`Transcript::resolve_elicitation`]
-//! answers.
+//! Tool results update the call they answer; text streams into an item before
+//! the final block replaces it in place; a `can_use_tool` control request
+//! becomes an approval item whose answer [`Transcript::resolve_approval`]
+//! turns back into a control response. An MCP elicitation the terminal shows
+//! is a read-only item, answered there.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -30,7 +30,7 @@ mod title;
 
 pub use branch::fork_point;
 pub use cache::{written_cache_ttl, KEEPALIVE_PROMPT};
-pub use elicitation::ElicitationAction;
+pub use elicitation::{ElicitationAction, TERMINAL_ELICITATION, TERMINAL_ELICITATION_ANSWERED};
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use summary::{RunningSummary, WaitingSummary};
 pub(crate) use title::SavedTitle;
@@ -87,35 +87,35 @@ impl ChatView for Transcript {
         self.full_outputs.get(tool_id).map(String::as_str)
     }
     fn waiting_on(&self) -> Option<&TranscriptItem> {
-        let approvals = self.approvals.values().map(|p| p.item);
-        let first = approvals
-            .chain(self.elicitations.values().map(|p| p.item))
-            .min()?;
+        let first = self.approvals.values().map(|p| p.item).min()?;
         self.items.get(first)
     }
 }
 
-/// What one [`Transcript::apply`] changed.
 /// How the CLI opens every skill body it injects after a `Skill` call.
 const SKILL_BODY_PREFIX: &str = "Base directory for this skill:";
 
+/// What one [`Transcript::apply`] changed.
 #[derive(Debug, Default, PartialEq)]
 pub struct Applied {
     /// Indices into [`Transcript::items`] that were added or updated.
     pub items: Vec<usize>,
     pub meta: bool,
-    /// A `control_response` the host must write back (unsupported requests are
-    /// answered with an error — unanswered, the CLI would wait forever).
-    pub reply: Option<Value>,
-    /// The session continued under a new id (`/clear`); items were reset.
+    /// The session continued under a new id (`/clear`, `/resume`); items were reset.
     pub new_session_id: Option<String>,
     /// First sighting of a message kind not in [`protocol`]'s inventory.
     pub unknown_kind: Option<String>,
     /// The slash command list changed (kept out of meta: it's large).
     pub commands: bool,
-    /// The CLI's answer to a host request: its `request_id`, and the payload
-    /// or the error.
-    pub response: Option<(String, Result<Value, String>)>,
+}
+
+/// A model switch asked of the CLI and not yet answered, to undo if it refuses.
+#[derive(Debug)]
+struct ModelRequest {
+    request_id: String,
+    choice: Option<String>,
+    model: Option<String>,
+    context_window: Option<u64>,
 }
 
 /// What an approval needs to be answered: the input to echo back and the
@@ -138,7 +138,9 @@ pub struct Transcript {
     /// Streamed text/thinking items, in block order, awaiting their final block.
     stream_slots: HashMap<String, VecDeque<usize>>,
     approvals: HashMap<String, PendingApproval>,
-    elicitations: HashMap<String, PendingElicitation>,
+    /// Elicitations the terminal asks that have no answer yet, by id.
+    terminal_elicitations: HashMap<String, usize>,
+    model_request: Option<ModelRequest>,
     unknown_seen: std::collections::HashSet<String>,
     /// Whole outputs of tools whose item only carries a preview.
     full_outputs: HashMap<String, String>,
@@ -219,14 +221,15 @@ impl Transcript {
             Some("user") => self.apply_user(obj, &mut changed),
             Some("assistant") => self.apply_assistant(obj, &mut changed),
             Some("stream_event") => self.apply_stream_event(obj, &mut changed),
-            Some("control_request") => {
-                applied.reply = self.apply_control_request(obj, &mut changed)
-            }
+            Some("control_request") => self.apply_control_request(obj, &mut changed),
             Some("control_cancel_request") => self.expire_approval(obj, &mut changed),
             Some("control_response") => {
-                self.apply_control_response(obj);
+                self.apply_control_response(obj, &mut changed);
                 applied.commands = self.read_commands(obj.pointer("/response/response/commands"));
-                applied.response = control_reply(obj);
+            }
+            Some(TERMINAL_ELICITATION) => self.apply_terminal_elicitation(obj, &mut changed),
+            Some(TERMINAL_ELICITATION_ANSWERED) => {
+                self.answer_terminal_elicitation(obj, &mut changed)
             }
             Some("conversation_reset") => {
                 let next = str_at(obj, "new_conversation_id").map(String::from);
@@ -259,8 +262,8 @@ impl Transcript {
                 self.meta.permission_mode = str_at(obj, "permissionMode").map(String::from)
             }
             Some("system") => match str_at(obj, "subtype") {
-                // A terminal's plugin sends one per request, with the effort
-                // the engine resolved; it knows no permission mode to report.
+                // The plugin sends one when the model or effort a request runs
+                // with changes, and on a model switch (with the pick it came from).
                 Some("init") => {
                     self.set_model(str_at(obj, "model").map(String::from));
                     if let Some(mode) = str_at(obj, "permissionMode") {
@@ -269,9 +272,9 @@ impl Transcript {
                     if let Some(effort) = str_at(obj, "effort") {
                         self.meta.effort = Some(effort.to_string());
                     }
-                }
-                Some("status") if str_at(obj, "status") == Some("requesting") => {
-                    self.meta.busy = true
+                    if let Some(choice) = str_at(obj, "modelChoice") {
+                        self.meta.model_choice = Some(choice.to_string());
+                    }
                 }
                 Some("turn_duration") => {
                     self.meta.busy = false;
@@ -292,28 +295,6 @@ impl Transcript {
                 }
                 Some("task_started" | "task_progress" | "task_updated" | "task_notification") => {
                     self.apply_task(obj)
-                }
-                Some("background_tasks_changed") => self.apply_background_tasks(obj),
-                Some("api_retry") => {
-                    let n = |k| obj.get(k).and_then(Value::as_u64).unwrap_or(0);
-                    self.meta.retry = Some(RetryInfo {
-                        attempt: n("attempt"),
-                        max_retries: n("max_retries"),
-                        retry_delay_ms: n("retry_delay_ms"),
-                        error: str_at(obj, "error").map(String::from),
-                    });
-                }
-                Some("commands_changed") => {
-                    applied.commands = self.read_commands(obj.get("commands"));
-                }
-                // A URL-mode elicitation's flow finished in the browser.
-                Some("elicitation_complete") => {
-                    if let (Some(server), Some(id)) = (
-                        str_at(obj, "mcp_server_name"),
-                        str_at(obj, "elicitation_id"),
-                    ) {
-                        changed.extend(elicitation::complete(&mut self.items, server, id));
-                    }
                 }
                 Some("compact_boundary") => {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
@@ -458,32 +439,6 @@ impl Transcript {
         }
     }
 
-    /// The CLI's list of live background jobs: add any not seen starting.
-    fn apply_background_tasks(&mut self, obj: &Value) {
-        let Some(list) = obj.get("tasks").and_then(Value::as_array) else {
-            return;
-        };
-        for entry in list {
-            let Some(id) = str_at(entry, "task_id") else {
-                continue;
-            };
-            let task_type = str_at(entry, "task_type")
-                .unwrap_or("background")
-                .to_string();
-            let description = str_at(entry, "description").unwrap_or_default().to_string();
-            let task = self.task_mut(id);
-            task.background = true;
-            task.kind = if task_type.contains("agent") {
-                "agent".into()
-            } else {
-                task_type
-            };
-            if task.description.is_empty() {
-                task.description = description;
-            }
-        }
-    }
-
     /// `/clear` and friends: the conversation starts over under a new id.
     fn reset(&mut self) {
         let meta = TranscriptMeta {
@@ -500,7 +455,30 @@ impl Transcript {
             meta,
             unknown_seen: std::mem::take(&mut self.unknown_seen),
             commands: std::mem::take(&mut self.commands),
+            models_pinned: self.models_pinned,
             ..Self::default()
+        };
+    }
+
+    /// After a reset onto a conversation that already has history (`/resume`
+    /// in the terminal), show that history; the session's settings stay.
+    pub fn resume_history(&mut self, path: &Path) {
+        let loaded = Self::load(path);
+        let meta = TranscriptMeta {
+            title: loaded.meta.title.clone(),
+            context_tokens: loaded.meta.context_tokens,
+            cache_expires_at: loaded.meta.cache_expires_at,
+            cache_ttl_secs: loaded.meta.cache_ttl_secs.or(self.meta.cache_ttl_secs),
+            tasks: loaded.meta.tasks.clone(),
+            artifacts: loaded.meta.artifacts.clone(),
+            ..std::mem::take(&mut self.meta)
+        };
+        *self = Self {
+            meta,
+            unknown_seen: std::mem::take(&mut self.unknown_seen),
+            commands: std::mem::take(&mut self.commands),
+            models_pinned: self.models_pinned,
+            ..loaded
         };
     }
 
@@ -508,11 +486,6 @@ impl Transcript {
         let Some(id) = str_at(obj, "request_id") else {
             return;
         };
-        if let Some(pending) = self.elicitations.remove(id) {
-            elicitation::expire(&mut self.items, pending.item);
-            changed.push(pending.item);
-            return;
-        }
         let Some(pending) = self.approvals.remove(id) else {
             return;
         };
@@ -536,13 +509,19 @@ impl Transcript {
             .unwrap_or_else(|| format!("event-{}", self.items.len()))
     }
 
-    /// The mode just requested with `set_permission_mode`.
-    pub fn set_permission_mode(&mut self, mode: &str) {
-        self.meta.permission_mode = Some(mode.to_string());
+    /// Show the model asked for with `set_model` (control request
+    /// `request_id`) until the CLI answers; a refusal puts the old one back.
+    pub fn request_model(&mut self, request_id: &str, value: &str) {
+        self.model_request = Some(ModelRequest {
+            request_id: request_id.to_string(),
+            choice: self.meta.model_choice.clone(),
+            model: self.meta.model.clone(),
+            context_window: self.meta.context_window,
+        });
+        self.set_model_choice(value);
     }
 
-    /// The model just requested with `set_model`.
-    pub fn set_model_choice(&mut self, value: &str) {
+    fn set_model_choice(&mut self, value: &str) {
         self.meta.model_choice = Some(value.to_string());
         let resolved = self
             .meta
@@ -571,10 +550,24 @@ impl Transcript {
         }
     }
 
-    /// Replies to the host's own requests; the `initialize` reply lists the
-    /// models the session can switch to. A terminal's plugin also names the
-    /// current pick (`modelChoice`), which `-p` has no way to say.
-    fn apply_control_response(&mut self, obj: &Value) {
+    /// Replies to the host's own requests: the `initialize` reply lists the
+    /// models the session can switch to and names the current pick
+    /// (`modelChoice`); a refused `set_model` undoes the switch it showed.
+    fn apply_control_response(&mut self, obj: &Value, changed: &mut Vec<usize>) {
+        let id = obj.pointer("/response/request_id").and_then(Value::as_str);
+        if let Some(asked) = self
+            .model_request
+            .take_if(|r| Some(r.request_id.as_str()) == id)
+        {
+            if obj.pointer("/response/subtype").and_then(Value::as_str) == Some("error") {
+                self.meta.model_choice = asked.choice;
+                self.meta.model = asked.model;
+                self.meta.context_window = asked.context_window;
+                let why = obj.pointer("/response/error").and_then(Value::as_str);
+                let text = why.unwrap_or("Claude didn't switch the model.").to_string();
+                self.upsert(TranscriptItem::Notice { id: asked.request_id, text }, changed);
+            }
+        }
         let Some(reply) = obj.pointer("/response/response") else {
             return;
         };
@@ -646,70 +639,55 @@ impl Transcript {
         ))
     }
 
-    /// Record the answer to an MCP elicitation and build the `control_response`.
-    /// `None` if the request is unknown or already answered.
-    pub fn resolve_elicitation(
-        &mut self,
-        request_id: &str,
-        action: ElicitationAction,
-        content: Option<&serde_json::Map<String, Value>>,
-    ) -> Option<(usize, Value)> {
-        let pending = self.elicitations.remove(request_id)?;
-        let item = pending.item;
-        let response = pending.answer(&mut self.items, action, content);
-        Some((
-            item,
-            json!({
-                "type": "control_response",
-                "response": {"subtype": "success", "request_id": request_id, "response": response},
-            }),
-        ))
-    }
-
     /// Request ids still waiting for an answer.
     pub fn pending_approval_ids(&self) -> Vec<String> {
         self.approvals.keys().cloned().collect()
     }
 
-    fn apply_elicitation(&mut self, request_id: &str, req: &Value, changed: &mut Vec<usize>) {
-        let (item, schema) = ElicitationRequest {
-            id: request_id.to_string(),
-            server: str_at(req, "mcp_server_name").unwrap_or("MCP server"),
-            message: str_at(req, "message").unwrap_or_default(),
-            mode: str_at(req, "mode"),
-            url: str_at(req, "url"),
-            elicitation_id: str_at(req, "elicitation_id"),
-            schema: req.get("requested_schema"),
-            title: str_at(req, "title"),
-            description: str_at(req, "description"),
+    /// An MCP elicitation the terminal shows (the plugin's
+    /// `classic.Elicitation`): a read-only item until the terminal answers it.
+    fn apply_terminal_elicitation(&mut self, obj: &Value, changed: &mut Vec<usize>) {
+        let Some(id) = str_at(obj, "id") else {
+            return;
+        };
+        let (mut item, _) = ElicitationRequest {
+            id: id.to_string(),
+            server: str_at(obj, "mcp_server_name").unwrap_or("MCP server"),
+            message: str_at(obj, "message").unwrap_or_default(),
+            mode: str_at(obj, "mode"),
+            url: str_at(obj, "url"),
+            elicitation_id: None,
+            schema: obj.get("requested_schema"),
+            title: None,
+            description: None,
         }
         .into_item();
+        if let TranscriptItem::Elicitation { in_terminal, .. } = &mut item {
+            *in_terminal = true;
+        }
         self.upsert(item, changed);
-        let pending = PendingElicitation::new(self.index[request_id], schema);
-        self.elicitations.insert(request_id.to_string(), pending);
+        self.terminal_elicitations
+            .insert(id.to_string(), self.index[id]);
     }
 
-    /// Permission prompts become approval items and MCP elicitations their own
-    /// items; anything else gets an error reply. `hook_callback` only comes for
-    /// SDK hooks registered in `initialize`, and `request_user_dialog` only for
-    /// the `supportedDialogKinds` it declared: the `initialize` sent has neither.
-    fn apply_control_request(&mut self, obj: &Value, changed: &mut Vec<usize>) -> Option<Value> {
-        let request_id = str_at(obj, "request_id")?;
-        let req = obj.get("request")?;
-        if str_at(req, "subtype") == Some("elicitation") {
-            self.apply_elicitation(request_id, req, changed);
-            return None;
+    fn answer_terminal_elicitation(&mut self, obj: &Value, changed: &mut Vec<usize>) {
+        let Some(i) = str_at(obj, "id").and_then(|id| self.terminal_elicitations.remove(id)) else {
+            return;
+        };
+        let answered = serde_json::from_value(obj.get("action").cloned().unwrap_or_default()).ok();
+        if let TranscriptItem::Elicitation { action, .. } = &mut self.items[i] {
+            *action = answered.or(Some(ElicitationAction::Cancel));
         }
+        changed.push(i);
+    }
+
+    /// Permission prompts become approval items; the plugin sends no other request.
+    fn apply_control_request(&mut self, obj: &Value, changed: &mut Vec<usize>) {
+        let (Some(request_id), Some(req)) = (str_at(obj, "request_id"), obj.get("request")) else {
+            return;
+        };
         if str_at(req, "subtype") != Some("can_use_tool") {
-            let subtype = str_at(req, "subtype").unwrap_or("unknown");
-            return Some(json!({
-                "type": "control_response",
-                "response": {
-                    "subtype": "error",
-                    "request_id": request_id,
-                    "error": format!("Workbench chat doesn't support `{subtype}` requests yet."),
-                },
-            }));
+            return;
         }
         let input = req.get("input").cloned().unwrap_or(Value::Null);
         let suggestions = req
@@ -740,7 +718,6 @@ impl Transcript {
                 suggestions,
             },
         );
-        None
     }
 
     fn apply_result(&mut self, obj: &Value, changed: &mut Vec<usize>) {
@@ -748,15 +725,24 @@ impl Transcript {
         self.keepalive = false;
         self.meta.retry = None;
         self.streaming_message = None;
-        // `modelUsage` is keyed by init's model id, `[1m]` included (CLI 2.1.286);
-        // subagents' models appear too, so only an exact match counts.
-        if let (Some(usage), Some(model)) = (obj.get("modelUsage"), self.meta.model.as_deref()) {
-            if let Some(window) = usage
+        // Keyed by model id. The plugin's key may lack the `[1m]` init reported
+        // (it reports one model only), so a lone entry counts too.
+        if let Some(usage) = obj.get("modelUsage").and_then(Value::as_object) {
+            let model = self.meta.model.as_deref().unwrap_or_default();
+            let entry = usage
                 .get(model)
+                .or_else(|| (usage.len() == 1).then(|| usage.values().next()).flatten());
+            if let Some(window) = entry
                 .and_then(|u| u.get("contextWindow"))
                 .and_then(Value::as_u64)
             {
                 self.meta.context_window = Some(window);
+            }
+        }
+        // Unanswered at the turn's end: the terminal's dialog went with it.
+        for (_, i) in self.terminal_elicitations.drain() {
+            if elicitation::expire(&mut self.items, i) {
+                changed.push(i);
             }
         }
         if obj.get("is_error").and_then(Value::as_bool) == Some(true) {
@@ -839,6 +825,12 @@ impl Transcript {
             self.attach_skill_body(obj, text, changed);
             return;
         }
+        if text == QUEUED_NUDGE {
+            self.meta.busy = true;
+            return;
+        }
+        // The files list the plugin adds for the model; the mentions stay.
+        let text = text.find(ATTACHED_FILES).map_or(text, |end| &text[..end]);
         if self.start_keepalive(id.clone(), text, changed) {
             return;
         }
@@ -1238,25 +1230,23 @@ impl Transcript {
     }
 }
 
-/// `{"response": {"subtype": "success"|"error", "request_id", "response"|"error"}}`.
-fn control_reply(obj: &Value) -> Option<(String, Result<Value, String>)> {
-    let r = obj.get("response")?;
-    let id = str_at(r, "request_id")?.to_string();
-    let result = match str_at(r, "subtype") {
-        Some("success") => Ok(r.get("response").cloned().unwrap_or(Value::Null)),
-        _ => Err(str_at(r, "error").unwrap_or("request failed").to_string()),
-    };
-    Some((id, result))
-}
-
 /// How a terminal's plugin frames a chat prompt it puts into a running turn
 /// (the CLI's own wording for a prompt typed mid-turn).
 pub const QUEUED_PROMPT_PREFIX: &str = "The user sent a new message while you were working:\n";
 
+/// What a terminal's plugin sends when chat prompts it put into a turn went
+/// unread by it: they are in the conversation already, so it only asks for an
+/// answer, and the chat doesn't show it.
+pub const QUEUED_NUDGE: &str = "Please answer the message I sent while you were working.";
+
+/// How a terminal's plugin lists a chat prompt's `@` files for the model:
+/// a plugin's prompt never has its mentions expanded.
+const ATTACHED_FILES: &str = "\n\nAttached files (read each with the Read tool):";
+
 /// The typed text of a [`QUEUED_PROMPT_PREFIX`] row, without the framing.
 fn queued_prompt(text: &str) -> Option<&str> {
     let rest = text.strip_prefix(QUEUED_PROMPT_PREFIX)?;
-    let end = ["\n\nAttached files", "\n\nIMPORTANT:"]
+    let end = [ATTACHED_FILES, "\n\nIMPORTANT:"]
         .iter()
         .filter_map(|m| rest.find(m))
         .min()

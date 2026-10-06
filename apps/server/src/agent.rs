@@ -1,7 +1,7 @@
 //! Chat-mode sessions — an interactive `claude` in a server terminal, run as
 //! a chat by the Workbench plugin (`modlink`), or a `codex app-server` over
-//! JSON-RPC — whose events fold into the same chat items. Every change is broadcast to attached clients
-//! (desktop chat pane, phone) as an `update` frame.
+//! JSON-RPC — whose events fold into the same chat items. Every change is
+//! broadcast to attached clients (desktop chat pane, phone) as an `update` frame.
 //!
 //! One [`AgentManager`] holds both kinds, so ids are global: stopping,
 //! attaching and messaging work by id whatever runs behind it. What differs
@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ mod modlink;
 mod session;
 
 pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
+pub(crate) use claude::validate as validate_claude_session_id;
 pub use cache::CachePolicy;
 pub use modlink::{ModGrant, ModLink};
 pub use session::AgentSession;
@@ -32,6 +33,8 @@ pub use session::AgentSession;
 const DEFAULT_MAX_AGENTS: usize = 16;
 /// How long a start waits for codex to open (or resume) its thread.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a new terminal's `claude` gets to start and attach through the plugin.
+const TERMINAL_START: Duration = Duration::from_secs(30);
 /// How far ahead a chat may be kept warm: every keep-alive turn costs usage.
 const MAX_KEEP_WARM_MS: u64 = 24 * 60 * 60 * 1000;
 
@@ -127,6 +130,14 @@ pub struct AgentSummary {
     /// The server terminal whose interactive `claude` this chat is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_id: Option<String>,
+}
+
+/// What came of [`AgentManager::open_terminal`].
+pub enum TerminalStart {
+    /// The plugin attached the session.
+    Attached(Arc<AgentSession>),
+    /// The watch stopped the wait with this answer.
+    Stopped(serde_json::Value),
 }
 
 /// Whether a Claude session has a transcript to `--resume` (else `--session-id` starts it).
@@ -333,7 +344,7 @@ impl AgentManager {
     /// history loaded from disk. Another terminal's live session is only taken
     /// over once its link went stale.
     pub fn attach_mod(&self, token: &str, session_id: &str) -> Result<Arc<AgentSession>> {
-        claude::validate(session_id, None)?;
+        claude::validate(session_id)?;
         let Some(grant) = lock(&self.mod_grants).get(token).cloned() else {
             bail!("unknown terminal token");
         };
@@ -363,11 +374,13 @@ impl AgentManager {
         }
         let config_dir =
             workbench_core::claude_accounts::resolve_saved(grant.claude_account_id.as_deref())?;
-        let driver = claude::history_driver(
-            config_dir.as_deref(),
-            session_id,
-            grant.resume_at.as_deref(),
-        );
+        // Only the first attach after a rewind cuts history there: what is
+        // typed since continues that branch, which a re-attach must show.
+        let resume_at = lock(&self.mod_grants)
+            .get_mut(token)
+            .and_then(|g| g.resume_at.take());
+        let transcript =
+            claude::history_transcript(config_dir.as_deref(), session_id, resume_at.as_deref());
         let req = StartAgent {
             cwd: grant.cwd,
             project_path: grant.project_path,
@@ -384,12 +397,12 @@ impl AgentManager {
         let link = Arc::new(ModLink::new(token.to_string(), grant.terminal_id));
         let session = AgentSession::attach_mod(
             req,
-            driver,
+            driver::Driver::Claude(transcript),
             link,
             &self.cache_policies,
             self.attention.clone(),
         );
-        session.queue(&claude::hello())?;
+        session.send(&claude::hello())?;
         lock(&self.inner).insert(session_id.to_string(), session.clone());
         self.start_upkeep();
         Ok(session)
@@ -484,37 +497,60 @@ impl AgentManager {
         if let Some(old) = &link.terminal_id {
             terminals.kill_and_wait(old);
         }
-        crate::terminal::create_from_body(
-            terminals,
-            self,
-            crate::terminal::CreateTerminalBody {
-                project_path: req.project_path,
-                worktree_path: req.worktree_path,
-                name: None,
-                command: None,
-                claude_session: Some(crate::terminal::ClaudeSessionLaunch {
-                    id: session_id.clone(),
-                    resume,
-                    resume_at,
-                    permission_mode,
-                    prompt: None,
-                }),
-                cols: 120,
-                rows: 40,
-                pane_id: req.pane_id,
-                hook_socket: req.hook_socket,
-                shell: None,
-                claude_account_id: req.claude_account_id,
-            },
-        )?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while std::time::Instant::now() < deadline {
-            if self.get(&session_id).is_some() {
-                return Ok(());
+        let body = crate::terminal::CreateTerminalBody {
+            project_path: req.project_path,
+            worktree_path: req.worktree_path,
+            name: None,
+            command: None,
+            claude_session: Some(crate::terminal::ClaudeSessionLaunch {
+                id: session_id,
+                resume,
+                resume_at,
+                permission_mode,
+                prompt: None,
+            }),
+            cols: 120,
+            rows: 40,
+            pane_id: req.pane_id,
+            hook_socket: req.hook_socket,
+            shell: None,
+            claude_account_id: req.claude_account_id,
+        };
+        self.open_terminal(terminals, body, |_| None)?;
+        Ok(())
+    }
+
+    /// Open a server terminal running `claude` on its `claude_session` and
+    /// wait for the plugin to attach it. `watch` runs on each poll with the
+    /// terminal's id; an answer from it stops the wait. Blocking.
+    pub fn open_terminal(
+        &self,
+        terminals: &crate::terminal::TerminalManager,
+        body: crate::terminal::CreateTerminalBody,
+        mut watch: impl FnMut(&str) -> Option<serde_json::Value>,
+    ) -> Result<TerminalStart> {
+        let session_id = body
+            .claude_session
+            .as_ref()
+            .map(|c| c.id.clone())
+            .context("not a Claude session")?;
+        let terminal = crate::terminal::create_from_body(terminals, self, body)?;
+        let deadline = Instant::now() + TERMINAL_START;
+        while Instant::now() < deadline {
+            if let Some(session) = self.get(&session_id) {
+                return Ok(TerminalStart::Attached(session));
+            }
+            if let Some(answer) = watch(&terminal.id) {
+                return Ok(TerminalStart::Stopped(answer));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        bail!("Claude didn't come back in its terminal after the restart")
+        // Not attached: one left running would be a second `claude` on the session.
+        terminals.kill(&terminal.id);
+        bail!(
+            "Claude didn't start in its terminal within {}s. Open it as a terminal to see why (a login, an error).",
+            TERMINAL_START.as_secs()
+        )
     }
 
     /// The mod session `session_id` attached with `token`, or else the one the
@@ -533,11 +569,10 @@ impl AgentManager {
             link.touch();
         }
         for line in lines {
-            if link.is_some_and(|link| !link.note_line(line)) {
-                session.refresh_attention();
-                continue;
+            if let Some(link) = link {
+                link.note_line(line);
             }
-            session.feed(&line.to_string(), |new_id| {
+            session.apply_line(&line.to_string(), |new_id| {
                 lock(&self.inner).insert(new_id.to_string(), session.clone());
             });
             if line.get("type").and_then(serde_json::Value::as_str) == Some("result") {
@@ -591,32 +626,60 @@ impl AgentManager {
         });
     }
 
-    /// Stop a session's process (any of its ids). `end`: the person ended the
-    /// chat, so other viewers close it, vs a handoff to a terminal. Blocking
-    /// (waits out the grace period).
+    /// Stop a session's process (any of its ids); a Claude chat's process is
+    /// its terminal's `claude`, so that terminal goes too. `end`: the person
+    /// ended the chat, so other viewers close it, vs a handoff to a terminal.
+    /// Blocking (waits out the grace period).
     pub fn stop(&self, session_id: &str, end: bool) -> bool {
-        let _lifecycle = lock(&self.lifecycle);
-        let Some(session) = self.get(session_id) else {
-            return false;
+        let session = {
+            let _lifecycle = lock(&self.lifecycle);
+            let Some(session) = self.get(session_id) else {
+                return false;
+            };
+            self.forget(&session);
+            if end {
+                session.end();
+            } else {
+                session.shutdown();
+            }
+            session
         };
-        self.forget(&session);
-        if end {
-            session.end();
-        } else {
+        self.kill_terminal(&session);
+        true
+    }
+
+    /// The terminal's `claude` left (it exited, or `/exit`): drop its chat and
+    /// keep the terminal, which is the person's shell again.
+    pub fn detach(&self, session_id: &str) {
+        let _lifecycle = lock(&self.lifecycle);
+        if let Some(session) = self.get(session_id) {
+            self.forget(&session);
             session.shutdown();
         }
-        true
     }
 
     /// Stop whatever chat sessions (either kind) a closed pane owned. Blocking.
     pub fn stop_pane(&self, pane_id: &str) -> usize {
-        let _lifecycle = lock(&self.lifecycle);
-        let owned = self.sessions(|s| s.pane_id.as_deref() == Some(pane_id));
+        let owned = {
+            let _lifecycle = lock(&self.lifecycle);
+            let owned = self.sessions(|s| s.pane_id.as_deref() == Some(pane_id));
+            for session in &owned {
+                self.forget(session);
+                session.shutdown();
+            }
+            owned
+        };
         for session in &owned {
-            self.forget(session);
-            session.shutdown();
+            self.kill_terminal(session);
         }
         owned.len()
+    }
+
+    fn kill_terminal(&self, session: &AgentSession) {
+        let terminal = session.mod_link().and_then(|l| l.terminal_id.as_deref());
+        if let (Some(id), Some((terminals, _))) = (terminal, self.terminals.get()) {
+            terminals.kill(id);
+        }
     }
 
     /// Stop every session (the app is quitting or installing an update). Blocking.

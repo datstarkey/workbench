@@ -1,7 +1,8 @@
-//! What differs per CLI, behind one interface: how a session's process is
-//! started, how its stdout folds into chat items, and how client messages are
-//! encoded for its stdin. Drivers are state machines — they return messages to
-//! write and say what changed; [`super::AgentSession`] does the IO.
+//! What differs per CLI, behind one interface: how the lines a session gets
+//! (a terminal plugin's posts, `codex app-server`'s stdout) fold into chat
+//! items, and how client messages are encoded for it. Drivers are state
+//! machines — they return messages to send and say what changed;
+//! [`super::AgentSession`] does the IO.
 
 use std::process::Command;
 
@@ -39,8 +40,6 @@ pub(super) struct Effects {
     pub snapshot: bool,
     /// The session is ready under this id, or failed to start.
     pub ready: Option<Result<String, String>>,
-    /// The CLI answered a host request: its id, and the payload or error.
-    pub response: Option<(String, Result<Value, String>)>,
 }
 
 /// A process to spawn, the driver for it, and its opening lines.
@@ -48,10 +47,6 @@ pub(super) struct Launch {
     pub cmd: Command,
     pub driver: Driver,
     pub hello: Vec<Value>,
-    /// Set when the id is known and nothing more is needed before clients use it.
-    pub ready: Option<String>,
-    /// For error messages: `claude` / `codex`.
-    pub program: &'static str,
 }
 
 impl Driver {
@@ -100,7 +95,10 @@ impl Driver {
         files: &[PromptFile],
     ) -> Result<Effects> {
         match self {
-            Self::Claude(t) => claude::prompt(t, text, images, files),
+            Self::Claude(_) if !(images.is_empty() && files.is_empty()) => {
+                anyhow::bail!("a Claude chat takes attachments as `@path` mentions")
+            }
+            Self::Claude(t) => Ok(claude::prompt(t, text)),
             Self::Codex(c) => c.prompt(text, images, files),
         }
     }
@@ -112,7 +110,7 @@ impl Driver {
         answers: Option<&Map<String, Value>>,
     ) -> Result<Effects> {
         match self {
-            Self::Claude(t) => claude::approve(t, request_id, decision, answers),
+            Self::Claude(t) => Ok(claude::approve(t, request_id, decision, answers)),
             Self::Codex(c) => c.approve(request_id, decision, answers),
         }
     }
@@ -124,7 +122,7 @@ impl Driver {
         content: Option<&Map<String, Value>>,
     ) -> Result<Effects> {
         let resolved = match self {
-            Self::Claude(t) => t.resolve_elicitation(request_id, action, content),
+            Self::Claude(_) => anyhow::bail!("Answer it in the terminal."),
             Self::Codex(c) => c.resolve_elicitation(request_id, action, content)?,
         };
         // `None`: already answered (another device, or twice).
@@ -144,9 +142,11 @@ impl Driver {
         }
     }
 
+    /// Codex switches in place; a Claude terminal restarts in the mode
+    /// (`AgentManager::mode_terminal`).
     pub fn set_mode(&mut self, mode: &str) -> Result<Effects> {
         match self {
-            Self::Claude(t) => claude::set_mode(t, mode),
+            Self::Claude(_) => anyhow::bail!("Switch it in the terminal with Shift+Tab."),
             Self::Codex(c) => c.set_mode(mode),
         }
     }
@@ -155,15 +155,6 @@ impl Driver {
         match self {
             Self::Claude(t) => claude::set_model(t, model),
             Self::Codex(c) => c.set_model(model),
-        }
-    }
-
-    /// Ask the CLI to restore (or, dry, preview restoring) the files the
-    /// session changed since `message_id`. Returns the request id to await.
-    pub fn rewind_files(&mut self, message_id: &str, dry_run: bool) -> Result<(String, Effects)> {
-        match self {
-            Self::Claude(_) => claude::rewind_files(message_id, dry_run),
-            Self::Codex(_) => anyhow::bail!("Codex chats can't rewind"),
         }
     }
 

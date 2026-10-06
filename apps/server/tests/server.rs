@@ -1517,7 +1517,7 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         received.contains(r#""subtype":"initialize""#),
         "handshake first"
     );
-    assert!(received.contains(r#""origin":{"kind":"human"}"#));
+    assert!(received.contains(r#""content":"hello""#), "prompt relayed as text: {received}");
     assert!(
         received.contains(r#""behavior":"allow""#),
         "approval relayed: {received}"

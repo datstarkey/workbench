@@ -151,7 +151,9 @@
 			<p class="px-3.5 pt-1 text-xs text-wb-ink-mute">{elicitation.description}</p>
 		{/if}
 
-		{#if isUrl}
+		{#if elicitation.inTerminal}
+			<p class="px-3.5 py-3 text-xs text-wb-ink-mute">Answer this in the terminal.</p>
+		{:else if isUrl}
 			<div class="flex flex-col gap-1 px-3.5 pt-2.5 text-xs">
 				{#if url}
 					<span class="text-wb-ink-mute"

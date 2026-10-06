@@ -639,6 +639,8 @@ export type TranscriptItem =
 			expired: boolean;
 			/** URL mode: the server reported the flow finished. */
 			completed: boolean;
+			/** Asked by a terminal `claude`'s own dialog: shown here, answered there. */
+			inTerminal?: boolean;
 			action?: ElicitationAction;
 			/** What an accepted form sent. */
 			content?: Record<string, unknown>;

@@ -2,10 +2,11 @@
 //! [`TranscriptItem::Event`]s (denied tools, hooks that failed or blocked,
 //! recalled memories, refusals) and artifact links for the meta.
 //!
-//! Live sessions report hooks as `system:hook_response`; session JSONL keeps
-//! `hook_*` attachments and a `stop_hook_summary` instead. Both paths only
-//! surface hooks that blocked, failed or spoke to the user, never a line per
-//! successful hook.
+//! Hooks come from session JSONL (`hook_*` attachments and a
+//! `stop_hook_summary`), which only surface hooks that blocked, failed or
+//! spoke to the user, never a line per successful hook; a live terminal
+//! session has no source for them. Denials and refusals come live from the
+//! Workbench plugin.
 
 use serde_json::Value;
 
@@ -19,10 +20,6 @@ pub(super) fn system_event(obj: &Value, id: String) -> Option<TranscriptItem> {
             let (kind, title, detail) = permission_denied(obj);
             (kind, title, detail.map(String::from))
         }
-        "hook_response" => {
-            let (title, detail) = hook_response(obj)?;
-            (EventKind::Hook, title, detail)
-        }
         "stop_hook_summary" => {
             if obj.get("preventedContinuation").and_then(Value::as_bool) != Some(true) {
                 return None;
@@ -32,21 +29,6 @@ pub(super) fn system_event(obj: &Value, id: String) -> Option<TranscriptItem> {
                 EventKind::Hook,
                 "Stop hook stopped Claude".into(),
                 reason.map(String::from),
-            )
-        }
-        "memory_recall" => return memory_event(obj.get("memories")?, id),
-        "model_refusal_fallback" => {
-            let original = str_at(obj, "original_model").unwrap_or("The model");
-            let fallback = str_at(obj, "fallback_model").unwrap_or("another model");
-            let title = if str_at(obj, "scope") == Some("local") {
-                format!("A side request was refused and retried on {fallback}")
-            } else {
-                format!("{original} refused, retried on {fallback}")
-            };
-            (
-                EventKind::Refusal,
-                title,
-                refusal_detail(obj).map(String::from),
             )
         }
         "model_refusal_no_fallback" => {
@@ -104,48 +86,6 @@ fn permission_denied(obj: &Value) -> (EventKind, String, Option<&str>) {
     };
     let detail = non_empty(obj, "decision_reason").or_else(|| str_at(obj, "message"));
     (EventKind::PermissionDenied, title, detail)
-}
-
-/// A hook that blocked, failed or showed the user a message. `stdout` may be
-/// the hook's JSON reply, which can block without a failing exit code.
-fn hook_response(obj: &Value) -> Option<(String, Option<String>)> {
-    let hook = str_at(obj, "hook_name")
-        .or_else(|| str_at(obj, "hook_event"))
-        .unwrap_or("A");
-    let exit = obj.get("exit_code").and_then(Value::as_i64);
-    let said = non_empty(obj, "stderr")
-        .or_else(|| non_empty(obj, "stdout"))
-        .or_else(|| non_empty(obj, "output"))
-        .map(String::from);
-    match str_at(obj, "outcome")? {
-        "error" if exit == Some(2) => Some((format!("{hook} hook blocked"), said)),
-        "error" => Some((failed(hook, exit), said)),
-        "success" => {
-            let reply: Value = serde_json::from_str(str_at(obj, "stdout")?.trim()).ok()?;
-            if str_at(&reply, "decision") == Some("block")
-                || reply.pointer("/hookSpecificOutput/permissionDecision")
-                    == Some(&Value::from("deny"))
-            {
-                let reason = str_at(&reply, "reason").or_else(|| {
-                    reply
-                        .pointer("/hookSpecificOutput/permissionDecisionReason")
-                        .and_then(Value::as_str)
-                });
-                return Some((format!("{hook} hook blocked"), reason.map(String::from)));
-            }
-            if reply.get("continue").and_then(Value::as_bool) == Some(false) {
-                let reason = str_at(&reply, "stopReason");
-                return Some((
-                    format!("{hook} hook stopped Claude"),
-                    reason.map(String::from),
-                ));
-            }
-            let message = str_at(&reply, "systemMessage")?;
-            Some((format!("{hook} hook"), Some(message.to_string())))
-        }
-        // `cancelled`: the turn was interrupted, which the chat already shows.
-        _ => None,
-    }
 }
 
 fn failed(hook: &str, exit: Option<i64>) -> String {

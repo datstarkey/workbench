@@ -363,14 +363,14 @@ fn the_context_window_comes_from_the_sessions_model_usage() {
 }
 
 #[test]
-fn another_models_usage_never_sets_the_window() {
+fn the_plugins_one_model_sets_the_window_without_the_1m_suffix() {
     let mut t = Transcript::default();
     t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
     t.apply(
         &json!({"type":"result","subtype":"success","is_error":false,
-        "modelUsage":{"claude-opus-5-5":{"contextWindow":200000}}}),
+        "modelUsage":{"claude-opus-5-5":{"contextWindow":1000000}}}),
     );
-    assert_eq!(t.meta().context_window, None);
+    assert_eq!(t.meta().context_window, Some(1_000_000));
 }
 
 #[test]
@@ -716,23 +716,6 @@ fn uuid_check_rejects_paths() {
 }
 
 #[test]
-fn a_recorded_cli_turn_has_no_unknown_kinds() {
-    // A real `claude -p` stream-json turn (CLI 2.1.286) that asked for and got
-    // permission to run a Bash command.
-    let mut t = Transcript::default();
-    let mut unknown = Vec::new();
-    for line in include_str!("fixtures/stream-2.1.286.jsonl").lines() {
-        unknown.extend(t.apply_line(line).unknown_kind);
-    }
-    assert!(unknown.is_empty(), "add these to protocol.rs: {unknown:?}");
-    assert!(t.items().iter().any(|i| matches!(i,
-        TranscriptItem::Approval { tool, .. } if tool == "Bash")));
-    assert!(t.items().iter().any(|i| matches!(i,
-        TranscriptItem::Tool { name, status: ToolStatus::Ok, .. } if name == "Bash")));
-    assert!(!t.meta().busy, "the result line ends the turn");
-}
-
-#[test]
 fn unknown_kinds_are_reported_once() {
     let mut t = Transcript::default();
     let line = json!({"type":"system","subtype":"brand_new_thing"});
@@ -756,16 +739,6 @@ fn a_withdrawn_approval_expires_and_cannot_be_answered() {
     assert!(t
         .resolve_approval("r", ApprovalDecision::Allow, None)
         .is_none());
-}
-
-#[test]
-fn unsupported_host_requests_get_an_error_reply() {
-    let mut t = Transcript::default();
-    let a = t.apply(&json!({"type":"control_request","request_id":"e1","request":{"subtype":"hook_callback","callback_id":"c1","input":{}}}));
-    let reply = a.reply.expect("the CLI must not be left waiting");
-    assert_eq!(reply["response"]["subtype"], "error");
-    assert_eq!(reply["response"]["request_id"], "e1");
-    assert!(t.items().is_empty());
 }
 
 #[test]
@@ -840,9 +813,9 @@ fn subagents_and_background_jobs_are_tracked() {
     ));
     assert!(a.meta, "progress reaches clients through meta");
     t.apply(&sys(
-        "background_tasks_changed",
-        json!({"tasks":[
-        {"task_id":"b1","task_type":"local_bash","description":"bun run dev"}]}),
+        "task_started",
+        json!({"task_id":"b1","task_type":"local_bash","description":"bun run dev",
+        "is_backgrounded":true}),
     ));
     t.apply(&sys(
         "task_notification",
@@ -880,22 +853,8 @@ fn subagents_and_background_jobs_are_tracked() {
 }
 
 #[test]
-fn retries_and_usage_limits_reach_the_chat() {
+fn usage_limits_reach_the_chat() {
     let mut t = Transcript::default();
-    t.apply(
-        &json!({"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,
-        "retry_delay_ms":4000,"error_status":529,"error":"overloaded","uuid":"r","session_id":"s"}),
-    );
-    let retry = t.meta().retry.clone().expect("retry shown");
-    assert_eq!(
-        (retry.attempt, retry.max_retries, retry.error.as_deref()),
-        (2, 10, Some("overloaded"))
-    );
-    t.apply(&stream(
-        json!({"type":"message_start","message":{"id":"m"}}),
-    ));
-    assert!(t.meta().retry.is_none(), "cleared once the model answers");
-
     t.apply(
         &json!({"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
         "resetsAt":1790857800,"rateLimitType":"five_hour","utilization":1.0}}),
@@ -1028,7 +987,7 @@ fn pinned_models_outlast_a_plugin_list_and_its_choice_and_effort_show() {
     assert_eq!(t.meta().model_choice.as_deref(), Some("sonnet"));
     assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
 
-    t.set_permission_mode("plan");
+    t.apply(&json!({"type":"permission-mode","permissionMode":"plan"}));
     t.apply(&json!({"type":"system","subtype":"init","model":"claude-sonnet-5-5","effort":"high"}));
     assert_eq!(t.meta().effort.as_deref(), Some("high"));
     assert_eq!(t.meta().permission_mode.as_deref(), Some("plan"));
@@ -1042,7 +1001,7 @@ fn a_prompt_put_into_a_running_turn_shows_as_typed() {
     );
     t.apply(&json!({"type":"user","uuid":"q","isMeta":true,"message":{"content":framed}}));
     assert!(
-        matches!(&t.items()[..], [TranscriptItem::User { text, .. }] if text == "look at @/tmp/a.png"),
+        matches!(t.items(), [TranscriptItem::User { text, .. }] if text == "look at @/tmp/a.png"),
         "{:?}",
         t.items()
     );
@@ -1069,29 +1028,87 @@ fn slash_commands_come_from_initialize_and_updates() {
     assert!(a.commands);
     assert_eq!(t.commands()[0].argument_hint.as_deref(), Some("<focus>"));
     assert_eq!(t.commands()[1].argument_hint, None);
-    let a = t.apply(&json!({"type":"system","subtype":"commands_changed","commands":[{"name":"review","description":"Review"}]}));
-    assert!(a.commands);
-    assert_eq!(t.commands().len(), 1);
     t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
-    assert_eq!(t.commands().len(), 1, "/clear keeps the command list");
+    assert_eq!(t.commands().len(), 2, "/clear keeps the command list");
 }
 
 #[test]
-fn control_responses_reach_the_host() {
+fn a_refused_model_switch_puts_the_old_model_back() {
     let mut t = Transcript::default();
-    let ok = t.apply(
-        &json!({"type":"control_response","response":{"subtype":"success",
-        "request_id":"rw-1","response":{"canRewind":true,"filesChanged":["/a"]}}}),
+    t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[{"value":"sonnet","resolvedModel":"claude-sonnet-5-5"}],"modelChoice":"default"}}}),
     );
-    let (id, result) = ok.response.unwrap();
-    assert_eq!(id, "rw-1");
-    assert_eq!(result.unwrap()["filesChanged"], json!(["/a"]));
-    let err = t.apply(
-        &json!({"type":"control_response","response":{"subtype":"error",
-        "request_id":"rw-2","error":"No file checkpoint found"}}),
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5"}));
+    t.request_model("m1", "sonnet");
+    assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
+    let a = t.apply(
+        &json!({"type":"control_response","response":{"subtype":"error","request_id":"m1",
+        "error":"Model: a managed setting fixes it"}}),
     );
-    assert_eq!(
-        err.response,
-        Some(("rw-2".into(), Err("No file checkpoint found".into())))
-    );
+    assert!(a.meta);
+    assert_eq!(t.meta().model_choice.as_deref(), Some("default"));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5"));
+    assert!(matches!(t.items(), [TranscriptItem::Notice { text, .. }] if text.contains("managed")));
+
+    t.request_model("m2", "sonnet");
+    t.apply(&json!({"type":"control_response","response":{"subtype":"success","request_id":"m2","response":{}}}));
+    assert_eq!(t.meta().model_choice.as_deref(), Some("sonnet"));
+}
+
+#[test]
+fn a_model_switch_in_the_terminal_names_its_pick() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-sonnet-5-5","modelChoice":"sonnet"}));
+    assert_eq!(t.meta().model_choice.as_deref(), Some("sonnet"));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-sonnet-5-5"));
+}
+
+#[test]
+fn a_terminal_elicitation_shows_read_only_until_answered() {
+    let mut t = Transcript::default();
+    let a = t.apply(&json!({"type":"workbench_terminal_elicitation","id":"e1",
+        "mcp_server_name":"deploy","message":"Which environment?","mode":"form",
+        "requested_schema":{"type":"object","properties":{"env":{"type":"string"}}}}));
+    assert_eq!(a.unknown_kind, None);
+    assert!(matches!(&t.items()[0],
+        TranscriptItem::Elicitation { in_terminal: true, action: None, server, .. } if server == "deploy"));
+    assert!(t.waiting_on().is_none(), "the terminal asks it, not the chat");
+    let json = serde_json::to_value(&t.items()[0]).unwrap();
+    assert_eq!(json["inTerminal"], true);
+
+    t.apply(&json!({"type":"workbench_terminal_elicitation_result","id":"e1","action":"accept"}));
+    assert!(matches!(&t.items()[0],
+        TranscriptItem::Elicitation { action: Some(ElicitationAction::Accept), .. }));
+
+    t.apply(&json!({"type":"workbench_terminal_elicitation","id":"e2","mcp_server_name":"x","message":"?"}));
+    t.apply(&json!({"type":"result","subtype":"success","is_error":false}));
+    assert!(matches!(&t.items()[1], TranscriptItem::Elicitation { expired: true, .. }),
+        "unanswered when the turn ended");
+}
+
+#[test]
+fn resume_shows_the_resumed_conversations_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(format!("{SID}.jsonl"));
+    std::fs::write(&path, user("h1", json!("from before")).to_string()).unwrap();
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"m","permissionMode":"plan"}));
+    t.apply(&user("u", json!("hello")));
+    t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
+    t.resume_history(&path);
+    assert!(matches!(t.items(), [TranscriptItem::User { text, .. }] if text == "from before"));
+    assert_eq!(t.meta().permission_mode.as_deref(), Some("plan"));
+    assert!(!t.meta().busy);
+}
+
+#[test]
+fn plugin_framing_stays_out_of_the_chat() {
+    let mut t = Transcript::default();
+    let idle = "look at @/tmp/a.png\n\nAttached files (read each with the Read tool):\n- /tmp/a.png";
+    t.apply(&user("p1", json!(idle)));
+    t.apply(&json!({"type":"result","subtype":"success","is_error":false}));
+    t.apply(&user("p2", json!(QUEUED_NUDGE)));
+    assert!(matches!(t.items(), [TranscriptItem::User { text, .. }] if text == "look at @/tmp/a.png"));
+    assert!(t.meta().busy, "the nudge still starts a turn");
 }

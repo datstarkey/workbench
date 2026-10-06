@@ -1,6 +1,7 @@
-//! One chat session's process and its clients: spawning, writing to its
-//! stdin, folding its stdout through the [`Driver`], and broadcasting every
-//! change to attached clients (desktop chat pane, phone) as `update` frames.
+//! One chat session and its clients: a `codex app-server` spawned and spoken
+//! to over its stdio, or a terminal `claude` the Workbench plugin feeds
+//! (`modlink`). Lines fold through the [`Driver`], and every change goes to
+//! attached clients (desktop chat pane, phone) as `update` frames.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -28,10 +29,8 @@ pub(super) const SNAPSHOT_ITEMS: usize = 500;
 const STOP_GRACE: Duration = Duration::from_secs(3);
 /// How much of a background task's output the panel shows.
 const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
-/// How long a host request (a file rewind) may take the CLI to answer.
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
-
-type Waiter = std::sync::mpsc::Sender<Result<Value, String>>;
+/// The only CLI run over pipes: a Claude chat is a terminal `claude`.
+const PIPED: &str = "codex";
 
 pub(super) type Registry = Arc<Mutex<HashMap<String, Arc<AgentSession>>>>;
 
@@ -64,7 +63,7 @@ pub struct AgentSession {
     /// The running (or next) turn is a cache keep-alive, so its end isn't recorded.
     keepalive_turn: AtomicBool,
     tx: broadcast::Sender<String>,
-    stdin: Mutex<Option<Sink>>,
+    stdin: Mutex<Option<ChildStdin>>,
     outgoing: Mutex<Option<mpsc::SyncSender<String>>>,
     outgoing_bytes: AtomicUsize,
     /// `None` for a session fed by a terminal's plugin: there is no process of ours.
@@ -75,14 +74,11 @@ pub struct AgentSession {
     exited: AtomicBool,
     task_files: Mutex<HashMap<String, PathBuf>>,
     stderr_tail: Mutex<String>,
-    program: &'static str,
     /// Set once the session has an id clients can use, or failed to get one.
     ready: Mutex<Option<Result<String, String>>>,
     ready_cv: Condvar,
     /// How it was started, to start it again resumed elsewhere (a rewind).
     relaunch: StartAgent,
-    /// Host requests awaiting the CLI's answer, by request id.
-    waiters: Mutex<HashMap<String, Waiter>>,
     /// Stopped to make way for a relaunch: clients re-attach, not end.
     replaced: AtomicBool,
     /// Ended on purpose (End session), not by a crash, `/exit` or a handoff.
@@ -96,15 +92,9 @@ pub struct AgentSession {
     transcript_path: Mutex<Option<(String, PathBuf)>>,
 }
 
-/// The command every chat process starts from: cwd, pipes, the inherited
+/// The command a chat process starts from: cwd, pipes, the inherited
 /// environment without the server's token, the pane's hook wiring, and its
 /// own process group so stopping it also ends the shells it started.
-/// Where a session's input lines go.
-enum Sink {
-    Pipe(ChildStdin),
-    Mod(Arc<ModLink>),
-}
-
 pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgent) -> Command {
     let mut cmd = workbench_core::shell::command(program);
     cmd.current_dir(&req.cwd)
@@ -116,16 +106,12 @@ pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgen
     }
     cmd.env("PATH", workbench_core::paths::enriched_path());
     cmd.env_remove("WORKBENCH_TOKEN");
-    // The Workbench plugin (Claude) and the notify bridge (Codex) keep driving the desktop's
-    // activity tracking, as for terminal panes.
+    // The notify bridge keeps driving the desktop's activity tracking, as for terminal panes.
     if let Some(id) = &req.pane_id {
         cmd.env("WORKBENCH_PANE_ID", id);
     }
     if let Some(sock) = &req.hook_socket {
         cmd.env("WORKBENCH_HOOK_SOCKET", sock);
-        if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
-            cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
-        }
     }
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
@@ -148,12 +134,10 @@ impl AgentSession {
             mut cmd,
             driver,
             hello,
-            ready,
-            program,
         } = launch;
-        let mut child = cmd.spawn().with_context(|| {
-            format!("failed to start `{program}` (is the {program} CLI installed?)")
-        })?;
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("failed to start `{PIPED}` (is the {PIPED} CLI installed?)"))?;
         let stdout = child.stdout.take().context("stdout")?;
         let stderr = child.stderr.take().context("stderr")?;
         let stdin = child.stdin.take().context("stdin")?;
@@ -163,10 +147,9 @@ impl AgentSession {
             req,
             relaunch,
             driver,
-            Sink::Pipe(stdin),
+            (Some(stdin), None),
             Some(child),
-            program,
-            ready,
+            None,
             &cache_policies,
             attention,
         );
@@ -189,7 +172,7 @@ impl AgentSession {
             loop {
                 match bounded_line(&mut lines, 64 * 1024) {
                     Ok(Some(line)) => {
-                        tracing::warn!("{} stderr: {line}", reader.program);
+                        tracing::warn!("{PIPED} stderr: {line}");
                         *lock(&reader.stderr_tail) = strip_ansi(&line);
                     }
                     Ok(None) => break,
@@ -236,23 +219,22 @@ impl AgentSession {
             req,
             relaunch,
             driver,
-            Sink::Mod(link),
+            (None, Some(link)),
             None,
-            "claude",
             ready,
             cache_policies,
             attention,
         )
     }
 
+    /// `io` is the process's stdin, or the plugin link that stands in for it.
     #[allow(clippy::too_many_arguments)]
     fn build(
         req: StartAgent,
         relaunch: StartAgent,
         driver: Driver,
-        sink: Sink,
+        io: (Option<ChildStdin>, Option<Arc<ModLink>>),
         child: Option<Child>,
-        program: &'static str,
         ready: Option<String>,
         cache_policies: &Arc<PolicyStore>,
         attention: crate::attention_feed::AttentionFeed,
@@ -263,12 +245,9 @@ impl AgentSession {
             Some(id) if kind == AgentKind::Claude => cache_policies.get(id),
             _ => CachePolicy::default(),
         };
-        let link = match &sink {
-            Sink::Mod(link) => Some(link.clone()),
-            Sink::Pipe(_) => None,
-        };
+        let (stdin, link) = io;
         let (tx, _) = broadcast::channel(256);
-        let (outgoing, receiver) = if matches!(&sink, Sink::Pipe(_)) {
+        let (outgoing, receiver) = if stdin.is_some() {
             let (tx, rx) = mpsc::sync_channel::<String>(128);
             (Some(tx), Some(rx))
         } else {
@@ -290,7 +269,7 @@ impl AgentSession {
             turn_ended_at: Mutex::new(None),
             keepalive_turn: AtomicBool::new(false),
             tx,
-            stdin: Mutex::new(Some(sink)),
+            stdin: Mutex::new(stdin),
             outgoing: Mutex::new(outgoing),
             outgoing_bytes: AtomicUsize::new(0),
             pid: child.as_ref().map(Child::id),
@@ -299,11 +278,9 @@ impl AgentSession {
             exited: AtomicBool::new(false),
             task_files: Mutex::new(HashMap::new()),
             stderr_tail: Mutex::new(String::new()),
-            program,
             ready: Mutex::new(ready.map(Ok)),
             ready_cv: Condvar::new(),
             relaunch,
-            waiters: Mutex::new(HashMap::new()),
             replaced: AtomicBool::new(false),
             ended: AtomicBool::new(false),
             cache_policy: Mutex::new(cache_policy),
@@ -355,16 +332,6 @@ impl AgentSession {
     /// Whether any client (desktop chat pane, phone) is attached.
     pub fn has_viewers(&self) -> bool {
         self.tx.receiver_count() > 0
-    }
-
-    /// Queue a line for the plugin, as `send` writes one to a process's stdin.
-    pub(super) fn queue(&self, line: &Value) -> Result<()> {
-        self.send(line)
-    }
-
-    /// Apply a line the plugin posted, as the reader thread does for a process's stdout.
-    pub(super) fn feed(&self, line: &str, alias: impl FnOnce(&str)) {
-        self.apply_line(line, alias);
     }
 
     pub fn claude_account_id(&self) -> Option<String> {
@@ -439,8 +406,7 @@ impl AgentSession {
             Some(Ok(id)) => Ok(id.clone()),
             Some(Err(e)) => bail!("{e}"),
             None => bail!(
-                "`{}` didn't start within {}s{}",
-                self.program,
+                "`{PIPED}` didn't start within {}s{}",
                 timeout.as_secs(),
                 self.stderr_suffix()
             ),
@@ -517,7 +483,8 @@ impl AgentSession {
         }
     }
 
-    fn send(&self, msg: &Value) -> Result<()> {
+    /// To the plugin's queue (`/mod/in`), or the process's stdin.
+    pub(super) fn send(&self, msg: &Value) -> Result<()> {
         if let Some(link) = &self.link {
             if self.has_exited() {
                 bail!("the session has stopped");
@@ -549,17 +516,16 @@ impl AgentSession {
 
     fn write_line(&self, msg: &str) -> Result<()> {
         let mut stdin = lock(&self.stdin);
-        let Some(Sink::Pipe(pipe)) = stdin.as_mut() else {
+        let Some(pipe) = stdin.as_mut() else {
             bail!("the session has stopped");
         };
-        writeln!(pipe, "{msg}").with_context(|| format!("write to {}", self.program))?;
-        pipe.flush()
-            .with_context(|| format!("flush to {}", self.program))
+        writeln!(pipe, "{msg}").with_context(|| format!("write to {PIPED}"))?;
+        pipe.flush().with_context(|| format!("flush to {PIPED}"))
     }
 
     fn fail_io(&self, what: &str, error: impl std::fmt::Display) {
         let _ = self.tx.send(
-            json!({"t":"error","message":format!("Invalid {} {what}: {error}",self.program)})
+            json!({"t":"error","message":format!("Invalid {PIPED} {what}: {error}")})
                 .to_string(),
         );
         if let Some(pid) = self.pid {
@@ -737,22 +703,6 @@ impl AgentSession {
         Ok(meta)
     }
 
-    /// Restore the files Claude changed since the prompt `message_id`, or
-    /// with `dry_run` only report what would change (`RewindFilesResult`).
-    pub fn rewind_files(&self, message_id: &str, dry_run: bool) -> Result<Value> {
-        self.idle_meta()?;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (request_id, effects) = lock(&self.driver).rewind_files(message_id, dry_run)?;
-        lock(&self.waiters).insert(request_id.clone(), tx);
-        let sent = effects.send.iter().try_for_each(|msg| self.send(msg));
-        let reply = sent.and_then(|()| {
-            rx.recv_timeout(CONTROL_TIMEOUT)
-                .map_err(|_| anyhow::anyhow!("{} didn't answer the rewind", self.program))
-        });
-        lock(&self.waiters).remove(&request_id);
-        reply?.map_err(anyhow::Error::msg)
-    }
-
     /// The start request to launch this conversation again, under its current id.
     pub(super) fn relaunch(&self) -> StartAgent {
         let mut req = self.relaunch.clone();
@@ -862,31 +812,26 @@ impl AgentSession {
         .to_string()
     }
 
-    /// Apply one stdout line. `alias` registers the new id when `/clear` moves
-    /// the conversation — before any client hears of it, so a start or attach
-    /// with the new id can never spawn a second process.
-    fn apply_line(&self, line: &str, alias: impl FnOnce(&str)) {
+    /// Apply one line (codex's stdout, or a terminal plugin's post). `alias`
+    /// registers the new id when `/clear` or `/resume` moves the conversation —
+    /// before any client hears of it, so a start or attach with the new id
+    /// can never open a second process.
+    pub(super) fn apply_line(&self, line: &str, alias: impl FnOnce(&str)) {
         let mut d = lock(&self.driver);
         let effects = d.apply_line(line);
         for frame in &effects.frames {
             let _ = self.tx.send(frame.to_string());
         }
-        if let Some((id, reply)) = effects.response {
-            if let Some(waiter) = lock(&self.waiters).remove(&id) {
-                let _ = waiter.send(reply);
-            }
-        }
         for msg in &effects.send {
             if let Err(e) = self.send(msg) {
-                tracing::warn!("could not answer {}: {e}", self.program);
+                tracing::warn!("could not answer {PIPED}: {e}");
                 if self.pid.is_some() {
                     self.fail_io("write", e);
                 }
             }
         }
-        let view = d.view();
         if effects.commands {
-            let frame = json!({"t": "commands", "commands": view.commands()});
+            let frame = json!({"t": "commands", "commands": d.view().commands()});
             let _ = self.tx.send(frame.to_string());
         }
         if let Some(new_id) = effects.new_id {
@@ -901,10 +846,15 @@ impl AgentSession {
                 self.cache_policies.set(&new_id, &policy);
             }
             alias(&new_id);
-            self.touch(view);
-            let _ = self.tx.send(self.snapshot(view));
+            // `/resume` continues a conversation that has history; `/clear`'s has none yet.
+            if let (Driver::Claude(t), Some(path)) = (&mut *d, self.history_path()) {
+                t.resume_history(&path);
+            }
+            self.touch(d.view());
+            let _ = self.tx.send(self.snapshot(d.view()));
             return;
         }
+        let view = d.view();
         if let Some(ready) = effects.ready {
             self.set_ready(ready);
         }
@@ -972,8 +922,7 @@ impl AgentSession {
         self.attention.forget(self.attention_source, &self.id());
         let tail = lock(&self.stderr_tail).clone();
         self.set_ready(Err(format!(
-            "`{}` exited before it was ready{}",
-            self.program,
+            "`{PIPED}` exited before it was ready{}",
             self.stderr_suffix()
         )));
         let frame = if self.replaced.load(Ordering::SeqCst) {
@@ -989,7 +938,8 @@ impl AgentSession {
     /// Interrupt, close stdin, and kill the process (and its group) if it
     /// lingers. The reader thread's `finish` reaps it and ends the group.
     pub(super) fn shutdown(&self) {
-        // The terminal's `claude` is the person's: stopping the chat only detaches it.
+        // No process of ours: a chat's terminal is the manager's to kill
+        // (`AgentManager::stop`), and a detach leaves it running.
         let Some(pid) = self.pid else {
             self.finish();
             return;

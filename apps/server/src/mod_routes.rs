@@ -29,6 +29,7 @@ pub struct SessionRef {
 #[serde(rename_all = "camelCase")]
 pub struct OutBody {
     session_id: String,
+    #[serde(default)]
     lines: Vec<Value>,
 }
 
@@ -172,13 +173,19 @@ pub async fn ask(
     }
 }
 
+/// The terminal's `claude` is leaving: its last lines, then the chat detaches.
 pub async fn bye(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<SessionRef>,
+    Json(body): Json<OutBody>,
 ) -> ApiResult<StatusCode> {
-    session(&state, &headers, &body.session_id)?;
+    let session = session(&state, &headers, &body.session_id)?;
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop(&body.session_id, false))).await?;
+    crate::routes::blocking(move || {
+        agents.feed_mod(&session, &body.lines);
+        agents.detach(&session.id());
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
