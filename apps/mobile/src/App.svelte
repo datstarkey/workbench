@@ -98,6 +98,17 @@
 					</h1>
 					<p class="mb-4 font-mono text-[11px] text-wb-ink-soft">workbench-server control plane</p>
 
+					<label class="mb-1 block text-[11px] font-medium text-wb-ink-mute" for="nickname"
+						>Host nickname <span class="font-normal text-wb-ink-soft">(optional)</span></label
+					>
+					<Input
+						id="nickname"
+						bind:value={c.nickname}
+						placeholder="Desktop, Home server…"
+						autocapitalize="words"
+						class="mb-3"
+					/>
+
 					<Button
 						onclick={() => c.scanAndConnect()}
 						disabled={c.scanning || c.connecting}

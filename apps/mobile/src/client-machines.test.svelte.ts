@@ -78,6 +78,38 @@ describe('MobileClient with several machines', () => {
 		vi.unstubAllGlobals();
 	});
 
+	it('pairs with a nickname and renames a connected host without reconnecting', async () => {
+		const hosts = servers('mac');
+		const c = new MobileClient();
+		c.nickname = '  Desktop  ';
+		await connectedTo('mac', c);
+		expect(c.machine?.name).toBe('Desktop');
+		const store = c.store;
+		const connection = c.connection;
+		const calls = hosts.mac.calls.length;
+		c.machines.rename(c.machineId!, 'Home server');
+		expect(c.machine?.name).toBe('Home server');
+		expect(c.store).toBe(store);
+		expect(c.connection).toBe(connection);
+		expect(hosts.mac.calls).toHaveLength(calls);
+		expect(new MobileClient().machines.active?.name).toBe('Home server');
+		await c.connect();
+		expect(c.machine?.name).toBe('Home server');
+		c.addMachine();
+		expect(c.nickname).toBe('');
+	});
+
+	it('a failed pairing does not save a nickname or replace the connected name', async () => {
+		servers('mac');
+		const c = await connectedTo('mac');
+		c.url = url('offline');
+		c.token = tokenOf('offline');
+		c.nickname = 'Not connected';
+		await c.connect();
+		expect(c.machines.list).toHaveLength(1);
+		expect(c.machine?.name).toBe('mac');
+	});
+
 	it('pairing a second machine adds it instead of replacing the first', async () => {
 		servers('mac', 'pc');
 		const c = await connectedTo('mac');

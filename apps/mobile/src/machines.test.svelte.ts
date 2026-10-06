@@ -90,6 +90,17 @@ describe('SavedMachines', () => {
 		expect(new SavedMachines().active?.url).toBe(PC);
 	});
 
+	it('saves a nickname and keeps it when reconnecting or changing addresses', () => {
+		const m = new SavedMachines();
+		const desktop = m.save(MAC, TOKEN, '  Desktop  ');
+		expect(desktop.name).toBe('Desktop');
+		expect(new SavedMachines().active?.name).toBe('Desktop');
+		expect(m.save('https://desktop.tail123.ts.net', TOKEN, '  ').name).toBe('Desktop');
+		expect(m.save(MAC, TOKEN, 'Office').name).toBe('Office');
+		expect(m.list).toHaveLength(1);
+		expect(m.active?.id).toBe(desktop.id);
+	});
+
 	it('save() updates the token of the machine at the same url instead of adding one', () => {
 		const m = new SavedMachines();
 		const mac = m.save(MAC, TOKEN);

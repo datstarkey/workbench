@@ -52,6 +52,7 @@ export class MobileClient {
 	/** The connect form's fields (they show the last connected machine). */
 	url = $state(this.machines.active?.url ?? '');
 	token = $state(this.machines.active?.token ?? '');
+	nickname = $state('');
 	/** The server every request goes to; null while disconnected. */
 	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
@@ -175,7 +176,7 @@ export class MobileClient {
 	connect(): Promise<void> {
 		// Only hand-typed input gets a scheme and the default port added: a scanned
 		// `https://box.ts.net` must not become `https://box.ts.net:4317`.
-		return this.open(this.url, this.token, this.url === this.exactUrl);
+		return this.open(this.url, this.token, this.url === this.exactUrl, this.nickname);
 	}
 
 	/** Switch to a saved machine. The current connection stays until the new one has answered. */
@@ -188,7 +189,12 @@ export class MobileClient {
 	 * Verify a server (health + token), then replace the current connection with
 	 * it. A failure leaves the current connection as it was.
 	 */
-	private async open(rawUrl: string, rawToken: string, exact: boolean): Promise<void> {
+	private async open(
+		rawUrl: string,
+		rawToken: string,
+		exact: boolean,
+		nickname = ''
+	): Promise<void> {
 		const attempt = ++this.attempt;
 		const superseded = () => attempt !== this.attempt;
 		const base = exact ? rawUrl : normalizeUrl(rawUrl);
@@ -208,7 +214,8 @@ export class MobileClient {
 			if (superseded()) return next.dispose();
 
 			this.teardown();
-			const machine = this.machines.save(base, token);
+			const machine = this.machines.save(base, token, nickname);
+			this.nickname = '';
 			this.url = base;
 			this.exactUrl = base;
 			this.token = token;
@@ -241,6 +248,7 @@ export class MobileClient {
 		this.disconnect();
 		this.url = '';
 		this.token = '';
+		this.nickname = '';
 		this.exactUrl = null;
 	}
 
