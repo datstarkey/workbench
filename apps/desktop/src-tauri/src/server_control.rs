@@ -101,6 +101,7 @@ impl ServerControl {
             cwd: cwd.to_string(),
             hook_socket,
             resume_at: None,
+            permission_mode: None,
             terminal_id: None,
         };
         let token = match agents.grant_mod(grant) {
