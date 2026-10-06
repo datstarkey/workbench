@@ -45,6 +45,7 @@
 						variant="ghost"
 						size="icon-sm"
 						class="size-7 text-muted-foreground hover:text-foreground"
+						aria-label={tooltipLabel}
 						type="button"
 					>
 						<HistoryIcon class="size-3.5" />

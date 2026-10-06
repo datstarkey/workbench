@@ -31,7 +31,7 @@
 	<div class="flex w-full max-w-[540px] flex-col items-center gap-6 px-4 text-center">
 		<!-- Hero icon + headline -->
 		<div class="flex flex-col items-center gap-3">
-			<div class="grid size-10 place-items-center rounded-xl bg-wb-accent/10 text-wb-accent">
+			<div class="grid size-12 place-items-center rounded-xl bg-wb-accent/10 text-wb-accent">
 				<span class="flex items-center gap-1"
 					><AgentIcon agent="claude" class="size-5" /><AgentIcon
 						agent="codex"

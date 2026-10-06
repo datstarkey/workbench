@@ -172,6 +172,7 @@
 						size="icon-sm"
 						class="size-6 text-wb-claude hover:bg-wb-claude/10 hover:text-wb-claude"
 						type="button"
+						aria-label="New Claude session"
 						onclick={() => claudeSessionStore.startSessionInWorkspace(workspace)}
 					>
 						<AgentIcon agent="claude" class="size-3.5" />
@@ -197,6 +198,7 @@
 						size="icon-sm"
 						class="size-6 text-wb-codex hover:bg-wb-codex/10 hover:text-wb-codex"
 						type="button"
+						aria-label="New Codex session"
 						onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
 					>
 						<AgentIcon agent="codex" class="size-3.5" />
