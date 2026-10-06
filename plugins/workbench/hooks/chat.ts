@@ -623,6 +623,31 @@ export const register: Register = (on) => {
 		return result;
 	});
 
+	// `/compact` (the chat's, or the server's upkeep) runs no turn either: the chat
+	// needs the boundary and a `result`. Auto compaction runs inside a turn, which
+	// ends with its own.
+	on('session.compact', async ($, e, next) => {
+		const result = await next(e);
+		if (!link || e.agentId || e.trigger === 'precompute') return result;
+		if (!result.messages) {
+			emit({
+				type: 'system',
+				subtype: 'local_command_output',
+				content: result.skip,
+				uuid: `wbmod-compact-${++askSeq}`
+			});
+		} else {
+			emit({
+				type: 'system',
+				subtype: 'compact_boundary',
+				compact_metadata: { trigger: e.trigger, pre_tokens: result.tokensBefore },
+				uuid: `wbmod-compact-${++askSeq}`
+			});
+		}
+		if (!runningTurn) emit({ type: 'result', subtype: 'success', is_error: false });
+		return result;
+	});
+
 	// Structured results (an Artifact's link) and subagents for the tasks panel.
 	on('tool.call', async ($, e, next) => {
 		if (!link) return next(e);
