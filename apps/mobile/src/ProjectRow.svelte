@@ -7,8 +7,8 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import type { ProjectConfig } from '@workbench/types';
-	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
-	import { repoLabel, tildePath } from './home-format.ts';
+	import { openExternal, type MobileClient } from './client.svelte.ts';
+	import { baseName, repoLabel, tildePath } from './home-format.ts';
 	import type { ReviewFolder } from './project-review.svelte';
 	import { matchParts } from './project-sections.ts';
 	import StartButtons from './StartButtons.svelte';
@@ -19,6 +19,8 @@
 		favourite,
 		live,
 		highlight = '',
+		open,
+		onToggle,
 		onReview
 	}: {
 		client: MobileClient;
@@ -28,6 +30,8 @@
 		live: number;
 		/** Search text to mark in the project name. */
 		highlight?: string;
+		open: boolean;
+		onToggle: () => void;
 		onReview: (folder: ReviewFolder, tab: 'history' | 'changes') => void;
 	} = $props();
 
@@ -35,15 +39,15 @@
 	const name = $derived(project.name || baseName(project.path));
 	const worktrees = $derived((store.worktrees[project.path] ?? []).filter((w) => !w.isMain));
 	const githubUrl = $derived(store.githubUrls[project.path]);
-	let open = $state(false);
 	let newBranch = $state('');
 
 	const chip =
 		'flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-wb-hair bg-wb-panel px-2.5 text-[12px] text-wb-ink-mute active:bg-wb-panel2';
 
 	async function toggle() {
-		open = !open;
-		if (!open) return;
+		const opening = !open;
+		onToggle();
+		if (!opening) return;
 		void store.loadGithubUrl(project.path);
 		if (!store.worktrees[project.path]) await store.loadWorktrees(project.path);
 	}

@@ -26,6 +26,9 @@ export class ProjectPrefs {
 
 	toggleFavourite(path: string): void {
 		this.toggle(this.favourites, LS_FAVOURITES, path);
+		if (this.favourites.has(path) && this.collapsed.has('favourites')) {
+			this.toggleSection('favourites');
+		}
 	}
 
 	toggleSection(key: string): void {

@@ -1,5 +1,4 @@
 import type { AgentSummary } from '@workbench/types';
-import { baseName } from './client.svelte.ts';
 
 type Waiting = NonNullable<AgentSummary['waiting']>;
 
@@ -43,6 +42,15 @@ export function answerableFromHome(item: Waiting): boolean {
 	return !['AskUserQuestion', 'ExitPlanMode', 'Elicitation'].includes(item.tool);
 }
 
+export function baseName(path: string): string {
+	return (
+		path
+			.replace(/[\\/]+$/, '')
+			.split(/[\\/]/)
+			.pop() || path
+	);
+}
+
 /** "repo" or "repo · worktree": where a chat runs. */
 export function chatWhere(chat: AgentSummary): string {
 	return chat.worktreePath
@@ -52,5 +60,8 @@ export function chatWhere(chat: AgentSummary): string {
 
 /** A path with the home directory shown as `~`. */
 export function tildePath(path: string): string {
-	return path.replace(/^(\/Users|\/home)\/[^/]+(?=\/|$)|^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/, '~');
+	return path.replace(
+		/^(\/Users|\/home)\/(?!Shared(?:\/|$))[^/]+(?=\/|$)|^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/,
+		'~'
+	);
 }

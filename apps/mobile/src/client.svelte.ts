@@ -12,6 +12,7 @@ import { hostOf, LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './mac
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
+import { baseName } from './home-format.ts';
 import { ProjectPrefs } from './project-prefs.svelte.ts';
 import { Drafts } from './drafts.svelte';
 import { SessionNotifications } from './session-notifications.svelte';
@@ -33,15 +34,6 @@ function readLinks(machineId: string): Record<string, ChatRef> {
 
 function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
-}
-
-export function baseName(path: string): string {
-	return (
-		path
-			.replace(/[\\/]+$/, '')
-			.split(/[\\/]/)
-			.pop() || path
-	);
 }
 
 /** Uses the system URL handler without the opener plugin's inAppBrowser mode. */
@@ -281,6 +273,7 @@ export class MobileClient {
 		this.accounts = [];
 		this.accountId = undefined;
 		this.machineId = null;
+		this.projectPrefs = new ProjectPrefs('disconnected');
 		this.claudeTerminals = {};
 		this.terminals = [];
 		this.chats = [];

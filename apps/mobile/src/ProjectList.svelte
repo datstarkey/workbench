@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { SvelteSet } from 'svelte/reactivity';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -19,6 +20,8 @@
 	const store = $derived(client.store!);
 	const prefs = $derived(client.projectPrefs);
 	let query = $state('');
+	/** Kept here so a row stays open when starring or searching remounts it. */
+	const expanded = new SvelteSet<string>();
 	const searching = $derived(query.trim() !== '');
 	const sections = $derived(projectSections(store.projects, prefs.favourites, query));
 	const live = $derived.by(() => {
@@ -63,7 +66,7 @@
 		</p>
 	{:else if sections.length === 0}
 		<p class="px-1 text-xs text-wb-ink-soft">No projects match “{query}”.</p>
-	{:else if prefs.favourites.size === 0 && !searching}
+	{:else if !searching && sections[0].kind !== 'favourites'}
 		<p class="px-1 text-xs text-wb-ink-soft">Star a project to pin it to the top.</p>
 	{/if}
 	{#each sections as section (section.key)}
@@ -100,6 +103,10 @@
 						favourite={section.kind === 'favourites'}
 						live={live[project.path] ?? 0}
 						highlight={query}
+						open={expanded.has(project.path)}
+						onToggle={() => {
+							if (!expanded.delete(project.path)) expanded.add(project.path);
+						}}
 						{onReview}
 					/>
 				{/each}

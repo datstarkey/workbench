@@ -47,5 +47,6 @@ describe('tildePath', () => {
 		expect(tildePath('/home/jake')).toBe('~');
 		expect(tildePath('C:\\Users\\jake\\src')).toBe('~\\src');
 		expect(tildePath('/srv/Users/jake')).toBe('/srv/Users/jake');
+		expect(tildePath('/Users/Shared/app')).toBe('/Users/Shared/app');
 	});
 });

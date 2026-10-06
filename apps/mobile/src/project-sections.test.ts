@@ -34,4 +34,5 @@ it('splits text around every case-insensitive match', () => {
 	expect(marked('aAbaa', 'a')).toBe('[a][A]b[a][a]');
 	expect(marked('api', '')).toBe('api');
 	expect(marked('api', 'zzz')).toBe('api');
+	expect(marked('İstanbul-app', 'app')).toBe('İstanbul-app');
 });
