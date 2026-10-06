@@ -1,3 +1,4 @@
+import { replaceToken, tokenAtCaret, type CaretToken } from './composer-tokens';
 import type { ElicitationItem } from './elicitation-form';
 import { isArtifactTool } from './artifacts';
 import { contextUsage } from './usage-format';
@@ -479,20 +480,30 @@ export function effortLabel(level: EffortLevel | null): string {
 }
 
 /** A `/` command being typed: where its `/` is and the name after it, lowercased. */
-export interface SlashQuery {
-	start: number;
-	query: string;
-}
+export type SlashQuery = CaretToken;
 
 /**
  * The `/name` word ending at the caret, at the start or after whitespace, as
  * Claude Code's prompt offers commands mid-line; a path like `src/x` isn't one.
  */
 export function slashQuery(draft: string, caret = draft.length): SlashQuery | null {
-	const before = draft.slice(0, caret);
-	const match = /(^|\s)\/([^\s/]*)$/.exec(before);
-	if (!match) return null;
-	return { start: before.length - match[2].length - 1, query: match[2].toLowerCase() };
+	const token = tokenAtCaret(draft, caret, '/');
+	return token && { ...token, query: token.query.toLowerCase() };
+}
+
+/** Only whitespace around the `/name` being typed: it can run or send on its own. */
+export function isWholeCommand(draft: string, slash: SlashQuery, caret: number): boolean {
+	return !draft.slice(0, slash.start).trim() && !draft.slice(caret).replace(/^\S*/, '').trim();
+}
+
+/** The draft with the `/name` being typed replaced by `/<name> `, and the caret after it. */
+export function insertCommand(
+	draft: string,
+	slash: SlashQuery,
+	caret: number,
+	name: string
+): { text: string; caret: number } {
+	return replaceToken(draft, slash.start, caret, `/${name} `);
 }
 
 /** Commands for the `/` menu: name prefix matches, then name, then description matches. */

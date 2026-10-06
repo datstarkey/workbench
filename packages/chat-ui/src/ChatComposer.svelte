@@ -22,7 +22,9 @@
 	} from '@workbench/types';
 	import {
 		agentName,
+		insertCommand,
 		isRiskyMode,
+		isWholeCommand,
 		matchCommands,
 		modeLabel,
 		modeOptions,
@@ -106,22 +108,28 @@
 	/** The `/` and `@` menus: matches for what's being typed, unless dismissed with Esc. */
 	let menuIndex = $state(0);
 	let dismissedAt = $state<string | null>(null);
-	let caret = $state(0);
+	/** The caret, read on input/keyup/click, counts only for the draft it was read on. */
+	let caretAt = $state({ draft: '', caret: 0 });
+	const caret = $derived(caretAt.draft === draft ? caretAt.caret : draft.length);
+	/** Esc dismisses the menu for this text and caret only. */
+	const menuKey = $derived(`${caret}:${draft}`);
 	const slash = $derived(slashQuery(draft, caret));
+	/** A command typed after other text: Enter sends the message, Tab or a click picks. */
+	const midLine = $derived(slash !== null && !isWholeCommand(draft, slash, caret));
 	const matches = $derived(slash ? matchCommands(commands, slash.query) : []);
-	const menuOpen = $derived(matches.length > 0 && dismissedAt !== draft && !disabledReason);
+	const menuOpen = $derived(matches.length > 0 && dismissedAt !== menuKey && !disabledReason);
 
 	let paths = $state.raw<string[]>([]);
 	const mention = $derived(loadFiles && !menuOpen ? mentionQuery(draft, caret) : null);
 	const fileMatches = $derived(mention ? matchFiles(paths, mention.query) : []);
-	const filesOpen = $derived(fileMatches.length > 0 && dismissedAt !== draft && !disabledReason);
+	const filesOpen = $derived(fileMatches.length > 0 && dismissedAt !== menuKey && !disabledReason);
 	const options = $derived(menuOpen ? matches.length : filesOpen ? fileMatches.length : 0);
 	const active = $derived(Math.min(menuIndex, options - 1));
 
 	/** Track the caret and fetch the file list (cached by the chat) once `@` is typed. */
 	function onCaret(node: HTMLTextAreaElement) {
-		caret = node.selectionStart;
-		if (loadFiles && mentionQuery(node.value, caret)) {
+		caretAt = { draft: node.value, caret: node.selectionStart };
+		if (loadFiles && mentionQuery(node.value, node.selectionStart)) {
 			void loadFiles().then((list) => (paths = list));
 		}
 	}
@@ -130,10 +138,15 @@
 		if (!mention || !textarea) return;
 		const next = insertMention(draft, mention, caret, path);
 		menuIndex = 0;
+		await place(next);
+	}
+
+	/** Set the draft and put the caret where an inserted token ends. */
+	async function place(next: { text: string; caret: number }) {
 		draft = next.text;
-		caret = next.caret;
+		caretAt = { draft: next.text, caret: next.caret };
 		await tick();
-		textarea.setSelectionRange(next.caret, next.caret);
+		textarea?.setSelectionRange(next.caret, next.caret);
 	}
 
 	/**
@@ -141,9 +154,9 @@
 	 * one typed mid-line is inserted where it stands, for Claude to expand.
 	 */
 	async function pick(command: SlashCommand, sendNow: boolean) {
-		if (!slash || !textarea) return;
+		if (!slash) return;
 		menuIndex = 0;
-		const whole = slash.start === 0 && !draft.slice(caret).trim();
+		const whole = !midLine;
 		if (whole && onCommand?.(command.name)) {
 			draft = '';
 			return;
@@ -153,12 +166,7 @@
 			send();
 			return;
 		}
-		const token = `/${command.name} `;
-		const after = draft.slice(caret).replace(/^\S*/, '').replace(/^ /, '');
-		draft = draft.slice(0, slash.start) + token + after;
-		caret = slash.start + token.length;
-		await tick();
-		textarea.setSelectionRange(caret, caret);
+		await place(insertCommand(draft, slash, caret, command.name));
 	}
 
 	const canSend = $derived(
@@ -235,7 +243,8 @@
 				menuIndex = (active + step + options) % options;
 				return;
 			}
-			if ((event.key === 'Enter' && !event.shiftKey && !event.isComposing) || event.key === 'Tab') {
+			const enter = event.key === 'Enter' && !event.shiftKey && !event.isComposing;
+			if ((enter && !(menuOpen && midLine)) || event.key === 'Tab') {
 				event.preventDefault();
 				if (menuOpen) void pick(matches[active], event.key === 'Enter' && enterSends);
 				else void pickFile(fileMatches[active]);
@@ -244,7 +253,7 @@
 			if (event.key === 'Escape') {
 				event.preventDefault();
 				event.stopPropagation(); // Esc here closes the menu, not the turn
-				dismissedAt = draft;
+				dismissedAt = menuKey;
 				return;
 			}
 		}
