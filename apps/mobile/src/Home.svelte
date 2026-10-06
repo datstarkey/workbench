@@ -1,20 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { SvelteSet } from 'svelte/reactivity';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
-	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
-	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
-	import SearchIcon from '@lucide/svelte/icons/search';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
-	import type { AgentSummary, ProjectConfig } from '@workbench/types';
-	import { baseName, openExternal, type MobileClient } from './client.svelte.ts';
-	import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
+	import type { MobileClient } from './client.svelte.ts';
+	import { age, answerableFromHome, chatWhere, waitingLabel } from './home-format.ts';
 	import MachinesSheet from './MachinesSheet.svelte';
+	import ProjectList from './ProjectList.svelte';
 	import Sheet from './Sheet.svelte';
 	import ProjectReviewSheet from './ProjectReviewSheet.svelte';
 	import type { ReviewFolder } from './project-review.svelte';
@@ -22,7 +18,6 @@
 	let { client }: { client: MobileClient } = $props();
 
 	const store = $derived(client.store!);
-	let query = $state('');
 	let settingsOpen = $state(false);
 	let machinesOpen = $state(false);
 	let reviewFolder = $state<ReviewFolder | null>(null);
@@ -31,8 +26,6 @@
 	const status = $derived(
 		client.connecting ? 'switching' : client.online ? 'connected' : 'not responding'
 	);
-	const expanded = new SvelteSet<string>();
-	let newBranch = $state<Record<string, string>>({});
 	/** Re-render relative times without refetching. */
 	let now = $state(Date.now());
 	onMount(() => {
@@ -42,27 +35,6 @@
 
 	const needsYou = $derived(client.chats.filter((c) => !c.exited && c.waiting));
 	const runningChats = $derived(client.chats.filter((c) => !c.exited && !c.waiting));
-	const projects = $derived.by(() => {
-		const q = query.trim().toLowerCase();
-		return q
-			? store.projects.filter(
-					(p) => p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q)
-				)
-			: store.projects;
-	});
-
-	const where = (chat: AgentSummary) =>
-		chat.worktreePath
-			? `${baseName(chat.projectPath)} · ${baseName(chat.worktreePath)}`
-			: baseName(chat.projectPath);
-	const projectName = (p: ProjectConfig) => p.name || baseName(p.path);
-
-	async function toggle(path: string) {
-		if (expanded.has(path)) return void expanded.delete(path);
-		expanded.add(path);
-		void store.loadGithubUrl(path);
-		if (!store.worktrees[path]) await store.loadWorktrees(path);
-	}
 </script>
 
 {#snippet sectionTitle(label: string, count?: number, dot?: boolean)}
@@ -74,52 +46,6 @@
 		{#if count !== undefined}<span class="font-mono tracking-normal text-wb-ink-mute">{count}</span
 			>{/if}
 	</h2>
-{/snippet}
-
-{#snippet startButtons(projectPath: string, worktreePath: string | undefined, name: string)}
-	<div class="flex shrink-0 overflow-hidden rounded-lg">
-		<button
-			type="button"
-			class="h-8 bg-wb-accent px-3 text-[12.5px] font-semibold text-wb-accent-ink active:brightness-90"
-			aria-label="Start Claude in {name}"
-			onclick={() => client.startClaude(projectPath, worktreePath, name)}
-		>
-			Claude
-		</button>
-		<button
-			type="button"
-			class="h-8 border border-l-0 border-wb-hair bg-wb-panel2 px-2.5 text-[12.5px] font-semibold text-wb-codex active:bg-wb-panel"
-			aria-label="Start a Codex chat in {name}"
-			onclick={() => client.startCodex(projectPath, worktreePath, name)}
-		>
-			Codex
-		</button>
-		<button
-			type="button"
-			class="grid h-8 w-9 place-items-center border border-l-0 border-wb-hair bg-wb-panel2 text-wb-ink-mute active:bg-wb-panel"
-			aria-label="Open a terminal in {name}"
-			onclick={() => client.createTerminal(projectPath, worktreePath, name)}
-		>
-			<SquareTerminalIcon class="size-4" />
-		</button>
-	</div>
-{/snippet}
-
-{#snippet reviewButtons(projectPath: string, worktreePath: string | undefined, name: string)}
-	<div class="flex gap-2 py-2 pr-2 pl-10">
-		{#each ['history', 'changes'] as const as tab (tab)}
-			<button
-				type="button"
-				class="h-9 rounded-lg border border-wb-hair bg-wb-panel px-3 text-xs text-wb-ink-mute active:bg-wb-panel2"
-				onclick={() => {
-					reviewTab = tab;
-					reviewFolder = { projectPath, worktreePath, name };
-				}}
-			>
-				{tab === 'history' ? 'History' : 'Review changes'}
-			</button>
-		{/each}
-	</div>
 {/snippet}
 
 <div class="flex h-full flex-col bg-wb-bg text-wb-ink">
@@ -192,7 +118,7 @@
 								>{age(chat.updatedAt, now)}</span
 							>
 						</div>
-						<span class="truncate text-[14px] font-semibold">{chat.title ?? where(chat)}</span>
+						<span class="truncate text-[14px] font-semibold">{chat.title ?? chatWhere(chat)}</span>
 						{#if answerableFromHome(waiting)}
 							<code
 								class="truncate rounded-md border border-wb-hair bg-wb-rail px-2.5 py-1.5 font-mono text-[11.5px]"
@@ -269,7 +195,7 @@
 							{/if}
 							<span
 								class="shrink-0 rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-ink-mute"
-								>{where(chat)}</span
+								>{chatWhere(chat)}</span
 							>
 							{#if chat.running}
 								<span class="truncate font-mono text-[11px] text-wb-ink"
@@ -326,117 +252,13 @@
 			</section>
 		{/if}
 
-		<section class="flex flex-col gap-2">
-			{@render sectionTitle('Start')}
-			<label
-				class="flex h-9 items-center gap-2 rounded-lg border border-wb-hair bg-wb-panel px-3 text-wb-ink-soft focus-within:border-wb-ink-soft"
-			>
-				<SearchIcon class="size-4 shrink-0" />
-				<span class="sr-only">Search projects</span>
-				<input
-					bind:value={query}
-					placeholder="Search {store.projects.length} projects"
-					autocapitalize="off"
-					autocorrect="off"
-					spellcheck={false}
-					class="min-w-0 flex-1 bg-transparent text-[13px] text-wb-ink placeholder:text-wb-ink-soft focus:outline-none"
-				/>
-			</label>
-			{#if store.projects.length === 0}
-				<p class="px-1 text-xs text-wb-ink-soft">
-					No projects on this server yet. Add one in Workbench on the desktop.
-				</p>
-			{:else if projects.length === 0}
-				<p class="px-1 text-xs text-wb-ink-soft">No projects match “{query}”.</p>
-			{/if}
-			{#each projects as p (p.path)}
-				{@const open = expanded.has(p.path)}
-				<div class="overflow-hidden rounded-xl border border-wb-hair-soft bg-wb-panel">
-					<div class="flex items-center gap-1.5 py-2 pr-2 pl-1">
-						<button
-							type="button"
-							class="grid size-8 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2"
-							aria-label={open ? 'Hide worktrees' : 'Show worktrees'}
-							aria-expanded={open}
-							onclick={() => toggle(p.path)}
-						>
-							{#if open}<ChevronDownIcon class="size-4" />{:else}<ChevronRightIcon
-									class="size-4"
-								/>{/if}
-						</button>
-						<span class="flex min-w-0 flex-1 flex-col">
-							<span class="truncate text-[13.5px] font-semibold">{projectName(p)}</span>
-							<span class="truncate font-mono text-[11px] text-wb-ink-soft">{p.path}</span>
-						</span>
-						{@render startButtons(p.path, undefined, projectName(p))}
-					</div>
-					{#if open}
-						{@const githubUrl = store.githubUrls[p.path]}
-						<div class="flex flex-col border-t border-wb-hair-soft bg-wb-rail/50">
-							{@render reviewButtons(p.path, undefined, projectName(p))}
-							{#if githubUrl}
-								<button
-									type="button"
-									class="flex items-center gap-2 border-b border-wb-hair-soft py-2.5 pr-3 pl-10 text-left text-wb-ink-mute active:bg-wb-panel2"
-									onclick={() => openExternal(githubUrl)}
-								>
-									<span class="min-w-0 flex-1 truncate font-mono text-[12px]"
-										><span class="sr-only">Open on GitHub: </span>{repoLabel(githubUrl)}</span
-									>
-									<ExternalLinkIcon class="size-3.5 shrink-0" />
-								</button>
-							{/if}
-							{#each (store.worktrees[p.path] ?? []).filter((w) => !w.isMain) as w (w.path)}
-								<div class="flex items-center gap-2 border-b border-wb-hair-soft py-2 pr-2 pl-10">
-									<span class="flex min-w-0 flex-1 flex-col">
-										<span class="truncate font-mono text-[12px]">{w.branch || '(detached)'}</span>
-										<span class="truncate font-mono text-[10.5px] text-wb-ink-soft"
-											>{baseName(w.path)}</span
-										>
-									</span>
-									{@render startButtons(
-										p.path,
-										w.path,
-										`${projectName(p)} · ${w.branch || baseName(w.path)}`
-									)}
-								</div>
-								{@render reviewButtons(
-									p.path,
-									w.path,
-									`${projectName(p)} · ${w.branch || baseName(w.path)}`
-								)}
-							{/each}
-							<form
-								class="flex gap-2 py-2 pr-2 pl-10"
-								onsubmit={(e) => {
-									e.preventDefault();
-									const branch = (newBranch[p.path] ?? '').trim();
-									if (!branch) return;
-									newBranch[p.path] = '';
-									void store.createWorktree(p.path, branch);
-								}}
-							>
-								<input
-									bind:value={newBranch[p.path]}
-									placeholder="new-branch-name"
-									aria-label="New worktree branch for {projectName(p)}"
-									autocapitalize="off"
-									autocorrect="off"
-									spellcheck={false}
-									class="h-8 min-w-0 flex-1 rounded-lg border border-wb-hair bg-wb-panel px-2.5 font-mono text-[12px] text-wb-ink placeholder:text-wb-ink-soft focus:border-wb-ink-soft focus:outline-none"
-								/>
-								<button
-									type="submit"
-									class="h-8 rounded-lg border border-wb-hair bg-wb-panel2 px-3 text-[12px] font-medium text-wb-ink-mute active:bg-wb-panel"
-								>
-									New worktree
-								</button>
-							</form>
-						</div>
-					{/if}
-				</div>
-			{/each}
-		</section>
+		<ProjectList
+			{client}
+			onReview={(folder, tab) => {
+				reviewTab = tab;
+				reviewFolder = folder;
+			}}
+		/>
 	</main>
 </div>
 

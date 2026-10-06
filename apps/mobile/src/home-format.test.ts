@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentSummary } from '@workbench/types';
-import { age, answerableFromHome, repoLabel, waitingLabel } from './home-format.ts';
+import { age, answerableFromHome, repoLabel, tildePath, waitingLabel } from './home-format.ts';
 
 const approval = (tool: string): NonNullable<AgentSummary['waiting']> => ({
 	id: 'r1',
@@ -38,5 +38,14 @@ describe('waiting on you', () => {
 		expect(answerableFromHome(approval('ExitPlanMode'))).toBe(false);
 		expect(answerableFromHome(approval('Elicitation'))).toBe(false);
 		expect(waitingLabel(approval('Elicitation'))).toBe('Needs your input');
+	});
+});
+
+describe('tildePath', () => {
+	it('shows the home directory as ~', () => {
+		expect(tildePath('/Users/jake/Repos/app')).toBe('~/Repos/app');
+		expect(tildePath('/home/jake')).toBe('~');
+		expect(tildePath('C:\\Users\\jake\\src')).toBe('~\\src');
+		expect(tildePath('/srv/Users/jake')).toBe('/srv/Users/jake');
 	});
 });

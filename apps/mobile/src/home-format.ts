@@ -1,4 +1,5 @@
 import type { AgentSummary } from '@workbench/types';
+import { baseName } from './client.svelte.ts';
 
 type Waiting = NonNullable<AgentSummary['waiting']>;
 
@@ -40,4 +41,16 @@ export function waitingLabel(item: Waiting): string {
 /** Questions, plans and MCP forms need the full view to answer; plain permissions can be answered from home. */
 export function answerableFromHome(item: Waiting): boolean {
 	return !['AskUserQuestion', 'ExitPlanMode', 'Elicitation'].includes(item.tool);
+}
+
+/** "repo" or "repo · worktree": where a chat runs. */
+export function chatWhere(chat: AgentSummary): string {
+	return chat.worktreePath
+		? `${baseName(chat.projectPath)} · ${baseName(chat.worktreePath)}`
+		: baseName(chat.projectPath);
+}
+
+/** A path with the home directory shown as `~`. */
+export function tildePath(path: string): string {
+	return path.replace(/^(\/Users|\/home)\/[^/]+(?=\/|$)|^[A-Za-z]:\\Users\\[^\\]+(?=\\|$)/, '~');
 }

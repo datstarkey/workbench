@@ -12,6 +12,7 @@ import { hostOf, LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './mac
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
+import { ProjectPrefs } from './project-prefs.svelte.ts';
 import { Drafts } from './drafts.svelte';
 import { SessionNotifications } from './session-notifications.svelte';
 import { ProjectReview, type ReviewFolder } from './project-review.svelte';
@@ -63,6 +64,7 @@ export class MobileClient {
 	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
 	drafts = new Drafts('disconnected');
+	projectPrefs = $state.raw(new ProjectPrefs('disconnected'));
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
 	accountId = $state<string | undefined>(undefined);
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
@@ -199,6 +201,7 @@ export class MobileClient {
 			this.connection = { url: base, token };
 			this.machineId = machine.id;
 			this.drafts = new Drafts(machine.id);
+			this.projectPrefs = new ProjectPrefs(machine.id);
 			this.controlPlane = createHttpTransport({ baseUrl: base, token });
 			this.claudeTerminals = readLinks(machine.id);
 			this.online = true;
