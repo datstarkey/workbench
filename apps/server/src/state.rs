@@ -3,7 +3,7 @@ use tokio::sync::watch;
 use crate::agent::AgentManager;
 use crate::spawn::RemoteControlManager;
 use crate::terminal::TerminalManager;
-use crate::usage::UsageCache;
+use crate::usage::{ModelsCache, UsageCache};
 
 /// The long-lived session managers. Both are `Arc`-backed, so clones share the
 /// same terminals and spawned sessions — which is how the desktop's loopback and
@@ -14,6 +14,7 @@ pub struct Managers {
     pub terminals: TerminalManager,
     pub agents: AgentManager,
     pub usage: UsageCache,
+    pub models: ModelsCache,
 }
 
 impl Managers {
@@ -31,6 +32,7 @@ pub struct AppState {
     pub terminals: TerminalManager,
     pub agents: AgentManager,
     pub usage: UsageCache,
+    pub models: ModelsCache,
     /// When `Some`, requests must present this as a bearer token. Only the
     /// standalone binary on a loopback bind (or with `--insecure-no-token`) runs
     /// with `None`; embedded listeners always carry one.
@@ -51,6 +53,7 @@ impl AppState {
             terminals: managers.terminals,
             agents: managers.agents,
             usage: managers.usage,
+            models: managers.models,
             token,
             revoked,
             local_port: None,

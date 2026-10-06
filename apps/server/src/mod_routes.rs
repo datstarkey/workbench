@@ -64,7 +64,20 @@ pub async fn hello(
 ) -> ApiResult<StatusCode> {
     let token = token(&headers)?.to_string();
     let agents = state.agents.clone();
-    crate::routes::blocking(move || agents.attach_mod(&token, &body.session_id)).await?;
+    let session =
+        crate::routes::blocking(move || agents.attach_mod(&token, &body.session_id)).await?;
+    // The plugin can only guess the model list; the CLI's own replaces it
+    // when the (cached) probe answers.
+    tokio::spawn(async move {
+        match state
+            .models
+            .get(session.claude_account_id(), session.cwd())
+            .await
+        {
+            Ok(models) => session.pin_models(models),
+            Err(e) => tracing::warn!("could not list Claude models: {e:#}"),
+        }
+    });
     Ok(StatusCode::NO_CONTENT)
 }
 

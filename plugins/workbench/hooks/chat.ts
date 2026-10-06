@@ -20,6 +20,8 @@ let outbox: Line[] = [];
 let flushing = false;
 let polling = false;
 let model = '';
+// The model and effort last reported, so a change is sent once.
+let lastSettings = '';
 let messageSeq = 0;
 let currentMessage = '';
 const startedBlocks = new Set<number>();
@@ -39,6 +41,13 @@ const toolResults = new Map<string, unknown>();
 const toolRows = new Map<string, Line>();
 // Agent tool calls still running, for the tasks panel.
 const runningAgents: string[] = [];
+// Background agents (their Agent call returned at launch): agent id -> task id,
+// until the agent's own `turn.complete`.
+const asyncAgents = new Map<string, string>();
+// Chat prompts appended into the running turn that no request has read yet;
+// any left when the turn ends run as their own turn (echoed once already).
+let injected: string[] = [];
+const echoed = new Set<string>();
 
 // Questions and plans are asked from `tool.call` (an answer edits the input);
 // `tool.check` then lets the answered call through.
@@ -116,6 +125,20 @@ function askLine(requestId: string, tool: string, input: unknown, toolUseId?: st
 		request_id: requestId,
 		request: { subtype: 'can_use_tool', tool_name: tool, input, tool_use_id: toolUseId }
 	};
+}
+
+/**
+ * How the CLI frames a prompt typed while a turn runs, so the model takes it up.
+ * `@` mentions (chat images and files) are only expanded for a submitted
+ * prompt, so an appended one names them for the model to Read. Core's
+ * `QUEUED_PROMPT_PREFIX` unwraps this wording when history is reloaded.
+ */
+function midTurn(text: string): string {
+	const files = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|(\S+))/g)].map((m) => m[1] ?? m[2]);
+	const attached = files.length
+		? `\n\nAttached files (read each with the Read tool):\n${files.map((f) => `- ${f}`).join('\n')}`
+		: '';
+	return `The user sent a new message while you were working:\n${text}${attached}\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.`;
 }
 
 /**
@@ -202,6 +225,7 @@ export const register: Register = (on) => {
 			if (needsHello && Date.now() - lastHello > 5000) {
 				needsHello = false;
 				lastHello = Date.now();
+				lastSettings = '';
 				void $.http
 					.fetch(`${link.url}/mod/hello`, init('POST', { sessionId: link.sessionId }))
 					.then((res) => {
@@ -218,9 +242,29 @@ export const register: Register = (on) => {
 						if (line.type === 'user') {
 							const message = line.message as { content?: unknown } | undefined;
 							const text = promptText(message?.content);
-							// Not awaited: it resolves when its turn starts, and polling
-							// must go on meanwhile (approval answers, interrupts).
-							if (text) void $.prompt.submit({ text, asUser: true });
+							if (!text) continue;
+							// A plugin's submit waits for the turn to end, so mid-turn it
+							// joins the running turn the way a typed prompt would.
+							const appended = runningTurn
+								? await $.session
+										.append({
+											message: { type: 'user', content: [{ type: 'text', text: midTurn(text) }] }
+										})
+										.catch((err: unknown) => ({ deny: String(err) }))
+								: undefined;
+							if (appended && !appended.deny && runningTurn) {
+								injected.push(text);
+								emit({
+									type: 'user',
+									uuid: `wbmod-queued-${++askSeq}`,
+									session_id: link?.sessionId,
+									message: { role: 'user', content: text }
+								});
+							} else {
+								// Not awaited: it resolves when its turn starts, and polling
+								// must go on meanwhile (approval answers, interrupts).
+								void $.prompt.submit({ text, asUser: true });
+							}
 						} else if (line.type === 'control_request') {
 							const sub = (line.request as { subtype?: string } | undefined)?.subtype;
 							const req = (line.request ?? {}) as {
@@ -232,14 +276,15 @@ export const register: Register = (on) => {
 								if (runningTurn) await $.turn.abort({ turnId: runningTurn }).catch(() => {});
 								reply(line.request_id);
 							} else if (sub === 'initialize') {
-								// The chat's model picker lists what `/config` offers.
+								// A fallback list: the server replaces it with the CLI's own.
 								const row = (await $.config.list()).find((r) => r.key === 'model');
 								const models = (row?.options ?? []).map(modelOption);
 								const commands = (await $.command.list()).map((c) => ({
 									name: c.name,
 									description: c.description
 								}));
-								reply(line.request_id, undefined, { models, commands });
+								const modelChoice = typeof row?.value === 'string' ? row.value : undefined;
+								reply(line.request_id, undefined, { models, commands, modelChoice });
 							} else if (sub === 'set_model' && req.model) {
 								// As the TUI's `/config` does (aliases resolve there; a plugin can't
 								// switch a session to an alias on its own).
@@ -288,10 +333,24 @@ export const register: Register = (on) => {
 	on('turn.step', async function* ($, e, next) {
 		if (!link || e.agentId) return yield* next(e);
 		runningTurn = e.turnId;
+		// This request carries every row appended so far.
+		injected = [];
 		const stream = next(effort ? { ...e, effort } : e);
 		currentMessage = `wbmod-${link.sessionId.slice(0, 8)}-${++messageSeq}`;
 		startedBlocks.clear();
 		model = e.model || model;
+		// What this request really runs with: the engine resolved both.
+		const sent = effort ?? e.effort;
+		const settings = `${model} ${sent ?? ''}`;
+		if (settings !== lastSettings) {
+			lastSettings = settings;
+			emit({
+				type: 'system',
+				subtype: 'init',
+				model,
+				...(typeof sent === 'string' ? { effort: sent } : {})
+			});
+		}
 		emit({
 			type: 'stream_event',
 			event: { type: 'message_start', message: { id: currentMessage, model } }
@@ -355,6 +414,8 @@ export const register: Register = (on) => {
 					}
 				});
 			} else if (m.type === 'user' && e.door === 'prompt') {
+				const text = promptText(m.content);
+				if (echoed.delete(text)) return next(e);
 				emit({ type: 'user', uuid: e.uuid, session_id: link.sessionId, message: m });
 			} else if (m.type === 'user' && e.door === 'tool-result') {
 				const row: Line = { type: 'user', uuid: e.uuid, session_id: link.sessionId, message: m };
@@ -376,9 +437,30 @@ export const register: Register = (on) => {
 	});
 
 	on('turn.complete', ($, e, next) => {
-		if (link && !('agentId' in e && e.agentId)) {
+		const task = e.agentId ? asyncAgents.get(e.agentId) : undefined;
+		if (link && task && e.agentId) {
+			asyncAgents.delete(e.agentId);
+			emit({
+				type: 'system',
+				subtype: 'task_notification',
+				task_id: task,
+				status: e.reason === 'aborted' ? 'stopped' : e.reason === 'answer' ? 'completed' : 'failed',
+				uuid: `wbmod-done-${task}`
+			});
+		}
+		if (link && !e.agentId) {
 			runningTurn = undefined;
 			emit({ type: 'result', subtype: 'success', is_error: e.reason === 'error' });
+			const unread = injected;
+			injected = [];
+			// Entries live one turn at most, so a stale one can't hide a later prompt.
+			echoed.clear();
+			// Stopped: the prompt stays in the chat, as an interrupted CLI leaves it.
+			if (e.reason === 'aborted') return next(e);
+			for (const text of unread) {
+				echoed.add(text);
+				void $.prompt.submit({ text, asUser: true });
+			}
 		}
 		return next(e);
 	});
@@ -424,17 +506,21 @@ export const register: Register = (on) => {
 				task_type: 'local_agent',
 				uuid: `wbmod-task-${id}`
 			});
-		} else if (e.agentId && runningAgents.length === 1) {
+		} else if (e.agentId && (asyncAgents.has(e.agentId) || runningAgents.length === 1)) {
 			emit({
 				type: 'system',
 				subtype: 'task_progress',
-				task_id: runningAgents[0],
+				task_id: asyncAgents.get(e.agentId) ?? runningAgents[0],
 				last_tool_name: e.tool,
 				uuid: `wbmod-progress-${++askSeq}`
 			});
 		}
 		const result = await next(e);
-		if (isAgent && id) {
+		const launched = result.result as { status?: string; agentId?: string } | undefined;
+		if (isAgent && id && launched?.status === 'async_launched' && launched.agentId) {
+			runningAgents.splice(runningAgents.indexOf(id), 1);
+			asyncAgents.set(launched.agentId, id);
+		} else if (isAgent && id) {
 			runningAgents.splice(runningAgents.indexOf(id), 1);
 			emit({
 				type: 'system',

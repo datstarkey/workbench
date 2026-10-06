@@ -433,6 +433,9 @@ impl AgentManager {
             session.feed(&line.to_string(), |new_id| {
                 lock(&self.inner).insert(new_id.to_string(), session.clone());
             });
+            if line.get("type").and_then(serde_json::Value::as_str) == Some("result") {
+                session.learn_cache_ttl();
+            }
         }
     }
 
