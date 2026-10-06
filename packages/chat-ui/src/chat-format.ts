@@ -478,6 +478,18 @@ export function pickTasks(
 	return { agents, jobs, tab, selected: list.find((t) => t.id === pickedId) ?? list[0] ?? null };
 }
 
+export type TaskView = 'conversation' | 'output';
+
+/** A subagent opens on its own conversation; other tasks only have output. */
+export function taskViews(task: TaskInfo): TaskView[] {
+	return task.kind === 'agent' ? ['conversation', 'output'] : ['output'];
+}
+
+export function pickTaskView(task: TaskInfo, picked: TaskView | null): TaskView {
+	const views = taskViews(task);
+	return picked && views.includes(picked) ? picked : views[0];
+}
+
 /** `1.8k tokens`, `24k tokens`. */
 export function formatCount(n: number, unit: string): string {
 	const value =

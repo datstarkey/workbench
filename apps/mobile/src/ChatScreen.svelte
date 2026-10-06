@@ -406,7 +406,9 @@
 		<ChatTasks
 			{tasks}
 			seenAt={chat.seenAt}
+			{cwd}
 			fetchOutput={(id) => chat.taskOutput(id)}
+			fetchTranscript={(id) => chat.taskTranscript(id)}
 			onClose={() => (tasksOpen = false)}
 			class="h-auto w-full rounded-lg border border-wb-hair"
 		/>

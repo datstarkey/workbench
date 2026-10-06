@@ -70,6 +70,10 @@ pub fn router(state: AppState) -> Router {
             "/agent/claude/:id/message",
             post(crate::agent_routes::agent_message),
         )
+        .route(
+            "/agent/claude/:id/tasks/:task_id/transcript",
+            get(crate::agent_routes::agent_task_transcript),
+        )
         .route("/agent/claude/:id", delete(crate::agent_routes::agent_stop))
         .route(
             "/agent/claude/:id/ws",

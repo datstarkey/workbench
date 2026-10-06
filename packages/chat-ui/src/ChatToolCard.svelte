@@ -23,7 +23,8 @@
 		cwd?: string;
 		/** When the call was first seen running, for its timer. */
 		startedAt?: number;
-		fetchFullOutput: (toolId: string) => Promise<string | null>;
+		/** Absent where the whole output can't be fetched (a subagent's read-only transcript). */
+		fetchFullOutput?: (toolId: string) => Promise<string | null>;
 	} = $props();
 
 	let open = $state(false);
@@ -32,6 +33,7 @@
 	let loadingFull = $state(false);
 
 	async function showAll() {
+		if (!fetchFullOutput) return;
 		loadingFull = true;
 		fullOutput = await fetchFullOutput(tool.id);
 		loadingFull = false;
@@ -116,7 +118,7 @@
 				{:else}
 					<pre class="px-2.5 whitespace-pre-wrap text-wb-ink-mute">{shown}</pre>
 				{/if}
-				{#if tool.fullOutputBytes && fullOutput === null}
+				{#if tool.fullOutputBytes && fullOutput === null && fetchFullOutput}
 					<button
 						type="button"
 						class="mx-2.5 my-1 rounded px-1.5 py-0.5 font-sans text-[11px] text-wb-accent hover:underline focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"

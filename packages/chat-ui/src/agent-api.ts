@@ -1,5 +1,11 @@
 import { agentWsUrl } from '@workbench/transport';
-import type { AgentClientMsg, AgentSummary, StartAgentBody, UsageLimit } from '@workbench/types';
+import type {
+	AgentClientMsg,
+	AgentSummary,
+	StartAgentBody,
+	TaskTranscript,
+	UsageLimit
+} from '@workbench/types';
 
 /** What an {@link AgentChat} needs from the server; injectable for tests. */
 export interface AgentApi {
@@ -10,6 +16,8 @@ export interface AgentApi {
 	terminalId?(sessionId: string): string | undefined;
 	/** The chat cwd's files for `@` mentions; absent leaves the menu out. */
 	files?(where: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]>;
+	/** A subagent's own conversation; null until the CLI writes it. */
+	taskTranscript?(sessionId: string, taskId: string): Promise<TaskTranscript | null>;
 }
 
 export interface AgentServer {
@@ -71,6 +79,12 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 				...(worktreePath ? { worktreePath } : {})
 			}).toString();
 			return (await call<string[]>('GET', `/agent/files?${query}`)) ?? [];
+		},
+		taskTranscript(sessionId: string, taskId: string): Promise<TaskTranscript | null> {
+			return call<TaskTranscript>(
+				'GET',
+				`${path(sessionId)}/tasks/${encodeURIComponent(taskId)}/transcript`
+			);
 		},
 		/**
 		 * Stop a session's process, e.g. before a terminal takes it over. `end`:

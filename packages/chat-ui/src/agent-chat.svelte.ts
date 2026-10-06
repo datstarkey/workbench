@@ -13,6 +13,7 @@ import type {
 	RewindFiles,
 	SlashCommand,
 	StartAgentBody,
+	TaskTranscript,
 	TranscriptItem,
 	TranscriptMeta
 } from '@workbench/types';
@@ -448,6 +449,12 @@ export class AgentChat {
 			if (!this.send({ t: 'taskOutput', taskId })) return resolve(null);
 			this.taskWaiters[taskId] = chain(this.taskWaiters[taskId], resolve);
 		});
+	}
+
+	/** A subagent's own conversation; null until it exists or when it can't be read. */
+	async taskTranscript(taskId: string): Promise<TaskTranscript | null> {
+		if (!this.sessionId || !this.api.taskTranscript) return null;
+		return this.api.taskTranscript(this.sessionId, taskId).catch(() => null);
 	}
 
 	/** Rewind is offered only for Claude, attached, idle and not waiting on an answer. */

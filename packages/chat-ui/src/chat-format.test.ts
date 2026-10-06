@@ -17,6 +17,8 @@ import {
 	isWholeCommand,
 	insertCommand,
 	pickTasks,
+	pickTaskView,
+	taskViews,
 	approvalPreview,
 	formatElapsed,
 	formatTokens,
@@ -421,6 +423,16 @@ describe('tasks panel', () => {
 		const onlyJobs = [task('shell', 'local_bash', 'running')];
 		expect(pickTasks(onlyJobs, 'agents', null).tab).toBe('jobs');
 		expect(pickTasks([], null, null).selected).toBeNull();
+	});
+
+	it('opens an agent on its conversation and a shell on its output', () => {
+		const agent = task('a1', 'agent', 'running');
+		const shell = task('shell', 'local_bash', 'running');
+		expect(taskViews(agent)).toEqual(['conversation', 'output']);
+		expect(pickTaskView(agent, null)).toBe('conversation');
+		expect(pickTaskView(agent, 'output')).toBe('output');
+		expect(taskViews(shell)).toEqual(['output']);
+		expect(pickTaskView(shell, 'conversation')).toBe('output');
 	});
 
 	it('abbreviates counts', () => {

@@ -678,6 +678,13 @@ export interface TaskInfo {
 	outputId?: string;
 }
 
+/** A subagent's own conversation (`GET /agent/claude/:id/tasks/:taskId/transcript`). */
+export interface TaskTranscript {
+	/** How many earlier items were left out. */
+	start: number;
+	items: TranscriptItem[];
+}
+
 /** A slash command the session accepts (built-ins, custom commands, skills). */
 export interface SlashCommand {
 	name: string;
