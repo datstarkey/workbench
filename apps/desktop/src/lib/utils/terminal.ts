@@ -69,10 +69,13 @@ export async function createNativeTerminal(request: {
 	fontSize: number;
 	startupCommand?: string;
 	claudeAccountId?: string;
+	/** The registered project `projectPath` (the cwd, maybe a worktree) belongs to. */
+	projectRoot?: string;
 }): Promise<void> {
 	await invoke('create_native_terminal', {
 		sessionId: request.sessionId,
 		projectPath: request.projectPath,
+		projectRoot: request.projectRoot ?? null,
 		shell: request.shell,
 		x: request.x,
 		y: request.y,

@@ -473,11 +473,17 @@ impl AgentSession {
     pub fn prompt(&self, text: &str, images: &[PromptImage], files: &[PromptFile]) -> Result<()> {
         self.keepalive_turn
             .store(text == KEEPALIVE_PROMPT, Ordering::SeqCst);
-        if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
-            let text = super::modlink::attachments_as_mentions(&self.id(), text, images, files)?;
-            return self.run(|d| d.prompt(&text, &[], &[]));
+        let sent = if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
+            super::modlink::attachments_as_mentions(&self.id(), text, images, files)
+                .and_then(|text| self.run(|d| d.prompt(&text, &[], &[])))
+        } else {
+            self.run(|d| d.prompt(text, images, files))
+        };
+        // No turn started, so the flag must not swallow the next one's end.
+        if sent.is_err() {
+            self.keepalive_turn.store(false, Ordering::SeqCst);
         }
-        self.run(|d| d.prompt(text, images, files))
+        sent
     }
 
     pub fn approve(

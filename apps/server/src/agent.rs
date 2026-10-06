@@ -436,8 +436,8 @@ impl AgentManager {
             link.touch();
         }
         for line in lines {
-            if let Some(link) = link {
-                link.note_line(line);
+            if link.is_some_and(|link| !link.note_line(line)) {
+                continue;
             }
             session.feed(&line.to_string(), |new_id| {
                 lock(&self.inner).insert(new_id.to_string(), session.clone());

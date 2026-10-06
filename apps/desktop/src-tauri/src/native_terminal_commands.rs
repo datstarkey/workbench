@@ -21,6 +21,7 @@ pub async fn create_native_terminal(
     font_size: f64,
     startup_command: Option<String>,
     claude_account_id: Option<String>,
+    project_root: Option<String>,
     manager: tauri::State<'_, NativeTerminalManager>,
     window: tauri::WebviewWindow,
     app_handle: tauri::AppHandle,
@@ -33,14 +34,14 @@ pub async fn create_native_terminal(
         .map_err(|e| e.to_string())?;
     let mod_env = server.grant_native_terminal(
         &session_id,
+        project_root.as_deref().unwrap_or(&project_path),
         &project_path,
         claude_account_id,
         hook_socket.clone(),
     );
 
-    manager
-        .spawn(
-            session_id,
+    let spawned = manager.spawn(
+        session_id.clone(),
             project_path,
             shell,
             x,
@@ -51,11 +52,14 @@ pub async fn create_native_terminal(
             startup_command,
             hook_socket,
             claude_config_dir,
-            mod_env,
-            ns_view,
-            app_handle,
-        )
-        .map_err(|e| e.to_string())
+        mod_env,
+        ns_view,
+        app_handle,
+    );
+    if spawned.is_err() {
+        server.revoke_native_terminal(&session_id);
+    }
+    spawned.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

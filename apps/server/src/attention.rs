@@ -36,6 +36,8 @@ pub struct Attention {
     pub worktree_path: Option<String>,
     pub title: Option<String>,
     pub waiting: Option<WaitingSummary>,
+    /// Still mid-turn (an answered approval lets the turn go on).
+    pub busy: bool,
 }
 
 struct Seen {
@@ -97,7 +99,11 @@ impl AttentionTracker {
         // Gone while waiting (stopped, or its process ended): nothing waits now.
         for (id, seen) in previous.iter().flatten() {
             if seen.waiting.is_some() && !kept.contains(id) {
-                out.push(attention(AttentionKind::Resolved, &seen.last));
+                let gone = AgentSummary {
+                    busy: false,
+                    ..seen.last.clone()
+                };
+                out.push(attention(AttentionKind::Resolved, &gone));
             }
         }
         self.seen = Some(next);
@@ -117,6 +123,7 @@ fn attention(kind: AttentionKind, s: &AgentSummary) -> Attention {
         worktree_path: s.worktree_path.clone(),
         title: s.title.clone(),
         waiting: s.waiting.clone(),
+        busy: s.busy && !s.exited,
     }
 }
 

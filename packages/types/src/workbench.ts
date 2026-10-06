@@ -923,4 +923,6 @@ export interface AgentAttention {
 	worktreePath: string | null;
 	title: string | null;
 	waiting: AgentSummary['waiting'];
+	/** Still mid-turn (an answered approval lets the turn go on). */
+	busy: boolean;
 }

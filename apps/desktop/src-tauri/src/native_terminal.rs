@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::types::{TerminalActivityEvent, TerminalDataEvent, TerminalExitEvent};
 
@@ -217,6 +217,10 @@ impl NativeTerminalManager {
         if let Some(dir) = claude_config_dir {
             cmd.env(crate::claude_accounts::CONFIG_DIR_ENV, dir);
         }
+        let mod_token = mod_env
+            .iter()
+            .find(|(key, _)| *key == "WORKBENCH_MOD_TOKEN")
+            .map(|(_, token)| token.clone());
         for (key, val) in mod_env {
             cmd.env(key, val);
         }
@@ -409,6 +413,12 @@ impl NativeTerminalManager {
 
             // Cleanup: remove session from map and emit exit event.
             Self::remove_session(&sessions_for_cleanup, &sid);
+            // A shell that exits on its own never sees `kill_native_terminal`.
+            if let Some(token) = &mod_token {
+                handle
+                    .state::<crate::server_control::ServerControl>()
+                    .revoke_native_token(&sid, token);
+            }
 
             let exit_code = session_for_cleanup
                 .lock()

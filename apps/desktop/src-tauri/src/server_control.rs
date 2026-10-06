@@ -84,6 +84,7 @@ impl ServerControl {
     pub fn grant_native_terminal(
         &self,
         pane_id: &str,
+        project_path: &str,
         cwd: &str,
         claude_account_id: Option<String>,
         hook_socket: Option<String>,
@@ -94,8 +95,8 @@ impl ServerControl {
         };
         let grant = workbench_server::agent::ModGrant {
             pane_id: Some(pane_id.to_string()),
-            project_path: cwd.to_string(),
-            worktree_path: None,
+            project_path: project_path.to_string(),
+            worktree_path: (cwd != project_path).then(|| cwd.to_string()),
             claude_account_id,
             cwd: cwd.to_string(),
             hook_socket,
@@ -134,6 +135,18 @@ impl ServerControl {
         if let Some(token) = token {
             self.managers.agents.revoke_grant(&token);
         }
+    }
+
+    /// Withdraw `token` once its native terminal's shell exited, unless the
+    /// pane has since been issued another.
+    #[cfg(target_os = "macos")]
+    pub fn revoke_native_token(&self, pane_id: &str, token: &str) {
+        let mut grants = self.native_grants.lock().unwrap_or_else(|e| e.into_inner());
+        if grants.get(pane_id).map(String::as_str) == Some(token) {
+            grants.remove(pane_id);
+        }
+        drop(grants);
+        self.managers.agents.revoke_grant(token);
     }
 }
 

@@ -49,11 +49,16 @@ pub struct ModLink {
     answered: Notify,
     /// The tool call each approval in `asks` is for.
     ask_tools: Mutex<std::collections::HashMap<String, Option<String>>>,
-    /// The approval the terminal's own dialog asks now (no chat was open),
-    /// with its tool call: what the session waits on until that call has a
-    /// result or the turn ends.
-    in_terminal: Mutex<Option<(WaitingSummary, Option<String>)>>,
+    /// What the terminal's own dialogs ask (no chat was open), oldest first,
+    /// each with its tool call: what the session waits on until the plugin says
+    /// it was answered, the call has a result, or the turn ends.
+    in_terminal: Mutex<Vec<(WaitingSummary, Option<String>)>>,
 }
+
+/// A line only the server reads: the terminal shows a dialog the plugin can't
+/// route through `/mod/ask` (an MCP elicitation), named by the TUI's
+/// Notification hook. It isn't folded into the transcript.
+const TERMINAL_WAITING: &str = "workbench_terminal_waiting";
 
 impl ModLink {
     pub fn new(token: String, terminal_id: Option<String>) -> Self {
@@ -66,7 +71,7 @@ impl ModLink {
             asks: Mutex::new(std::collections::HashMap::new()),
             answered: Notify::new(),
             ask_tools: Mutex::new(std::collections::HashMap::new()),
-            in_terminal: Mutex::new(None),
+            in_terminal: Mutex::new(Vec::new()),
         }
     }
 
@@ -125,38 +130,56 @@ impl ModLink {
                 in_terminal: true,
                 ..waiting
             };
-            *lock(&self.in_terminal) = Some((waiting, tool));
+            lock(&self.in_terminal).push((waiting, tool));
         }
     }
 
-    /// What the terminal's own dialog waits on, if anything.
+    /// The oldest dialog the terminal waits on, if any.
     pub fn terminal_waiting(&self) -> Option<WaitingSummary> {
-        lock(&self.in_terminal).as_ref().map(|(w, _)| w.clone())
+        lock(&self.in_terminal).first().map(|(w, _)| w.clone())
     }
 
-    /// A line the plugin posted: the terminal's dialog was answered once its
-    /// tool call has a result (run, or denied), or the turn ended.
-    pub fn note_line(&self, line: &Value) {
-        let mut slot = lock(&self.in_terminal);
-        let Some((_, tool)) = slot.as_ref() else {
-            return;
-        };
-        let answered = match line.get("type").and_then(Value::as_str) {
-            Some("result") => true,
-            Some("user") => line
-                .pointer("/message/content")
-                .and_then(Value::as_array)
-                .is_some_and(|blocks| {
-                    blocks.iter().any(|b| {
-                        let id = b.get("tool_use_id").and_then(Value::as_str);
-                        id.is_some() && (tool.is_none() || id == tool.as_deref())
-                    })
-                }),
-            _ => false,
-        };
-        if answered {
-            *slot = None;
+    /// A line the plugin posted. A terminal dialog was answered once the
+    /// plugin cancels its request (the approved call starts), its tool call
+    /// has a result (it ran, or was denied), or the turn ends. False for a
+    /// line only the server reads, which the transcript must not see.
+    pub fn note_line(&self, line: &Value) -> bool {
+        let mut asked = lock(&self.in_terminal);
+        let str_at = |p: &str| line.pointer(p).and_then(Value::as_str);
+        match str_at("/type") {
+            Some(TERMINAL_WAITING) => {
+                asked.push((
+                    WaitingSummary {
+                        id: str_at("/id").unwrap_or_default().to_string(),
+                        tool: str_at("/tool").unwrap_or("Elicitation").to_string(),
+                        preview: str_at("/preview").unwrap_or_default().to_string(),
+                        in_terminal: true,
+                    },
+                    None,
+                ));
+                return false;
+            }
+            Some("result") => asked.clear(),
+            Some("control_cancel_request") => {
+                asked.retain(|(w, _)| Some(w.id.as_str()) != str_at("/request_id"));
+            }
+            Some("user") => {
+                let results: Vec<&str> = line
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
+                    .collect();
+                if !results.is_empty() {
+                    asked.retain(|(_, tool)| {
+                        tool.as_deref().is_some_and(|t| !results.contains(&t))
+                    });
+                }
+            }
+            _ => {}
         }
+        true
     }
 
     pub fn push(&self, line: Value) {
@@ -322,6 +345,36 @@ mod tests {
         link.fall_back("r2", Some(waiting("r2")));
         link.note_line(&json!({"type": "result", "subtype": "success"}));
         assert!(link.terminal_waiting().is_none(), "the turn ended");
+    }
+
+    #[test]
+    fn parallel_terminal_approvals_clear_one_at_a_time() {
+        let link = ModLink::new("t".into(), None);
+        for (r, t) in [("r1", "toolu_1"), ("r2", "toolu_2")] {
+            link.expect_answer(r, Some(t.into()));
+            link.fall_back(r, Some(waiting(r)));
+        }
+        assert_eq!(link.terminal_waiting().unwrap().id, "r1");
+        // The plugin cancels r1 as its approved call starts: a long tool isn't "waiting".
+        assert!(link.note_line(&json!({"type": "control_cancel_request", "request_id": "r1"})));
+        assert_eq!(link.terminal_waiting().unwrap().id, "r2");
+        link.note_line(
+            &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_2"}]}}),
+        );
+        assert!(link.terminal_waiting().is_none());
+    }
+
+    #[test]
+    fn a_terminal_elicitation_waits_and_stays_out_of_the_transcript() {
+        let link = ModLink::new("t".into(), None);
+        let line = json!({"type": TERMINAL_WAITING, "id": "e1", "tool": "Elicitation", "preview": "Pick one"});
+        assert!(!link.note_line(&line), "not for the transcript");
+        let w = link.terminal_waiting().unwrap();
+        assert_eq!((w.id.as_str(), w.tool.as_str(), w.in_terminal), ("e1", "Elicitation", true));
+        link.note_line(
+            &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_9"}]}}),
+        );
+        assert!(link.terminal_waiting().is_none(), "the MCP call returned");
     }
 
     #[tokio::test]

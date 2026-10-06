@@ -504,6 +504,7 @@ describe('ClaudeSessionStore', () => {
 			worktreePath: null,
 			title: 'Fix the build',
 			waiting: null,
+			busy: false,
 			...over
 		});
 		let notified: AttentionTarget[];
@@ -521,10 +522,13 @@ describe('ClaudeSessionStore', () => {
 			expect(store.panesAwaitingInput.has('pane-1')).toBe(true);
 			expect(store.panesInProgress.has('pane-1')).toBe(false);
 
-			emitMockEvent('agent:attention', attention('resolved'));
+			// Answered mid-turn: the turn goes on.
+			emitMockEvent('agent:attention', attention('resolved', { busy: true }));
 			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
+			expect(store.panesInProgress.has('pane-1')).toBe(true);
 
 			emitMockEvent('agent:attention', attention('turnEnded'));
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
 			expect(notified).toEqual([{ paneId: 'pane-1' }, { paneId: 'pane-1' }]);
 			expect(mockWorkspaceStore.paneForAgent).toHaveBeenCalledWith(
 				expect.objectContaining({ sessionId: 'sess-1', terminalId: 'term-1' })

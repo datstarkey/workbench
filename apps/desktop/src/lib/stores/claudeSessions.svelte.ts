@@ -394,6 +394,7 @@ export class ClaudeSessionStore {
 				break;
 			case 'resolved':
 				this.panesAwaitingInput.delete(paneId);
+				if (event.busy) this.panesInProgress.add(paneId);
 				break;
 			case 'turnEnded':
 				this.panesInProgress.delete(paneId);
