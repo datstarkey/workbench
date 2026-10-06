@@ -17,4 +17,5 @@ Chat can now trust a new folder and switch permission modes properly, and it no 
 
 ## Improvements
 
+- CI now compiles the macOS-only code on every Rust change, after a missed macOS compile error held this release back. (#195)
 - The Workbench Claude Code plugin is now type-checked and linted in CI, which caught and fixed several type errors. (#192)
