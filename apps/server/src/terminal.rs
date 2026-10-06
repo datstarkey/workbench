@@ -541,7 +541,11 @@ pub fn create_from_body(
         body.hook_socket,
         body.shell,
         claude_config_dir.as_deref(),
-        body.claude_session.as_ref().map(|s| s.id.clone()),
+        // Only a terminal its plugin can attach becomes a chat.
+        body.claude_session
+            .as_ref()
+            .filter(|_| token.is_some())
+            .map(|s| s.id.clone()),
         &mod_env,
     );
     match (&created, &token) {

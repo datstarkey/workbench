@@ -172,9 +172,8 @@ impl ModLink {
                     .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
                     .collect();
                 if !results.is_empty() {
-                    asked.retain(|(_, tool)| {
-                        tool.as_deref().is_some_and(|t| !results.contains(&t))
-                    });
+                    asked
+                        .retain(|(_, tool)| tool.as_deref().is_some_and(|t| !results.contains(&t)));
                 }
             }
             _ => {}
@@ -332,9 +331,7 @@ mod tests {
         link.expect_answer("r1", Some("toolu_1".into()));
         link.fall_back("r1", Some(waiting("r1")));
         assert!(link.terminal_waiting().unwrap().in_terminal);
-        let result = |id: &str| {
-            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id}]}})
-        };
+        let result = |id: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id}]}});
         link.note_line(&json!({"type": "stream_event"}));
         link.note_line(&result("toolu_other"));
         assert!(link.terminal_waiting().is_some(), "another call's result");
@@ -370,7 +367,10 @@ mod tests {
         let line = json!({"type": TERMINAL_WAITING, "id": "e1", "tool": "Elicitation", "preview": "Pick one"});
         assert!(!link.note_line(&line), "not for the transcript");
         let w = link.terminal_waiting().unwrap();
-        assert_eq!((w.id.as_str(), w.tool.as_str(), w.in_terminal), ("e1", "Elicitation", true));
+        assert_eq!(
+            (w.id.as_str(), w.tool.as_str(), w.in_terminal),
+            ("e1", "Elicitation", true)
+        );
         link.note_line(
             &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_9"}]}}),
         );
