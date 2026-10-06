@@ -45,10 +45,15 @@
 	import ViewSwitch from './ViewSwitch.svelte';
 	import { useBack } from './back-navigation';
 	import ProjectReviewSheet from './ProjectReviewSheet.svelte';
+	import { dictate, supportsDictation } from './dictation';
 
 	let { client, ref }: { client: MobileClient; ref: ChatRef } = $props();
 
-	setChatPlatform({ openLink: openExternal, enterSends: false });
+	setChatPlatform({
+		openLink: openExternal,
+		enterSends: false,
+		...(supportsDictation() ? { dictate } : {})
+	});
 
 	// svelte-ignore state_referenced_locally
 	const chat = new AgentChat(

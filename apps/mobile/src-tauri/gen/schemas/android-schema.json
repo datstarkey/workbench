@@ -2587,6 +2587,24 @@
           "type": "string",
           "const": "session-notifications:deny-take-open-session",
           "markdownDescription": "Denies the take_open_session command without any pre-configured scope."
+        },
+        {
+          "description": "Allows opening Android speech input to dictate a chat draft.\n#### This default permission set includes:\n\n- `allow-recognize`",
+          "type": "string",
+          "const": "speech-input:default",
+          "markdownDescription": "Allows opening Android speech input to dictate a chat draft.\n#### This default permission set includes:\n\n- `allow-recognize`"
+        },
+        {
+          "description": "Enables the recognize command without any pre-configured scope.",
+          "type": "string",
+          "const": "speech-input:allow-recognize",
+          "markdownDescription": "Enables the recognize command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the recognize command without any pre-configured scope.",
+          "type": "string",
+          "const": "speech-input:deny-recognize",
+          "markdownDescription": "Denies the recognize command without any pre-configured scope."
         }
       ]
     },

@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The recognition activity owns microphone access; Workbench only receives text. -->
+</manifest>

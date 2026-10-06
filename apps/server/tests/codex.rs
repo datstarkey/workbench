@@ -140,14 +140,12 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     let list = |path: &'static str| {
         let url = format!("{base}{path}");
         async move {
-            client()
-                .get(url)
-                .send()
-                .await
-                .unwrap()
-                .json::<Vec<Value>>()
-                .await
-                .unwrap()
+            let response = client().get(url).send().await.unwrap();
+            assert!(
+                response.headers().contains_key(reqwest::header::DATE),
+                "Android uses the server's Date to catch a newly listed first-turn completion"
+            );
+            response.json::<Vec<Value>>().await.unwrap()
         }
     };
 
@@ -169,6 +167,7 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     assert_eq!(all[0]["agent"], "codex");
     assert_eq!(all[0]["sessionId"], NEW_THREAD);
     assert_eq!(all[0]["paneId"], "pane-1");
+    assert_eq!(all[0]["turnEndedAt"], Value::Null);
     assert!(
         list("/agent/claude").await.is_empty(),
         "older phones see Claude only"
@@ -232,6 +231,7 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     assert_eq!(approval["description"], "May I list?");
     let waiting = &list("/agent").await[0]["waiting"];
     assert_eq!(waiting["preview"], "ls");
+    assert_eq!(waiting["id"], approval["id"]);
 
     let approve = json!({"t":"approve","requestId": approval["id"],"decision":"allow"});
     ws.send(Message::Text(approve.to_string())).await.unwrap();
@@ -246,6 +246,13 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         }
     }
     assert!(saw_output, "the command finishes with its output");
+    let completed = &list("/agent").await[0];
+    assert_eq!(completed["busy"], false);
+    assert_eq!(completed["waiting"], Value::Null);
+    assert!(
+        completed["turnEndedAt"].as_u64().is_some(),
+        "Codex completion is visible to Android polling even after its busy frame was missed"
+    );
 
     let received = std::fs::read_to_string(&log).unwrap();
     let sent: Vec<Value> = received

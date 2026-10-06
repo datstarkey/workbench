@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { tick, type Snippet } from 'svelte';
+	import { onDestroy, tick, type Snippet } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { watch } from 'runed';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import ImagePlusIcon from '@lucide/svelte/icons/image-plus';
+	import MicIcon from '@lucide/svelte/icons/mic';
 	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -40,6 +41,7 @@
 	} from './attachment-intake';
 	import { insertMention, matchFiles, mentionQuery } from './file-mentions';
 	import { getChatPlatform } from './platform';
+	import { Dictation, insertDictation } from './dictation.svelte';
 
 	let {
 		id,
@@ -98,6 +100,8 @@
 
 	const platform = getChatPlatform();
 	const enterSends = platform.enterSends ?? true;
+	const dictation = platform.dictate ? new Dictation(platform.dictate) : null;
+	onDestroy(() => dictation?.dispose());
 
 	let attachError = $state('');
 	/** A file is being dragged over this composer. */
@@ -147,6 +151,15 @@
 		caretAt = { draft: next.text, caret: next.caret };
 		await tick();
 		textarea?.setSelectionRange(next.caret, next.caret);
+	}
+
+	function dictate() {
+		if (!dictation || disabledReason !== null) return;
+		void dictation.start(async (text) => {
+			if (disabledReason !== null) return;
+			await place(insertDictation(draft, text, textarea?.selectionStart, textarea?.selectionEnd));
+			textarea?.focus();
+		});
 	}
 
 	/**
@@ -387,6 +400,9 @@
 	{#if attachError}
 		<p class="px-3.5 pb-1 text-[11px] text-wb-err" role="alert">{attachError}</p>
 	{/if}
+	{#if dictation?.error}
+		<p class="px-3.5 pb-1 text-[11px] text-wb-err" role="alert">{dictation.error}</p>
+	{/if}
 	<div class="flex items-center gap-1.5 px-2 pb-2">
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
@@ -451,6 +467,18 @@
 			}}
 		/>
 		<span class="flex-1"></span>
+		{#if dictation}
+			<button
+				type="button"
+				class="flex size-9 shrink-0 items-center justify-center rounded-md text-wb-ink-mute hover:bg-wb-panel2 hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
+				aria-label={dictation.busy ? 'Listening…' : 'Dictate message'}
+				title={dictation.busy ? 'Listening…' : 'Dictate message'}
+				disabled={disabledReason !== null || dictation.busy}
+				onclick={dictate}
+			>
+				<MicIcon class={cn('size-4', dictation.busy && 'text-wb-accent')} />
+			</button>
+		{/if}
 		{#if busy}
 			<button
 				type="button"

@@ -27,3 +27,4 @@ tauri-plugin-barcode-scanner = "2"
 tauri-plugin-apk-updater = { path = "plugins/apk-updater" }
 
 tauri-plugin-session-notifications = { path = "plugins/session-notifications" }
+tauri-plugin-speech-input = { path = "plugins/speech-input" }

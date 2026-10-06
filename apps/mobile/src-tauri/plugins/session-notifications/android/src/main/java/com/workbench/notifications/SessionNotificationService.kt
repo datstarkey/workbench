@@ -78,9 +78,10 @@ class SessionNotificationService : Service() {
           val body = connection.inputStream.use { it.readBytes() }
           if (body.size > 2 * 1024 * 1024) return@scheduleWithFixedDelay
           val list = JSONArray(String(body, Charsets.UTF_8))
+          val serverTime = connection.getHeaderFieldDate("Date", 0L).takeIf { it > 0L }
           main.post {
             if (generation != current) return@post
-            for (alert in tracker.update(list)) {
+            for (alert in tracker.update(list, serverTime)) {
               if (visible) { Telemetry.breadcrumb("alert skipped: app visible"); continue }
               noteBlocked()
               val s = alert.session
