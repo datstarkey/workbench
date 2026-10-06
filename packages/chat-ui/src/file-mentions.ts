@@ -1,15 +1,11 @@
+import { replaceToken, tokenAtCaret, type CaretToken } from './composer-tokens';
+
 /** An `@` mention being typed: where its `@` is and the text after it. */
-export interface MentionQuery {
-	start: number;
-	query: string;
-}
+export type MentionQuery = CaretToken;
 
 /** The `@path` word ending at the caret, if one is being typed. */
 export function mentionQuery(draft: string, caret: number): MentionQuery | null {
-	const before = draft.slice(0, caret);
-	const match = /(^|\s)@([^\s@]*)$/.exec(before);
-	if (!match) return null;
-	return { start: before.length - match[2].length - 1, query: match[2] };
+	return tokenAtCaret(draft, caret, '@');
 }
 
 /**
@@ -56,7 +52,5 @@ export function insertMention(
 	path: string
 ): { text: string; caret: number } {
 	const token = /\s/.test(path) ? `@"${path}" ` : `@${path} `;
-	const after = draft.slice(caret).replace(/^\S*/, '').replace(/^ /, '');
-	const text = draft.slice(0, mention.start) + token + after;
-	return { text, caret: mention.start + token.length };
+	return replaceToken(draft, mention.start, caret, token);
 }

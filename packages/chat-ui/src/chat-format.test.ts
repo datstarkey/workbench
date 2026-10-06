@@ -13,6 +13,8 @@ import {
 	limitNotice,
 	matchCommands,
 	slashQuery,
+	isWholeCommand,
+	insertCommand,
 	pickTasks,
 	approvalPreview,
 	formatElapsed,
@@ -439,6 +441,23 @@ describe('slash menu', () => {
 		expect(slashQuery('fix it then /rev and more', 16)).toEqual({ start: 12, query: 'rev' });
 		expect(slashQuery('see src/lib')).toBe(null);
 		expect(slashQuery('open /usr/bin')).toBe(null);
+	});
+
+	it('treats a command as the whole draft only with nothing but whitespace around it', () => {
+		const at = (draft: string, caret = draft.length) => slashQuery(draft, caret)!;
+		expect(isWholeCommand('/res', at('/res'), 4)).toBe(true);
+		expect(isWholeCommand('/resume', at('/resume', 4), 4)).toBe(true);
+		expect(isWholeCommand('  /res', at('  /res'), 6)).toBe(true);
+		expect(isWholeCommand('fix it /rev', at('fix it /rev'), 11)).toBe(false);
+		expect(isWholeCommand('/rev then more', at('/rev then more', 4), 4)).toBe(false);
+	});
+
+	it('inserts a picked command where it was typed', () => {
+		const draft = 'fix it then /re and push';
+		expect(insertCommand(draft, slashQuery(draft, 15)!, 15, 'review')).toEqual({
+			text: 'fix it then /review and push',
+			caret: 20
+		});
 	});
 
 	it('ranks prefix matches before other matches', () => {
