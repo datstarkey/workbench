@@ -102,7 +102,7 @@ impl Launch {
 }
 
 /// One live session as the phone's home screen lists it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSummary {
     pub agent: AgentKind,
@@ -359,6 +359,11 @@ impl AgentManager {
             .mod_link()
             .context("not a terminal session")?
             .clone();
+        // A desktop native terminal's `claude` can't be restarted from here, and
+        // a new server terminal beside it would run the session twice.
+        if link.terminal_id.is_none() {
+            bail!("Rewind this session in its own terminal.");
+        }
         session.idle_meta()?;
         let req = session.relaunch();
         let Launch::Claude {
@@ -426,10 +431,14 @@ impl AgentManager {
 
     /// Fold lines a terminal's plugin posted into its session.
     pub fn feed_mod(&self, session: &Arc<AgentSession>, lines: &[serde_json::Value]) {
-        if let Some(link) = session.mod_link() {
+        let link = session.mod_link();
+        if let Some(link) = link {
             link.touch();
         }
         for line in lines {
+            if let Some(link) = link {
+                link.note_line(line);
+            }
             session.feed(&line.to_string(), |new_id| {
                 lock(&self.inner).insert(new_id.to_string(), session.clone());
             });

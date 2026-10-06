@@ -12,6 +12,7 @@ use base64::Engine;
 use serde_json::Value;
 use tokio::sync::Notify;
 use workbench_core::chat_attachment::PDF_TYPE;
+use workbench_core::claude_transcript::WaitingSummary;
 
 use super::{lock, PromptFile, PromptImage};
 
@@ -46,6 +47,12 @@ pub struct ModLink {
     /// answer once a client gives it.
     asks: Mutex<std::collections::HashMap<String, Option<Value>>>,
     answered: Notify,
+    /// The tool call each approval in `asks` is for.
+    ask_tools: Mutex<std::collections::HashMap<String, Option<String>>>,
+    /// The approval the terminal's own dialog asks now (no chat was open),
+    /// with its tool call: what the session waits on until that call has a
+    /// result or the turn ends.
+    in_terminal: Mutex<Option<(WaitingSummary, Option<String>)>>,
 }
 
 impl ModLink {
@@ -58,14 +65,18 @@ impl ModLink {
             last_seen: Mutex::new(Instant::now()),
             asks: Mutex::new(std::collections::HashMap::new()),
             answered: Notify::new(),
+            ask_tools: Mutex::new(std::collections::HashMap::new()),
+            in_terminal: Mutex::new(None),
         }
     }
 
-    /// The plugin asked for approval `request_id`: answers go to `/mod/ask`, not `/mod/in`.
-    pub fn expect_answer(&self, request_id: &str) {
+    /// The plugin asked for approval `request_id` (for tool call `tool_use_id`):
+    /// answers go to `/mod/ask`, not `/mod/in`.
+    pub fn expect_answer(&self, request_id: &str, tool_use_id: Option<String>) {
         lock(&self.asks)
             .entry(request_id.to_string())
             .or_insert(None);
+        lock(&self.ask_tools).insert(request_id.to_string(), tool_use_id);
     }
 
     /// Take a client's answer to an approval the plugin waits on; `false` when
@@ -99,12 +110,53 @@ impl ModLink {
         let mut asks = lock(&self.asks);
         let answer = asks.get_mut(request_id)?.take()?;
         asks.remove(request_id);
+        lock(&self.ask_tools).remove(request_id);
         Some(answer)
     }
 
-    /// Stop waiting on `request_id` (it fell back to the terminal).
-    pub fn drop_ask(&self, request_id: &str) {
+    /// Stop waiting on `request_id`: the terminal asks it instead, and
+    /// `waiting` (its summary as the chat had it) stays what the session
+    /// waits on, so a phone or desktop not looking still hears of it.
+    pub fn fall_back(&self, request_id: &str, waiting: Option<WaitingSummary>) {
         lock(&self.asks).remove(request_id);
+        let tool = lock(&self.ask_tools).remove(request_id).flatten();
+        if let Some(waiting) = waiting {
+            let waiting = WaitingSummary {
+                in_terminal: true,
+                ..waiting
+            };
+            *lock(&self.in_terminal) = Some((waiting, tool));
+        }
+    }
+
+    /// What the terminal's own dialog waits on, if anything.
+    pub fn terminal_waiting(&self) -> Option<WaitingSummary> {
+        lock(&self.in_terminal).as_ref().map(|(w, _)| w.clone())
+    }
+
+    /// A line the plugin posted: the terminal's dialog was answered once its
+    /// tool call has a result (run, or denied), or the turn ended.
+    pub fn note_line(&self, line: &Value) {
+        let mut slot = lock(&self.in_terminal);
+        let Some((_, tool)) = slot.as_ref() else {
+            return;
+        };
+        let answered = match line.get("type").and_then(Value::as_str) {
+            Some("result") => true,
+            Some("user") => line
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|b| {
+                        let id = b.get("tool_use_id").and_then(Value::as_str);
+                        id.is_some() && (tool.is_none() || id == tool.as_deref())
+                    })
+                }),
+            _ => false,
+        };
+        if answered {
+            *slot = None;
+        }
     }
 
     pub fn push(&self, line: Value) {
@@ -240,6 +292,36 @@ mod tests {
             attachments_as_mentions("s1", "plain", &[], &[]).unwrap(),
             "plain"
         );
+    }
+
+    fn waiting(id: &str) -> WaitingSummary {
+        WaitingSummary {
+            id: id.into(),
+            tool: "Bash".into(),
+            preview: "ls".into(),
+            in_terminal: false,
+        }
+    }
+
+    #[test]
+    fn a_terminal_asked_approval_waits_until_its_call_has_a_result() {
+        let link = ModLink::new("t".into(), None);
+        link.expect_answer("r1", Some("toolu_1".into()));
+        link.fall_back("r1", Some(waiting("r1")));
+        assert!(link.terminal_waiting().unwrap().in_terminal);
+        let result = |id: &str| {
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id}]}})
+        };
+        link.note_line(&json!({"type": "stream_event"}));
+        link.note_line(&result("toolu_other"));
+        assert!(link.terminal_waiting().is_some(), "another call's result");
+        link.note_line(&result("toolu_1"));
+        assert!(link.terminal_waiting().is_none());
+
+        link.expect_answer("r2", None);
+        link.fall_back("r2", Some(waiting("r2")));
+        link.note_line(&json!({"type": "result", "subtype": "success"}));
+        assert!(link.terminal_waiting().is_none(), "the turn ended");
     }
 
     #[tokio::test]

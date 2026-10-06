@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod agent_routes;
+pub mod attention;
 pub mod auth;
 pub mod cli;
 pub mod error;

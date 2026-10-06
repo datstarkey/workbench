@@ -171,6 +171,7 @@ impl NativeTerminalManager {
         startup_command: Option<String>,
         hook_socket_path: Option<String>,
         claude_config_dir: Option<std::path::PathBuf>,
+        mod_env: Vec<(&'static str, String)>,
         ns_view_ptr: *mut c_void,
         app_handle: AppHandle,
     ) -> Result<()> {
@@ -215,6 +216,9 @@ impl NativeTerminalManager {
         }
         if let Some(dir) = claude_config_dir {
             cmd.env(crate::claude_accounts::CONFIG_DIR_ENV, dir);
+        }
+        for (key, val) in mod_env {
+            cmd.env(key, val);
         }
 
         // Shell integration (OSC 133) — inject ZDOTDIR for zsh

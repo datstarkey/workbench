@@ -39,6 +39,12 @@ describe('waiting on you', () => {
 		expect(answerableFromHome(approval('Elicitation'))).toBe(false);
 		expect(waitingLabel(approval('Elicitation'))).toBe('Needs your input');
 	});
+
+	it("leaves one the terminal's own dialog asks to the terminal", () => {
+		const inTerminal = { ...approval('Bash'), inTerminal: true };
+		expect(answerableFromHome(inTerminal)).toBe(false);
+		expect(waitingLabel(inTerminal)).toBe('Wants to run a command (answer in its terminal)');
+	});
 });
 
 describe('tildePath', () => {

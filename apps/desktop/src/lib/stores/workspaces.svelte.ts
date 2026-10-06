@@ -799,6 +799,26 @@ export class WorkspaceStore {
 		);
 	}
 
+	/**
+	 * The pane showing a chat session: the pane that started it, else one on its
+	 * session id (or an id it had before a `/clear`), else one on its terminal.
+	 * Sessions started on the phone carry no pane id.
+	 */
+	paneForAgent(a: {
+		paneId: string | null;
+		sessionId: string;
+		previousIds: string[];
+		terminalId: string | null;
+	}): string | null {
+		const ids = [a.sessionId, ...a.previousIds];
+		const panes = this.workspaces.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes));
+		const match =
+			panes.find((p) => p.id === a.paneId) ??
+			panes.find((p) => p.claudeSessionId !== undefined && ids.includes(p.claudeSessionId)) ??
+			panes.find((p) => a.terminalId !== null && this.serverTerminalIds[p.id] === a.terminalId);
+		return match?.id ?? null;
+	}
+
 	/** Activate the workspace and tab containing the given pane. */
 	focusPane(paneId: string): boolean {
 		const location = this.findPaneLocation(paneId);

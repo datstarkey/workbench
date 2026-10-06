@@ -30,7 +30,6 @@ export const register: Register = (on, options) => {
 		noteBackgroundTasks(e.background_tasks);
 		return forward($, e, next);
 	});
-	on('classic.Notification', forward);
 	// The bridge only needs the tool and a Bash command; a Write's input and any
 	// tool's response can be whole files.
 	on('classic.PostToolUse', ($, e, next) => {
