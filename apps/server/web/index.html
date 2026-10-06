@@ -116,9 +116,6 @@
 				border-color: var(--accent);
 				color: #0b0e14;
 			}
-			button.danger {
-				color: var(--err);
-			}
 			button:active {
 				opacity: 0.7;
 			}
@@ -189,11 +186,6 @@
 			</div>
 
 			<div class="card">
-				<h2>Running sessions</h2>
-				<div id="sessions"><div class="empty">None.</div></div>
-			</div>
-
-			<div class="card">
 				<h2>Projects</h2>
 				<div id="projects"><div class="empty">Loading…</div></div>
 			</div>
@@ -207,19 +199,13 @@
 
 			const $ = (id) => document.getElementById(id);
 
-			// Escape untrusted data before putting it in innerHTML. Session names,
-			// cwd, project names, and git branch/paths are all attacker-influenceable.
+			// Escape untrusted data before putting it in innerHTML. Project names and
+			// git branch/paths are attacker-influenceable.
 			function esc(v) {
 				return String(v ?? '').replace(
 					/[&<>"']/g,
 					(c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
 				);
-			}
-
-			// Only allow http(s) links; reject javascript:/data: etc.
-			function safeUrl(u) {
-				if (typeof u !== 'string') return null;
-				return /^https?:\/\//i.test(u) ? u : null;
 			}
 
 			function toast(msg, isErr) {
@@ -253,64 +239,6 @@
 
 			function setOnline(ok) {
 				$('status-dot').classList.toggle('ok', ok);
-			}
-
-			async function loadSessions() {
-				try {
-					const sessions = (await api('/remote/sessions')) ?? [];
-					const el = $('sessions');
-					if (!sessions.length) {
-						el.innerHTML = '<div class="empty">None.</div>';
-						return;
-					}
-					el.innerHTML = '';
-					for (const s of sessions) {
-						const row = document.createElement('div');
-						row.className = 'row';
-						const link = safeUrl(s.sessionUrl);
-						const url = link
-							? `<a href="${esc(link)}" target="_blank" rel="noreferrer">open</a>`
-							: '<span class="muted">starting…</span>';
-						const status =
-							s.status && typeof s.status === 'object' ? 'exited' : esc(s.status || '');
-						row.innerHTML = `<div class="grow"><div class="name">${esc(s.name || s.id.slice(0, 8))}</div><div class="sub">${esc(s.cwd)} · ${status} · ${url}</div></div>`;
-						const kill = document.createElement('button');
-						kill.className = 'danger';
-						kill.textContent = 'Kill';
-						kill.onclick = async () => {
-							try {
-								await api('/remote/sessions/' + encodeURIComponent(s.id), { method: 'DELETE' });
-								loadSessions();
-							} catch (e) {
-								toast(e.message, true);
-							}
-						};
-						row.appendChild(kill);
-						el.appendChild(row);
-					}
-				} catch (e) {
-					toast(e.message, true);
-				}
-			}
-
-			async function spawn(projectPath, worktreePath, name) {
-				try {
-					await api('/remote/spawn', {
-						method: 'POST',
-						body: JSON.stringify({ projectPath, worktreePath, name })
-					});
-					toast('Session spawned — check the Claude app');
-					// The session URL appears asynchronously once `claude` prints it;
-					// poll a few times so the row flips starting→running on its own.
-					loadSessions();
-					let tries = 0;
-					const poll = setInterval(() => {
-						loadSessions();
-						if (++tries >= 5) clearInterval(poll);
-					}, 2000);
-				} catch (e) {
-					toast(e.message, true);
-				}
 			}
 
 			async function createWorktree(repoPath, branch) {
@@ -358,17 +286,9 @@
 					const row = document.createElement('div');
 					row.className = 'row';
 					row.innerHTML = `<div class="grow"><div class="name">${esc(projectName(p))}</div><div class="sub">${esc(p.path)}</div></div>`;
-					const spawnBtn = document.createElement('button');
-					spawnBtn.className = 'primary';
-					spawnBtn.textContent = 'Spawn';
-					spawnBtn.onclick = (e) => {
-						e.stopPropagation();
-						spawn(p.path, null, projectName(p));
-					};
 					const moreBtn = document.createElement('button');
 					moreBtn.textContent = expanded === p.path ? '▾' : '▸';
 					moreBtn.onclick = () => openProject(p.path);
-					row.appendChild(spawnBtn);
 					row.appendChild(moreBtn);
 					el.appendChild(row);
 
@@ -384,12 +304,6 @@
 								wr.className = 'inline';
 								wr.style.alignItems = 'center';
 								wr.innerHTML = `<div class="grow"><div class="name">${esc(w.branch || '(detached)')}</div><div class="sub">${esc(w.path)}${w.isMain ? ' · main' : ''}</div></div>`;
-								const sp = document.createElement('button');
-								sp.className = 'primary';
-								sp.textContent = 'Spawn';
-								sp.onclick = () =>
-									spawn(p.path, w.isMain ? null : w.path, `${projectName(p)}:${w.branch}`);
-								wr.appendChild(sp);
 								panel.appendChild(wr);
 							}
 							const form = document.createElement('div');
@@ -420,18 +334,14 @@
 				}
 			}
 
-			async function refresh() {
-				await Promise.all([loadProjects(), loadSessions()]);
-			}
-
-			$('refresh').onclick = refresh;
+			$('refresh').onclick = loadProjects;
 			$('save-token').onclick = () => {
 				token = $('token').value.trim();
 				localStorage.setItem(TOKEN_KEY, token);
-				refresh();
+				loadProjects();
 			};
 			if (token) $('token').value = token;
-			refresh();
+			loadProjects();
 		</script>
 	</body>
 </html>
