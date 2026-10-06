@@ -478,10 +478,21 @@ export function effortLabel(level: EffortLevel | null): string {
 	return level ? EFFORT_LABELS[level] : 'Default effort';
 }
 
-/** The `/` command being typed, if the draft is just `/` plus a name so far. */
-export function slashQuery(draft: string): string | null {
-	const match = /^\/(\S*)$/.exec(draft);
-	return match ? match[1].toLowerCase() : null;
+/** A `/` command being typed: where its `/` is and the name after it, lowercased. */
+export interface SlashQuery {
+	start: number;
+	query: string;
+}
+
+/**
+ * The `/name` word ending at the caret, at the start or after whitespace, as
+ * Claude Code's prompt offers commands mid-line; a path like `src/x` isn't one.
+ */
+export function slashQuery(draft: string, caret = draft.length): SlashQuery | null {
+	const before = draft.slice(0, caret);
+	const match = /(^|\s)\/([^\s/]*)$/.exec(before);
+	if (!match) return null;
+	return { start: before.length - match[2].length - 1, query: match[2].toLowerCase() };
 }
 
 /** Commands for the `/` menu: name prefix matches, then name, then description matches. */

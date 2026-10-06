@@ -431,11 +431,14 @@ describe('slash menu', () => {
 		{ name: 'security-review', description: 'Find vulnerabilities' }
 	];
 
-	it('opens only while the draft is a bare command name', () => {
-		expect(slashQuery('/')).toBe('');
-		expect(slashQuery('/Com')).toBe('com');
+	it('opens for a command name at the caret, at the start or mid-line', () => {
+		expect(slashQuery('/')).toEqual({ start: 0, query: '' });
+		expect(slashQuery('/Com')).toEqual({ start: 0, query: 'com' });
 		expect(slashQuery('/compact focus on tests')).toBe(null);
-		expect(slashQuery('fix /this')).toBe(null);
+		expect(slashQuery('fix it then /rev')).toEqual({ start: 12, query: 'rev' });
+		expect(slashQuery('fix it then /rev and more', 16)).toEqual({ start: 12, query: 'rev' });
+		expect(slashQuery('see src/lib')).toBe(null);
+		expect(slashQuery('open /usr/bin')).toBe(null);
 	});
 
 	it('ranks prefix matches before other matches', () => {
