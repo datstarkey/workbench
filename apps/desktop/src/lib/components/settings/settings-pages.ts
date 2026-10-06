@@ -47,7 +47,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
 			{
 				id: 'general',
 				label: 'General',
-				description: 'Look and layout of Workbench itself.',
+				description: 'Startup, appearance and layout of Workbench itself.',
 				store: 'workbench'
 			},
 			{
