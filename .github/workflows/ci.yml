@@ -125,8 +125,7 @@ jobs:
       - name: Check Rust compiles on Windows
         run: cargo test --workspace --no-run
 
-  # Smoke-tests the built app over WebDriver (apps/desktop/e2e). Not a required
-  # check: WebKitGTK under xvfb is new here, so it earns that once it's stable.
+  # Smoke-tests the built app over WebDriver (apps/desktop/e2e). A required check.
   e2e:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true' || needs.changes.outputs.rust == 'true') }}
