@@ -57,7 +57,8 @@
 	import {
 		AdoptionPoller,
 		adoptableTerminals,
-		adoptionRound
+		adoptionRound,
+		shared
 	} from '$features/terminal/server-terminals';
 	import { isClaimedLocally, listServerTerminals } from '$features/terminal/terminal-connection';
 	import { listAgents } from '$features/chat/agent-api';
@@ -189,10 +190,11 @@
 	// only once workspaces are loaded, or every persisted pane's session would look foreign.
 	// A Claude chat runs in a server terminal of its own: it's adopted as the chat, not twice.
 	let chatTerminalIds = new Set<string>();
+	const agents = shared(listAgents);
 	const adoption = new AdoptionPoller([
 		adoptionRound({
 			list: async () => {
-				const [terminals, chats] = await Promise.all([listServerTerminals(), listAgents()]);
+				const [terminals, chats] = await Promise.all([listServerTerminals(), agents()]);
 				// A failed listing keeps the last set rather than adopting chats' terminals.
 				if (chats)
 					chatTerminalIds = new Set(chats.flatMap((c) => (c.terminalId ? [c.terminalId] : [])));
@@ -208,8 +210,11 @@
 			onAdopted: (t) => toast.info(`Terminal opened on another device: ${t.name ?? 'terminal'}`)
 		}),
 		adoptionRound({
-			list: listAgents,
-			adoptable: (list) => workspaceStore.adoptableServerChats(list),
+			list: agents,
+			adoptable: (list) => {
+				claudeSessionStore.syncFromAgents(list);
+				return workspaceStore.adoptableServerChats(list);
+			},
 			adopt: (c) => workspaceStore.adoptServerChat(c, projectStore.getByPath(c.projectPath)),
 			onAdopted: (c) => toast.info(`Chat opened on another device: ${c.title ?? 'chat'}`)
 		})

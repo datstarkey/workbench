@@ -40,19 +40,15 @@ describe('SavedMachines', () => {
 		expect(m.active).toBeNull();
 	});
 
-	it('migrates the single saved server, with its terminal links, and drops the old keys', () => {
-		const links = JSON.stringify({ t1: { sessionId: 's', projectPath: '/p', name: 'p' } });
+	it('migrates the single saved server and drops the old keys', () => {
 		localStorage.setItem('wb.serverUrl', MAC);
 		localStorage.setItem('wb.token', TOKEN);
-		localStorage.setItem('wb.claudeTerminals', links);
 
 		const m = new SavedMachines();
 
 		expect(m.list).toHaveLength(1);
 		expect(m.active).toMatchObject({ name: '100.64.1.2', url: MAC, token: TOKEN });
-		expect(localStorage.getItem(machineKey('wb.claudeTerminals', m.active!.id))).toBe(links);
-		for (const key of ['wb.serverUrl', 'wb.token', 'wb.claudeTerminals'])
-			expect(localStorage.getItem(key)).toBeNull();
+		for (const key of ['wb.serverUrl', 'wb.token']) expect(localStorage.getItem(key)).toBeNull();
 		// Persisted: a relaunch sees the same machine, not a second migration.
 		expect(new SavedMachines().active).toEqual(m.active);
 	});
@@ -60,7 +56,6 @@ describe('SavedMachines', () => {
 	it('keeps the old pairing when the migrated list could not be written', () => {
 		localStorage.setItem('wb.serverUrl', MAC);
 		localStorage.setItem('wb.token', TOKEN);
-		localStorage.setItem('wb.claudeTerminals', '{}');
 		const setItem = localStorage.setItem.bind(localStorage);
 		vi.spyOn(localStorage, 'setItem').mockImplementation((k: string, v: string) => {
 			if (k === 'wb.machines') throw new Error('QuotaExceededError');
@@ -72,7 +67,6 @@ describe('SavedMachines', () => {
 		expect(m.active?.url).toBe(MAC);
 		expect(localStorage.getItem('wb.serverUrl')).toBe(MAC);
 		expect(localStorage.getItem('wb.token')).toBe(TOKEN);
-		expect(localStorage.getItem('wb.claudeTerminals')).toBe('{}');
 	});
 
 	it('does not migrate an address saved without a token', () => {
@@ -141,13 +135,13 @@ describe('SavedMachines', () => {
 		const m = new SavedMachines();
 		const mac = m.save(MAC, TOKEN);
 		const pc = m.save(PC, PC_TOKEN);
-		localStorage.setItem(machineKey('wb.claudeTerminals', pc.id), '{}');
+		localStorage.setItem(machineKey('wb.account', pc.id), 'work');
 
 		m.remove(pc.id);
 
 		expect(m.list.map((x) => x.id)).toEqual([mac.id]);
 		expect(m.active).toBeNull();
-		expect(localStorage.getItem(machineKey('wb.claudeTerminals', pc.id))).toBeNull();
+		expect(localStorage.getItem(machineKey('wb.account', pc.id))).toBeNull();
 		expect(localStorage.getItem('wb.activeMachine')).toBeNull();
 	});
 

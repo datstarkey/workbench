@@ -222,6 +222,7 @@ pub fn run() {
                 native_terminal_commands::write_native_terminal,
                 native_notification_commands::is_native_notification_available,
                 native_notification_commands::send_native_notification,
+                native_notification_commands::remove_native_notification,
             ));
     }
 

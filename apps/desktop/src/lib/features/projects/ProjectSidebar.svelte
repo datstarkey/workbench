@@ -114,7 +114,7 @@
 	function startSessionInWorktree(projectPath: string, worktreePath: string, branch: string): void {
 		worktreeManager.open(projectPath, worktreePath, branch);
 		const ws = workspaceStore.getByWorktreePath(worktreePath);
-		if (ws) claudeSessionStore.startSessionInWorkspace(ws);
+		if (ws) claudeSessionStore.startSession(ws.id);
 	}
 
 	function sessionCount(sessions: ActiveClaudeSession[], type: 'claude' | 'codex'): number {

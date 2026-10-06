@@ -12,12 +12,11 @@ import {
 } from '$types/workbench';
 import { invoke } from '$lib/transport';
 import {
-	extractPromptArg,
-	newSessionCommand,
-	resumeCommand,
-	tryResumeCommand,
-	claudeNewSessionWithIdCommand,
-	applyClaudeLaunchOptions,
+	codexCommand,
+	codexCommandWithPrompt,
+	codexResumeCommand,
+	extractCodexPromptArg,
+	tryCodexResumeCommand,
 	type LaunchOptions
 } from '$lib/utils/claude';
 import { effectivePath } from '$lib/utils/path';
@@ -27,7 +26,7 @@ import { suppressLayout } from '$features/terminal/layout-guard';
 import { visibleSplit } from '$features/terminal/split-view';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
-import { paneAgent, terminalAfterChat } from '$features/chat/pane-handoff';
+import { paneAgent, codexTerminalAfterChat } from '$features/chat/pane-handoff';
 import {
 	chatHasHistory,
 	isChatClaimed,
@@ -55,7 +54,8 @@ interface WorkspaceSnapshot {
 
 interface AddAISessionOptions {
 	label?: string;
-	startupCommand?: string;
+	/** Submitted as the new session starts (an agent action). */
+	prompt?: string;
 }
 
 export class WorkspaceStore {
@@ -181,11 +181,11 @@ export class WorkspaceStore {
 		};
 	}
 
+	/** A Claude pane's terminal runs its session (`claudeSessionLaunch`); Codex's runs `command`. */
 	private createAITab(
 		label: string,
-		sessionId: string,
-		command: string,
 		type: SessionType,
+		pane: Pick<TerminalPaneState, 'claudeSessionId' | 'startupCommand' | 'newClaudeSession'>,
 		claudeAccountId?: string
 	): TerminalTabState {
 		return {
@@ -197,8 +197,7 @@ export class WorkspaceStore {
 				{
 					id: uid(),
 					type,
-					claudeSessionId: sessionId,
-					startupCommand: command,
+					...pane,
 					...(type === 'claude' && claudeAccountId && { claudeAccountId })
 				}
 			]
@@ -261,9 +260,22 @@ export class WorkspaceStore {
 	 * Persists the mapping so a webview reload can re-attach to the same PTY.
 	 */
 	setServerTerminalId(paneId: string, serverTerminalId: string): void {
+		this.noteClaudeLaunched(paneId);
 		if (this.serverTerminalIds[paneId] === serverTerminalId) return;
 		this.serverTerminalIds = { ...this.serverTerminalIds, [paneId]: serverTerminalId };
 		this.persist();
+	}
+
+	/** A pane's new Claude session has run: from now on its terminal resumes it. */
+	noteClaudeLaunched(paneId: string): void {
+		const pane = this.findPane(paneId);
+		if (pane?.newClaudeSession) this.patchPane(paneId, { newClaudeSession: undefined });
+	}
+
+	private findPane(paneId: string): TerminalPaneState | undefined {
+		return this.workspaces
+			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
+			.find((p) => p.id === paneId);
 	}
 
 	/** Server terminal ids the adoption poller must skip: mapped to panes or released. */
@@ -629,27 +641,28 @@ export class WorkspaceStore {
 		this.updateWorkspace(workspaceId, (w) => {
 			const count = w.terminalTabs.filter((t) => t.type === type).length;
 			const label = options?.label?.trim() || `${labelPrefix} ${count + 1}`;
-			const explicit = options?.startupCommand?.trim();
-			// A project/task startup command of `claude …` must still pick up the
-			// sandbox wrapper and permission mode, or both settings are bypassed.
-			const startupCommand = explicit
-				? type === 'codex'
-					? explicit
-					: applyClaudeLaunchOptions(explicit, this.launchOptions)
-				: newSessionCommand(type, this.launchOptions);
-			// A plain new Claude tab can open straight into chat: chat picks the
-			// session id up front (`--session-id`), so it needs no terminal first.
-			// Not while the sandbox runtime is on — chat can't run inside it yet.
-			const asChat = type === 'claude' && !explicit && this.opensAsChat;
-			const sessionId = asChat ? crypto.randomUUID() : ''; // Claude requires a real UUID
+			const prompt = options?.prompt?.trim();
+			// A Claude session gets its id up front (`--session-id`), so its terminal,
+			// chat, hooks and the phone all know it before Claude has written anything.
 			const newTab = this.createAITab(
 				label,
-				sessionId,
-				asChat ? claudeNewSessionWithIdCommand(sessionId, this.launchOptions) : startupCommand,
 				type,
+				type === 'codex'
+					? {
+							claudeSessionId: '',
+							startupCommand: prompt
+								? codexCommandWithPrompt(prompt, this.launchOptions)
+								: codexCommand(this.launchOptions)
+						}
+					: {
+							claudeSessionId: crypto.randomUUID(),
+							newClaudeSession: prompt ? { prompt } : {}
+						},
 				this.settingsStore.activeClaudeAccountId
 			);
-			if (asChat) newTab.panes[0].view = 'chat';
+			// A plain new Claude tab can open straight into chat; an agent action's
+			// prompt goes to the terminal.
+			if (type === 'claude' && !prompt && this.opensAsChat) newTab.panes[0].view = 'chat';
 			tabId = newTab.id;
 			return {
 				...w,
@@ -658,27 +671,6 @@ export class WorkspaceStore {
 			};
 		});
 		return { tabId };
-	}
-
-	/** Update an AI tab once its session ID has been discovered from the JSONL */
-	updateAITab(
-		workspaceId: string,
-		tabId: string,
-		sessionId: string,
-		label: string,
-		type: SessionType = 'claude'
-	) {
-		this.updateWorkspace(workspaceId, (w) => ({
-			...w,
-			terminalTabs: w.terminalTabs.map((t) => {
-				if (t.id !== tabId) return t;
-				return {
-					...t,
-					label,
-					panes: t.panes.map((p) => (p.type === type ? { ...p, claudeSessionId: sessionId } : p))
-				};
-			})
-		}));
 	}
 
 	/** Update an AI pane's session ID by pane ID. */
@@ -693,10 +685,12 @@ export class WorkspaceStore {
 					if (p.id !== paneId || p.claudeSessionId === sessionId) return p;
 					tabChanged = true;
 					changed = true;
-					const cmd = tryResumeCommand(type, sessionId, this.launchOptions);
+					const cmd =
+						type === 'codex' ? tryCodexResumeCommand(sessionId, this.launchOptions) : undefined;
 					return {
 						...p,
 						claudeSessionId: sessionId,
+						newClaudeSession: undefined,
 						...(cmd && { startupCommand: cmd })
 					};
 				});
@@ -718,29 +712,23 @@ export class WorkspaceStore {
 		return null;
 	}
 
-	/** Claude views share one terminal process; Codex changes between TUI and app-server. */
+	/**
+	 * Claude views share one terminal process: switching only changes the view,
+	 * and Chat attaches to the terminal's `claude` (rejects when its plugin
+	 * hasn't connected). Codex changes between TUI and app-server.
+	 */
 	async setPaneView(paneId: string, view: PaneView): Promise<void> {
-		const pane = this.workspaces
-			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
-			.find((p) => p.id === paneId);
+		const pane = this.findPane(paneId);
 		if (!pane || (pane.view ?? 'terminal') === view) return;
-		if (
-			paneAgent(pane) === 'claude' &&
-			this.adoption.isAdopted(paneId) &&
-			this.serverTerminalIds[paneId]
-		) {
-			if (view === 'terminal') releaseChat(paneId);
-			this.patchPane(paneId, { view, liveTerminal: undefined });
-			return;
-		}
-		if (view === 'terminal' && pane.liveTerminal) {
-			releaseChat(paneId);
-			this.patchPane(paneId, { view, liveTerminal: undefined });
-			return;
-		}
-		// The terminal's own `claude` is already a chat through the Workbench plugin: show it, no restart.
-		const live = view === 'chat' && paneAgent(pane) === 'claude' ? await liveChatFor(paneId) : null;
-		if (live) {
+		if (paneAgent(pane) === 'claude') {
+			// An adopted chat attaches only, by itself.
+			if (view === 'terminal' || this.adoption.isAdopted(paneId)) {
+				if (view === 'terminal') releaseChat(paneId);
+				this.patchPane(paneId, { view, liveTerminal: undefined });
+				return;
+			}
+			const live = await liveChatFor(paneId, this.serverTerminalIds[paneId]);
+			if (!live) throw new Error(CLAUDE_NOT_IN_CHAT);
 			this.patchPane(paneId, { view, liveTerminal: true, claudeSessionId: live });
 			return;
 		}
@@ -761,7 +749,7 @@ export class WorkspaceStore {
 			await (
 				pane.claudeSessionId ? stopAgent(pane.claudeSessionId) : stopAgentForPane(paneId)
 			).catch(() => {});
-			patch = { ...terminalAfterChat(pane, started, this.launchOptions), view };
+			patch = { ...codexTerminalAfterChat(pane, started, this.launchOptions), view };
 		}
 		this.patchPane(paneId, patch);
 	}
@@ -817,14 +805,14 @@ export class WorkspaceStore {
 		paneId: string | null;
 		sessionId: string;
 		previousIds: string[];
-		terminalId: string | null;
+		terminalId?: string | null;
 	}): string | null {
 		const ids = [a.sessionId, ...a.previousIds];
 		const panes = this.workspaces.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes));
 		const match =
 			panes.find((p) => p.id === a.paneId) ??
 			panes.find((p) => p.claudeSessionId !== undefined && ids.includes(p.claudeSessionId)) ??
-			panes.find((p) => a.terminalId !== null && this.serverTerminalIds[p.id] === a.terminalId);
+			panes.find((p) => a.terminalId != null && this.serverTerminalIds[p.id] === a.terminalId);
 		return match?.id ?? null;
 	}
 
@@ -909,21 +897,25 @@ export class WorkspaceStore {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);
 			if (!tab || !isAISessionType(tab.type)) return w;
 			const type = tab.type;
-			const sessionId = freshCodex ? undefined : tab.panes[0]?.claudeSessionId;
-			const command = sessionId
-				? resumeCommand(type, sessionId, this.launchOptions)
-				: newSessionCommand(type, this.launchOptions);
+			const old = tab.panes[0];
+			const codexId = freshCodex ? undefined : old?.claudeSessionId;
 			// A restart stays on the pane's account: its transcript lives there.
 			const newTab = this.createAITab(
 				tab.label,
-				sessionId ?? '',
-				command,
 				type,
-				tab.panes[0]?.claudeAccountId
+				type === 'codex'
+					? {
+							claudeSessionId: codexId ?? '',
+							startupCommand: codexId
+								? codexResumeCommand(codexId, this.launchOptions)
+								: codexCommand(this.launchOptions)
+						}
+					: old?.claudeSessionId
+						? { claudeSessionId: old.claudeSessionId, newClaudeSession: old.newClaudeSession }
+						: { claudeSessionId: crypto.randomUUID(), newClaudeSession: {} },
+				old?.claudeAccountId
 			);
-			// Codex chat needs no id (a new thread).
-			const chatAllowed = type === 'codex' || Boolean(sessionId);
-			if (tab.panes[0]?.view === 'chat' && chatAllowed) newTab.panes[0].view = 'chat';
+			if (old?.view === 'chat') newTab.panes[0].view = 'chat';
 			const splitView = w.splitView && {
 				...w.splitView,
 				tabIds: w.splitView.tabIds.map((id) => (id === tabId ? newTab.id : id)) as [string, string]
@@ -949,9 +941,13 @@ export class WorkspaceStore {
 		this.updateWorkspace(workspaceId, (w) => {
 			const newTab = this.createAITab(
 				label,
-				sessionId,
-				resumeCommand(type, sessionId, this.launchOptions),
 				type,
+				type === 'codex'
+					? {
+							claudeSessionId: sessionId,
+							startupCommand: codexResumeCommand(sessionId, this.launchOptions)
+						}
+					: { claudeSessionId: sessionId },
 				accountId
 			);
 			if (view === 'chat' || (type === 'claude' && this.opensAsChat)) newTab.panes[0].view = 'chat';
@@ -1005,10 +1001,6 @@ export class WorkspaceStore {
 		);
 	}
 
-	addClaudeByProject(projectPath: string): { workspaceId: string; tabId: string } | null {
-		return this.addAIByProject(projectPath, 'claude');
-	}
-
 	addAIByProject(
 		projectPath: string,
 		type: SessionType = 'claude',
@@ -1052,37 +1044,48 @@ export class WorkspaceStore {
 		return { tabs: fixed, changed };
 	}
 
-	private ensureAIResumeCommands(tabs: TerminalTabState[]): {
+	private ensureAILaunches(tabs: TerminalTabState[]): {
 		tabs: TerminalTabState[];
 		changed: boolean;
 	} {
 		let changed = false;
 		const fixed = tabs.map((tab) => {
 			const fixedPanes = tab.panes.map((pane) => {
-				const isAI = isAISessionType(pane.type);
-				if (isAI && pane.claudeSessionId) {
-					const cmd = resumeCommand(pane.type!, pane.claudeSessionId, this.launchOptions);
-					if (pane.startupCommand !== cmd) {
-						changed = true;
-						return { ...pane, startupCommand: cmd };
-					}
-				} else if (isAI && !pane.claudeSessionId) {
-					// Rebuild from the binary alone, so a changed permission mode adds or drops
-					// the flag while any initial prompt argument (e.g. `claude 'review ...'`)
-					// survives. Unrecognised commands normalise back to the bare base.
-					const base = newSessionCommand(pane.type!, this.launchOptions);
-					const promptArg = extractPromptArg(pane.type!, pane.startupCommand);
-					const cmd = promptArg ? `${base} ${promptArg}` : base;
-					if (pane.startupCommand !== cmd) {
-						changed = true;
-						return { ...pane, startupCommand: cmd };
-					}
-				}
-				return pane;
+				const next = this.normalizedAIPane(pane);
+				if (next !== pane) changed = true;
+				return next;
 			});
 			return { ...tab, panes: fixedPanes };
 		});
 		return { tabs: fixed, changed };
+	}
+
+	/**
+	 * A Codex pane's command follows the current launch options. A Claude pane
+	 * runs its session id, never a command; one saved by an older build with a
+	 * `claude …` command and no id starts a new session.
+	 */
+	private normalizedAIPane(pane: TerminalPaneState): TerminalPaneState {
+		if (pane.type === 'claude') {
+			if (pane.claudeSessionId && pane.startupCommand === undefined) return pane;
+			const next = { ...pane };
+			delete next.startupCommand;
+			return pane.claudeSessionId
+				? next
+				: { ...next, claudeSessionId: crypto.randomUUID(), newClaudeSession: {} };
+		}
+		if (pane.type !== 'codex') return pane;
+		let cmd: string;
+		if (pane.claudeSessionId) {
+			cmd = codexResumeCommand(pane.claudeSessionId, this.launchOptions);
+		} else {
+			// Rebuild from the binary alone, so changed overrides apply while any
+			// initial prompt argument (e.g. `codex 'review ...'`) survives.
+			const base = codexCommand(this.launchOptions);
+			const promptArg = extractCodexPromptArg(pane.startupCommand);
+			cmd = promptArg ? `${base} ${promptArg}` : base;
+		}
+		return pane.startupCommand === cmd ? pane : { ...pane, startupCommand: cmd };
 	}
 
 	private ensureActiveTabId(
@@ -1107,7 +1110,7 @@ export class WorkspaceStore {
 		let anyChanged = false;
 		const normalized = this.workspaces.map((w) => {
 			const structure = this.ensureTabStructure(w.terminalTabs);
-			const commands = this.ensureAIResumeCommands(structure.tabs);
+			const commands = this.ensureAILaunches(structure.tabs);
 			const activeTab = this.ensureActiveTabId(commands.tabs, w.activeTerminalTabId);
 
 			const changed = structure.changed || commands.changed || activeTab.changed;
@@ -1127,11 +1130,20 @@ export class WorkspaceStore {
 	}
 }
 
+/** As the phone says it: the terminal's `claude` hasn't attached through the plugin. */
+export const CLAUDE_NOT_IN_CHAT =
+	'Claude has not connected to Chat. Complete any login or trust prompt in its terminal, then try again.';
+
 /** The session id of the chat the pane's terminal `claude` runs as, if it's live. */
-async function liveChatFor(paneId: string): Promise<string | null> {
-	const agents = await listAgents().catch(() => null);
+async function liveChatFor(paneId: string, terminalId: string | undefined): Promise<string | null> {
+	const agents = await listAgents();
 	return (
-		agents?.find((a) => a.paneId === paneId && a.agent === 'claude' && !a.exited)?.sessionId ?? null
+		agents?.find(
+			(a) =>
+				a.agent === 'claude' &&
+				!a.exited &&
+				(a.paneId === paneId || (terminalId !== undefined && a.terminalId === terminalId))
+		)?.sessionId ?? null
 	);
 }
 

@@ -33,6 +33,7 @@ vi.mock('@tauri-apps/api/window', () => ({
 import { NotificationStore } from './notifications.svelte';
 import type { AttentionTarget, ClaudeSessionStore } from './claudeSessions.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
+import type { AgentAttention } from '$types/workbench';
 
 const PANE = 'pane-1';
 
@@ -52,12 +53,14 @@ function mockWorkspaces() {
 	} as unknown as WorkspaceStore;
 }
 
-/** Captures the store's awaiting-input callback so tests can drive it directly. */
+type Fire = (target: AttentionTarget, kind?: AgentAttention['kind']) => void;
+
+/** Captures the store's attention callback so tests can drive it directly. */
 function mockSessions() {
-	const holder: { fire?: (target: AttentionTarget) => void } = {};
+	const holder: { fire?: Fire } = {};
 	const sessions = {
-		onAwaitingInput: (cb: (target: AttentionTarget) => void) => {
-			holder.fire = cb;
+		onAttention: (cb: (target: AttentionTarget, kind: AgentAttention['kind']) => void) => {
+			holder.fire = (target, kind = 'waiting') => cb(target, kind);
 		}
 	} as unknown as ClaudeSessionStore;
 	return { sessions, holder };
@@ -101,8 +104,8 @@ describe('NotificationStore', () => {
 			// same pane replaces its banner instead of stacking.
 			expect(invokeSpy).toHaveBeenCalledWith('send_native_notification', {
 				identifier: PANE,
-				title: 'Workbench — needs input',
-				body: 'Claude 1 is waiting for your response'
+				title: 'Workbench — Claude 1',
+				body: 'Approval or answer needed'
 			});
 			// The plugin's macOS path posts to an API macOS no longer delivers on.
 			expect(sendNotification).not.toHaveBeenCalled();
@@ -119,8 +122,28 @@ describe('NotificationStore', () => {
 
 			expect(invokeSpy).toHaveBeenCalledWith('send_native_notification', {
 				identifier: 'sess-1',
-				title: 'app — needs input',
-				body: 'Fix the build is waiting for your response'
+				title: 'app — Fix the build',
+				body: 'Approval or answer needed'
+			});
+		});
+
+		it('says a turn ended, and takes the notification down once resolved', async () => {
+			useNativePath();
+			mockInvoke('remove_native_notification', () => undefined);
+			const { sessions, holder } = mockSessions();
+			new NotificationStore(mockWorkspaces(), sessions);
+			await settle();
+
+			holder.fire?.({ paneId: PANE }, 'turnEnded');
+			holder.fire?.({ id: 'sess-1', projectPath: '/repos/app', label: 'Phone' }, 'resolved');
+			await settle();
+
+			expect(invokeSpy).toHaveBeenCalledWith(
+				'send_native_notification',
+				expect.objectContaining({ identifier: PANE, body: 'Turn complete' })
+			);
+			expect(invokeSpy).toHaveBeenCalledWith('remove_native_notification', {
+				identifier: 'sess-1'
 			});
 		});
 
@@ -197,10 +220,22 @@ describe('NotificationStore', () => {
 
 			expect(sendNotification).toHaveBeenCalledWith(
 				expect.objectContaining({
-					title: 'Workbench — needs input',
-					body: 'Claude 1 is waiting for your response'
+					title: 'Workbench — Claude 1',
+					body: 'Approval or answer needed'
 				})
 			);
+		});
+
+		it('has nothing to take down when resolved (the plugin cannot remove on desktop)', async () => {
+			const { sessions, holder } = mockSessions();
+			new NotificationStore(mockWorkspaces(), sessions);
+			await settle();
+
+			holder.fire?.({ paneId: PANE }, 'resolved');
+			await settle();
+
+			expect(sendNotification).not.toHaveBeenCalled();
+			expect(invokeSpy).not.toHaveBeenCalledWith('remove_native_notification', expect.anything());
 		});
 
 		it('respects an explicit permission denial', async () => {

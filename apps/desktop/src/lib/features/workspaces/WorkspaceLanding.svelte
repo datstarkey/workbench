@@ -52,7 +52,7 @@
 			<!-- Claude — primary action -->
 			<button
 				type="button"
-				onclick={() => claudeSessionStore.startSessionInWorkspace(workspace)}
+				onclick={() => claudeSessionStore.startSession(workspace.id)}
 				class="group flex w-full items-center gap-3 rounded-lg border border-wb-accent bg-wb-panel px-3 py-2.5 ring-2 ring-wb-accent/20 transition-colors hover:bg-wb-panel2"
 			>
 				<div
@@ -70,7 +70,7 @@
 			<!-- Codex -->
 			<button
 				type="button"
-				onclick={() => claudeSessionStore.startSessionInWorkspace(workspace, 'codex')}
+				onclick={() => claudeSessionStore.startSession(workspace.id, 'codex')}
 				class="group flex w-full items-center gap-3 rounded-lg border border-wb-hair bg-wb-panel px-3 py-2.5 transition-colors hover:bg-wb-panel2"
 			>
 				<div

@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { watch } from 'runed';
 	import { onDestroy, onMount } from 'svelte';
-	import type { ProjectConfig } from '$types/workbench';
+	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { TERMINAL_BG } from '$lib/terminal-config';
+	import { getWorkspaceStore } from '$stores/context';
 	import {
 		createNativeTerminal,
 		killNativeTerminal,
@@ -16,6 +17,7 @@
 		project,
 		active,
 		startupCommand,
+		claudeSession,
 		claudeAccountId,
 		cwd
 	}: {
@@ -23,10 +25,14 @@
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
+		/** A Claude pane's session; Rust builds its `claude` command. */
+		claudeSession?: ClaudeSessionLaunch;
 		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
 		claudeAccountId?: string;
 		cwd?: string;
 	} = $props();
+
+	const workspaceStore = getWorkspaceStore();
 
 	let container: HTMLDivElement;
 	let unlistenExit: (() => void) | null = null;
@@ -103,11 +109,12 @@
 				width: nsRect.width,
 				height: nsRect.height,
 				fontSize: 13,
-				startupCommand,
+				...(claudeSession ? { claudeSession } : { startupCommand }),
 				claudeAccountId
 			});
 
 			created = true;
+			workspaceStore.noteClaudeLaunched(sessionId);
 
 			// Set initial visibility
 			if (!active) {

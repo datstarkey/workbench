@@ -20,6 +20,7 @@ pub async fn create_native_terminal(
     height: f64,
     font_size: f64,
     startup_command: Option<String>,
+    claude_session: Option<workbench_core::claude_launch::ClaudeSessionLaunch>,
     claude_account_id: Option<String>,
     project_root: Option<String>,
     manager: tauri::State<'_, NativeTerminalManager>,
@@ -28,6 +29,10 @@ pub async fn create_native_terminal(
     hook_bridge: tauri::State<'_, HookBridgeState>,
     server: tauri::State<'_, ServerControl>,
 ) -> Result<(), String> {
+    // Built here, as a server terminal's is, so the sandbox wrapper fails closed.
+    let startup_command =
+        workbench_core::claude_launch::startup_command(startup_command, claude_session.as_ref())
+            .map_err(|e| e.to_string())?;
     let ns_view = window.ns_view().map_err(|e| e.to_string())?;
     let hook_socket = hook_bridge.socket_path().map(str::to_string);
     let claude_config_dir = crate::claude_accounts::resolve_saved(claude_account_id.as_deref())
@@ -42,16 +47,16 @@ pub async fn create_native_terminal(
 
     let spawned = manager.spawn(
         session_id.clone(),
-            project_path,
-            shell,
-            x,
-            y,
-            width,
-            height,
-            font_size,
-            startup_command,
-            hook_socket,
-            claude_config_dir,
+        project_path,
+        shell,
+        x,
+        y,
+        width,
+        height,
+        font_size,
+        startup_command,
+        hook_socket,
+        claude_config_dir,
         mod_env,
         ns_view,
         app_handle,

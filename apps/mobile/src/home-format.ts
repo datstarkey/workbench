@@ -1,4 +1,4 @@
-import type { AgentSummary } from '@workbench/types';
+import { baseName, type AgentSummary } from '@workbench/types';
 
 type Waiting = NonNullable<AgentSummary['waiting']>;
 
@@ -52,14 +52,7 @@ export function answerableFromHome(item: Waiting): boolean {
 	);
 }
 
-export function baseName(path: string): string {
-	return (
-		path
-			.replace(/[\\/]+$/, '')
-			.split(/[\\/]/)
-			.pop() || path
-	);
-}
+export { baseName };
 
 /** "repo" or "repo · worktree": where a chat runs. */
 export function chatWhere(chat: AgentSummary): string {

@@ -18,3 +18,9 @@ pub fn is_native_notification_available() -> bool {
 pub fn send_native_notification(identifier: String, title: String, body: String) -> bool {
     native_notifications::send(&identifier, &title, &body)
 }
+
+/// Withdraw a delivered notification (its session no longer needs anyone).
+#[tauri::command]
+pub fn remove_native_notification(identifier: String) {
+    native_notifications::remove(&identifier);
+}

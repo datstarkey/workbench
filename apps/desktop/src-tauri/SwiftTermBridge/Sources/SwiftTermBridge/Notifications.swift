@@ -124,3 +124,12 @@ public func wb_notification_send(
     }
     return true
 }
+
+/// Withdraws the delivered notification posted under `identifier`, if any.
+@_cdecl("wb_notification_remove")
+public func wb_notification_remove(identifier: UnsafePointer<CChar>?) {
+    guard isBundled(), let identifier else { return }
+    UNUserNotificationCenter.current().removeDeliveredNotifications(
+        withIdentifiers: [String(cString: identifier)]
+    )
+}

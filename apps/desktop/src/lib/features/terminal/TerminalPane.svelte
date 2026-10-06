@@ -9,7 +9,7 @@
 	import { SearchAddon } from '@xterm/addon-search';
 	import { open } from '@tauri-apps/plugin-shell';
 	import '@xterm/xterm/css/xterm.css';
-	import type { ProjectConfig } from '$types/workbench';
+	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
 	import { TerminalConnection } from './terminal-connection';
 	import { stripAnsi } from '$lib/utils/format';
@@ -30,6 +30,7 @@
 		project,
 		active,
 		startupCommand,
+		claudeSession,
 		claudeAccountId,
 		cwd,
 		existingServerTerminalId,
@@ -44,6 +45,8 @@
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
+		/** A Claude pane's session; the server builds its `claude` command. */
+		claudeSession?: ClaudeSessionLaunch;
 		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
 		claudeAccountId?: string;
 		cwd?: string;
@@ -112,30 +115,31 @@
 	let removeCopyListener: (() => void) | null = null;
 	let removeResidueGuard: (() => void) | null = null;
 
-	// Buffer early output to detect Claude CLI errors for auto-retry
+	// A resumed session with nothing on disk (its tab never got a message) fails
+	// at once: start it as a new session on the same id instead.
 	let earlyOutput = '';
-	let claudeRetryCmd = '';
+	let watchingResume = false;
 
-	function detectClaudeRetry(text: string): void {
-		if (!startupCommand?.startsWith('claude') || claudeRetryCmd) return;
+	function detectMissingSession(text: string): void {
 		earlyOutput += text;
 		if (earlyOutput.length > 2048) {
-			earlyOutput = '';
+			watchingResume = false;
 			return;
 		}
-		const plain = stripAnsi(earlyOutput);
-		let retryCmd = '';
-		if (plain.includes('No conversation found with session ID:')) {
-			retryCmd = 'claude';
-		}
-		if (retryCmd) {
-			claudeRetryCmd = retryCmd;
-			earlyOutput = '';
-			setTimeout(() => {
-				// CR is what Enter sends; a Windows console ignores a bare LF.
-				conn?.write(`${retryCmd}\r`);
-			}, 500);
-		}
+		if (
+			!claudeSession ||
+			!stripAnsi(earlyOutput).includes('No conversation found with session ID:')
+		)
+			return;
+		watchingResume = false;
+		void conn
+			?.relaunch({ claudeSession: { ...claudeSession, resume: false } })
+			.then(() => {
+				if (conn?.terminalId) onServerTerminalIdChange?.(paneId, conn.terminalId);
+			})
+			.catch((e) => {
+				terminalError = `Couldn't start Claude: ${e instanceof Error ? e.message : e}`;
+			});
 	}
 
 	function canFitTerminal(): boolean {
@@ -309,7 +313,7 @@
 		// Feed AI-pane output through the activity/quiescence tracker. Server-hosted
 		// panes stream over the WS and don't emit the terminal:data events the store
 		// listens to for local panes, so drive it here. Decode once (shell panes skip
-		// it) and reuse the decoded text for the claude-retry scan.
+		// it) and reuse the decoded text for the missing-session scan.
 		const paneType = claudeSessionStore.paneType(paneId);
 		let decoded: string | null = null;
 		if (paneType !== null) {
@@ -317,10 +321,7 @@
 			claudeSessionStore.noteTerminalOutput(paneId, decoded);
 		}
 
-		// Scan early output for a Claude CLI session error to auto-retry.
-		if (startupCommand?.startsWith('claude') && !claudeRetryCmd && earlyOutput.length < 2048) {
-			detectClaudeRetry(decoded ?? new TextDecoder().decode(bytes));
-		}
+		if (watchingResume) detectMissingSession(decoded ?? new TextDecoder().decode(bytes));
 
 		if (inPerformanceMode()) {
 			// Offscreen: batch into queue, flush on timer
@@ -587,7 +588,7 @@
 				projectPath: project.path,
 				...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 				name: workspaceStore.paneDisplayName(paneId) ?? project.name,
-				command: startupCommand,
+				...(claudeSession ? { claudeSession } : { command: startupCommand }),
 				cols: terminal.cols,
 				rows: terminal.rows,
 				paneId,
@@ -600,6 +601,9 @@
 				takenOver = true;
 			} else {
 				await conn.connect(connectOpts, existingServerTerminalId);
+				// Only a terminal opened here: a re-attached one replays old output.
+				watchingResume =
+					claudeSession?.resume === true && conn.terminalId !== existingServerTerminalId;
 			}
 
 			// Notify workspace store of the assigned server terminal ID.

@@ -35,6 +35,10 @@
 
 import { terminalServerStatus } from '$lib/server-mode';
 import { parseTerminalControlFrame, terminalWsUrl } from '@workbench/transport';
+import type {
+	CreateServerTerminalBody,
+	ServerTerminalMeta as TerminalMeta
+} from '$types/workbench';
 
 /** Payload delivered to the `onData` callback. */
 export type TerminalDataPayload = Uint8Array;
@@ -48,39 +52,8 @@ export interface TerminalExitInfo {
 	code?: number;
 }
 
-export interface ConnectOptions {
-	/** Project or worktree path the PTY should `cd` to. */
-	projectPath: string;
-	/** Override with the worktree path when applicable. */
-	worktreePath?: string;
-	/** Display name shown in terminal lists. */
-	name?: string;
-	/** Optional startup command to run after the shell starts (e.g. `claude`). */
-	command?: string;
-	/** Initial terminal width in columns. */
-	cols: number;
-	/** Initial terminal height in rows. */
-	rows: number;
-	/** Stable pane id — forwarded as WORKBENCH_PANE_ID for hook correlation. */
-	paneId?: string;
-	/** Project-configured shell — forwarded so the server launches the right one. */
-	shell?: string;
-	/** Hook-bridge socket address — forwarded as WORKBENCH_HOOK_SOCKET. */
-	hookSocket?: string;
-	/** Saved Claude account — the server sets its dir as CLAUDE_CONFIG_DIR. */
-	claudeAccountId?: string;
-}
-
-/** Server-side terminal metadata returned by GET/POST /remote/terminals. */
-export interface TerminalMeta {
-	id: string;
-	name?: string;
-	cwd: string;
-	createdAt: number;
-	alive: boolean;
-	/** Set on a chat's terminal: it's adopted as the chat, not as a terminal. */
-	claudeSessionId?: string;
-}
+/** A fresh PTY's spec: the POST /remote/terminals body. */
+export type ConnectOptions = CreateServerTerminalBody;
 
 /** Resolved loopback server coordinates. */
 export interface ServerInfo {
@@ -266,6 +239,17 @@ export class TerminalConnection {
 		await this.connect({ ...this.lastOpts, cols, rows }, this.terminalId ?? undefined);
 	}
 
+	/** Replace the PTY with a fresh one, `patch` over the last spec; the old one is killed. */
+	async relaunch(patch: Partial<ConnectOptions>): Promise<void> {
+		if (!this.lastOpts) throw new Error('terminal was never connected');
+		const old = this.terminalId;
+		this.detachSocket();
+		this.exitDelivered = false;
+		this.terminalId = null;
+		if (old) await deleteServerTerminal(old);
+		await this.connect({ ...this.lastOpts, ...patch });
+	}
+
 	/** Whether a server terminal with `id` still exists and is alive. */
 	private async isAlive(baseUrl: string, token: string | undefined, id: string): Promise<boolean> {
 		try {
@@ -300,18 +284,7 @@ export class TerminalConnection {
 		const resp = await fetch(`${baseUrl}/remote/terminals`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json', ...authHeaders(token) },
-			body: JSON.stringify({
-				projectPath: opts.projectPath,
-				worktreePath: opts.worktreePath ?? null,
-				name: opts.name ?? null,
-				command: opts.command ?? null,
-				cols: opts.cols,
-				rows: opts.rows,
-				paneId: opts.paneId ?? null,
-				shell: opts.shell || null,
-				hookSocket: opts.hookSocket ?? null,
-				claudeAccountId: opts.claudeAccountId ?? null
-			})
+			body: JSON.stringify({ ...opts, shell: opts.shell || undefined })
 		});
 		if (!resp.ok) {
 			throw new Error(`POST /remote/terminals failed: ${resp.status}`);

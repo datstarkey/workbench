@@ -1,17 +1,14 @@
 import { invokeSpy, clearInvokeMocks } from '../../test/tauri-mocks';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WorkspaceStore } from './workspaces.svelte';
-import { SANDBOX_RUNTIME_PACKAGE } from '$lib/utils/claude';
+import { CLAUDE_NOT_IN_CHAT, WorkspaceStore } from './workspaces.svelte';
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { adoptableTerminals } from '$features/terminal/server-terminals';
-import { stopAgent, stopAgentForPane } from '$features/chat/agent-api';
+import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
 import { chatHasHistory, reopenChat } from '$features/chat/chat-registry';
 import type {
 	AgentSummary,
-	ClaudePermissionMode,
 	ProjectConfig,
 	ProjectWorkspace,
-	SessionType,
 	TerminalPaneState,
 	TerminalTabState
 } from '$types/workbench';
@@ -30,7 +27,8 @@ vi.mock('$features/terminal/terminal-connection', async (importOriginal) => ({
 vi.mock('$features/chat/agent-api', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$features/chat/agent-api')>()),
 	stopAgent: vi.fn(async () => {}),
-	stopAgentForPane: vi.fn(async () => {})
+	stopAgentForPane: vi.fn(async () => {}),
+	listAgents: vi.fn(async (): Promise<AgentSummary[] | null> => null)
 }));
 
 vi.mock('$features/chat/chat-registry', async (importOriginal) => ({
@@ -46,17 +44,9 @@ const mockGitStore = {
 	statusByProject: {} as Record<string, { branch: string }>
 };
 const mockWorkbenchSettingsStore = {
-	claudePermissionMode: 'default',
-	sandboxRuntimeEnabled: false,
 	defaultClaudeView: 'terminal' as 'terminal' | 'chat',
-	sandboxSettingsPath: undefined as string | undefined,
 	activeClaudeAccountId: undefined as string | undefined,
-	get launchOptions() {
-		return {
-			permissionMode: this.claudePermissionMode as ClaudePermissionMode,
-			sandboxSettingsPath: this.sandboxSettingsPath
-		};
-	}
+	launchOptions: {}
 };
 vi.mock('./context', () => ({
 	getGitStore: () => mockGitStore,
@@ -97,10 +87,7 @@ describe('WorkspaceStore', () => {
 		uidCounter = 0;
 		mockGitStore.branchByProject = {};
 		mockGitStore.statusByProject = {};
-		mockWorkbenchSettingsStore.claudePermissionMode = 'default';
-		mockWorkbenchSettingsStore.sandboxRuntimeEnabled = false;
 		mockWorkbenchSettingsStore.defaultClaudeView = 'terminal';
-		mockWorkbenchSettingsStore.sandboxSettingsPath = undefined;
 		mockWorkbenchSettingsStore.activeClaudeAccountId = undefined;
 		store = new WorkspaceStore();
 	});
@@ -887,8 +874,9 @@ describe('WorkspaceStore', () => {
 			expect(tab.type).toBe('claude');
 			expect(tab.label).toBe('Claude 1');
 			expect(tab.panes[0].type).toBe('claude');
-			expect(tab.panes[0].startupCommand).toBe('claude');
-			expect(tab.panes[0].claudeSessionId).toBe('');
+			expect(tab.panes[0].startupCommand).toBeUndefined();
+			expect(tab.panes[0].claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+			expect(tab.panes[0].newClaudeSession).toEqual({});
 			expect(updated.activeTerminalTabId).toBe(tabId);
 		});
 
@@ -902,18 +890,16 @@ describe('WorkspaceStore', () => {
 			expect(pane.view).toBe('chat');
 			expect(pane.claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
 			// Switching to the terminal before any message starts the same id.
-			expect(pane.startupCommand).toBe(`claude --session-id ${pane.claudeSessionId}`);
+			expect(pane.newClaudeSession).toEqual({});
 		});
 
-		it('opens chat even with the sandbox runtime on (the terminal is what srt wraps), not for explicit commands', () => {
+		it("opens an agent action's tab as a terminal even when chat is the default", () => {
 			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
-			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.addAISession('ws-a', 'claude');
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
 
-			store.addAISession('ws-a', 'claude', { startupCommand: 'claude "fix the build"' });
-			expect(store.workspaces[0].terminalTabs[1].panes[0].view).toBeUndefined();
+			store.addAISession('ws-a', 'claude', { prompt: 'fix the build' });
+
+			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBeUndefined();
 		});
 
 		it('creates a codex tab with correct type', () => {
@@ -961,17 +947,17 @@ describe('WorkspaceStore', () => {
 			expect(store.workspaces[0].terminalTabs[0].id).toBe(tabId);
 		});
 
-		it('accepts explicit label and startup command options', () => {
+		it('accepts explicit label and prompt options', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 
 			store.addAISession('ws-a', 'claude', {
 				label: 'Review PR',
-				startupCommand: "claude 'Review this PR for regressions'"
+				prompt: 'Review this PR for regressions'
 			});
 
 			const tab = store.workspaces[0].terminalTabs[0];
 			expect(tab.label).toBe('Review PR');
-			expect(tab.panes[0].startupCommand).toBe("claude 'Review this PR for regressions'");
+			expect(tab.panes[0].newClaudeSession).toEqual({ prompt: 'Review this PR for regressions' });
 		});
 	});
 
@@ -1034,16 +1020,66 @@ describe('WorkspaceStore', () => {
 	describe('chat view guards', () => {
 		const id = '32345678-1234-1234-1234-123456789abc';
 
-		it('moves a pane to chat with the sandbox runtime on', async () => {
+		function summary(overrides: Partial<AgentSummary>): AgentSummary {
+			return {
+				agent: 'claude',
+				sessionId: id,
+				projectPath: '/projects/test',
+				worktreePath: null,
+				paneId: null,
+				claudeAccountId: null,
+				title: null,
+				model: null,
+				busy: false,
+				exited: false,
+				busySince: null,
+				updatedAt: 1,
+				waiting: null,
+				running: null,
+				previousIds: [],
+				...overrides
+			};
+		}
+
+		it("Chat attaches to the terminal's own claude, found by pane or terminal", async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
 			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
-			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
+			store.setServerTerminalId(paneId, 'srv-1');
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({ terminalId: 'srv-1' })]);
+
 			await store.setPaneView(paneId, 'chat');
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
+
+			expect(store.workspaces[0].terminalTabs[0].panes[0]).toMatchObject({
+				view: 'chat',
+				liveTerminal: true,
+				claudeSessionId: id
+			});
+			expect(deleteServerTerminal).not.toHaveBeenCalled();
 		});
 
-		it('keeps a restarted chat tab in chat, sandbox runtime or not', async () => {
+		it("Chat refuses when Claude hasn't connected, and Terminal only switches the view", async () => {
+			vi.mocked(stopAgent).mockClear();
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			store.resumeAISession('ws-a', id, 'S', 'claude');
+			const paneId = store.workspaces[0].terminalTabs[0].panes[0].id;
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({ paneId: 'other', exited: true })]);
+
+			await expect(store.setPaneView(paneId, 'chat')).rejects.toThrow(CLAUDE_NOT_IN_CHAT);
+			expect(store.isChatPane(paneId)).toBe(false);
+
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({ paneId })]);
+			await store.setPaneView(paneId, 'chat');
+			await store.setPaneView(paneId, 'terminal');
+			expect(store.workspaces[0].terminalTabs[0].panes[0]).toMatchObject({
+				view: 'terminal',
+				liveTerminal: undefined,
+				claudeSessionId: id
+			});
+			expect(stopAgent).not.toHaveBeenCalled();
+		});
+
+		it('keeps a restarted chat tab in chat', async () => {
 			mockWorkbenchSettingsStore.defaultClaudeView = 'chat';
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
@@ -1052,10 +1088,7 @@ describe('WorkspaceStore', () => {
 			await store.restartAISession('ws-a', tabId);
 			const restarted = store.workspaces[0].terminalTabs[0];
 			expect(restarted.panes[0].view).toBe('chat');
-
-			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
-			await store.restartAISession('ws-a', restarted.id);
-			expect(store.workspaces[0].terminalTabs[0].panes[0].view).toBe('chat');
+			expect(restarted.panes[0].claudeSessionId).toBe(id);
 		});
 	});
 
@@ -1099,7 +1132,8 @@ describe('WorkspaceStore', () => {
 			expect(tab.label).toBe('My Session');
 			expect(tab.type).toBe('claude');
 			expect(tab.panes[0].claudeSessionId).toBe(sessionId);
-			expect(tab.panes[0].startupCommand).toBe(`claude --resume ${sessionId}`);
+			expect(tab.panes[0].startupCommand).toBeUndefined();
+			expect(tab.panes[0].newClaudeSession).toBeUndefined();
 			expect(store.workspaces[0].activeTerminalTabId).toBe(tab.id);
 		});
 
@@ -1141,11 +1175,12 @@ describe('WorkspaceStore', () => {
 			expect(updated.terminalTabs[0].id).not.toBe('tab-1');
 			expect(updated.terminalTabs[0].type).toBe('claude');
 			expect(updated.terminalTabs[0].panes[0].claudeSessionId).toBe(sessionId);
-			expect(updated.terminalTabs[0].panes[0].startupCommand).toBe(`claude --resume ${sessionId}`);
+			expect(updated.terminalTabs[0].panes[0].startupCommand).toBeUndefined();
+			expect(updated.terminalTabs[0].panes[0].newClaudeSession).toBeUndefined();
 			expect(updated.activeTerminalTabId).toBe(updated.terminalTabs[0].id);
 		});
 
-		it('uses new session command when no session ID', () => {
+		it('starts a new session when the pane has no session ID', () => {
 			const tab = makeTab({
 				id: 'tab-1',
 				type: 'claude',
@@ -1160,7 +1195,9 @@ describe('WorkspaceStore', () => {
 
 			store.restartAISession('ws-a', 'tab-1');
 
-			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe('claude');
+			const pane = store.workspaces[0].terminalTabs[0].panes[0];
+			expect(pane.claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+			expect(pane.newClaudeSession).toEqual({});
 		});
 
 		it('no-ops for non-AI tab', () => {
@@ -1179,27 +1216,8 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
-	describe('updateAITab', () => {
-		it('updates the label and session ID', () => {
-			const tab = makeTab({
-				id: 'tab-1',
-				type: 'claude',
-				label: 'Claude 1',
-				panes: [{ id: 'pane-1', type: 'claude', claudeSessionId: '' }]
-			});
-			const ws = makeWorkspace({ id: 'ws-a', terminalTabs: [tab] });
-			store.workspaces = [ws];
-
-			store.updateAITab('ws-a', 'tab-1', 'session-123', 'Updated Label', 'claude');
-
-			const updated = store.workspaces[0].terminalTabs[0];
-			expect(updated.label).toBe('Updated Label');
-			expect(updated.panes[0].claudeSessionId).toBe('session-123');
-		});
-	});
-
 	describe('updateAISessionByPaneId', () => {
-		it('updates session ID and startupCommand for valid UUID', () => {
+		it('updates the session ID of a Claude pane, which has no command', () => {
 			const tab = makeTab({
 				id: 'tab-1',
 				type: 'claude',
@@ -1214,7 +1232,7 @@ describe('WorkspaceStore', () => {
 
 			const pane = store.workspaces[0].terminalTabs[0].panes[0];
 			expect(pane.claudeSessionId).toBe(validUuid);
-			expect(pane.startupCommand).toBe(`claude --resume ${validUuid}`);
+			expect(pane.startupCommand).toBeUndefined();
 			expect(invokeSpy).toHaveBeenCalledWith('save_workspaces', expect.any(Object));
 		});
 
@@ -1377,23 +1395,6 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
-	describe('addClaudeByProject', () => {
-		it('adds a claude session to the main workspace', () => {
-			const ws = makeWorkspace({ id: 'ws-a', projectPath: '/a' });
-			store.workspaces = [ws];
-
-			const result = store.addClaudeByProject('/a');
-
-			expect(result).not.toBeNull();
-			expect(result!.workspaceId).toBe('ws-a');
-			expect(result!.tabId).toBeTruthy();
-		});
-
-		it('returns null when no workspace exists for project', () => {
-			expect(store.addClaudeByProject('/nonexistent')).toBeNull();
-		});
-	});
-
 	describe('addAIByProject', () => {
 		it('creates a codex session by project path', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a', projectPath: '/a' })];
@@ -1509,90 +1510,6 @@ describe('WorkspaceStore', () => {
 			expect(store.workspaces[0].activeTerminalTabId).toBe('');
 		});
 
-		it('updates AI resume commands for panes with session IDs', () => {
-			const sessionId = '12345678-1234-1234-1234-123456789abc';
-			const tab: TerminalTabState = {
-				id: 'tab-1',
-				label: 'Claude 1',
-				split: 'horizontal',
-				type: 'claude',
-				panes: [
-					{
-						id: 'pane-1',
-						type: 'claude',
-						claudeSessionId: sessionId,
-						startupCommand: 'wrong-command'
-					}
-				]
-			};
-			const ws = makeWorkspace({
-				id: 'ws-a',
-				terminalTabs: [tab],
-				activeTerminalTabId: 'tab-1'
-			});
-			store.workspaces = [ws];
-
-			store.ensureShape();
-
-			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe(
-				`claude --resume ${sessionId}`
-			);
-		});
-
-		it('updates AI new session commands for panes without session IDs', () => {
-			const tab: TerminalTabState = {
-				id: 'tab-1',
-				label: 'Claude 1',
-				split: 'horizontal',
-				type: 'claude',
-				panes: [
-					{
-						id: 'pane-1',
-						type: 'claude',
-						startupCommand: 'wrong-command'
-					}
-				]
-			};
-			const ws = makeWorkspace({
-				id: 'ws-a',
-				terminalTabs: [tab],
-				activeTerminalTabId: 'tab-1'
-			});
-			store.workspaces = [ws];
-
-			store.ensureShape();
-
-			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe('claude');
-		});
-
-		it('preserves AI new session commands that include prompt args', () => {
-			const tab: TerminalTabState = {
-				id: 'tab-1',
-				label: 'Claude 1',
-				split: 'horizontal',
-				type: 'claude',
-				panes: [
-					{
-						id: 'pane-1',
-						type: 'claude',
-						startupCommand: "claude 'Review this PR for regressions'"
-					}
-				]
-			};
-			const ws = makeWorkspace({
-				id: 'ws-a',
-				terminalTabs: [tab],
-				activeTerminalTabId: 'tab-1'
-			});
-			store.workspaces = [ws];
-
-			store.ensureShape();
-
-			expect(store.workspaces[0].terminalTabs[0].panes[0].startupCommand).toBe(
-				"claude 'Review this PR for regressions'"
-			);
-		});
-
 		it('fixes codex resume commands', () => {
 			const sessionId = '12345678-1234-1234-1234-123456789abc';
 			const tab: TerminalTabState = {
@@ -1634,8 +1551,7 @@ describe('WorkspaceStore', () => {
 					{
 						id: 'pane-1',
 						type: 'claude',
-						claudeSessionId: sessionId,
-						startupCommand: `claude --resume ${sessionId}`
+						claudeSessionId: sessionId
 					}
 				]
 			};
@@ -1734,365 +1650,93 @@ describe('WorkspaceStore', () => {
 		});
 	});
 
-	// ─── ensureShape × permission mode ──────────────────────
+	// ─── Claude panes run a session, never a command ────────
 
-	describe('ensureShape permission mode', () => {
+	describe('Claude pane launches', () => {
 		const sessionId = '12345678-1234-1234-1234-123456789abc';
 
-		function seedPane(pane: TerminalPaneState, type: SessionType = 'claude') {
-			const tab: TerminalTabState = {
-				id: 'tab-1',
-				label: 'AI 1',
-				split: 'horizontal',
-				type,
-				panes: [pane]
-			};
+		function pane(): TerminalPaneState {
+			return store.workspaces[0].terminalTabs[0].panes[0];
+		}
+
+		function seedPane(seed: TerminalPaneState) {
 			store.workspaces = [
-				makeWorkspace({ id: 'ws-a', terminalTabs: [tab], activeTerminalTabId: 'tab-1' })
+				makeWorkspace({
+					id: 'ws-a',
+					terminalTabs: [
+						{ id: 'tab-1', label: 'AI 1', split: 'horizontal', type: seed.type, panes: [seed] }
+					],
+					activeTerminalTabId: 'tab-1'
+				})
 			];
 		}
 
-		function startupCommand(): string | undefined {
-			return store.workspaces[0].terminalTabs[0].panes[0].startupCommand;
-		}
-
-		it('inserts the flag and keeps a prompt persisted under the default mode', () => {
-			seedPane({ id: 'pane-1', type: 'claude', startupCommand: "claude 'Review this PR'" });
-			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe("claude --permission-mode bypassPermissions 'Review this PR'");
-		});
-
-		it('removes a stale flag and keeps the prompt when the mode returns to default', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				startupCommand: "claude --permission-mode bypassPermissions 'Review this PR'"
-			});
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe("claude 'Review this PR'");
-		});
-
-		it('swaps one mode flag for another without touching the prompt', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				startupCommand: "claude --permission-mode plan 'Review this PR'"
-			});
-			mockWorkbenchSettingsStore.claudePermissionMode = 'acceptEdits';
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe("claude --permission-mode acceptEdits 'Review this PR'");
-		});
-
-		it('adds the flag to a promptless new-session command', () => {
-			seedPane({ id: 'pane-1', type: 'claude', startupCommand: 'claude' });
-			mockWorkbenchSettingsStore.claudePermissionMode = 'dontAsk';
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe('claude --permission-mode dontAsk');
-		});
-
-		it('normalises a command carrying an unknown mode back to the base', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				startupCommand: "claude --permission-mode bogus 'Review this PR'"
-			});
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe('claude');
-		});
-
-		it('adds the flag to a resume command', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				claudeSessionId: sessionId,
-				startupCommand: `claude --resume ${sessionId}`
-			});
-			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(
-				`claude --permission-mode bypassPermissions --resume ${sessionId}`
-			);
-		});
-
-		it('strips the flag from a resume command when the mode returns to default', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				claudeSessionId: sessionId,
-				startupCommand: `claude --permission-mode bypassPermissions --resume ${sessionId}`
-			});
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`claude --resume ${sessionId}`);
-		});
-
-		it('leaves codex commands unflagged while a claude mode is set', () => {
-			seedPane(
-				{ id: 'pane-1', type: 'codex', startupCommand: "codex 'Find DRY violations'" },
-				'codex'
-			);
-			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe("codex -c tui.alternate_screen=never 'Find DRY violations'");
-		});
-	});
-
-	// ─── Sandbox runtime wrapper ────────────────────────────
-
-	describe('ensureShape sandbox runtime wrapper', () => {
-		const sessionId = '12345678-1234-1234-1234-123456789abc';
-		const settingsPath = '/Users/u/.workbench/sandbox-runtime.json';
-		const prefix = `npx --yes ${SANDBOX_RUNTIME_PACKAGE} --settings '${settingsPath}' --`;
-
-		function seedPane(pane: TerminalPaneState, type: SessionType = 'claude') {
-			const tab: TerminalTabState = {
-				id: 'tab-1',
-				label: 'AI 1',
-				split: 'horizontal',
-				type,
-				panes: [pane]
-			};
-			store.workspaces = [
-				makeWorkspace({ id: 'ws-a', terminalTabs: [tab], activeTerminalTabId: 'tab-1' })
-			];
-		}
-
-		function startupCommand(): string | undefined {
-			return store.workspaces[0].terminalTabs[0].panes[0].startupCommand;
-		}
-
-		it('wraps a promptless new-session command when the setting is turned on', () => {
-			seedPane({ id: 'pane-1', type: 'claude', startupCommand: 'claude' });
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`${prefix} claude`);
-		});
-
-		it('unwraps a persisted command when the setting is turned off', () => {
-			seedPane({ id: 'pane-1', type: 'claude', startupCommand: `${prefix} claude` });
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe('claude');
-		});
-
-		it('keeps a persisted command untouched while the setting stays on', () => {
-			seedPane({ id: 'pane-1', type: 'claude', startupCommand: `${prefix} claude` });
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`${prefix} claude`);
-		});
-
-		it('preserves an initial prompt across the wrapper being added', () => {
-			seedPane({ id: 'pane-1', type: 'claude', startupCommand: "claude 'Review this PR'" });
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`${prefix} claude 'Review this PR'`);
-		});
-
-		it('preserves an initial prompt across the wrapper being removed', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				startupCommand: `${prefix} claude 'Review this PR'`
-			});
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe("claude 'Review this PR'");
-		});
-
-		it('combines the wrapper with a permission-mode flag', () => {
-			seedPane({ id: 'pane-1', type: 'claude', startupCommand: 'claude' });
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`${prefix} claude --permission-mode bypassPermissions`);
-		});
-
-		it('rewrites a wrapped resume command when the setting is turned off', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				claudeSessionId: sessionId,
-				startupCommand: `${prefix} claude --resume ${sessionId}`
-			});
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`claude --resume ${sessionId}`);
-		});
-
-		it('wraps a resume command when the setting is turned on', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				claudeSessionId: sessionId,
-				startupCommand: `claude --resume ${sessionId}`
-			});
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`${prefix} claude --resume ${sessionId}`);
-		});
-
-		it('never wraps codex, which has no sandbox-runtime support', () => {
-			seedPane(
-				{ id: 'pane-1', type: 'codex', startupCommand: "codex 'Find DRY violations'" },
-				'codex'
-			);
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe("codex -c tui.alternate_screen=never 'Find DRY violations'");
-		});
-
-		/** Commands persisted before the version was pinned must still normalise. */
-		it('rewrites an unversioned wrapper written by an earlier build', () => {
-			seedPane({
-				id: 'pane-1',
-				type: 'claude',
-				startupCommand:
-					"npx --yes @anthropic-ai/sandbox-runtime --settings '/old/path.json' -- claude 'Review this PR'"
-			});
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.ensureShape();
-
-			expect(startupCommand()).toBe(`${prefix} claude 'Review this PR'`);
-		});
-	});
-
-	// ─── Explicit startup commands ──────────────────────────
-
-	describe('addAISession startup commands', () => {
-		const settingsPath = '/Users/u/.workbench/sandbox-runtime.json';
-		const prefix = `npx --yes ${SANDBOX_RUNTIME_PACKAGE} --settings '${settingsPath}' --`;
-
-		function seedWorkspace() {
+		it('a new Claude tab picks its session id up front and builds no command', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-		}
 
-		function startupCommand(): string | undefined {
-			const tab = store.workspaces[0].terminalTabs[0];
-			return tab.panes[0].startupCommand;
-		}
+			store.addAISession('ws-a', 'claude');
 
-		/**
-		 * A project startup command or task of `claude …` used to launch bare,
-		 * bypassing both the sandbox wrapper and the permission mode.
-		 */
-		it('wraps an explicit bare claude startup command', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.addAISession('ws-a', 'claude', { startupCommand: 'claude' });
-
-			expect(startupCommand()).toBe(`${prefix} claude`);
+			expect(pane().claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+			expect(pane().newClaudeSession).toEqual({});
+			expect(pane().startupCommand).toBeUndefined();
 		});
 
-		it('wraps an explicit claude startup command and keeps its arguments', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
+		it("an agent action's prompt rides along for the server to quote", () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 
-			store.addAISession('ws-a', 'claude', { startupCommand: "claude 'run the tests'" });
+			store.addAISession('ws-a', 'claude', { prompt: "  it's broken  " });
 
-			expect(startupCommand()).toBe(`${prefix} claude 'run the tests'`);
+			expect(pane().newClaudeSession).toEqual({ prompt: "it's broken" });
+			expect(pane().view).toBeUndefined();
 		});
 
-		it('adds the permission mode to an explicit claude startup command', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.claudePermissionMode = 'bypassPermissions';
+		it("a Codex agent action's prompt is in its command", () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 
-			store.addAISession('ws-a', 'claude', { startupCommand: 'claude' });
+			store.addAISession('ws-a', 'codex', { prompt: 'audit' });
 
-			expect(startupCommand()).toBe('claude --permission-mode bypassPermissions');
+			expect(pane().startupCommand).toBe("codex -c tui.alternate_screen=never 'audit'");
 		});
 
-		/** A mode the user wrote into the startup command is their decision. */
-		it('preserves a permission-mode flag the startup command already carries', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.claudePermissionMode = 'acceptEdits';
+		it('resumes once its terminal exists', () => {
+			seedPane({ id: 'pane-1', type: 'claude', claudeSessionId: sessionId, newClaudeSession: {} });
 
-			store.addAISession('ws-a', 'claude', {
-				startupCommand: 'claude --permission-mode plan'
+			store.setServerTerminalId('pane-1', 'srv-1');
+
+			expect(pane().newClaudeSession).toBeUndefined();
+		});
+
+		it('drops a command an older build saved', () => {
+			seedPane({
+				id: 'pane-1',
+				type: 'claude',
+				claudeSessionId: sessionId,
+				startupCommand: `npx --yes @anthropic-ai/sandbox-runtime@0.0.76 --settings '/x' -- claude --resume ${sessionId}`
 			});
 
-			expect(startupCommand()).toBe('claude --permission-mode plan');
+			store.ensureShape();
+
+			expect(pane()).toEqual({ id: 'pane-1', type: 'claude', claudeSessionId: sessionId });
 		});
 
-		it('still wraps a startup command that carries its own permission mode', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-			mockWorkbenchSettingsStore.claudePermissionMode = 'acceptEdits';
+		it("keeps a Codex pane's prompt while its command follows the launch options", () => {
+			seedPane({ id: 'pane-1', type: 'codex', startupCommand: "codex 'Find DRY violations'" });
 
-			store.addAISession('ws-a', 'claude', {
-				startupCommand: 'claude --permission-mode plan'
-			});
+			store.ensureShape();
 
-			expect(startupCommand()).toBe(`${prefix} claude --permission-mode plan`);
+			expect(pane().startupCommand).toBe(
+				"codex -c tui.alternate_screen=never 'Find DRY violations'"
+			);
 		});
 
-		it('leaves an explicit claude command unwrapped when the setting is off', () => {
-			seedWorkspace();
+		it('gives an id-less Claude pane from an older build a new session', () => {
+			seedPane({ id: 'pane-1', type: 'claude', claudeSessionId: '', startupCommand: 'claude' });
 
-			store.addAISession('ws-a', 'claude', { startupCommand: "claude 'run the tests'" });
+			store.ensureShape();
 
-			expect(startupCommand()).toBe("claude 'run the tests'");
-		});
-
-		/** Only a Claude launch is rebuilt; arbitrary shell commands pass through. */
-		it('leaves a non-claude startup command untouched', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.addAISession('ws-a', 'claude', { startupCommand: 'bun run dev' });
-
-			expect(startupCommand()).toBe('bun run dev');
-		});
-
-		it('does not rewrite a command that merely mentions claude', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.addAISession('ws-a', 'claude', { startupCommand: 'echo claude' });
-
-			expect(startupCommand()).toBe('echo claude');
-		});
-
-		it('leaves an explicit codex startup command untouched', () => {
-			seedWorkspace();
-			mockWorkbenchSettingsStore.sandboxSettingsPath = settingsPath;
-
-			store.addAISession('ws-a', 'codex', { startupCommand: "codex 'audit'" });
-
-			expect(startupCommand()).toBe("codex 'audit'");
+			expect(pane().claudeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+			expect(pane().newClaudeSession).toEqual({});
+			expect(pane().startupCommand).toBeUndefined();
 		});
 	});
 	// ─── Adopting terminals opened on another device ────────
@@ -2449,8 +2093,7 @@ describe('WorkspaceStore', () => {
 			vi.mocked(chatHasHistory).mockReturnValue(true);
 		});
 
-		it('moves to chat by killing the PTY, even with the sandbox runtime on', async () => {
-			mockWorkbenchSettingsStore.sandboxRuntimeEnabled = true;
+		it('moves to chat by killing the PTY', async () => {
 			store.setServerTerminalId(codexPane().id, 'srv-1');
 
 			await store.setPaneView(codexPane().id, 'chat');

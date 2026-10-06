@@ -13,8 +13,6 @@ const LS_ACTIVE = 'wb.activeMachine';
 /** The single server saved before machines existed; migrated into the list once. */
 const LEGACY_URL = 'wb.serverUrl';
 const LEGACY_TOKEN = 'wb.token';
-/** Terminal id → the conversation its `claude` runs; stored per machine (see `machineKey`). */
-export const LS_LINKS = 'wb.claudeTerminals';
 const DEFAULT_PORT = '4317';
 
 export const machineKey = (key: string, machineId: string) => `${key}.${machineId}`;
@@ -62,15 +60,12 @@ function readList(raw: string): Machine[] {
 	}
 }
 
-/** The pre-machines pairing becomes the first (active) machine, with its terminal links. */
+/** The pre-machines pairing becomes the first (active) machine. */
 function migrateLegacy(): Machine | null {
 	const url = lsGet(LEGACY_URL);
 	const token = lsGet(LEGACY_TOKEN);
 	if (!url || !token) return null;
-	const machine: Machine = { id: crypto.randomUUID(), name: hostOf(url), url, token };
-	const links = lsGet(LS_LINKS);
-	if (links !== null) lsSet(machineKey(LS_LINKS, machine.id), links);
-	return machine;
+	return { id: crypto.randomUUID(), name: hostOf(url), url, token };
 }
 
 /** Saved machines plus which one the app connects to; persisted in localStorage. */
@@ -97,8 +92,6 @@ export class SavedMachines {
 		if (!readList(lsGet(LS_MACHINES) ?? '').some((m) => m.id === legacy.id)) return;
 		lsRemove(LEGACY_URL);
 		lsRemove(LEGACY_TOKEN);
-		const links = lsGet(LS_LINKS);
-		if (links === null || lsGet(machineKey(LS_LINKS, legacy.id)) === links) lsRemove(LS_LINKS);
 	}
 
 	/**
@@ -140,7 +133,6 @@ export class SavedMachines {
 	remove(id: string): void {
 		this.list = this.list.filter((m) => m.id !== id);
 		if (this.activeId === id) this.activeId = null;
-		lsRemove(machineKey(LS_LINKS, id));
 		lsRemove(machineKey('wb.account', id));
 		// Remove drafts only for the forgotten machine.
 		try {
