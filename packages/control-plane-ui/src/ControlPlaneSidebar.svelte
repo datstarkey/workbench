@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { Button } from '@workbench/ui/button';
 	import { Input } from '@workbench/ui/input';
 	import type { ProjectConfig } from '@workbench/types';
@@ -115,7 +116,7 @@
 									onclick={() =>
 										onOpenTerminal(p.path, undefined, `${projectName(p)} · claude`, 'claude')}
 								>
-									Claude
+									<AgentIcon agent="claude" class="size-3.5 text-current" />Claude
 								</Button>
 							{/if}
 							<Button variant="ghost" size="sm" onclick={() => toggle(p.path)}>
@@ -156,7 +157,7 @@
 														'claude'
 													)}
 											>
-												Claude
+												<AgentIcon agent="claude" class="size-3.5 text-current" />Claude
 											</Button>
 										{/if}
 									</div>

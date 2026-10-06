@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import {
 		getClaudeSessionStore,
@@ -78,10 +79,14 @@
 
 	<ClaudeAccountSwitcher />
 	{#if sessionCounts.claude > 0}
-		<span class="text-wb-claude">● {sessionCounts.claude} Claude</span>
+		<span class="flex items-center gap-1.5 text-wb-claude"
+			><AgentIcon agent="claude" class="size-3" />{sessionCounts.claude} Claude</span
+		>
 	{/if}
 	{#if sessionCounts.codex > 0}
-		<span class="text-wb-codex">● {sessionCounts.codex} Codex</span>
+		<span class="flex items-center gap-1.5 text-wb-codex"
+			><AgentIcon agent="codex" class="size-3" />{sessionCounts.codex} Codex</span
+		>
 	{/if}
 	{#if version}
 		<span class="text-wb-ink-soft">workbench v{version}</span>

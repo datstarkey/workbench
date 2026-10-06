@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import type { Component } from 'svelte';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
@@ -12,7 +13,6 @@
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
 	import InstanceSwitcher from '$features/instances/InstanceSwitcher.svelte';
@@ -481,7 +481,7 @@
 		Open
 	</Item>
 	<Item onclick={row.onNewSession}>
-		<SparklesIcon class="size-3.5" />
+		<AgentIcon agent="claude" class="size-3.5" />
 		New Session
 	</Item>
 	{#if row.onRemove}
@@ -498,14 +498,15 @@
 	{@const codex = sessionCount(sessions, 'codex')}
 	{#if claude > 0}
 		<span
-			class="shrink-0 rounded bg-wb-claude/20 px-1 font-mono text-[9.5px] font-semibold text-wb-claude"
-			>C{claude}</span
+			class="inline-flex shrink-0 items-center gap-1 rounded bg-wb-claude/20 px-1 py-px font-mono text-[9.5px] font-semibold text-wb-claude"
+			><AgentIcon agent="claude" class="size-2.5" /><span class="sr-only">Claude:</span
+			>{claude}</span
 		>
 	{/if}
 	{#if codex > 0}
 		<span
-			class="shrink-0 rounded bg-wb-codex/20 px-1 font-mono text-[9.5px] font-semibold text-wb-codex"
-			>X{codex}</span
+			class="inline-flex shrink-0 items-center gap-1 rounded bg-wb-codex/20 px-1 py-px font-mono text-[9.5px] font-semibold text-wb-codex"
+			><AgentIcon agent="codex" class="size-2.5" /><span class="sr-only">Codex:</span>{codex}</span
 		>
 	{/if}
 {/snippet}

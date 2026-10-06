@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import type { Attachment } from 'svelte/attachments';
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
@@ -198,7 +199,7 @@
 		<div
 			class="flex shrink-0 items-center gap-3 border-b border-wb-hair-soft bg-wb-panel px-3 py-2 text-xs text-wb-ink-mute"
 		>
-			Same conversation in the Claude CLI
+			<AgentIcon agent="claude" class="size-4" />Same conversation in the Claude CLI
 			<button
 				type="button"
 				class="ml-auto rounded-lg border border-wb-hair bg-wb-panel2 px-3 py-1.5 font-medium text-wb-ink active:bg-wb-bg disabled:opacity-50"

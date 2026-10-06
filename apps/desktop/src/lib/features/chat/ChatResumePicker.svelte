@@ -1,14 +1,17 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { onMount } from 'svelte';
 	import XIcon from '@lucide/svelte/icons/x';
 	import type { DiscoveredClaudeSession } from '$types/workbench';
 	import { formatSessionDate } from '$lib/utils/format';
 
 	let {
+		agent,
 		load,
 		onPick,
 		onClose
 	}: {
+		agent: 'claude' | 'codex';
 		/** Earlier conversations to offer, newest first. */
 		load: () => Promise<DiscoveredClaudeSession[]>;
 		onPick: (session: DiscoveredClaudeSession) => void;
@@ -33,7 +36,9 @@
 	aria-label="Resume a conversation"
 >
 	<header class="flex items-center gap-2 border-b border-wb-hair px-3 py-2">
-		<span class="text-xs font-medium text-wb-ink">Resume a conversation</span>
+		<AgentIcon {agent} class="size-4" /><span class="text-xs font-medium text-wb-ink"
+			>Resume a conversation</span
+		>
 		<button
 			type="button"
 			class="ml-auto rounded p-0.5 text-wb-ink-soft hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"

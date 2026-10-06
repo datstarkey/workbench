@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { onDestroy } from 'svelte';
 	import type { AgentChat } from './agent-chat.svelte';
 	import { CodexControlsStore } from './codex-controls.svelte';
@@ -36,8 +37,9 @@
 {#if chat.agent === 'codex'}
 	<details class="rounded-md border border-wb-hair text-xs text-wb-ink">
 		<summary class="cursor-pointer px-3 py-2 text-wb-ink-mute"
-			>Codex controls{codexState?.goal ? ` · ${codexState.goal.status} goal` : ''}{codexState?.queue
-				.length
+			><span class="inline-flex items-center gap-1.5"
+				><AgentIcon agent="codex" class="size-3.5" />Codex controls</span
+			>{codexState?.goal ? ` · ${codexState.goal.status} goal` : ''}{codexState?.queue.length
 				? ` · ${codexState.queue.length} queued`
 				: ''}</summary
 		>

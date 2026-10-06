@@ -1,7 +1,7 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { onMount } from 'svelte';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
-	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -108,7 +108,9 @@
 						class="flex flex-col gap-2.5 rounded-xl border border-wb-warn/35 bg-wb-warn/[0.07] p-3"
 					>
 						<div class="flex items-center gap-2 text-xs">
-							<span class="font-semibold text-wb-warn">{waitingLabel(waiting)}</span>
+							<AgentIcon agent={chat.agent} class="size-3.5" /><span
+								class="font-semibold text-wb-warn">{waitingLabel(waiting)}</span
+							>
 							{#if chat.agent === 'codex'}
 								<span class="rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-codex"
 									>codex</span
@@ -172,7 +174,7 @@
 								chat.agent === 'codex' ? 'text-wb-codex' : 'text-wb-claude'
 							)}
 						>
-							<MessageSquareIcon class="size-4" />
+							<AgentIcon agent={chat.agent} class="size-4" />
 						</span>
 						<span class="truncate text-[13.5px] font-medium">{chat.title ?? 'New chat'}</span>
 						<span
@@ -226,7 +228,9 @@
 									claude ? 'text-wb-claude' : 'text-wb-shell'
 								)}
 							>
-								<SquareTerminalIcon class="size-4" />
+								{#if claude}<AgentIcon agent="claude" class="size-4" />{:else}<SquareTerminalIcon
+										class="size-4"
+									/>{/if}
 							</span>
 							<span class="flex min-w-0 flex-col">
 								<span class="truncate text-[13.5px] font-medium">{t.name ?? t.id.slice(0, 8)}</span>

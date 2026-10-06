@@ -1,8 +1,7 @@
 <script lang="ts">
+	import { AgentIcon } from '@workbench/ui/agent-icon';
 	import { onMount } from 'svelte';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TerminalSquareIcon from '@lucide/svelte/icons/terminal-square';
-	import ZapIcon from '@lucide/svelte/icons/zap';
 	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import RecentSessionList from '$features/workspaces/RecentSessionList.svelte';
 	import { effectivePath } from '$lib/utils/path';
@@ -32,8 +31,13 @@
 	<div class="flex w-full max-w-[540px] flex-col items-center gap-6 px-4 text-center">
 		<!-- Hero icon + headline -->
 		<div class="flex flex-col items-center gap-3">
-			<div class="grid size-10 place-items-center rounded-xl bg-wb-accent/10 text-wb-accent">
-				<SparklesIcon class="size-5" />
+			<div class="grid size-12 place-items-center rounded-xl bg-wb-accent/10 text-wb-accent">
+				<span class="flex items-center gap-1"
+					><AgentIcon agent="claude" class="size-5" /><AgentIcon
+						agent="codex"
+						class="size-5"
+					/></span
+				>
 			</div>
 			<div>
 				<h2 class="text-[15px] font-semibold tracking-tight text-wb-ink">Start a session</h2>
@@ -54,7 +58,7 @@
 				<div
 					class="grid size-8 shrink-0 place-items-center rounded-md bg-wb-bg text-wb-accent transition-colors group-hover:bg-wb-accent/10"
 				>
-					<SparklesIcon class="size-4" />
+					<AgentIcon agent="claude" class="size-4" />
 				</div>
 				<div class="flex flex-1 flex-col items-start text-left">
 					<span class="text-[13px] font-medium text-wb-ink">New Claude Session</span>
@@ -72,7 +76,7 @@
 				<div
 					class="grid size-8 shrink-0 place-items-center rounded-md bg-wb-bg text-wb-codex transition-colors group-hover:bg-wb-codex/10"
 				>
-					<ZapIcon class="size-4" />
+					<AgentIcon agent="codex" class="size-4" />
 				</div>
 				<div class="flex flex-1 flex-col items-start text-left">
 					<span class="text-[13px] font-medium text-wb-ink">New Codex Session</span>
@@ -110,12 +114,14 @@
 		<!-- Recent sessions -->
 		<div class="w-full">
 			<RecentSessionList
+				agent="claude"
 				title="Recent Claude Sessions"
 				sessions={claudeSessionStore.discoveredSessions}
 				onResume={(id, label) => claudeSessionStore.resumeSession(workspace.id, id, label)}
 				onRemove={(id) => claudeSessionStore.removeDiscoveredSession(id)}
 			/>
 			<RecentSessionList
+				agent="codex"
 				title="Recent Codex Sessions"
 				sessions={claudeSessionStore.discoveredCodexSessions}
 				onResume={(id, label) => claudeSessionStore.resumeSession(workspace.id, id, label, 'codex')}
