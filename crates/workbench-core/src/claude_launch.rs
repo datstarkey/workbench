@@ -28,10 +28,13 @@ pub const SANDBOX_RUNTIME_PACKAGE: &str = "@anthropic-ai/sandbox-runtime@0.0.76"
 /// the configured permission mode and, when the sandbox is on, srt's wrapper
 /// pointing at `sandbox_settings`.
 /// `resume_at`: continue from this entry, dropping what came after it (a rewind).
+/// `mode`: a mode picked for this session, passed even when it's `default`
+/// (the configured `default` leaves the flag out, so Claude's settings decide).
 pub fn terminal_command(
     session_id: &str,
     resume: bool,
     resume_at: Option<&str>,
+    mode: Option<&str>,
     settings: &WorkbenchSettings,
     sandbox_settings: &Path,
 ) -> Result<String> {
@@ -60,8 +63,11 @@ pub fn terminal_command(
         Ok(bin) if !bin.is_empty() => cmd.push_str(&shell_quote(&bin)),
         _ => cmd.push_str("claude"),
     }
-    let mode = settings.claude_permission_mode.as_str();
-    if mode != "default" && PERMISSION_MODES.contains(&mode) {
+    let (mode, picked) = match mode {
+        Some(mode) => (mode, true),
+        None => (settings.claude_permission_mode.as_str(), false),
+    };
+    if (picked || mode != "default") && PERMISSION_MODES.contains(&mode) {
         cmd.push_str(&format!(" --permission-mode {mode}"));
     }
     let flag = if resume { "--resume" } else { "--session-id" };
@@ -127,6 +133,26 @@ mod tests {
     const TRUST_DIALOG: &str = "\x1b[2G\x1b[1mQuick\x1b[8Gsafety\x1b[15Gcheck\x1b[22m\r\r\n\x1b[2G\x1b[38;2;177;185;249m\u{276f}\x1b[4GNo,\x1b[8Gexit\x1b[39m\r\r\n\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis\x1b[22Gfolder\r\r\n\x1b]0;claude\x07";
 
     #[test]
+    fn a_picked_mode_overrides_the_setting_even_when_default() {
+        let file = std::path::PathBuf::from("/nonexistent");
+        let cmd = |mode| {
+            terminal_command(
+                SID,
+                true,
+                None,
+                mode,
+                &settings("bypassPermissions", false),
+                &file,
+            )
+            .unwrap()
+        };
+        assert!(cmd(Some("default")).contains(" --permission-mode default "));
+        assert!(cmd(Some("auto")).contains(" --permission-mode auto "));
+        assert!(cmd(None).contains(" --permission-mode bypassPermissions "));
+        assert!(!cmd(Some("yolo")).contains("--permission-mode"));
+    }
+
+    #[test]
     fn spots_the_trust_dialog_drawn_with_cursor_moves() {
         assert!(shows_trust_prompt(TRUST_DIALOG));
         assert!(shows_trust_prompt(&format!(
@@ -157,6 +183,7 @@ mod tests {
             SID,
             true,
             None,
+            None,
             &settings("default", false),
             Path::new("/x"),
         );
@@ -169,6 +196,7 @@ mod tests {
             SID,
             false,
             None,
+            None,
             &settings("acceptEdits", false),
             Path::new("/x"),
         );
@@ -179,6 +207,7 @@ mod tests {
         let cmd = terminal_command(
             SID,
             true,
+            None,
             None,
             &settings("rm -rf /", false),
             Path::new("/x"),
@@ -193,6 +222,7 @@ mod tests {
             &bad,
             true,
             None,
+            None,
             &settings("default", false),
             Path::new("/x")
         )
@@ -205,7 +235,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("it's.json");
         std::fs::write(&file, "{}").unwrap();
-        let cmd = terminal_command(SID, true, None, &settings("plan", true), &file).unwrap();
+        let cmd = terminal_command(SID, true, None, None, &settings("plan", true), &file).unwrap();
         let quoted = file.to_str().unwrap().replace('\'', r#"'"'"'"#);
         assert_eq!(
             cmd,
@@ -222,6 +252,7 @@ mod tests {
             SID,
             true,
             Some(at),
+            None,
             &settings("default", false),
             Path::new("/x"),
         )
@@ -231,6 +262,7 @@ mod tests {
             SID,
             true,
             Some("x; rm -rf /"),
+            None,
             &settings("default", false),
             Path::new("/x"),
         )
@@ -248,6 +280,7 @@ mod tests {
         let err = terminal_command(
             SID,
             true,
+            None,
             None,
             &settings("default", true),
             &dir.path().join("no.json"),

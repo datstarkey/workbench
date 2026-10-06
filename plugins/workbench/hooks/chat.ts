@@ -394,11 +394,11 @@ export const register: Register = (on) => {
 								// switch a session to an alias on its own).
 								const set = await $.config.set({ key: 'model', value: req.model });
 								reply(line.request_id, denial(set, 'Model'));
-							} else if (sub === 'set_permission_mode' && req.mode) {
-								const set = await $.config
-									.set({ key: 'permissionMode', value: req.mode })
-									.catch((err: unknown) => ({ deny: String(err) }));
-								reply(line.request_id, denial(set, 'Mode'));
+							} else if (sub === 'set_permission_mode') {
+								// A plugin can't switch the live mode: `$.config.set` would rewrite the
+								// settings default. The server restarts its own terminals in the mode
+								// instead, so only a terminal it didn't start gets here.
+								reply(line.request_id, 'Mode: switch it in the terminal with Shift+Tab');
 							} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
 								effort = req.settings.effortLevel as TurnStepInput['effort'];
 								reply(line.request_id);
