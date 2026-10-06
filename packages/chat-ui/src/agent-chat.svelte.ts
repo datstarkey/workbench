@@ -20,9 +20,19 @@ import type {
 	TranscriptMeta
 } from '@workbench/types';
 import { NeedsTrustError, type AgentApi } from './agent-api';
-import { agentName, applyChanges, awaitsAnswer } from './chat-format';
+import {
+	activity,
+	agentName,
+	applyChanges,
+	awaitsAnswer,
+	chatTitle,
+	isRunning,
+	latestTodos
+} from './chat-format';
 import type { ElicitationValue } from './elicitation-form';
 import { previewUrl } from './attachment-intake';
+import { chatArtifacts } from './artifacts';
+import { ChatDraft } from './chat-draft.svelte';
 
 /**
  * - `starting`: launching or resuming the `claude` / `codex` process.
@@ -49,6 +59,8 @@ export interface PendingPrompt {
 }
 
 const RECONNECT_MS = 1500;
+/** Hidden this long (a sleeping phone or laptop), the socket may be dead while it still reads open. */
+const WAKE_RECONNECT_MS = 10_000;
 /** How long the `@` menu's file list is reused before it's fetched again. */
 const FILES_TTL_MS = 30_000;
 
@@ -103,7 +115,6 @@ export class AgentChat {
 	historyItems = $state.raw<TranscriptItem[]>([]);
 	private historyCursor = $state<string | null | undefined>(undefined);
 	private loadingHistory = false;
-	codexEvents = $state.raw<{ method: string; params: Record<string, unknown> }[]>([]);
 	onCodexEvent: ((method: string, params: Record<string, unknown>) => void) | null = null;
 	private controls = new Map<
 		string,
@@ -118,6 +129,16 @@ export class AgentChat {
 	rewind = $state.raw<RewindState | null>(null);
 	/** What the server does as the prompt cache nears expiry (Claude only). */
 	cachePolicy = $state.raw<CachePolicy>({ compactOnExpiry: false });
+
+	readonly live = $derived(this.status === 'live');
+	/** What the agent is doing now, or the request it waits on. */
+	readonly now = $derived(activity(this.items, this.meta));
+	/** The oldest approval, question or elicitation still waiting on the person. */
+	readonly waiting = $derived(this.items.find(awaitsAnswer) ?? null);
+	readonly tasks = $derived(this.meta?.tasks ?? []);
+	readonly runningTasks = $derived(this.tasks.filter(isRunning).length);
+	readonly todos = $derived(latestTodos(this.items));
+	readonly artifactList = $derived(chatArtifacts(this.meta?.artifacts));
 
 	private body: StartAgentBody;
 	private readonly api: AgentApi;
@@ -139,29 +160,53 @@ export class AgentChat {
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
 	private fileList: { at: number; files: Promise<string[]> } | null = null;
 	private rewindWaiters: Record<string, (reply: RewindReply | null) => void> = {};
+	private hiddenAt = 0;
 
-	constructor(body: StartAgentBody, api: AgentApi) {
+	/** `draft` is passed in by hosts that keep it beyond this chat (a phone's saved drafts). */
+	constructor(
+		body: StartAgentBody,
+		api: AgentApi,
+		readonly draft = new ChatDraft()
+	) {
 		this.body = body;
 		this.api = api;
 		this.agent = body.agent ?? 'claude';
 		this.sessionId = body.sessionId ?? '';
+		if (typeof document !== 'undefined')
+			document.addEventListener('visibilitychange', this.onVisibility);
 		void this.open();
 	}
 
+	private onVisibility = () => {
+		if (document.hidden) this.hiddenAt = Date.now();
+		else if (Date.now() - this.hiddenAt > WAKE_RECONNECT_MS) this.reconnect();
+	};
+
 	/**
-	 * Start (or resume) the process, then attach. Also the "Restart" action: an
+	 * Start (or resume) the process, then attach. Also the "Try again" action: an
 	 * `attachOnly` chat re-attaches while it runs, and once ended it starts here.
 	 */
 	open(): Promise<void> {
-		if (this.body.attachOnly && (this.status === 'exited' || this.status === 'failed')) {
-			this.body = { ...this.body, attachOnly: false };
-			this.onTakeOver?.();
-		}
+		if (this.status === 'exited' || this.status === 'failed') this.takeOver();
 		this.ws?.close(); // a Restart must not leave the old socket behind
 		this.ws = null;
 		this.status = 'starting';
 		this.error = null;
 		return this.connect();
+	}
+
+	/** Stop the process, then start it again here with the conversation resumed. */
+	async restart(): Promise<void> {
+		if (this.sessionId) await this.api.stop?.(this.sessionId).catch(() => {});
+		this.takeOver();
+		return this.open();
+	}
+
+	/** An `attachOnly` chat starts its own process from now on: this device owns it. */
+	private takeOver(): void {
+		if (!this.body.attachOnly) return;
+		this.body = { ...this.body, attachOnly: false };
+		this.onTakeOver?.();
 	}
 
 	/** The person trusted the folder: start again, answering Claude Code's dialog. */
@@ -222,6 +267,7 @@ export class AgentChat {
 		const ws = new WebSocket(url);
 		this.ws = ws;
 		ws.onmessage = (event) => {
+			if (this.ws !== ws) return; // a frame still arriving after a Restart closed it
 			try {
 				this.receive(JSON.parse(String(event.data)) as AgentServerMsg);
 			} catch (e) {
@@ -258,10 +304,6 @@ export class AgentChat {
 				break;
 			}
 			case 'codexEvent':
-				this.codexEvents = [
-					...this.codexEvents.slice(-19),
-					{ method: msg.method, params: msg.params }
-				];
 				this.onCodexEvent?.(msg.method, msg.params);
 				break;
 			case 'artifacts':
@@ -299,7 +341,7 @@ export class AgentChat {
 				this.settlePending();
 				break;
 			case 'exit':
-				this.rejectControls('The Codex session ended');
+				this.rejectControls(`The ${agentName(this.agent)} session ended`);
 				this.status = 'exited';
 				this.error = msg.message;
 				this.pending = [];
@@ -387,6 +429,10 @@ export class AgentChat {
 		if (Object.keys(previews).length > 0) {
 			this.imagePreviews = { ...this.imagePreviews, ...previews };
 		}
+	}
+
+	get title(): string {
+		return chatTitle(this.items, this.meta, this.agent);
 	}
 
 	/**
@@ -746,6 +792,8 @@ export class AgentChat {
 	dispose(): void {
 		this.rejectControls('Chat closed');
 		this.disposed = true;
+		if (typeof document !== 'undefined')
+			document.removeEventListener('visibilitychange', this.onVisibility);
 		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close();
 		this.ws = null;

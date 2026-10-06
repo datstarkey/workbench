@@ -8,13 +8,13 @@
 	import {
 		elicitationContent,
 		elicitationFields,
-		elicitationUrl,
 		initialDraft,
 		type ElicitationDraft,
 		type ElicitationItem,
 		type ElicitationValue
 	} from './elicitation-form';
 	import { getChatPlatform } from './platform';
+	import { safeExternalUrl } from './codex-helpers';
 
 	let {
 		elicitation,
@@ -43,7 +43,7 @@
 	let sent = $state<ElicitationAction | null>(null);
 
 	const isUrl = $derived(elicitation.mode === 'url');
-	const url = $derived(elicitationUrl(elicitation));
+	const url = $derived(safeExternalUrl(elicitation.url));
 	const host = $derived(url ? new URL(url).host : null);
 	const heading = $derived(elicitation.title ?? `${elicitation.server} needs your input`);
 

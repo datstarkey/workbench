@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { ArtifactInfo, TranscriptMeta } from '@workbench/types';
 import {
 	artifactFor,
-	artifactLink,
 	artifactName,
 	chatArtifacts,
 	isArtifactTool,
@@ -54,12 +53,6 @@ describe('artifact helpers', () => {
 		expect(artifactFor(m, 't1')?.url).toBe('https://claude.ai/artifact/a');
 		expect(artifactFor(m, 't2')).toBeNull();
 		expect(artifactFor(null, 't1')).toBeNull();
-	});
-
-	it('only opens http(s) links', () => {
-		expect(artifactLink('https://claude.ai/artifact/a')).toBe('https://claude.ai/artifact/a');
-		expect(artifactLink('file:///etc/passwd')).toBeNull();
-		expect(artifactLink('not a url')).toBeNull();
 	});
 
 	it('names untitled artifacts by their link', () => {

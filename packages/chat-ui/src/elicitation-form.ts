@@ -195,10 +195,3 @@ export function elicitationContent(
 	}
 	return { content, errors };
 }
-
-/** The URL to open, only if it's http(s): a server-sent link must not run script. */
-export function elicitationUrl(item: ElicitationItem): string | null {
-	if (!item.url || !URL.canParse(item.url)) return null;
-	const { protocol } = new URL(item.url);
-	return protocol === 'https:' || protocol === 'http:' ? item.url : null;
-}

@@ -9,6 +9,8 @@ describe('Codex input helpers', () => {
 	it('only opens HTTP links returned by native login/elicitation', () => {
 		expect(safeExternalUrl('javascript:alert(1)')).toBeNull();
 		expect(safeExternalUrl('file:///etc/passwd')).toBeNull();
+		expect(safeExternalUrl('not a url')).toBeNull();
+		expect(safeExternalUrl(undefined)).toBeNull();
 		expect(safeExternalUrl('https://example.com/sign-in')).toBe('https://example.com/sign-in');
 	});
 });

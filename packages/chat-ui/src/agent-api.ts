@@ -28,6 +28,8 @@ export interface AgentApi {
 	files?(where: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]>;
 	/** A subagent's own conversation; null until the CLI writes it. */
 	taskTranscript?(sessionId: string, taskId: string): Promise<TaskTranscript | null>;
+	/** Stop the session's process (a Restart). */
+	stop?(sessionId: string): Promise<void>;
 }
 
 export interface AgentServer {

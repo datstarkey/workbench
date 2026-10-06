@@ -8,18 +8,16 @@
 	import { cn } from '@workbench/ui';
 	import type { AgentChat } from './agent-chat.svelte';
 	import ChatActivity from './ChatActivity.svelte';
-	import ChatApproval from './ChatApproval.svelte';
-	import ChatElicitation from './ChatElicitation.svelte';
+	import ChatAnswer from './ChatAnswer.svelte';
 	import ChatArtifactCard from './ChatArtifactCard.svelte';
 	import ChatEvent from './ChatEvent.svelte';
 	import ChatMarkdown from './ChatMarkdown.svelte';
-	import ChatQuestion from './ChatQuestion.svelte';
 	import ChatRewind from './ChatRewind.svelte';
 	import ChatToolCard from './ChatToolCard.svelte';
 	import { artifactFor } from './artifacts';
 	import {
-		activity,
 		agentName,
+		awaitsAnswer,
 		groupBlocks,
 		stepNames,
 		toolDetail,
@@ -56,8 +54,6 @@
 	];
 
 	const blocks = $derived(groupBlocks([...chat.historyItems, ...chat.items]));
-	const now = $derived(activity(chat.items, chat.meta));
-	const live = $derived(chat.status === 'live');
 	const lastId = $derived(chat.items[chat.items.length - 1]?.id);
 </script>
 
@@ -245,36 +241,13 @@
 		{:else if block.item.kind === 'text'}
 			<div class="flex min-w-0 flex-col gap-2">
 				<ChatMarkdown text={block.item.text} />
-				{#if now.kind === 'writing' && block.item.id === lastId}
+				{#if chat.now.kind === 'writing' && block.item.id === lastId}
 					<span class="caret" aria-hidden="true"></span>
 				{/if}
 			</div>
-		{:else if block.item.kind === 'approval'}
-			{@const approval = block.item}
-			{#if inlineApprovals || approval.decision || approval.expired || approval.input?.isBlocking === false}
-				{#if approval.tool === 'AskUserQuestion'}
-					<ChatQuestion
-						{approval}
-						agent={chat.agent}
-						onAnswer={(decision, answers) => chat.approve(approval.id, decision, answers)}
-					/>
-				{:else}
-					<ChatApproval
-						{approval}
-						agent={chat.agent}
-						{cwd}
-						onDecide={(decision) => chat.approve(approval.id, decision)}
-					/>
-				{/if}
-			{/if}
-		{:else if block.item.kind === 'elicitation'}
-			{@const elicitation = block.item}
-			{#if inlineApprovals || elicitation.action || elicitation.expired}
-				<ChatElicitation
-					{elicitation}
-					agent={chat.agent}
-					onAnswer={(action, content) => chat.elicit(elicitation.id, action, content)}
-				/>
+		{:else if block.item.kind === 'approval' || block.item.kind === 'elicitation'}
+			{#if inlineApprovals || !awaitsAnswer(block.item)}
+				<ChatAnswer item={block.item} {chat} {cwd} />
 			{/if}
 		{:else if block.item.kind === 'event'}
 			<ChatEvent item={block.item} />
@@ -307,8 +280,13 @@
 		</div>
 	{/each}
 
-	{#if now.kind !== 'idle' && live}
-		<ChatActivity activity={now} since={chat.busySince} {cwd} onStop={() => chat.interrupt()} />
+	{#if chat.now.kind !== 'idle' && chat.live}
+		<ChatActivity
+			activity={chat.now}
+			since={chat.busySince}
+			{cwd}
+			onStop={() => chat.interrupt()}
+		/>
 	{/if}
 
 	{#if chat.status === 'exited'}
