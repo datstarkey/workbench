@@ -1,11 +1,13 @@
-//! The `claude` command a server terminal runs for a known session. Built here
-//! rather than by the client so a remote client can't launch Claude without the
-//! sandbox wrapper or permission mode the desktop's settings require (mirrors
-//! `claudeBinary` in `apps/desktop/src/lib/utils/claude.ts`).
+//! The `claude` command a terminal runs for a known session. Built here rather
+//! than by the client so no client (a phone, or the desktop's own webview) can
+//! launch Claude without the sandbox wrapper or permission mode the desktop's
+//! settings require. Server terminals and the desktop's native macOS terminals
+//! both build it here.
 
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 
 use crate::claude_transcript::is_uuid;
 use crate::types::WorkbenchSettings;
@@ -20,25 +22,58 @@ pub const PERMISSION_MODES: &[&str] = &[
     "bypassPermissions",
 ];
 
-/// Must match `SANDBOX_RUNTIME_PACKAGE` in `apps/desktop/src/lib/utils/claude.ts`;
-/// see `docs/SANDBOX_RUNTIME.md` for why the npm version is pinned.
+/// See `docs/SANDBOX_RUNTIME.md` for why the npm version is pinned.
 pub const SANDBOX_RUNTIME_PACKAGE: &str = "@anthropic-ai/sandbox-runtime@0.0.76";
+
+/// The Claude session a terminal runs (`claudeSession` in a terminal create).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ClaudeSessionLaunch {
+    pub id: String,
+    /// `--resume` an existing conversation, else `--session-id` starts one.
+    /// A terminal create decides it from the session's history, whatever a
+    /// client sent.
+    #[serde(default)]
+    pub resume: bool,
+    /// With `resume`: continue from this entry, dropping what came after (a rewind).
+    #[serde(default)]
+    pub resume_at: Option<String>,
+    /// A mode picked in chat, over the configured one (a restart to switch modes).
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// A new session's first prompt, submitted as Claude starts (an agent action).
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+/// What a new terminal types once its shell starts: `command`, or Claude on
+/// `session` under the saved settings (never both).
+pub fn startup_command(
+    command: Option<String>,
+    session: Option<&ClaudeSessionLaunch>,
+) -> Result<Option<String>> {
+    match (command, session) {
+        (Some(_), Some(_)) => bail!("send either command or claudeSession, not both"),
+        (_, Some(session)) => terminal_command(
+            session,
+            &crate::config::load_workbench_settings()?,
+            &crate::sandbox_runtime::settings_path(),
+        )
+        .map(Some),
+        (command, None) => Ok(command),
+    }
+}
 
 /// `claude --resume <id>` (or `--session-id <id>` for a new session), carrying
 /// the configured permission mode and, when the sandbox is on, srt's wrapper
-/// pointing at `sandbox_settings`.
-/// `resume_at`: continue from this entry, dropping what came after it (a rewind).
-/// `mode`: a mode picked for this session, passed even when it's `default`
-/// (the configured `default` leaves the flag out, so Claude's settings decide).
+/// pointing at `sandbox_settings`. A picked `permission_mode` is passed even
+/// when it's `default` (the configured `default` leaves the flag out, so
+/// Claude's settings decide).
 pub fn terminal_command(
-    session_id: &str,
-    resume: bool,
-    resume_at: Option<&str>,
-    mode: Option<&str>,
+    session: &ClaudeSessionLaunch,
     settings: &WorkbenchSettings,
     sandbox_settings: &Path,
 ) -> Result<String> {
-    if !is_uuid(session_id) {
+    if !is_uuid(&session.id) {
         bail!("session id must be a UUID");
     }
     let mut cmd = String::new();
@@ -63,21 +98,65 @@ pub fn terminal_command(
         Ok(bin) if !bin.is_empty() => cmd.push_str(&shell_quote(&bin)),
         _ => cmd.push_str("claude"),
     }
-    let (mode, picked) = match mode {
+    let (mode, picked) = match session.permission_mode.as_deref() {
         Some(mode) => (mode, true),
         None => (settings.claude_permission_mode.as_str(), false),
     };
     if (picked || mode != "default") && PERMISSION_MODES.contains(&mode) {
         cmd.push_str(&format!(" --permission-mode {mode}"));
     }
-    let flag = if resume { "--resume" } else { "--session-id" };
-    cmd.push_str(&format!(" {flag} {session_id}"));
+    let flag = if session.resume {
+        "--resume"
+    } else {
+        "--session-id"
+    };
+    cmd.push_str(&format!(" {flag} {}", session.id));
     // An entry id from the session file; only a UUID reaches the shell, unquoted
     // (cmd.exe keeps single quotes in the argument).
-    if let Some(at) = resume_at.filter(|at| resume && is_uuid(at)) {
+    if let Some(at) = session
+        .resume_at
+        .as_deref()
+        .filter(|at| session.resume && is_uuid(at))
+    {
         cmd.push_str(&format!(" --resume-session-at={at}"));
     }
+    // `--` ends Claude's options, so a prompt like `--dangerously-skip-permissions`
+    // is the prompt, never a flag (verified on Claude Code 2.1.292).
+    if let Some(arg) = new_prompt(session).as_deref().and_then(prompt_arg) {
+        cmd.push_str(" -- ");
+        cmd.push_str(&arg);
+    }
     Ok(cmd)
+}
+
+/// Why a new session's prompt was left out of its command, to tell the person.
+pub fn prompt_notice(session: &ClaudeSessionLaunch) -> Option<String> {
+    let prompt = new_prompt(session)?;
+    prompt_arg(&prompt).is_none().then(|| {
+        "Claude started without its prompt: on Windows a prompt can't contain \" % $ ` ! \
+         or line breaks. Paste it into Claude instead."
+            .to_string()
+    })
+}
+
+/// The prompt a new session starts with; a resumed one has its conversation.
+fn new_prompt(session: &ClaudeSessionLaunch) -> Option<String> {
+    let prompt = session.prompt.as_deref().filter(|_| !session.resume)?;
+    let prompt = prompt.replace("\r\n", "\n").replace('\r', "\n");
+    let prompt = prompt.trim();
+    (!prompt.is_empty()).then(|| prompt.to_string())
+}
+
+/// A prompt as one argument for the terminal's shell, or None when it can't be.
+fn prompt_arg(prompt: &str) -> Option<String> {
+    if cfg!(windows) {
+        // cmd.exe and PowerShell share only double quotes, and neither honours
+        // the other's escapes inside them: leave out whatever could end the
+        // argument or expand rather than run something else.
+        return (!prompt.contains(['"', '%', '$', '`', '!', '\n']))
+            .then(|| format!("\"{prompt}\""));
+    }
+    Some(shell_quote(prompt))
 }
 
 fn shell_quote(value: &str) -> String {
@@ -132,19 +211,26 @@ mod tests {
     /// The dialog as Claude Code 2.1.291 drew it in a PTY.
     const TRUST_DIALOG: &str = "\x1b[2G\x1b[1mQuick\x1b[8Gsafety\x1b[15Gcheck\x1b[22m\r\r\n\x1b[2G\x1b[38;2;177;185;249m\u{276f}\x1b[4GNo,\x1b[8Gexit\x1b[39m\r\r\n\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis\x1b[22Gfolder\r\r\n\x1b]0;claude\x07";
 
+    fn launch(resume: bool) -> ClaudeSessionLaunch {
+        ClaudeSessionLaunch {
+            id: SID.into(),
+            resume,
+            ..Default::default()
+        }
+    }
+
+    fn command(session: &ClaudeSessionLaunch, mode: &str) -> Result<String> {
+        terminal_command(session, &settings(mode, false), Path::new("/x"))
+    }
+
     #[test]
     fn a_picked_mode_overrides_the_setting_even_when_default() {
-        let file = std::path::PathBuf::from("/nonexistent");
-        let cmd = |mode| {
-            terminal_command(
-                SID,
-                true,
-                None,
-                mode,
-                &settings("bypassPermissions", false),
-                &file,
-            )
-            .unwrap()
+        let cmd = |mode: Option<&str>| {
+            let session = ClaudeSessionLaunch {
+                permission_mode: mode.map(str::to_string),
+                ..launch(true)
+            };
+            command(&session, "bypassPermissions").unwrap()
         };
         assert!(cmd(Some("default")).contains(" --permission-mode default "));
         assert!(cmd(Some("auto")).contains(" --permission-mode auto "));
@@ -178,55 +264,116 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_runs_its_command_or_claude_never_both() {
+        let shell = Some("ls".to_string());
+        assert_eq!(startup_command(shell.clone(), None).unwrap(), shell);
+        assert!(startup_command(shell, Some(&launch(true))).is_err());
+        let bad = ClaudeSessionLaunch {
+            id: "not-a-uuid".into(),
+            ..launch(true)
+        };
+        assert!(startup_command(None, Some(&bad)).is_err());
+    }
+
+    #[test]
     fn default_mode_adds_no_flag() {
-        let cmd = terminal_command(
-            SID,
-            true,
-            None,
-            None,
-            &settings("default", false),
-            Path::new("/x"),
-        );
+        let cmd = command(&launch(true), "default");
         assert_eq!(cmd.unwrap(), format!("claude --resume {SID}"));
     }
 
     #[test]
     fn known_modes_are_passed_and_unknown_ones_dropped() {
-        let cmd = terminal_command(
-            SID,
-            false,
-            None,
-            None,
-            &settings("acceptEdits", false),
-            Path::new("/x"),
-        );
+        let cmd = command(&launch(false), "acceptEdits");
         assert_eq!(
             cmd.unwrap(),
             format!("claude --permission-mode acceptEdits --session-id {SID}")
         );
-        let cmd = terminal_command(
-            SID,
-            true,
-            None,
-            None,
-            &settings("rm -rf /", false),
-            Path::new("/x"),
-        );
+        let cmd = command(&launch(true), "rm -rf /");
         assert_eq!(cmd.unwrap(), format!("claude --resume {SID}"));
     }
 
     #[test]
     fn rejects_a_non_uuid_id() {
-        let bad = format!("{SID}; rm -rf ~");
-        assert!(terminal_command(
-            &bad,
-            true,
-            None,
-            None,
-            &settings("default", false),
-            Path::new("/x")
-        )
-        .is_err());
+        let bad = ClaudeSessionLaunch {
+            id: format!("{SID}; rm -rf ~"),
+            ..launch(true)
+        };
+        assert!(command(&bad, "default").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_session_submits_its_prompt_as_one_quoted_argument() {
+        let session = ClaudeSessionLaunch {
+            prompt: Some("  it's $(broken)\r\nfix it  ".into()),
+            ..launch(false)
+        };
+        assert_eq!(
+            command(&session, "default").unwrap(),
+            format!("claude --session-id {SID} -- 'it'\"'\"'s $(broken)\nfix it'")
+        );
+        assert_eq!(prompt_notice(&session), None);
+    }
+
+    #[test]
+    fn a_prompt_that_looks_like_a_flag_stays_the_prompt() {
+        for flag in [
+            "--dangerously-skip-permissions",
+            "--permission-mode=bypassPermissions",
+        ] {
+            let session = ClaudeSessionLaunch {
+                prompt: Some(flag.into()),
+                ..launch(false)
+            };
+            let cmd = command(&session, "default").unwrap();
+            let (options, prompt) = cmd.split_once(" -- ").expect("`--` ends the options");
+            assert!(!options.contains(flag), "{cmd}");
+            assert!(prompt.contains(flag), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_resume_or_a_blank_prompt_sends_none() {
+        let resume = ClaudeSessionLaunch {
+            prompt: Some("review".into()),
+            ..launch(true)
+        };
+        assert_eq!(
+            command(&resume, "default").unwrap(),
+            format!("claude --resume {SID}")
+        );
+        let blank = ClaudeSessionLaunch {
+            prompt: Some(" \n ".into()),
+            ..launch(false)
+        };
+        assert_eq!(
+            command(&blank, "default").unwrap(),
+            format!("claude --session-id {SID}")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_starts_without_a_prompt_that_could_escape_its_quotes() {
+        let ok = ClaudeSessionLaunch {
+            prompt: Some("review this PR".into()),
+            ..launch(false)
+        };
+        assert!(command(&ok, "default")
+            .unwrap()
+            .ends_with(" -- \"review this PR\""));
+        for bad in ["a\" & calc", "%PATH%", "$(calc)", "a\nb"] {
+            let session = ClaudeSessionLaunch {
+                prompt: Some(bad.into()),
+                ..launch(false)
+            };
+            assert_eq!(
+                command(&session, "default").unwrap(),
+                format!("claude --session-id {SID}"),
+                "{bad}"
+            );
+            assert!(prompt_notice(&session).is_some(), "{bad}");
+        }
     }
 
     #[cfg(unix)]
@@ -235,7 +382,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("it's.json");
         std::fs::write(&file, "{}").unwrap();
-        let cmd = terminal_command(SID, true, None, None, &settings("plan", true), &file).unwrap();
+        let cmd = terminal_command(&launch(true), &settings("plan", true), &file).unwrap();
         let quoted = file.to_str().unwrap().replace('\'', r#"'"'"'"#);
         assert_eq!(
             cmd,
@@ -248,25 +395,13 @@ mod tests {
     #[test]
     fn a_rewind_resumes_at_its_fork_point() {
         let at = "5e5e5e5e-0000-4000-8000-000000000001";
-        let cmd = terminal_command(
-            SID,
-            true,
-            Some(at),
-            None,
-            &settings("default", false),
-            Path::new("/x"),
-        )
-        .unwrap();
+        let rewind = |at: &str| ClaudeSessionLaunch {
+            resume_at: Some(at.into()),
+            ..launch(true)
+        };
+        let cmd = command(&rewind(at), "default").unwrap();
         assert!(cmd.ends_with(&format!("--resume {SID} --resume-session-at={at}")));
-        let cmd = terminal_command(
-            SID,
-            true,
-            Some("x; rm -rf /"),
-            None,
-            &settings("default", false),
-            Path::new("/x"),
-        )
-        .unwrap();
+        let cmd = command(&rewind("x; rm -rf /"), "default").unwrap();
         assert!(
             !cmd.contains("resume-session-at"),
             "only a UUID reaches the shell: {cmd}"
@@ -278,10 +413,7 @@ mod tests {
     fn sandbox_without_its_settings_file_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         let err = terminal_command(
-            SID,
-            true,
-            None,
-            None,
+            &launch(true),
             &settings("default", true),
             &dir.path().join("no.json"),
         )

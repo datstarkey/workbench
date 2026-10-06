@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MobileClient } from './client.svelte.ts';
-import { machineKey } from './machines.svelte.ts';
 import { jsonResponse, stubLocalStorage } from './test-helpers.ts';
-import type { TerminalMeta } from './types.ts';
+import type { ServerTerminalMeta as TerminalMeta } from '@workbench/types';
 
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 
@@ -228,24 +227,6 @@ describe('MobileClient with several machines', () => {
 		expect(c.notice).toBeNull();
 	});
 
-	it('keeps each machine’s terminal ↔ chat links apart', async () => {
-		servers('mac', 'pc');
-		const c = await connectedTo('mac');
-		c.setDefaultView('terminal');
-		await c.startClaude('/repo', undefined, 'repo');
-		expect(Object.keys(c.claudeTerminals)).toEqual(['mac-t1']);
-		const macId = c.machineId!;
-
-		// The PC lists none of the Mac's terminals: its refresh must not prune the Mac's links.
-		await connectedTo('pc', c);
-		expect(c.claudeTerminals).toEqual({});
-		await c.refreshTerminals();
-
-		await c.switchTo(macId);
-		expect(Object.keys(c.claudeTerminals)).toEqual(['mac-t1']);
-		expect(localStorage.getItem(machineKey('wb.claudeTerminals', macId))).toContain('mac-t1');
-	});
-
 	it('drops a terminal list that arrives from the previous machine after switching', async () => {
 		const hosts = servers('mac', 'pc');
 		const c = await connectedTo('mac');
@@ -345,7 +326,7 @@ describe('MobileClient with several machines', () => {
 		await c.refreshTerminals();
 		expect(c.online).toBe(true);
 	});
-	it('does not restore an old terminal or save its chat link after switching during the post-create refresh', async () => {
+	it('does not restore an old terminal after switching during the post-create refresh', async () => {
 		const hosts = servers('mac', 'pc');
 		const c = await connectedTo('mac');
 		await connectedTo('pc', c);
@@ -359,7 +340,6 @@ describe('MobileClient with several machines', () => {
 		late.release();
 		await opening;
 		expect(c.terminals).toEqual([]);
-		expect(c.claudeTerminals).toEqual({});
 		expect(c.activeTerminalId).toBeNull();
 	});
 });

@@ -75,20 +75,35 @@ export interface TerminalExitEvent {
 // and the mobile client. Mirror of the Rust structs in apps/server/src/terminal.rs.
 
 /**
+ * The Claude session a terminal runs. The server builds the `claude` command
+ * (`workbench_core::claude_launch`) so the sandbox wrapper and permission mode
+ * can't be skipped.
+ */
+export interface ClaudeSessionLaunch {
+	/** Resumed when it has a transcript, else started on this id (the server decides). */
+	id: string;
+	/** A new session's first prompt (an agent action); ignored on a resume. */
+	prompt?: string;
+}
+
+/**
  * Request body for POST /remote/terminals.
  *
  * Desktop xterm path populates the optional desktop-parity fields (paneId,
  * hookSocket, shell) so the Claude/Codex hook bridge and the project shell work
  * identically to the local PtyManager path. ZDOTDIR shell-integration is applied
  * server-side (the resolver lives in workbench-core), so it is NOT a wire field.
- * Mobile omits the optional fields — server behaviour is unchanged for mobile.
  */
 export interface CreateServerTerminalBody {
 	projectPath: string;
 	worktreePath?: string;
 	name?: string;
-	/** Optional command typed into the shell once it starts (e.g. `claude`). */
+	/** Optional command typed into the shell once it starts (never with `claudeSession`). */
 	command?: string;
+	/** Run Claude on this session instead of `command`. */
+	claudeSession?: ClaudeSessionLaunch;
+	/** Saved Claude account whose config dir becomes the shell's `CLAUDE_CONFIG_DIR`. */
+	claudeAccountId?: string;
 	cols: number;
 	rows: number;
 	/** Opaque pane ID forwarded as WORKBENCH_PANE_ID env (desktop only). */
@@ -110,17 +125,11 @@ export interface ServerTerminalMeta {
 	/** Unix epoch milliseconds. */
 	createdAt: number;
 	alive: boolean;
+	/** The Claude session its `claude` runs, listed before its plugin attaches. */
+	claudeSessionId?: string;
+	/** On a create only: something to tell the person about how it started. */
+	notice?: string;
 }
-
-/**
- * Server → client control messages sent as JSON text frames over the terminal
- * WebSocket. PTY output is still delivered as binary frames.
- *
- * Discriminate by frame type:
- * - `MessageEvent.data` is an `ArrayBuffer` → raw PTY bytes (write to xterm)
- * - `MessageEvent.data` is a `string`        → parse as `WsServerMsg` (control)
- */
-export type WsServerMsg = { t: 'takeover' } | { t: 'exit'; code: number | null };
 
 export interface TerminalActivityEvent {
 	sessionId: string;
@@ -175,6 +184,8 @@ export interface TerminalPaneState {
 	liveTerminal?: boolean;
 	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
 	claudeAccountId?: string;
+	/** An agent action's prompt: it starts the pane's Claude session if that is new. */
+	claudePrompt?: string;
 }
 
 export type PaneView = 'terminal' | 'chat';

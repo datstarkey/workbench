@@ -7,6 +7,7 @@ import {
 	adoptionRound,
 	adoptionWorkspace,
 	paneDisplayName,
+	shared,
 	withoutPanes,
 	AdoptionPoller,
 	type AdoptableTerminal,
@@ -238,5 +239,17 @@ describe('AdoptionPoller', () => {
 		]);
 		await expect(both.tick()).resolves.toBeUndefined();
 		expect(adoptChat).toHaveBeenCalledOnce();
+	});
+});
+
+describe('shared', () => {
+	it('gives concurrent callers one fetch, and the next round a fresh one', async () => {
+		let n = 0;
+		const fetch = vi.fn(async () => ++n);
+		const list = shared(fetch);
+
+		expect(await Promise.all([list(), list()])).toEqual([1, 1]);
+		expect(await list()).toBe(2);
+		expect(fetch).toHaveBeenCalledTimes(2);
 	});
 });

@@ -94,6 +94,9 @@ pub struct TerminalMeta {
     /// listed before its plugin attaches, so clients adopt it as the chat.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_session_id: Option<String>,
+    /// On a create only: something the person should know about how it started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 struct TerminalSession {
@@ -247,6 +250,7 @@ impl TerminalManager {
             created_at,
             alive: true,
             claude_session_id,
+            notice: None,
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
         let (done_tx, _done_rx) = watch::channel(false);
@@ -452,18 +456,7 @@ pub struct CreateTerminalBody {
     pub claude_account_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ClaudeSessionLaunch {
-    pub id: String,
-    /// `--resume` an existing conversation, else `--session-id` starts one.
-    pub resume: bool,
-    /// With `resume`: continue from this entry, dropping what came after (a rewind).
-    #[serde(default)]
-    pub resume_at: Option<String>,
-    /// A mode picked in chat, over the configured one (a restart to switch modes).
-    #[serde(default)]
-    pub permission_mode: Option<String>,
-}
+pub use workbench_core::claude_launch::ClaudeSessionLaunch;
 
 #[derive(Debug, Deserialize)]
 pub struct KillQuery {
@@ -499,9 +492,8 @@ pub async fn terminal_create(
 pub fn create_from_body(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
-    body: CreateTerminalBody,
+    mut body: CreateTerminalBody,
 ) -> anyhow::Result<TerminalMeta> {
-    let local_port = agents.mod_port();
     let registered: Vec<String> = workbench_core::config::load_projects()?
         .into_iter()
         .map(|p| p.path)
@@ -513,58 +505,40 @@ pub fn create_from_body(
     )?;
     let claude_config_dir =
         workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
-    let command = match &body.claude_session {
-        Some(session) => Some(workbench_core::claude_launch::terminal_command(
-            &session.id,
-            session.resume,
-            session.resume_at.as_deref(),
-            session.permission_mode.as_deref(),
-            &workbench_core::config::load_workbench_settings()?,
-            &workbench_core::sandbox_runtime::settings_path(),
-        )?),
-        None => body.command,
-    };
+    // Resume whatever has a transcript, as a chat start does: a client can't
+    // know whether its session ever got a message written.
+    if let Some(session) = body.claude_session.as_mut() {
+        session.resume =
+            crate::agent::claude_history_exists(claude_config_dir.as_deref(), &session.id);
+    }
+    let notice = body
+        .claude_session
+        .as_ref()
+        .and_then(workbench_core::claude_launch::prompt_notice);
+    let command =
+        workbench_core::claude_launch::startup_command(body.command, body.claude_session.as_ref())?;
     // The Workbench plugin in this pane's `claude` runs the session as a
     // chat through `mod_routes`, with a token good for this terminal only.
-    let token = match local_port {
-        Some(_) => Some(
-            agents.grant_mod(crate::agent::ModGrant {
-                pane_id: body.pane_id.clone(),
-                project_path: body.project_path.clone(),
-                worktree_path: body.worktree_path.clone(),
-                claude_account_id: body.claude_account_id.clone(),
-                cwd: cwd.clone(),
-                hook_socket: body.hook_socket.clone(),
-                resume_at: body
-                    .claude_session
-                    .as_ref()
-                    .and_then(|s| s.resume_at.clone()),
-                permission_mode: body
-                    .claude_session
-                    .as_ref()
-                    .and_then(|s| s.permission_mode.clone()),
-                terminal_id: None,
-            })?,
-        ),
-        None => None,
-    };
-    let mut mod_env = match (&token, local_port) {
-        (Some(token), Some(port)) => vec![
-            ("WORKBENCH_MOD_URL", format!("http://127.0.0.1:{port}")),
-            ("WORKBENCH_MOD_TOKEN", token.clone()),
-        ],
-        _ => Vec::new(),
-    };
-    // The plugin is what makes the terminal a chat; a phone sends no hook
-    // socket, which is otherwise what loads it.
-    if !mod_env.is_empty() && body.hook_socket.is_none() {
-        if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
-            mod_env.push((
-                workbench_core::claude_plugin::PLUGIN_DIRS_ENV,
-                dirs.to_string_lossy().into_owned(),
-            ));
-        }
-    }
+    let (token, mod_env) = agents
+        .mod_env(crate::agent::ModGrant {
+            pane_id: body.pane_id.clone(),
+            project_path: body.project_path.clone(),
+            worktree_path: body.worktree_path.clone(),
+            claude_account_id: body.claude_account_id.clone(),
+            cwd: cwd.clone(),
+            hook_socket: body.hook_socket.clone(),
+            resume_at: body
+                .claude_session
+                .as_ref()
+                .and_then(|s| s.resume_at.clone()),
+            permission_mode: body
+                .claude_session
+                .as_ref()
+                .and_then(|s| s.permission_mode.clone()),
+            terminal_id: None,
+        })?
+        .unzip();
+    let mod_env = mod_env.unwrap_or_default();
     let created = terminals.create(
         cwd,
         body.name,
@@ -587,7 +561,7 @@ pub fn create_from_body(
         (Err(_), Some(token)) => agents.revoke_grant(token),
         _ => {}
     }
-    created
+    created.map(|meta| TerminalMeta { notice, ..meta })
 }
 
 pub async fn terminal_kill(

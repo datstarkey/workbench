@@ -68,9 +68,6 @@
 		},
 		client.agents
 	);
-	// svelte-ignore state_referenced_locally
-	const screenKey = client.chatScreenKey;
-	chat.onTerminal = (terminalId) => client.linkChatTerminal(screenKey, chat.sessionId, terminalId);
 	const name = agentName(chat.agent);
 	const isClaude = chat.agent === 'claude';
 

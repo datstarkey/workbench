@@ -1,16 +1,13 @@
 import { invoke } from '$lib/transport';
 import { listen } from '@tauri-apps/api/event';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-import { KEEPALIVE_PROMPT } from '@workbench/chat-ui';
 import { stripAnsi } from '$lib/utils/format';
-import { newSessionCommandWithPrompt, type LaunchOptions } from '$lib/utils/claude';
-import { getWorkbenchSettingsStore } from './context';
 import {
 	isAISessionType,
 	type ActiveClaudeSession,
 	type AgentAttention,
 	type AgentAction,
-	type ClaudeHookEvent,
+	type AgentSummary,
 	type CodexNotifyEvent,
 	type DiscoveredClaudeSession,
 	type SessionType,
@@ -35,7 +32,7 @@ const MAX_LABEL_DISCOVERY_ATTEMPTS = 6;
 
 /** Who to notify about: a pane here, or a session no pane shows (started on the phone). */
 export type AttentionTarget =
-	| { paneId: string }
+	| { paneId: string; sessionId: string }
 	| { id: string; projectPath: string; label: string };
 
 export class ClaudeSessionStore {
@@ -62,8 +59,6 @@ export class ClaudeSessionStore {
 	private lastTypingInputAt = new SvelteMap<string, number>();
 	/** Last timestamp when local viewport change occurred (resize/visibility resume) */
 	private lastViewportChangeAt = new SvelteMap<string, number>();
-	/** Latest Claude session ID observed for each pane from hook events */
-	private latestClaudeSessionByPane = new SvelteMap<string, string>();
 	/** Latest Codex session ID observed for each pane from notify events */
 	private latestCodexSessionByPane = new SvelteMap<string, string>();
 	/** Cache of sessionId → resolved label. Only ever holds labels we actually found. */
@@ -76,15 +71,11 @@ export class ClaudeSessionStore {
 	private projects: ProjectStore;
 	/** Reference to integration approval store for gating AI sessions */
 	private integrationApproval: IntegrationApprovalStore;
-	/** Reference to workbench settings store */
-	private settingsStore = getWorkbenchSettingsStore();
 
-	private get launchOptions(): LaunchOptions {
-		return this.settingsStore.launchOptions;
-	}
-
-	/** Callbacks invoked when a session needs someone (an answer, or its turn ended) */
-	private awaitingInputCallbacks: Array<(target: AttentionTarget) => void> = [];
+	/** Callbacks for a session needing someone (an answer, or its turn ended), or no longer */
+	private attentionCallbacks: Array<
+		(target: AttentionTarget, kind: AgentAttention['kind']) => void
+	> = [];
 
 	/** Active Claude sessions grouped by project path */
 	readonly activeSessionsByProject = $derived.by((): Record<string, ActiveClaudeSession[]> => {
@@ -138,32 +129,14 @@ export class ClaudeSessionStore {
 		return result;
 	});
 
-	/** Read Claude CLI session files from ~/.claude/projects/ */
+	/** Read Claude CLI session files from ~/.claude/projects/ (the resume list). */
 	async discoverSessions(projectPath: string): Promise<DiscoveredClaudeSession[]> {
-		try {
-			const sessions = await invoke<DiscoveredClaudeSession[]>('discover_claude_sessions', {
-				projectPath
-			});
-			this.discoveredSessions = sessions;
-			return sessions;
-		} catch (e) {
-			console.error('[ClaudeSessionStore] Failed to discover sessions:', e);
-			return [];
-		}
+		return (this.discoveredSessions = await this.peekSessions(projectPath, 'claude'));
 	}
 
-	/** Read Codex session files from ~/.codex/sessions/ filtered by cwd */
+	/** Read Codex session files from ~/.codex/sessions/ filtered by cwd (the resume list). */
 	async discoverCodexSessions(projectPath: string): Promise<DiscoveredClaudeSession[]> {
-		try {
-			const sessions = await invoke<DiscoveredClaudeSession[]>('discover_codex_sessions', {
-				projectPath
-			});
-			this.discoveredCodexSessions = sessions;
-			return sessions;
-		} catch (e) {
-			console.error('[ClaudeSessionStore] Failed to discover Codex sessions:', e);
-			return [];
-		}
+		return (this.discoveredCodexSessions = await this.peekSessions(projectPath, 'codex'));
 	}
 
 	/** Remove a session from the discovered list (does not delete the JSONL file) */
@@ -191,20 +164,17 @@ export class ClaudeSessionStore {
 	}
 
 	/** Start an agent action for a project (opens project/workspace if needed). */
-	startAgentActionByProject(projectPath: string, action: AgentAction, type: 'claude' | 'codex') {
+	async startAgentActionByProject(
+		projectPath: string,
+		action: AgentAction,
+		type: 'claude' | 'codex'
+	) {
+		if (!(await this.integrationApproval.ensureIntegration(type))) return;
 		this.projects.openProject(projectPath);
 		this.workspaces.addAIByProject(projectPath, type, {
 			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.launchOptions)
+			prompt: action.prompt
 		});
-	}
-
-	/** Start an AI session in a specific workspace */
-	async startSessionInWorkspace(
-		ws: { id: string; projectPath: string; worktreePath?: string },
-		type: SessionType = 'claude'
-	) {
-		await this.startSession(ws.id, type);
 	}
 
 	/** Resume an existing AI session, gated through integration approval */
@@ -235,15 +205,13 @@ export class ClaudeSessionStore {
 	}
 
 	/** Start an agent action in a specific workspace with an auto-submitted initial prompt. */
-	startAgentActionInWorkspace(
-		ws: { id: string; projectPath: string; worktreePath?: string },
+	async startAgentActionInWorkspace(
+		ws: { id: string },
 		action: AgentAction,
 		type: 'claude' | 'codex'
 	) {
-		this.workspaces.addAISession(ws.id, type, {
-			label: action.name,
-			startupCommand: newSessionCommandWithPrompt(type, action.prompt, this.launchOptions)
-		});
+		if (!(await this.integrationApproval.ensureIntegration(type))) return;
+		this.workspaces.addAISession(ws.id, type, { label: action.name, prompt: action.prompt });
 	}
 
 	private getAIPaneId(tab: {
@@ -304,14 +272,18 @@ export class ClaudeSessionStore {
 	 * comes from the plugin (`claude:hook`, `agent:attention`).
 	 */
 	noteTerminalOutput(paneId: string, data: string): void {
-		if (this.paneType(paneId) !== 'codex') return;
-		if (this.classifyTerminalData(paneId, data)) return;
-		// Real output → mark active and clear the submit fallback.
-		this.panesInProgress.add(paneId);
-		this.clearSubmitFallback(paneId);
 		// Replicate terminal:activity: mark inactive after a quiet window with no
 		// further output (the WS path has no backend activity debounce).
-		this.scheduleOutputQuiescence(paneId);
+		if (this.noteOutput(paneId, data)) this.scheduleOutputQuiescence(paneId);
+	}
+
+	/** Real Codex output (not echo or redraw) marks the pane active; true if it did. */
+	private noteOutput(paneId: string, data: string): boolean {
+		if (this.paneType(paneId) !== 'codex') return false;
+		if (this.classifyTerminalData(paneId, data)) return false;
+		this.panesInProgress.add(paneId);
+		this.clearSubmitFallback(paneId);
+		return true;
 	}
 
 	/** Reset the per-pane quiescence debounce; on fire, mark the Codex pane inactive. */
@@ -359,11 +331,6 @@ export class ClaudeSessionStore {
 		return false;
 	}
 
-	private payloadString(payload: Record<string, unknown>, key: string): string {
-		const value = payload[key];
-		return typeof value === 'string' ? value : '';
-	}
-
 	private clearSubmitFallback(paneId: string): void {
 		const fallback = this.submitFallbackTimeouts.get(paneId);
 		if (fallback) {
@@ -381,16 +348,17 @@ export class ClaudeSessionStore {
 		const paneId = this.workspaces.paneForAgent(event);
 		if (!paneId) {
 			// Not open here (yet): a session started on the phone.
-			if (event.kind === 'resolved') return;
 			const label = event.title ?? `Session ${event.sessionId.slice(0, 8)}`;
-			this.emitAwaitingInput({ id: event.sessionId, projectPath: event.projectPath, label });
+			this.emitAttention(
+				{ id: event.sessionId, projectPath: event.projectPath, label },
+				event.kind
+			);
 			return;
 		}
 		switch (event.kind) {
 			case 'waiting':
 				this.panesInProgress.delete(paneId);
 				this.panesAwaitingInput.add(paneId);
-				this.emitAwaitingInput({ paneId });
 				break;
 			case 'resolved':
 				this.panesAwaitingInput.delete(paneId);
@@ -399,67 +367,62 @@ export class ClaudeSessionStore {
 			case 'turnEnded':
 				this.panesInProgress.delete(paneId);
 				this.panesAwaitingInput.delete(paneId);
-				this.emitAwaitingInput({ paneId });
 				break;
 		}
+		this.emitAttention({ paneId, sessionId: event.sessionId }, event.kind);
 	}
 
-	/** Register a callback that fires when a session needs someone. */
-	onAwaitingInput(callback: (target: AttentionTarget) => void): void {
-		this.awaitingInputCallbacks.push(callback);
+	/** Register a callback for a session that needs someone, or no longer does (`resolved`). */
+	onAttention(callback: (target: AttentionTarget, kind: AgentAttention['kind']) => void): void {
+		this.attentionCallbacks.push(callback);
 	}
 
-	private emitAwaitingInput(target: AttentionTarget): void {
-		for (const cb of this.awaitingInputCallbacks) {
+	private emitAttention(target: AttentionTarget, kind: AgentAttention['kind']): void {
+		for (const cb of this.attentionCallbacks) {
 			try {
-				cb(target);
+				cb(target, kind);
 			} catch (e) {
-				console.warn('[ClaudeSessionStore] awaiting-input callback error:', e);
+				console.warn('[ClaudeSessionStore] attention callback error:', e);
 			}
 		}
 	}
 
-	private onClaudeHookEvent(event: ClaudeHookEvent): void {
-		const paneId = event.paneId;
-		if (this.paneType(paneId) !== 'claude') return;
-
-		if (event.sessionId) {
-			// A chat pane's session id comes only from its chat: the hook can report
-			// `/clear`'s new id before the server has moved the process to it, and
-			// the pane would then start a second claude on an id already in use.
-			if (!this.workspaces.isChatPane(paneId)) {
-				this.workspaces.updateAISessionByPaneId(paneId, event.sessionId, 'claude');
-			}
-			this.latestClaudeSessionByPane.set(paneId, event.sessionId);
-			// Only these two can have produced a first user message; retrying on every
-			// hook would rescan the session directory on each PostToolUse.
-			const canRetryLabel =
-				event.hookEventName === 'UserPromptSubmit' || event.hookEventName === 'Stop';
-			void this.syncLabelFromSession(paneId, event.sessionId, 'claude', canRetryLabel);
+	/**
+	 * Claude panes follow the server's summaries, as the phone does: every Claude
+	 * terminal's plugin (xterm, native and chat) feeds them, so the tab label is
+	 * the session's current title and the busy state its turn. A pane follows
+	 * its `claude` onto another session (`/resume` in the TUI); a chat pane's id
+	 * comes only from its chat.
+	 */
+	syncFromAgents(list: AgentSummary[]): void {
+		const newest: Record<string, AgentSummary> = {};
+		for (const a of list) {
+			if (a.agent !== 'claude' || a.exited) continue;
+			const paneId = this.workspaces.paneForAgent(a);
+			if (!paneId || this.paneType(paneId) !== 'claude') continue;
+			if ((newest[paneId]?.updatedAt ?? -Infinity) < a.updatedAt) newest[paneId] = a;
 		}
-
-		switch (event.hookEventName) {
-			case 'UserPromptSubmit':
-				// A cache keep-alive turn isn't work to report: its Stop then flags nothing.
-				if (this.payloadString(event.hookPayload, 'prompt') === KEEPALIVE_PROMPT) break;
-				this.panesInProgress.add(paneId);
-				this.panesAwaitingInput.delete(paneId);
-				break;
-			// What needs someone (and the notification) comes from `agent:attention`.
-			case 'Stop':
-			case 'SessionStart':
-				this.panesInProgress.delete(paneId);
-				this.panesAwaitingInput.delete(paneId);
-				break;
+		for (const [paneId, type] of Object.entries(this.paneTypeById)) {
+			if (type !== 'claude') continue;
+			const a = newest[paneId];
+			// Not busy while it waits on someone (that's `panesAwaitingInput`), or once gone.
+			if (a?.busy && !a.waiting) this.panesInProgress.add(paneId);
+			else this.panesInProgress.delete(paneId);
+			if (!a) continue;
+			if (a.paneId === paneId && !this.workspaces.isChatPane(paneId)) {
+				this.workspaces.updateAISessionByPaneId(paneId, a.sessionId, 'claude');
+			}
+			if (a.title) this.workspaces.updateAITabLabelByPaneId(paneId, a.title, 'claude');
 		}
 	}
 
+	/** A Codex pane's label is its thread's first message, from its session file. */
 	private async syncLabelFromSession(
 		paneId: string,
 		sessionId: string,
-		type: 'claude' | 'codex',
 		allowRetry = false
 	): Promise<void> {
+		const type = 'codex';
 		const fallback = `Session ${sessionId.slice(0, 8)}`;
 
 		// Check cache: if we already resolved a real label for this session, just apply it.
@@ -484,13 +447,11 @@ export class ClaudeSessionStore {
 		const ctx = this.workspaces.findAIPaneContext(paneId, type);
 		if (!ctx) return;
 
-		const latestByPane =
-			type === 'codex' ? this.latestCodexSessionByPane : this.latestClaudeSessionByPane;
 		// Read-only lookup: `discoverSessions` also overwrites the store-wide resume
 		// list, which a retry loop would yank out from under another project's landing
 		// page. Label sync must not have that side effect.
 		const sessions = await this.peekSessions(ctx.cwd, type);
-		if (latestByPane.get(paneId) !== sessionId) return;
+		if (this.latestCodexSessionByPane.get(paneId) !== sessionId) return;
 
 		// The backend substitutes `Session <id>` when the JSONL has no user message yet
 		// (`session_utils::fallback_label`), so a label equal to our own fallback means
@@ -503,14 +464,13 @@ export class ClaudeSessionStore {
 		}
 	}
 
-	/** Discover sessions without touching the shared `discovered*Sessions` state. */
 	/** Sessions in `cwd` without touching the store-wide resume list. */
 	async peekSessions(cwd: string, type: 'claude' | 'codex'): Promise<DiscoveredClaudeSession[]> {
 		const command = type === 'codex' ? 'discover_codex_sessions' : 'discover_claude_sessions';
 		try {
 			return await invoke<DiscoveredClaudeSession[]>(command, { projectPath: cwd });
 		} catch (e) {
-			console.error('[ClaudeSessionStore] Failed to discover sessions for label:', e);
+			console.error(`[ClaudeSessionStore] Failed to discover ${type} sessions:`, e);
 			return [];
 		}
 	}
@@ -528,7 +488,6 @@ export class ClaudeSessionStore {
 			void this.syncLabelFromSession(
 				paneId,
 				event.sessionId,
-				'codex',
 				event.notifyEvent === 'agent-turn-complete'
 			);
 		}
@@ -550,9 +509,6 @@ export class ClaudeSessionStore {
 		this.projects = projects;
 		this.integrationApproval = integrationApproval;
 
-		listen<ClaudeHookEvent>('claude:hook', (event) => {
-			this.onClaudeHookEvent(event.payload);
-		});
 		listen<CodexNotifyEvent>('codex:notify', (event) => {
 			this.onCodexNotifyEvent(event.payload);
 		});
@@ -560,14 +516,9 @@ export class ClaudeSessionStore {
 			this.onAgentAttention(event.payload);
 		});
 
+		// Local PTYs: `terminal:activity` below does the quiescence.
 		listen<TerminalDataEvent>('terminal:data', (event) => {
-			const paneId = event.payload.sessionId;
-			if (this.paneType(paneId) !== 'codex') return;
-			if (this.classifyTerminalData(paneId, event.payload.data)) return;
-
-			// Output received — mark as active and clear submit fallback.
-			this.panesInProgress.add(paneId);
-			this.clearSubmitFallback(paneId);
+			this.noteOutput(event.payload.sessionId, event.payload.data);
 		});
 
 		listen<TerminalActivityEvent>('terminal:activity', (event) => {

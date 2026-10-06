@@ -23,6 +23,7 @@ extern "C" {
         title: *const c_char,
         body: *const c_char,
     ) -> bool;
+    fn wb_notification_remove(identifier: *const c_char);
 }
 
 /// Set once during setup. The Swift delegate outlives any borrow we could pass it, so
@@ -91,4 +92,12 @@ pub fn send(identifier: &str, title: &str, body: &str) -> bool {
     };
 
     unsafe { wb_notification_send(id.as_ptr(), title.as_ptr(), body.as_ptr()) }
+}
+
+/// Withdraw the delivered notification posted under `identifier`, if any.
+pub fn remove(identifier: &str) {
+    let Ok(id) = CString::new(identifier) else {
+        return;
+    };
+    unsafe { wb_notification_remove(id.as_ptr()) }
 }

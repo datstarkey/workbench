@@ -4,11 +4,10 @@
  * desktop can pick them up: this polls the lists and adopts unknown ids into the
  * matching workspace as new tabs.
  */
-import type { AgentSummary, ProjectWorkspace } from '$types/workbench';
-import type { TerminalMeta } from './terminal-connection';
+import type { AgentSummary, ProjectWorkspace, ServerTerminalMeta } from '$types/workbench';
 
 export type AdoptableTerminal = Pick<
-	TerminalMeta,
+	ServerTerminalMeta,
 	'id' | 'name' | 'cwd' | 'alive' | 'claudeSessionId'
 >;
 
@@ -124,6 +123,12 @@ export function adoptionRound<T>(source: AdoptionSource<T>): AdoptionRound {
 			if (source.adopt(item)) source.onAdopted?.(item);
 		}
 	};
+}
+
+/** Calls made while one is in flight share it: the rounds of one tick fetch once. */
+export function shared<T>(fetch: () => Promise<T>): () => Promise<T> {
+	let inflight: Promise<T> | null = null;
+	return () => (inflight ??= fetch().finally(() => (inflight = null)));
 }
 
 export const ADOPTION_POLL_MS = 5000;

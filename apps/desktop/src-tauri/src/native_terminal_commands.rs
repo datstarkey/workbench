@@ -20,6 +20,7 @@ pub async fn create_native_terminal(
     height: f64,
     font_size: f64,
     startup_command: Option<String>,
+    mut claude_session: Option<workbench_core::claude_launch::ClaudeSessionLaunch>,
     claude_account_id: Option<String>,
     project_root: Option<String>,
     manager: tauri::State<'_, NativeTerminalManager>,
@@ -27,11 +28,25 @@ pub async fn create_native_terminal(
     app_handle: tauri::AppHandle,
     hook_bridge: tauri::State<'_, HookBridgeState>,
     server: tauri::State<'_, ServerControl>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let ns_view = window.ns_view().map_err(|e| e.to_string())?;
     let hook_socket = hook_bridge.socket_path().map(str::to_string);
     let claude_config_dir = crate::claude_accounts::resolve_saved(claude_account_id.as_deref())
         .map_err(|e| e.to_string())?;
+    // Decided and built here as a server terminal's is (`terminal::create_from_body`),
+    // so the sandbox wrapper fails closed.
+    if let Some(session) = claude_session.as_mut() {
+        session.resume = workbench_server::agent::claude_history_exists(
+            claude_config_dir.as_deref(),
+            &session.id,
+        );
+    }
+    let notice = claude_session
+        .as_ref()
+        .and_then(workbench_core::claude_launch::prompt_notice);
+    let startup_command =
+        workbench_core::claude_launch::startup_command(startup_command, claude_session.as_ref())
+            .map_err(|e| e.to_string())?;
     let mod_env = server.grant_native_terminal(
         &session_id,
         project_root.as_deref().unwrap_or(&project_path),
@@ -42,16 +57,16 @@ pub async fn create_native_terminal(
 
     let spawned = manager.spawn(
         session_id.clone(),
-            project_path,
-            shell,
-            x,
-            y,
-            width,
-            height,
-            font_size,
-            startup_command,
-            hook_socket,
-            claude_config_dir,
+        project_path,
+        shell,
+        x,
+        y,
+        width,
+        height,
+        font_size,
+        startup_command,
+        hook_socket,
+        claude_config_dir,
         mod_env,
         ns_view,
         app_handle,
@@ -59,7 +74,7 @@ pub async fn create_native_terminal(
     if spawned.is_err() {
         server.revoke_native_terminal(&session_id);
     }
-    spawned.map_err(|e| e.to_string())
+    spawned.map(|()| notice).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

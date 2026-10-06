@@ -118,9 +118,6 @@ impl ServerControl {
         hook_socket: Option<String>,
     ) -> Vec<(&'static str, String)> {
         let agents = &self.managers.agents;
-        let Some(port) = agents.mod_port() else {
-            return Vec::new();
-        };
         let grant = workbench_server::agent::ModGrant {
             pane_id: Some(pane_id.to_string()),
             project_path: project_path.to_string(),
@@ -132,8 +129,9 @@ impl ServerControl {
             permission_mode: None,
             terminal_id: None,
         };
-        let token = match agents.grant_mod(grant) {
-            Ok(token) => token,
+        let (token, env) = match agents.mod_env(grant) {
+            Ok(Some(granted)) => granted,
+            Ok(None) => return Vec::new(),
             Err(e) => {
                 log::warn!("could not issue a native terminal's chat token: {e:#}");
                 return Vec::new();
@@ -147,10 +145,7 @@ impl ServerControl {
         if let Some(old) = old {
             agents.revoke_grant(&old);
         }
-        vec![
-            ("WORKBENCH_MOD_URL", format!("http://127.0.0.1:{port}")),
-            ("WORKBENCH_MOD_TOKEN", token),
-        ]
+        env
     }
 
     /// Withdraw a closed native terminal's chat token.

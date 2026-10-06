@@ -13,6 +13,14 @@ import { baseName } from '$lib/utils/path';
 import type { AttentionTarget, ClaudeSessionStore } from './claudeSessions.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 
+/** A notification's text per attention kind, as the phone words it (`NotificationFeed.kt`). */
+export const ATTENTION_TEXT = {
+	waiting: 'Approval or answer needed',
+	turnEnded: 'Turn complete'
+} as const;
+
+const targetId = (target: AttentionTarget) => ('paneId' in target ? target.paneId : target.id);
+
 export class NotificationStore {
 	/**
 	 * Deliver through the native UNUserNotificationCenter bridge rather than the plugin.
@@ -33,8 +41,9 @@ export class NotificationStore {
 		this.workspaces = workspaces;
 		this.ready = this.init();
 
-		sessions.onAwaitingInput((target) => {
-			void this.notifyAwaitingInput(target);
+		sessions.onAttention((target, kind) => {
+			if (kind === 'resolved') void this.withdraw(target);
+			else void this.notify(target, ATTENTION_TEXT[kind]);
 		});
 	}
 
@@ -110,11 +119,29 @@ export class NotificationStore {
 		return shown.some((tab) => tab.panes.some((p) => p.id === paneId));
 	}
 
-	private async notifyAwaitingInput(target: AttentionTarget): Promise<void> {
+	/**
+	 * Take down a session's notification once nobody is needed. Only the native
+	 * macOS path can: `tauri-plugin-notification` has no removal on desktop.
+	 */
+	private async withdraw(target: AttentionTarget): Promise<void> {
+		await this.ready;
+		if (!this.native) return;
+		// Posted under the pane, or under the session while no pane showed it.
+		const ids = 'paneId' in target ? [target.paneId, target.sessionId] : [target.id];
+		for (const identifier of ids) {
+			try {
+				await invoke('remove_native_notification', { identifier });
+			} catch (e) {
+				console.warn('[NotificationStore] Failed to remove notification:', e);
+			}
+		}
+	}
+
+	private async notify(target: AttentionTarget, message: string): Promise<void> {
 		await this.ready;
 		// A session no pane shows here (started on the phone) is routed by its id;
 		// a click on it just brings the window forward.
-		const paneId = 'paneId' in target ? target.paneId : target.id;
+		const paneId = targetId(target);
 		// Suppress only when the user is actively looking at THIS pane —
 		// other panes still get notified even when the window is focused.
 		if ((await this.isWindowFocused()) && this.isPaneActive(paneId)) return;
@@ -124,8 +151,8 @@ export class NotificationStore {
 				: { projectName: baseName(target.projectPath), tabLabel: target.label };
 		if (!ctx) return;
 
-		const title = `${ctx.projectName} — needs input`;
-		const body = `${ctx.tabLabel} is waiting for your response`;
+		const title = `${ctx.projectName} — ${ctx.tabLabel}`;
+		const body = message;
 
 		if (this.native) {
 			try {

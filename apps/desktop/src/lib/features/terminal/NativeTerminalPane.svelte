@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { watch } from 'runed';
 	import { onDestroy, onMount } from 'svelte';
-	import type { ProjectConfig } from '$types/workbench';
+	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { TERMINAL_BG } from '$lib/terminal-config';
+	import { toast } from 'svelte-sonner';
 	import {
 		createNativeTerminal,
 		killNativeTerminal,
@@ -16,6 +17,7 @@
 		project,
 		active,
 		startupCommand,
+		claudeSession,
 		claudeAccountId,
 		cwd
 	}: {
@@ -23,6 +25,8 @@
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
+		/** A Claude pane's session; Rust builds its `claude` command. */
+		claudeSession?: ClaudeSessionLaunch;
 		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
 		claudeAccountId?: string;
 		cwd?: string;
@@ -93,7 +97,7 @@
 			const rect = container.getBoundingClientRect();
 			const nsRect = domToNSView(rect);
 
-			await createNativeTerminal({
+			const notice = await createNativeTerminal({
 				sessionId,
 				projectPath: cwd ?? project.path,
 				projectRoot: project.path,
@@ -103,11 +107,12 @@
 				width: nsRect.width,
 				height: nsRect.height,
 				fontSize: 13,
-				startupCommand,
+				...(claudeSession ? { claudeSession } : { startupCommand }),
 				claudeAccountId
 			});
 
 			created = true;
+			if (notice) toast.warning(notice);
 
 			// Set initial visibility
 			if (!active) {

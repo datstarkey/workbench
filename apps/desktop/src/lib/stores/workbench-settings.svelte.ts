@@ -25,7 +25,6 @@ import {
 	isClaudePermissionMode,
 	isCodexApprovalPolicy,
 	isCodexSandboxMode,
-	warnMissingSandboxSettingsPath,
 	type LaunchOptions
 } from '$lib/utils/claude';
 import { rotateServerToken } from '$lib/server-mode';
@@ -79,29 +78,21 @@ export class WorkbenchSettingsStore {
 	dirty = $state(false);
 
 	/**
-	 * The srt settings file Claude launches should be wrapped with, or undefined
-	 * to launch unwrapped. Native Windows support in sandbox-runtime is alpha, so
-	 * the wrapper is Unix-only.
+	 * The srt settings file Claude launches are wrapped with (the server builds
+	 * the wrapper), or undefined when it doesn't apply. Native Windows support in
+	 * sandbox-runtime is alpha, so the wrapper is Unix-only.
 	 */
 	get sandboxSettingsPath(): string | undefined {
 		if (!this.sandboxRuntimeEnabled || IS_WINDOWS) return undefined;
 		return this.sandboxRuntimeSettingsPath || undefined;
 	}
 
-	/** How new Claude and Codex sessions are launched. */
+	/** How new Codex sessions are launched (Claude's command is built by the server). */
 	get launchOptions(): LaunchOptions {
-		const sandboxSettingsPath = this.sandboxSettingsPath;
-		// Enabled but unresolved means the backend could not write the settings
-		// file; launching unwrapped is the safe-to-run fallback, but say so.
-		if (this.sandboxRuntimeEnabled && !sandboxSettingsPath) {
-			warnMissingSandboxSettingsPath();
-		}
 		return {
-			permissionMode: this.claudePermissionMode,
 			codexApprovalPolicy: this.codexApprovalPolicy,
 			codexSandboxMode: this.codexSandboxMode,
-			codexNoDaemon: this.codexNoDaemon,
-			sandboxSettingsPath
+			codexNoDaemon: this.codexNoDaemon
 		};
 	}
 

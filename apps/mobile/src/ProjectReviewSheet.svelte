@@ -42,13 +42,13 @@
 	}
 	function pick(session: DiscoveredClaudeSession) {
 		onClose();
-		client.openChat({
-			...folder,
-			sessionId: session.sessionId,
-			agent,
-			name: session.label,
-			...(agent === 'claude' && session.accountId ? { claudeAccountId: session.accountId } : {})
-		});
+		const ref = { ...folder, sessionId: session.sessionId, name: session.label };
+		if (agent === 'codex') client.openChat({ ...ref, agent });
+		else
+			void client.openClaude({
+				...ref,
+				...(session.accountId ? { claudeAccountId: session.accountId } : {})
+			});
 	}
 	function preview(file: GitFileStatus, staged: boolean) {
 		selected = { file, staged };

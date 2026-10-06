@@ -1,6 +1,7 @@
 <script lang="ts">
 	import NativeTerminalPane from '$features/terminal/NativeTerminalPane.svelte';
 	import type { ProjectConfig, TerminalPaneState } from '$types/workbench';
+	import { claudeSessionLaunch } from '$lib/utils/claude';
 
 	let {
 		panes,
@@ -27,6 +28,7 @@
 				{active}
 				{cwd}
 				startupCommand={primaryPane.startupCommand}
+				claudeSession={claudeSessionLaunch(primaryPane)}
 				claudeAccountId={primaryPane.claudeAccountId}
 			/>
 		</div>

@@ -1,10 +1,12 @@
 <script lang="ts">
 	import XIcon from '@lucide/svelte/icons/x';
 	import { SvelteMap } from 'svelte/reactivity';
+	import { toast } from 'svelte-sonner';
 	import { cn } from '@workbench/ui';
 	import SessionChat from '$features/chat/SessionChat.svelte';
 	import { paneAgent } from '$features/chat/pane-handoff';
 	import TerminalPane from '$features/terminal/TerminalPane.svelte';
+	import { claudeSessionLaunch } from '$lib/utils/claude';
 	import { getWorkspaceStore } from '$stores/context';
 	import {
 		isAISessionType,
@@ -40,6 +42,8 @@
 		switching.set(paneId, view);
 		try {
 			await workspaceStore.setPaneView(paneId, view);
+		} catch (e) {
+			toast.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			switching.delete(paneId);
 		}
@@ -87,6 +91,7 @@
 							active={active && !inChat}
 							{cwd}
 							startupCommand={pane.startupCommand}
+							claudeSession={claudeSessionLaunch(pane)}
 							claudeAccountId={pane.claudeAccountId}
 							existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
 							onServerTerminalIdChange={(paneId, serverTerminalId) =>

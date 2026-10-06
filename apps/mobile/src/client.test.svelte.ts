@@ -327,11 +327,30 @@ describe('MobileClient', () => {
 			c.setDefaultView('terminal');
 			await c.startClaude('/repo', undefined, 'repo');
 			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
-			expect(create?.body).toMatchObject({ claudeSession: { resume: false } });
+			expect(create?.body).toMatchObject({
+				claudeSession: { id: expect.stringMatching(/^[0-9a-f-]{36}$/) }
+			});
 			expect((create?.body as { command?: string }).command).toBeUndefined();
 			expect(c.activeTerminalId).toBe('t1');
-			expect(c.claudeTerminals.t1.projectPath).toBe('/repo');
 			expect(new MobileClient().defaultView).toBe('terminal');
+		});
+
+		it('opens a past session in the default view; the server decides it resumes', async () => {
+			const c = await connected();
+			const calls = fakeServer();
+			const ref = { sessionId: SID, projectPath: '/repo', name: 'Old', claudeAccountId: 'work' };
+
+			c.setDefaultView('terminal');
+			await c.openClaude(ref);
+			const create = calls.find((x) => x.method === 'POST' && x.path === '/remote/terminals');
+			expect(create?.body).toMatchObject({
+				claudeSession: { id: SID },
+				claudeAccountId: 'work'
+			});
+
+			c.setDefaultView('chat');
+			await c.openClaude(ref);
+			expect(c.activeChat).toEqual(ref);
 		});
 
 		it('shows a desktop Claude session as chat or terminal without stopping or spawning it', async () => {
@@ -343,7 +362,6 @@ describe('MobileClient', () => {
 			await c.showAsTerminal(ref);
 			expect(c.activeChat).toBeNull();
 			expect(c.activeTerminalId).toBe('t1');
-			expect(c.claudeTerminals).toEqual({}); // discovered entirely from the server
 
 			await c.showAsChat('t1');
 			expect(c.activeChat).toEqual(ref);
@@ -389,24 +407,6 @@ describe('MobileClient', () => {
 			expect(c.standaloneTerminals.map((t) => t.id)).toEqual(['shell']);
 			c.chats[0].exited = true;
 			expect(c.standaloneTerminals.map((t) => t.id)).toEqual(['t1', 'shell']);
-		});
-
-		it('learns terminal associations from chat startup and replacements, ignoring old screens', async () => {
-			const c = await connected();
-			c.openChat(c.chatRef(summary));
-			const key = c.chatScreenKey;
-			c.linkChatTerminal(key, SID, 't1');
-			expect(c.terminalChats.t1.sessionId).toBe(SID);
-			c.linkChatTerminal(key, 'after-clear', 'replacement');
-			expect(c.terminalChats.replacement).toMatchObject({
-				sessionId: 'after-clear',
-				attachOnly: true
-			});
-			c.openChat(c.chatRef(codexSummary));
-			c.linkChatTerminal(key, SID, 'late');
-			c.linkChatTerminal(c.chatScreenKey, 'thread-1', 'codex-terminal');
-			expect(c.claudeTerminals.late).toBeUndefined();
-			expect(c.claudeTerminals['codex-terminal']).toBeUndefined();
 		});
 
 		it('recognizes a Claude terminal before its plugin attaches without starting another process', async () => {

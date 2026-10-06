@@ -9,10 +9,10 @@
 	import { SearchAddon } from '@xterm/addon-search';
 	import { open } from '@tauri-apps/plugin-shell';
 	import '@xterm/xterm/css/xterm.css';
-	import type { ProjectConfig } from '$types/workbench';
+	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
 	import { TerminalConnection } from './terminal-connection';
-	import { stripAnsi } from '$lib/utils/format';
+	import { toast } from 'svelte-sonner';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
 	import { TerminalInputDedup } from './input-dedup';
@@ -30,6 +30,7 @@
 		project,
 		active,
 		startupCommand,
+		claudeSession,
 		claudeAccountId,
 		cwd,
 		existingServerTerminalId,
@@ -44,6 +45,8 @@
 		project: ProjectConfig;
 		active: boolean;
 		startupCommand?: string;
+		/** A Claude pane's session; the server builds its `claude` command. */
+		claudeSession?: ClaudeSessionLaunch;
 		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
 		claudeAccountId?: string;
 		cwd?: string;
@@ -111,32 +114,6 @@
 
 	let removeCopyListener: (() => void) | null = null;
 	let removeResidueGuard: (() => void) | null = null;
-
-	// Buffer early output to detect Claude CLI errors for auto-retry
-	let earlyOutput = '';
-	let claudeRetryCmd = '';
-
-	function detectClaudeRetry(text: string): void {
-		if (!startupCommand?.startsWith('claude') || claudeRetryCmd) return;
-		earlyOutput += text;
-		if (earlyOutput.length > 2048) {
-			earlyOutput = '';
-			return;
-		}
-		const plain = stripAnsi(earlyOutput);
-		let retryCmd = '';
-		if (plain.includes('No conversation found with session ID:')) {
-			retryCmd = 'claude';
-		}
-		if (retryCmd) {
-			claudeRetryCmd = retryCmd;
-			earlyOutput = '';
-			setTimeout(() => {
-				// CR is what Enter sends; a Windows console ignores a bare LF.
-				conn?.write(`${retryCmd}\r`);
-			}, 500);
-		}
-	}
 
 	function canFitTerminal(): boolean {
 		if (!terminal || !fitAddon || !container) return false;
@@ -308,18 +285,9 @@
 
 		// Feed AI-pane output through the activity/quiescence tracker. Server-hosted
 		// panes stream over the WS and don't emit the terminal:data events the store
-		// listens to for local panes, so drive it here. Decode once (shell panes skip
-		// it) and reuse the decoded text for the claude-retry scan.
-		const paneType = claudeSessionStore.paneType(paneId);
-		let decoded: string | null = null;
-		if (paneType !== null) {
-			decoded = new TextDecoder().decode(bytes);
-			claudeSessionStore.noteTerminalOutput(paneId, decoded);
-		}
-
-		// Scan early output for a Claude CLI session error to auto-retry.
-		if (startupCommand?.startsWith('claude') && !claudeRetryCmd && earlyOutput.length < 2048) {
-			detectClaudeRetry(decoded ?? new TextDecoder().decode(bytes));
+		// listens to for local panes, so drive it here (shell panes skip the decode).
+		if (claudeSessionStore.paneType(paneId) !== null) {
+			claudeSessionStore.noteTerminalOutput(paneId, new TextDecoder().decode(bytes));
 		}
 
 		if (inPerformanceMode()) {
@@ -587,7 +555,7 @@
 				projectPath: project.path,
 				...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 				name: workspaceStore.paneDisplayName(paneId) ?? project.name,
-				command: startupCommand,
+				...(claudeSession ? { claudeSession } : { command: startupCommand }),
 				cols: terminal.cols,
 				rows: terminal.rows,
 				paneId,
@@ -600,6 +568,7 @@
 				takenOver = true;
 			} else {
 				await conn.connect(connectOpts, existingServerTerminalId);
+				if (conn.notice) toast.warning(conn.notice);
 			}
 
 			// Notify workspace store of the assigned server terminal ID.

@@ -5,10 +5,12 @@ import type {
 	AgentSummary,
 	ApprovalDecision,
 	ClaudeAccount,
+	CreateServerTerminalBody,
+	ServerTerminalMeta as TerminalMeta,
 	WorkbenchSettings
 } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { hostOf, LS_LINKS, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
@@ -17,20 +19,14 @@ import { ProjectPrefs } from './project-prefs.svelte.ts';
 import { Drafts } from './drafts.svelte';
 import { SessionNotifications, type NotificationSession } from './session-notifications.svelte';
 import { ProjectReview, type ReviewFolder } from './project-review.svelte';
-import type { ChatRef, ClaudeLaunch, ClaudeView, TerminalMeta } from './types.ts';
+import type { ChatRef, ClaudeView } from './types.ts';
+
+/** Extras for a terminal that runs `claude` on a conversation (the server builds the command). */
+type ClaudeLaunch = Pick<CreateServerTerminalBody, 'claudeSession' | 'claudeAccountId'>;
 
 const LS_VIEW = 'wb.claudeView';
 /** Home-screen refresh while the app is in front. */
 const POLL_MS = 4000;
-
-function readLinks(machineId: string): Record<string, ChatRef> {
-	try {
-		const parsed: unknown = JSON.parse(lsGet(machineKey(LS_LINKS, machineId)) ?? '{}');
-		return parsed && typeof parsed === 'object' ? (parsed as Record<string, ChatRef>) : {};
-	} catch {
-		return {};
-	}
-}
 
 function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
@@ -104,7 +100,6 @@ export class MobileClient {
 	activeChat = $state<ChatRef | null>(null);
 	chatScreenKey = $state(0);
 	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
-	claudeTerminals = $state<Record<string, ChatRef>>({});
 	/** A Claude view switch is finding and attaching to the existing session. */
 	switching = $state(false);
 	/** Why the last action failed (switch, approve, open); shown on whichever screen is up. */
@@ -117,11 +112,14 @@ export class MobileClient {
 
 	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
 	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
-	/** Server associations also cover Claude sessions opened on another device. */
+	/**
+	 * Terminal id → the Claude conversation its `claude` runs, from the server:
+	 * every Claude terminal lists its session, and a chat its terminal.
+	 */
 	terminalChats = $derived.by(() => {
-		const links = { ...this.claudeTerminals };
+		const links: Record<string, ChatRef> = {};
 		for (const t of this.terminals) {
-			if (t.claudeSessionId && !links[t.id])
+			if (t.claudeSessionId)
 				links[t.id] = {
 					sessionId: t.claudeSessionId,
 					projectPath: t.cwd,
@@ -224,7 +222,6 @@ export class MobileClient {
 			this.drafts = new Drafts(machine.id);
 			this.projectPrefs = new ProjectPrefs(machine.id);
 			this.controlPlane = createHttpTransport({ baseUrl: base, token });
-			this.claudeTerminals = readLinks(machine.id);
 			this.online = true;
 			this.store = next;
 			await Promise.all([this.refreshTerminals(), this.refreshChats(), this.loadAccounts()]);
@@ -304,7 +301,6 @@ export class MobileClient {
 		this.accountId = undefined;
 		this.machineId = null;
 		this.projectPrefs = new ProjectPrefs('disconnected');
-		this.claudeTerminals = {};
 		this.terminals = [];
 		this.chats = [];
 		this.activeTerminalId = null;
@@ -351,17 +347,20 @@ export class MobileClient {
 	}
 
 	/** A new Claude conversation in the phone's default view. */
-	startClaude = async (projectPath: string, worktreePath: string | undefined, name: string) => {
-		const ref: ChatRef = {
+	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) =>
+		this.openClaude({
 			sessionId: crypto.randomUUID(),
 			projectPath,
 			worktreePath,
 			name,
 			...(this.accountId ? { claudeAccountId: this.accountId } : {})
-		};
+		});
+
+	/** A Claude conversation, new or past (the server resumes one on disk), in the default view. */
+	async openClaude(ref: ChatRef): Promise<void> {
 		if (this.defaultView === 'chat') this.openChat(ref);
-		else await this.openClaudeTerminal(ref, false);
-	};
+		else await this.openClaudeTerminal(ref);
+	}
 
 	/** A new Codex conversation; always a chat (Codex has no terminal handoff here). */
 	startCodex = (projectPath: string, worktreePath: string | undefined, name: string): void => {
@@ -408,16 +407,6 @@ export class MobileClient {
 	/** Update the screen's reference without remounting it when Codex starts or /clear re-keys. */
 	updateChatId(id: string): void {
 		if (this.activeChat && id) this.activeChat = { ...this.activeChat, sessionId: id };
-	}
-
-	/** Called on start/reconnect, including when mode changes or rewind replace the terminal. */
-	linkChatTerminal(screenKey: number, sessionId: string, terminalId: string): void {
-		if (screenKey !== this.chatScreenKey || !this.activeChat || this.activeChat.agent === 'codex')
-			return;
-		this.setLinks({
-			...this.claudeTerminals,
-			[terminalId]: { ...this.activeChat, sessionId, attachOnly: true }
-		});
 	}
 
 	/** Arrow field — the chat view's Back. The session keeps running on the server. */
@@ -525,17 +514,11 @@ export class MobileClient {
 		this.switching = false;
 	}
 
-	private async openClaudeTerminal(ref: ChatRef, resume: boolean): Promise<void> {
-		const id = await this.createTerminal(ref.projectPath, ref.worktreePath, ref.name, {
-			claudeSession: { id: ref.sessionId, resume },
+	private async openClaudeTerminal(ref: ChatRef): Promise<void> {
+		await this.createTerminal(ref.projectPath, ref.worktreePath, ref.name, {
+			claudeSession: { id: ref.sessionId },
 			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
 		});
-		if (id) this.setLinks({ ...this.claudeTerminals, [id]: ref });
-	}
-
-	private setLinks(links: Record<string, ChatRef>): void {
-		this.claudeTerminals = links;
-		if (this.machineId) lsSet(machineKey(LS_LINKS, this.machineId), JSON.stringify(links));
 	}
 
 	async refreshTerminals(): Promise<void> {
@@ -549,11 +532,6 @@ export class MobileClient {
 				if (!current()) return;
 				// Guard the {#each terminals} render: a non-array body would throw.
 				this.terminals = Array.isArray(data) ? data : [];
-				// eslint-disable-next-line svelte/prefer-svelte-reactivity -- local lookup only
-				const live = new Set(this.terminals.map((t) => t.id));
-				const links = Object.entries(this.claudeTerminals);
-				if (links.some(([id]) => !live.has(id)))
-					this.setLinks(Object.fromEntries(links.filter(([id]) => live.has(id))));
 			}
 		} catch {
 			if (current()) this.online = false;
@@ -607,14 +585,13 @@ export class MobileClient {
 		}
 	};
 
-	/** `wait` returns only once its processes are gone. */
-	private async deleteTerminal(id: string, wait = false): Promise<boolean> {
+	private async deleteTerminal(id: string): Promise<boolean> {
 		const live = this.live();
 		try {
-			const res = await fetch(
-				`${this.base}/remote/terminals/${encodeURIComponent(id)}${wait ? '?wait=true' : ''}`,
-				{ method: 'DELETE', headers: this.authHeaders() }
-			);
+			const res = await fetch(`${this.base}/remote/terminals/${encodeURIComponent(id)}`, {
+				method: 'DELETE',
+				headers: this.authHeaders()
+			});
 			if (!res.ok) return false;
 		} catch {
 			return false;

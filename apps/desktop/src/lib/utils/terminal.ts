@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { IntegrationStatus, TerminalExitEvent } from '$types/workbench';
+import type { ClaudeSessionLaunch, IntegrationStatus, TerminalExitEvent } from '$types/workbench';
 
 // ── Exit event listener for native SwiftTerm terminals ─────────────────────
 // The xterm path uses TerminalConnection (WS), so these listeners are only
@@ -58,6 +58,7 @@ export async function applyCodexIntegration(): Promise<boolean> {
 
 function ignoreSessionGone(): void {}
 
+/** Resolves to a notice about how it started (a Claude prompt left out), if any. */
 export async function createNativeTerminal(request: {
 	sessionId: string;
 	projectPath: string;
@@ -68,11 +69,13 @@ export async function createNativeTerminal(request: {
 	height: number;
 	fontSize: number;
 	startupCommand?: string;
+	/** Run Claude on this session instead; Rust builds the command. */
+	claudeSession?: ClaudeSessionLaunch;
 	claudeAccountId?: string;
 	/** The registered project `projectPath` (the cwd, maybe a worktree) belongs to. */
 	projectRoot?: string;
-}): Promise<void> {
-	await invoke('create_native_terminal', {
+}): Promise<string | null> {
+	return invoke<string | null>('create_native_terminal', {
 		sessionId: request.sessionId,
 		projectPath: request.projectPath,
 		projectRoot: request.projectRoot ?? null,
@@ -83,6 +86,7 @@ export async function createNativeTerminal(request: {
 		height: request.height,
 		fontSize: request.fontSize,
 		startupCommand: request.startupCommand ?? null,
+		claudeSession: request.claudeSession ?? null,
 		claudeAccountId: request.claudeAccountId ?? null
 	});
 }

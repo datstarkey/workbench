@@ -53,9 +53,10 @@ describe('native terminal IPC wrappers', () => {
 		);
 	});
 
-	it('createNativeTerminal forwards optional startupCommand', async () => {
+	it('createNativeTerminal forwards a Claude session for Rust to build', async () => {
 		invokeSpy.mockResolvedValueOnce(undefined);
 		const { createNativeTerminal } = await import('./terminal');
+		const claudeSession = { id: '12345678-1234-1234-1234-123456789abc' };
 
 		await createNativeTerminal({
 			sessionId: 'ses-2',
@@ -66,12 +67,12 @@ describe('native terminal IPC wrappers', () => {
 			width: 800,
 			height: 600,
 			fontSize: 14,
-			startupCommand: 'claude'
+			claudeSession
 		});
 
 		expect(invokeSpy).toHaveBeenCalledWith(
 			'create_native_terminal',
-			expect.objectContaining({ startupCommand: 'claude' })
+			expect.objectContaining({ startupCommand: null, claudeSession })
 		);
 	});
 

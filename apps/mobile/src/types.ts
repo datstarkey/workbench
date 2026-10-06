@@ -1,15 +1,5 @@
 import type { AgentKind } from '@workbench/types';
 
-export type TerminalMeta = {
-	id: string;
-	name?: string;
-	cwd: string;
-	createdAt: number;
-	alive: boolean;
-	/** The Claude conversation running in this terminal, including before its plugin attaches. */
-	claudeSessionId?: string;
-};
-
 /** How a new Claude session opens on this phone. */
 export type ClaudeView = 'chat' | 'terminal';
 
@@ -29,10 +19,4 @@ export interface ChatRef {
 	claudeAccountId?: string;
 	/** Join an existing process; only an explicit Restart may start it again. */
 	attachOnly?: boolean;
-}
-
-/** Extras for a terminal that runs `claude` on a conversation (the server builds the command). */
-export interface ClaudeLaunch {
-	claudeSession: { id: string; resume: boolean };
-	claudeAccountId?: string;
 }

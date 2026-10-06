@@ -199,7 +199,7 @@ describe('TerminalConnection', () => {
 				projectPath: '/projects/app',
 				worktreePath: '/projects/app-wt',
 				name: 'My shell',
-				command: 'claude',
+				command: 'ls',
 				cols: 100,
 				rows: 25
 			});
@@ -215,13 +215,9 @@ describe('TerminalConnection', () => {
 						projectPath: '/projects/app',
 						worktreePath: '/projects/app-wt',
 						name: 'My shell',
-						command: 'claude',
+						command: 'ls',
 						cols: 100,
-						rows: 25,
-						paneId: null,
-						shell: null,
-						hookSocket: null,
-						claudeAccountId: null
+						rows: 25
 					})
 				})
 			);
@@ -239,7 +235,9 @@ describe('TerminalConnection', () => {
 				rows: 24,
 				paneId: 'pane-7',
 				shell: '/bin/zsh',
-				hookSocket: '127.0.0.1:6123'
+				hookSocket: '127.0.0.1:6123',
+				claudeSession: { id: 'sid', prompt: 'review' },
+				claudeAccountId: 'work'
 			});
 			await flushMicrotasks();
 			FakeWebSocket._last!.openWs();
@@ -249,8 +247,11 @@ describe('TerminalConnection', () => {
 			expect(body).toMatchObject({
 				paneId: 'pane-7',
 				shell: '/bin/zsh',
-				hookSocket: '127.0.0.1:6123'
+				hookSocket: '127.0.0.1:6123',
+				claudeSession: { id: 'sid', prompt: 'review' },
+				claudeAccountId: 'work'
 			});
+			expect(body).not.toHaveProperty('command');
 		});
 
 		it('opens a WebSocket to the terminal WS endpoint using the returned id', async () => {

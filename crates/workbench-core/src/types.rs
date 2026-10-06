@@ -103,6 +103,12 @@ pub struct TerminalPaneSnapshot {
     /// `"chat"` when a Claude pane shows its session as chat (desktop `PaneView`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
+    /// The saved Claude account the pane runs under; its transcript lives there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_account_id: Option<String>,
+    /// An agent action's prompt, which starts the Claude session if it is new.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -803,6 +809,8 @@ mod tests {
                         session_type: None,
                         claude_session_id: None,
                         view: None,
+                        claude_account_id: None,
+                        claude_prompt: None,
                     }],
                     session_type: None,
                 }],
