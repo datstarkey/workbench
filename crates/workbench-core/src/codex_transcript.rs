@@ -367,6 +367,7 @@ impl CodexTranscript {
         let item = TranscriptItem::Notice {
             id: id.to_string(),
             text: clip(text),
+            in_terminal: false,
         };
         self.upsert(item, &mut changed);
         changed
@@ -403,6 +404,7 @@ impl CodexTranscript {
                 let item = TranscriptItem::Notice {
                     id: format!("turn-error:{id}"),
                     text: clip(text),
+                    in_terminal: false,
                 };
                 self.upsert(item, changed);
             }
@@ -410,6 +412,7 @@ impl CodexTranscript {
                 let item = TranscriptItem::Notice {
                     id: format!("interrupted:{id}"),
                     text: "Interrupted".into(),
+                    in_terminal: false,
                 };
                 self.upsert(item, changed);
             }
@@ -443,6 +446,7 @@ impl CodexTranscript {
         let item = TranscriptItem::Notice {
             id: format!("turn-error:{turn}"),
             text: clip(message),
+            in_terminal: false,
         };
         self.upsert(item, changed);
     }

@@ -12,7 +12,18 @@ pub fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Points this process alone at another config dir (`tauri dev`); unlike
+/// `WORKBENCH_CONFIG_DIR`, the shells it spawns don't inherit it.
+pub fn set_workbench_config_dir(dir: PathBuf) {
+    let _ = CONFIG_DIR.set(dir);
+}
+
 pub fn workbench_config_dir() -> PathBuf {
+    if let Some(dir) = CONFIG_DIR.get() {
+        return dir.clone();
+    }
     // Overridable so a headless server can point at an alternate config (and so
     // tests can isolate `~/.workbench` without touching the real home dir).
     if let Some(dir) = std::env::var_os("WORKBENCH_CONFIG_DIR") {

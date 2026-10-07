@@ -126,6 +126,7 @@ impl CodexTranscript {
                             },
                             clip(str_at(item, "review").unwrap_or_default())
                         ),
+                        in_terminal: false,
                     },
                     changed,
                 );
@@ -161,6 +162,7 @@ impl CodexTranscript {
                     TranscriptItem::Notice {
                         id,
                         text: format!("Hook context\n{}", clip(&item.to_string())),
+                        in_terminal: false,
                     },
                     changed,
                 );
@@ -182,7 +184,14 @@ impl CodexTranscript {
             }
             Some("contextCompaction") if completed => {
                 let text = "Conversation compacted".to_string();
-                self.upsert(TranscriptItem::Notice { id, text }, changed);
+                self.upsert(
+                    TranscriptItem::Notice {
+                        id,
+                        text,
+                        in_terminal: false,
+                    },
+                    changed,
+                );
             }
             Some(kind) => {
                 if self.unknown_seen.insert(format!("item:{kind}")) {
@@ -192,6 +201,7 @@ impl CodexTranscript {
                     TranscriptItem::Notice {
                         id,
                         text: format!("Codex {kind}: {}", clip(&item.to_string())),
+                        in_terminal: false,
                     },
                     changed,
                 );

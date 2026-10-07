@@ -58,7 +58,14 @@ impl Transcript {
         self.keepalive = true;
         self.meta.busy = true;
         let text = "Cache kept warm".to_string();
-        self.upsert(TranscriptItem::Notice { id, text }, changed);
+        self.upsert(
+            TranscriptItem::Notice {
+                id,
+                text,
+                in_terminal: false,
+            },
+            changed,
+        );
         true
     }
 }

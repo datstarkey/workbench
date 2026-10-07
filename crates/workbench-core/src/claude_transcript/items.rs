@@ -112,9 +112,14 @@ pub enum TranscriptItem {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<Value>,
     },
+    #[serde(rename_all = "camelCase")]
     Notice {
         id: String,
         text: String,
+        /// About something only the terminal shows (a command's panel): the
+        /// chat offers to switch to it.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        in_terminal: bool,
     },
     /// Something the CLI did around the conversation worth a line in it: a
     /// denied tool, a hook that failed or blocked, recalled memories, a refusal.

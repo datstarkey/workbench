@@ -304,6 +304,9 @@ impl Transcript {
                             TranscriptItem::Notice {
                                 id,
                                 text: clip(text),
+                                // The plugin's mark on a command left open in the TUI.
+                                in_terminal: obj.get("workbench_in_terminal")
+                                    == Some(&Value::Bool(true)),
                             },
                             &mut changed,
                         );
@@ -315,7 +318,14 @@ impl Transcript {
                 Some("compact_boundary") => {
                     let id = str_at(obj, "uuid").unwrap_or("compact").to_string();
                     let text = "Conversation compacted".to_string();
-                    self.upsert(TranscriptItem::Notice { id, text }, &mut changed);
+                    self.upsert(
+                        TranscriptItem::Notice {
+                            id,
+                            text,
+                            in_terminal: false,
+                        },
+                        &mut changed,
+                    );
                     self.meta.context_tokens = None;
                     self.meta.cache_expires_at = None;
                 }
@@ -569,6 +579,7 @@ impl Transcript {
             TranscriptItem::Notice {
                 id: asked.request_id,
                 text,
+                in_terminal: false,
             },
             changed,
         );
@@ -800,6 +811,7 @@ impl Transcript {
                 TranscriptItem::Notice {
                     id,
                     text: clip(text),
+                    in_terminal: false,
                 },
                 changed,
             );
@@ -856,6 +868,7 @@ impl Transcript {
                 TranscriptItem::Notice {
                     id,
                     text: "Interrupted".into(),
+                    in_terminal: false,
                 },
                 changed,
             );

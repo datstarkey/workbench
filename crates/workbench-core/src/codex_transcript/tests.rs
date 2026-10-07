@@ -254,7 +254,8 @@ fn streams_text_in_place_and_tracks_busy() {
         t.items()[2],
         TranscriptItem::Notice {
             id: "interrupted:t1".into(),
-            text: "Interrupted".into()
+            text: "Interrupted".into(),
+            in_terminal: false,
         }
     );
 }
@@ -523,7 +524,8 @@ fn errors_retry_quietly_then_show_once() {
         t.items(),
         &[TranscriptItem::Notice {
             id: "turn-error:t1".into(),
-            text: "routing failed".into()
+            text: "routing failed".into(),
+            in_terminal: false,
         }]
     );
     assert_eq!(t.meta().retry, None);

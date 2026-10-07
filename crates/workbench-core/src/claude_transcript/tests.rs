@@ -760,7 +760,27 @@ fn clear_starts_over_under_the_new_session_id() {
 fn slash_command_output_is_shown() {
     let mut t = Transcript::default();
     t.apply(&json!({"type":"system","subtype":"local_command_output","content":"Total cost: $0.42","uuid":"o1"}));
-    assert!(matches!(&t.items()[0], TranscriptItem::Notice { text, .. } if text.contains("$0.42")));
+    assert!(
+        matches!(&t.items()[0], TranscriptItem::Notice { text, in_terminal: false, .. } if text.contains("$0.42"))
+    );
+}
+
+#[test]
+fn a_command_left_open_in_the_terminal_says_so() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"local_command_output","content":"/usage opened in the terminal",
+        "workbench_in_terminal":true,"uuid":"o1"}));
+    assert!(matches!(
+        &t.items()[0],
+        TranscriptItem::Notice {
+            in_terminal: true,
+            ..
+        }
+    ));
+    assert_eq!(
+        serde_json::to_value(&t.items()[0]).unwrap()["inTerminal"],
+        json!(true)
+    );
 }
 
 #[test]
