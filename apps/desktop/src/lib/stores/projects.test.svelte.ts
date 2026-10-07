@@ -195,4 +195,55 @@ describe('ProjectStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('save_projects', { projects: [] });
 		});
 	});
+
+	describe('favourites', () => {
+		beforeEach(() => {
+			const mem: Record<string, string> = {};
+			vi.stubGlobal('localStorage', {
+				getItem: (k: string) => mem[k] ?? null,
+				setItem: (k: string, v: string) => void (mem[k] = v)
+			});
+			store = new ProjectStore(mockWorkspaceStore);
+			mockInvoke('save_projects', () => undefined);
+		});
+
+		afterEach(() => {
+			vi.unstubAllGlobals();
+		});
+
+		it('toggles a favourite and remembers it across stores', () => {
+			store.toggleFavourite('/a');
+			expect(store.favourites.has('/a')).toBe(true);
+			expect(new ProjectStore(mockWorkspaceStore).favourites.has('/a')).toBe(true);
+
+			store.toggleFavourite('/a');
+			expect(new ProjectStore(mockWorkspaceStore).favourites.has('/a')).toBe(false);
+		});
+
+		it('reopens a collapsed Favourites section for a new favourite', () => {
+			store.toggleSection('favourites');
+			store.toggleFavourite('/a');
+			expect(store.collapsedSections.has('favourites')).toBe(false);
+
+			store.toggleSection('favourites');
+			store.toggleFavourite('/a');
+			expect(store.collapsedSections.has('favourites')).toBe(true);
+		});
+
+		it('ignores unreadable saved favourites', () => {
+			localStorage.setItem('workbench.favourites', '{"not":"an array"}');
+			expect([...new ProjectStore(mockWorkspaceStore).favourites]).toEqual([]);
+		});
+
+		it('follows a project whose path changes and drops a removed one', async () => {
+			store.projects = [makeProject({ path: '/a' })];
+			store.toggleFavourite('/a');
+
+			await store.update('/a', makeProject({ path: '/b' }));
+			expect([...store.favourites]).toEqual(['/b']);
+
+			await store.remove('/b');
+			expect(new ProjectStore(mockWorkspaceStore).favourites.size).toBe(0);
+		});
+	});
 });

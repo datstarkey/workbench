@@ -13,14 +13,16 @@
 	import PanelLeftOpenIcon from '@lucide/svelte/icons/panel-left-open';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import StarIcon from '@lucide/svelte/icons/star';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
 	import InstanceSwitcher from '$features/instances/InstanceSwitcher.svelte';
 	import * as ContextMenu from '@workbench/ui/context-menu';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
+	import { projectSections } from '@workbench/control-plane-ui';
 	import { Input } from '@workbench/ui/input';
 	import { ScrollArea } from '@workbench/ui/scroll-area';
-	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+	import { SvelteMap } from 'svelte/reactivity';
 	import {
 		getClaudeSessionStore,
 		getGitHubStore,
@@ -32,7 +34,6 @@
 	} from '$stores/context';
 	import { openUrl } from '$lib/utils/open-url';
 	import type { ActiveClaudeSession, ProjectConfig, WorktreeInfo } from '$types/workbench';
-	import type { ProjectGroup } from '$stores/projects.svelte';
 	import CIStatusBadge from './CIStatusBadge.svelte';
 	import PRStatusBadge from './PRStatusBadge.svelte';
 	import ProjectMenuItems from './ProjectMenuItems.svelte';
@@ -59,35 +60,14 @@
 
 	// Explicit per-project toggles; projects the user never toggled follow "is active".
 	const expandedProjects = new SvelteMap<string, boolean>();
-	const collapsedGroups = new SvelteSet<string>();
 
 	let filterText = $state('');
 	let cloneDialogOpen = $state(false);
 	let dragOverProjectPath = $state<string | null>(null);
 
-	let filteredGroupedProjects: ProjectGroup[] = $derived.by(() => {
-		const query = filterText.trim().toLowerCase();
-		if (!query) return projectStore.groupedProjects;
-
-		const result: ProjectGroup[] = [];
-		for (const section of projectStore.groupedProjects) {
-			const groupMatches = section.group?.toLowerCase().includes(query) ?? false;
-			if (groupMatches) {
-				result.push(section);
-			} else {
-				const filtered = section.projects.filter((p) => p.name.toLowerCase().includes(query));
-				if (filtered.length > 0) {
-					result.push({ group: section.group, projects: filtered });
-				}
-			}
-		}
-		return result;
-	});
-
-	function toggleSet<T>(set: SvelteSet<T>, value: T) {
-		if (set.has(value)) set.delete(value);
-		else set.add(value);
-	}
+	const sections = $derived(
+		projectSections(projectStore.projects, projectStore.favourites, filterText)
+	);
 
 	// Landing back on the default drops the override, so the project follows "is active" again.
 	function toggleExpanded(path: string, expanded: boolean, isActive: boolean) {
@@ -192,26 +172,30 @@
 							Add a folder to get started.
 						</p>
 					</div>
-				{:else if filteredGroupedProjects.length === 0}
+				{:else if sections.length === 0}
 					<p class="px-3 py-4 text-center font-mono text-[11px] text-wb-ink-mute">No matches.</p>
 				{:else}
-					{#each filteredGroupedProjects as section (section.group ?? '__ungrouped')}
-						{#if section.group}
-							{@const isGroupCollapsed = collapsedGroups.has(section.group) && !filterText}
+					{#each sections as section (section.key)}
+						{#if section.kind !== 'other' || sections.length > 1}
+							{@const isGroupCollapsed =
+								projectStore.collapsedSections.has(section.key) && !filterText}
 							<button
 								class="mt-2 flex w-full items-center gap-1 px-3 py-1 text-left first:mt-0"
 								type="button"
 								aria-expanded={!isGroupCollapsed}
-								onclick={() => toggleSet(collapsedGroups, section.group!)}
+								onclick={() => projectStore.toggleSection(section.key)}
 							>
 								{#if isGroupCollapsed}
 									<ChevronRightIcon class="size-3 shrink-0 text-wb-ink-mute" />
 								{:else}
 									<ChevronDownIcon class="size-3 shrink-0 text-wb-ink-mute" />
 								{/if}
+								{#if section.kind === 'favourites'}
+									<StarIcon class="size-2.5 shrink-0 fill-wb-warn text-wb-warn" />
+								{/if}
 								<span
 									class="truncate text-[10.5px] font-semibold tracking-wider text-wb-ink-mute uppercase"
-									>{section.group}</span
+									>{section.title}</span
 								>
 								<span class="ml-auto font-mono text-[10px] text-wb-ink-mute"
 									>{section.projects.length}</span
@@ -239,6 +223,7 @@
 	{@const sessions = allSessionsForProject(project.path)}
 	{@const attentionType = projectAttentionType(project.path)}
 	{@const isExpanded = expandedProjects.get(project.path) ?? isActive}
+	{@const isFavourite = projectStore.favourites.has(project.path)}
 	<div
 		role="listitem"
 		draggable="true"
@@ -305,6 +290,15 @@
 						/>
 					{/if}
 					{@render sessionBadges(sessions)}
+					<button
+						class="grid size-5 shrink-0 place-items-center rounded text-wb-ink-mute opacity-0 transition-opacity group-hover:opacity-100 hover:bg-wb-panel2 hover:text-wb-ink focus-visible:opacity-100"
+						type="button"
+						aria-label="Favourite {project.name}"
+						aria-pressed={isFavourite}
+						onclick={() => projectStore.toggleFavourite(project.path)}
+					>
+						<StarIcon class={['size-3', isFavourite && 'fill-wb-warn text-wb-warn']} />
+					</button>
 					<DropdownMenu.Root>
 						<DropdownMenu.Trigger
 							class="grid size-5 shrink-0 place-items-center rounded text-wb-ink-mute opacity-0 transition-opacity group-hover:opacity-100 hover:bg-wb-panel2 hover:text-wb-ink focus-visible:opacity-100 data-[state=open]:opacity-100"

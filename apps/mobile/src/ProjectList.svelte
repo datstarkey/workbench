@@ -6,7 +6,7 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import type { MobileClient } from './client.svelte.ts';
 	import type { ReviewFolder } from './project-review.svelte';
-	import { projectSections } from './project-sections.ts';
+	import { projectSections } from '@workbench/control-plane-ui';
 	import ProjectRow from './ProjectRow.svelte';
 
 	let {
