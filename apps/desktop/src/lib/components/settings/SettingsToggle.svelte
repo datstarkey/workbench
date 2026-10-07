@@ -22,6 +22,7 @@
 
 <SettingsRow {label} {description} {children}>
 	{#snippet control()}
-		<Switch {checked} {disabled} {onCheckedChange} aria-label={label} />
+		<!-- Controlled: a change the caller refuses or fails springs back. -->
+		<Switch bind:checked={() => checked, onCheckedChange} {disabled} aria-label={label} />
 	{/snippet}
 </SettingsRow>

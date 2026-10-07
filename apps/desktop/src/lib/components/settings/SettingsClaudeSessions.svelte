@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getWorkbenchSettingsStore } from '$stores/context';
-	import { IS_WINDOWS } from '$lib/utils/claude';
+	import { IS_WINDOWS } from '$lib/utils/platform';
 	import type { ClaudePermissionMode, PaneView } from '$types/workbench';
 	import EditableStringList from './EditableStringList.svelte';
 	import SettingsNote from './SettingsNote.svelte';

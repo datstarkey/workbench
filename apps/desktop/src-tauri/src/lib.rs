@@ -12,6 +12,7 @@ pub use workbench_core::{
 #[cfg(all(feature = "e2e", not(debug_assertions)))]
 compile_error!("the `e2e` feature is test-only and must not be built in release mode");
 
+mod autostart;
 mod commands;
 mod git_commands;
 mod git_watcher;
@@ -46,6 +47,8 @@ use tauri::Manager;
 macro_rules! build_invoke_handler {
     ( $( $extra:path ),* $(,)? ) => {
         tauri::generate_handler![
+            autostart::autostart_enabled,
+            autostart::set_autostart,
             commands::list_projects,
             commands::read_chat_attachment,
             commands::save_projects,
@@ -154,11 +157,7 @@ pub fn run() {
         .manage(RefreshDispatcher::new())
         .manage(server_control::ServerControl::new())
         .setup(|app| {
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            app.handle().plugin(tauri_plugin_autostart::init(
-                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-                None,
-            ))?;
+            autostart::on_startup(app.handle());
 
             let handle = app.handle().clone();
             #[cfg(target_os = "macos")]

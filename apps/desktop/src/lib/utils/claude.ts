@@ -5,6 +5,7 @@ import type {
 	CodexSandboxMode,
 	TerminalPaneState
 } from '$types/workbench';
+import { IS_WINDOWS } from './platform';
 
 /**
  * What a Claude pane's terminal runs. The server (or, for a native terminal,
@@ -117,9 +118,6 @@ export function tryCodexResumeCommand(sessionId: string, opts?: LaunchOptions): 
 		return undefined;
 	}
 }
-
-export const IS_WINDOWS =
-	typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
 
 /** Quote a string for use in a shell command, handling platform differences. */
 function shellQuote(value: string): string {

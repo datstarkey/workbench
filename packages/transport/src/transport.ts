@@ -15,7 +15,6 @@
 
 import type {
 	BranchInfo,
-	ClaudeHookEvent,
 	CodexNotifyEvent,
 	DiscoveredClaudeSession,
 	GitHubRemote,
@@ -56,7 +55,6 @@ export interface ControlPlaneCommands {
 /** Control-plane events streamed from the backend (NOT `terminal:data/exit`). */
 export interface ControlPlaneEvents {
 	'project:refresh-requested': ProjectRefreshRequestedEvent;
-	'claude:hook': ClaudeHookEvent;
 	'codex:notify': CodexNotifyEvent;
 }
 
