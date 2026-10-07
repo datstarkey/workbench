@@ -1,14 +1,4 @@
 /** Small, platform-neutral helpers for native Codex controls. */
-export function safeExternalUrl(value: unknown): string | null {
-	if (typeof value !== 'string') return null;
-	try {
-		const url = new URL(value);
-		return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
-	} catch {
-		return null;
-	}
-}
-
 export function pcm16(samples: Float32Array): string {
 	const bytes = new Uint8Array(samples.length * 2);
 	const view = new DataView(bytes.buffer);

@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	elicitationContent,
-	elicitationFields,
-	elicitationUrl,
-	type ElicitationItem,
-	initialDraft
-} from './elicitation-form';
+import { elicitationContent, elicitationFields, initialDraft } from './elicitation-form';
 
 const schema = {
 	type: 'object',
@@ -98,15 +92,5 @@ describe('elicitationContent', () => {
 		});
 		const { content } = elicitationContent(f, { at: '2026-10-04T12:00:00Z' });
 		expect(content.at).toBe('2026-10-04T12:00:00.000Z');
-	});
-});
-
-describe('elicitationUrl', () => {
-	const item = (url: string) => ({ kind: 'elicitation', url }) as ElicitationItem;
-
-	it('only opens http(s)', () => {
-		expect(elicitationUrl(item('https://example.com/auth'))).toBe('https://example.com/auth');
-		expect(elicitationUrl(item('javascript:alert(1)'))).toBeNull();
-		expect(elicitationUrl(item('not a url'))).toBeNull();
 	});
 });
