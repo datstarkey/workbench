@@ -53,6 +53,9 @@ let title: string | undefined;
 let runningTurn: string | undefined;
 // The live model's context window, from the latest measurement.
 let contextWindow: number | undefined;
+// The window the chat was last sent outside a `result`; a model switch
+// clears the chat's, so it's sent again.
+let sentWindow: number | undefined;
 // Why the last turn failed (StopFailure), and the id of the `result` that
 // reported it, whose notice takes the reason when StopFailure comes after.
 let failure: string | undefined;
@@ -111,6 +114,14 @@ const terminalElicitations = new Map<string, string[]>();
 // Model switches the person made (`/model`, `/config`, the chat's pick); an
 // automatic fallback or a resume keeps the pick the chat shows.
 const PICKED_MODEL = new Set(['command', 'picker', 'sdk']);
+
+// Without `model`: the TUI names the bare id, and resending it would drop
+// the `[1m]` the chat's model carries.
+function sendWindow(window: number | undefined) {
+	if (window === undefined || window === sentWindow) return;
+	sentWindow = window;
+	emit({ type: 'system', subtype: 'init', contextWindow: window });
+}
 
 function reply(requestId: unknown, error?: string, response: Line = {}) {
 	emit({
@@ -394,6 +405,7 @@ export const register: Register = (on) => {
 				}
 				modelPick = { id: req.resolvedModel, choice: req.model, effortLevels: req.effortLevels };
 				model = req.resolvedModel;
+				sentWindow = undefined;
 				reply(line.request_id);
 				emit({ type: 'system', subtype: 'init', model, modelChoice: req.model });
 			} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
@@ -418,6 +430,7 @@ export const register: Register = (on) => {
 				server.hello.last = Date.now();
 				lastSettings = '';
 				reportedMode = '';
+				sentWindow = undefined;
 				void $.http
 					.fetch(`${link.url}/mod/hello`, server.init('POST', { sessionId: link.sessionId }))
 					.then(async (res) => {
@@ -426,11 +439,10 @@ export const register: Register = (on) => {
 							return;
 						}
 						// A restarted server has no plan usage reading until a window moves.
-						const limits = await $.session
-							.usage()
-							.then((u) => rateLimitLine(u.rateLimits))
-							.catch(() => undefined);
+						const usage = await $.session.usage().catch(() => undefined);
+						const limits = usage && rateLimitLine(usage.rateLimits);
 						if (limits) emit(limits);
+						sendWindow(contextWindow ?? usage?.context.window);
 					})
 					.catch(() => (server.hello.needed = true));
 			}
@@ -452,18 +464,14 @@ export const register: Register = (on) => {
 		const configMode = rows.find((r) => r.key === 'permissionMode')?.value;
 		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);
 		reportedMode = permissionMode ?? '';
+		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
 		const usage = await $.session.usage().catch(() => undefined);
-		contextWindow = usage?.context.window;
-		emit({
-			type: 'system',
-			subtype: 'init',
-			session_id: sessionId,
-			model,
-			permissionMode,
-			contextWindow
-		});
 		const limits = usage && rateLimitLine(usage.rateLimits);
 		if (limits) emit(limits);
+		// A measurement taken meanwhile is newer.
+		contextWindow ??= usage?.context.window;
+		sentWindow = undefined;
+		sendWindow(contextWindow);
 		return result;
 	});
 
@@ -494,10 +502,8 @@ export const register: Register = (on) => {
 
 	on('session.measure', ($, e, next) => {
 		if (server.current()) {
-			// Sent now, not only with the turn's `result`, so a first turn shows it.
-			if (e.context.window !== contextWindow)
-				emit({ type: 'system', subtype: 'init', model, contextWindow: e.context.window });
 			contextWindow = e.context.window;
+			sendWindow(contextWindow);
 			const limit = e.changed.includes('rateLimits') ? rateLimitLine(e.rateLimits) : undefined;
 			if (limit) emit(limit);
 		}
@@ -744,6 +750,7 @@ export const register: Register = (on) => {
 		if (PICKED_MODEL.has(e.source)) modelPick = undefined;
 		if (server.current()) {
 			model = e.to_model;
+			sentWindow = undefined;
 			emit({
 				type: 'system',
 				subtype: 'init',

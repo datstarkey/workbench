@@ -277,9 +277,12 @@ impl Transcript {
             }
             Some("system") => match str_at(obj, "subtype") {
                 // The plugin sends one when the model or effort a request runs
-                // with changes, and on a model switch (with the pick it came from).
+                // with changes, on a model switch (with the pick it came from),
+                // and with only `contextWindow` when it learns the window.
                 Some("init") => {
-                    self.set_model(str_at(obj, "model").map(String::from));
+                    if let Some(model) = str_at(obj, "model") {
+                        self.note_init_model(model);
+                    }
                     if let Some(window) = obj.get("contextWindow").and_then(Value::as_u64) {
                         self.meta.context_window = Some(window);
                     }
@@ -1160,6 +1163,18 @@ impl Transcript {
                 .as_deref()
                 .and_then(|m| m.strip_suffix("[1m]"))
                 != Some(model)
+        {
+            self.set_model(Some(model.to_string()));
+        }
+    }
+
+    /// A request's init names the bare id, so a `[1m]` the model already has
+    /// stays (and the window with it); gaining one is a new window.
+    fn note_init_model(&mut self, model: &str) {
+        let base = |m: &str| m.strip_suffix("[1m]").unwrap_or(m).to_string();
+        let current = self.meta.model.as_deref();
+        if current.map(base) != Some(base(model))
+            || (model.ends_with("[1m]") && !current.is_some_and(|m| m.ends_with("[1m]")))
         {
             self.set_model(Some(model.to_string()));
         }

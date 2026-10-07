@@ -635,7 +635,9 @@ impl AgentManager {
                 session::rekey(&self.inner, session, new_id, resumed)
             });
             match line.get("type").and_then(serde_json::Value::as_str) {
-                Some("result") => session.learn_cache_ttl(),
+                Some("result") => {
+                    session.learn_cache_ttl();
+                }
                 Some("assistant") => session.learn_cache_ttl_early(),
                 _ => {}
             }

@@ -376,10 +376,28 @@ fn the_plugins_one_model_sets_the_window_without_the_1m_suffix() {
 #[test]
 fn the_plugins_init_sets_the_window_before_any_result() {
     let mut t = Transcript::default();
-    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5","contextWindow":1000000}));
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
+    t.apply(&json!({"type":"system","subtype":"init","contextWindow":1000000}));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5[1m]"));
     assert_eq!(t.meta().context_window, Some(1_000_000));
+    // The first request's init and message name the bare id.
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5","effort":"high"}));
     t.apply(&json!({"type":"assistant","uuid":"a1","message":{"id":"m1","model":"claude-opus-5-5","content":[]}}));
+    assert_eq!(t.meta().model.as_deref(), Some("claude-opus-5-5[1m]"));
     assert_eq!(t.meta().context_window, Some(1_000_000));
+}
+
+#[test]
+fn an_init_gaining_1m_or_another_model_forgets_the_window() {
+    let mut t = Transcript::default();
+    t.apply(
+        &json!({"type":"system","subtype":"init","model":"claude-opus-5-5","contextWindow":200000}),
+    );
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}));
+    assert_eq!(t.meta().context_window, None);
+    t.apply(&json!({"type":"system","subtype":"init","contextWindow":1000000}));
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-sonnet-5-5"}));
+    assert_eq!(t.meta().context_window, None);
 }
 
 #[test]
