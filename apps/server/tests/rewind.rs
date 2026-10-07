@@ -183,9 +183,11 @@ async fn rewind_restarts_before_the_prompt_and_says_files_stay() {
     let received = std::fs::read_to_string(&log).unwrap();
     assert!(!received.contains("rewind_files"), "{received}");
 
-    ws.send(Message::Text(json!({"t": "prompt", "text": "/resume"}).to_string()))
-        .await
-        .unwrap();
+    ws.send(Message::Text(
+        json!({"t": "prompt", "text": "/resume"}).to_string(),
+    ))
+    .await
+    .unwrap();
     let snapshot = loop {
         let frame = next_json(&mut ws).await;
         if frame["t"] == "snapshot" {

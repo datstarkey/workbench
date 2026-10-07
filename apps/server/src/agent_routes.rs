@@ -44,8 +44,8 @@ use crate::agent::{
     AgentKind, AgentManager, AgentSession, AgentSummary, CachePolicy, Launch, PromptFile,
     PromptImage, StartAgent, TerminalStart, MAX_FILES, MAX_IMAGES,
 };
-use crate::error::{ApiError, ApiResult};
 use crate::cwd::resolve_cwd;
+use crate::error::{ApiError, ApiResult};
 use crate::state::{wait_revoked, AppState};
 use crate::terminal::WsAuthQuery;
 

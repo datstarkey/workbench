@@ -60,6 +60,13 @@ const taskAgents = new Map<string, string>();
 // Background agents: their Agent call returned at launch, so their own
 // `turn.complete` ends the task.
 const asyncAgents = new Set<string>();
+// Main-thread Skill calls still running: call id → the skill and the agents
+// there were before it. A forked skill's agent has no `agent.spawn`: the first
+// call of an agent new since then names it, and its Skill call is its task.
+const runningSkills = new Map<string, { skill: string; before: Set<string> }>();
+// Whether the latest prompt came from a chat: what it asks waits for a chat's
+// answer even before one has it open (a phone in the background).
+let chatTurn = false;
 // Chat prompts appended into the running turn that no request has read yet.
 let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
@@ -96,6 +103,28 @@ function reply(requestId: unknown, error?: string, response: Line = {}) {
 function linkAgent(agent: string, task: string) {
 	agentTasks.set(agent, task);
 	taskAgents.set(task, agent);
+}
+
+function startSkillTask(task: string, agent: string) {
+	linkAgent(agent, task);
+	emit(
+		{
+			type: 'system',
+			subtype: 'task_started',
+			task_id: task,
+			tool_use_id: task,
+			description: `/${runningSkills.get(task)?.skill ?? 'skill'}`,
+			task_type: 'local_agent',
+			uuid: `wbmod-task-${task}`
+		},
+		{
+			type: 'system',
+			subtype: 'task_updated',
+			task_id: task,
+			output_id: agent,
+			uuid: `wbmod-task-out-${task}`
+		}
+	);
 }
 
 function unlinkTask(task: string) {
@@ -640,6 +669,14 @@ export const register: Register = (on) => {
 		return result;
 	});
 
+	// A chat's prompt reaches the session through this plugin's own submit;
+	// one typed at the terminal hands what the turn asks back to the terminal.
+	on('prompt.submit', async ($, e, next) => {
+		if (e.origin.kind === 'plugin') chatTurn = e.origin.name === $.plugin.name;
+		else if (e.origin.kind === 'composer') chatTurn = false;
+		return next(e);
+	});
+
 	// Structured results (an Artifact's link) and subagents for the tasks panel.
 	on('tool.call', async ($, e, next) => {
 		if (!server.current()) return next(e);
@@ -657,7 +694,8 @@ export const register: Register = (on) => {
 				(u, i) => $.http.fetch(u, i),
 				requestId,
 				askLine(requestId, e.tool, input, id),
-				next.signal
+				next.signal,
+				chatTurn
 			);
 			if (answer) {
 				if (answer.behavior !== 'allow')
@@ -668,6 +706,20 @@ export const register: Register = (on) => {
 		}
 		const input = e as unknown as { description?: string; subagent_type?: string };
 		const isAgent = !e.agentId && e.tool === 'Agent';
+		const isSkill = !e.agentId && e.tool === 'Skill';
+		if (isSkill && id) {
+			const before = new Set((await $.agent.list()).map((a) => a.id));
+			runningSkills.set(id, {
+				skill: (e as unknown as { skill?: string }).skill ?? 'skill',
+				before
+			});
+		}
+		const skillTask = runningSkills.size === 1 ? [...runningSkills.keys()][0] : undefined;
+		if (e.agentId && skillTask && !taskAgents.has(skillTask) && !agentTasks.has(e.agentId)) {
+			const agent = (await $.agent.list()).find((a) => a.id === e.agentId);
+			if (agent && !agent.parentId && !runningSkills.get(skillTask)!.before.has(agent.id))
+				startSkillTask(skillTask, agent.id);
+		}
 		if (isAgent && id) {
 			runningAgents.add(id);
 			emit({
@@ -692,9 +744,30 @@ export const register: Register = (on) => {
 		const main = id && !e.agentId ? id : undefined;
 		if (main) callsRunning.add(main);
 		const result = await next(e);
-		const launched = result.result as { status?: string; agentId?: string } | undefined;
+		const launched = result.result as
+			| { status?: string; agentId?: string; success?: boolean; background?: boolean }
+			| undefined;
 		if (isAgent && id) {
 			runningAgents.delete(id);
+		}
+		if (isSkill && id) {
+			const forked = launched?.status === 'forked' ? launched.agentId : undefined;
+			const guessed = taskAgents.get(id);
+			if (guessed && guessed !== forked) unlinkTask(id);
+			if (forked && guessed !== forked) startSkillTask(id, forked);
+			if (forked && launched?.background) asyncAgents.add(forked);
+			else if (taskAgents.has(id) || guessed) {
+				unlinkTask(id);
+				emit({
+					type: 'system',
+					subtype: 'task_notification',
+					task_id: id,
+					status:
+						launched?.success === false || result.isError || result.deny ? 'failed' : 'completed',
+					uuid: `wbmod-done-${id}`
+				});
+			}
+			runningSkills.delete(id);
 		}
 		if (isAgent && id && launched?.status === 'async_launched' && launched.agentId) {
 			asyncAgents.add(launched.agentId);
@@ -777,7 +850,7 @@ export const register: Register = (on) => {
 
 	// Fires only when the mode's decider would show its dialog: rules, the mode
 	// and auto mode's classifier have all had their say. Asked in chat while one
-	// is open; the server answers `fallback` when none is (or it closes), and the
+	// is open; the server answers `fallback` when none has shown it, and the
 	// terminal's dialog asks instead. A held request in flight doesn't spend the
 	// hook's time budget, however long the person takes.
 	on('classic.PermissionRequest', async ($, e, next) => {
@@ -797,7 +870,8 @@ export const register: Register = (on) => {
 			(u, i) => $.http.fetch(u, i),
 			requestId,
 			line,
-			next.signal
+			next.signal,
+			chatTurn
 		);
 		if (!answer) {
 			// The terminal asks now; the server shows it waiting until it's answered.

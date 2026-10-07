@@ -117,15 +117,20 @@ pub struct AskBody {
     request_id: String,
     /// The `can_use_tool` request, on the first call; later calls keep waiting.
     line: Option<Value>,
+    /// A chat's to answer even before one has it open: its turn came from chat.
+    #[serde(default)]
+    hold: bool,
 }
 
 /// How long one `/mod/ask` call waits before answering `pending`.
 const ASK_WAIT: Duration = Duration::from_secs(20);
 
 /// An approval the terminal's `claude` asks in chat. Answers `{answer}` once a
-/// client answers, `{fallback: true}` when no chat is open (the TUI asks
+/// client answers, `{fallback: true}` when no chat has shown it (the TUI asks
 /// instead; the card is withdrawn, but the session list still shows it as
-/// waiting, `inTerminal`), or `{pending: true}` to be called again.
+/// waiting, `inTerminal`), or `{pending: true}` to be called again. Once a chat
+/// has shown it, or its turn came from chat (`hold`), it waits for a chat's
+/// answer even while none is open.
 /// A held request is how the plugin waits without spending its hook budget.
 pub async fn ask(
     State(state): State<AppState>,
@@ -151,6 +156,9 @@ pub async fn ask(
             .and_then(Value::as_str)
             .map(String::from);
         link.expect_answer(&body.request_id, tool_use_id);
+        if body.hold {
+            link.shown(&body.request_id, true);
+        }
         feed(line).await?;
     }
     let deadline = tokio::time::Instant::now() + ASK_WAIT;
@@ -161,7 +169,7 @@ pub async fn ask(
         {
             return Ok(Json(json!({ "answer": answer })));
         }
-        if !session.has_viewers() {
+        if !link.shown(&body.request_id, session.has_viewers()) {
             link.fall_back(&body.request_id, session.waiting_for(&body.request_id));
             session.refresh_attention();
             feed(json!({"type": "control_cancel_request", "request_id": body.request_id})).await?;
