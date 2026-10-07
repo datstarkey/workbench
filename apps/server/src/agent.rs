@@ -191,12 +191,51 @@ pub struct AgentManager {
     /// Ids of sessions the person ended lately, newest last: an attach-only
     /// start on one is told it was ended, not that it's merely gone (a crash).
     ended: Arc<Mutex<VecDeque<String>>>,
+    /// The `set_model` a chat last sent each Claude session, by id, and the
+    /// ones a restart (rewind, mode) owes its new `claude`, which starts on
+    /// the default model: the pick is session-only, so the plugin forgets it.
+    model_picks: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    restart_picks: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }
 
 /// How many ended ids are remembered.
 const ENDED_KEPT: usize = 64;
 
 impl AgentManager {
+    /// Switch a session's model, remembered for a Claude terminal's restart.
+    pub fn set_model(&self, session: &AgentSession, model: &str) -> Result<()> {
+        if let Some(sent) = session.set_model(model)? {
+            lock(&self.model_picks).insert(session.id(), sent);
+        }
+        Ok(())
+    }
+
+    /// A Claude session of `account_id` is linked to its terminal's plugin.
+    pub fn has_linked_claude(&self, account_id: &Option<String>) -> bool {
+        !self
+            .sessions(|s| {
+                s.kind == AgentKind::Claude
+                    && &s.claude_account_id() == account_id
+                    && s.mod_link().is_some_and(|l| !l.is_stale())
+            })
+            .is_empty()
+    }
+
+    /// Give every Claude session of `account_id` in `cwd` a newer model list.
+    pub fn pin_models_for(
+        &self,
+        account_id: &Option<String>,
+        cwd: &std::path::Path,
+        models: &[workbench_core::claude_transcript::ModelOption],
+    ) {
+        let found = self.sessions(|s| {
+            s.kind == AgentKind::Claude && &s.claude_account_id() == account_id && s.cwd() == cwd
+        });
+        for session in found {
+            session.pin_models(models.to_vec());
+        }
+    }
+
     pub fn get(&self, session_id: &str) -> Option<Arc<AgentSession>> {
         lock(&self.inner).get(session_id).cloned()
     }
@@ -414,6 +453,10 @@ impl AgentManager {
             self.attention.clone(),
         );
         session.send(&claude::hello())?;
+        if let Some(mut pick) = lock(&self.restart_picks).remove(session_id) {
+            pick["request_id"] = uuid::Uuid::new_v4().to_string().into();
+            session.send(&pick)?;
+        }
         lock(&self.inner).insert(session_id.to_string(), session.clone());
         self.unmark_ended(session_id);
         self.start_upkeep();
@@ -493,6 +536,9 @@ impl AgentManager {
         };
         // A session nobody has written to yet has no file to `--resume`.
         let resume = claude_history_exists(config_dir.as_deref(), &session_id);
+        if let Some(pick) = lock(&self.model_picks).get(&session_id).cloned() {
+            lock(&self.restart_picks).insert(session_id.clone(), pick);
+        }
         // Clients re-attach on `replaced` by starting the session: they wait here
         // for this restart rather than open a second `claude` beside it.
         let starting = self.start_lock(&session_id);
@@ -584,12 +630,33 @@ impl AgentManager {
             if let Some(link) = link {
                 link.note_line(line);
             }
+            self.forget_replaced_pick(session, line);
             session.apply_line(&line.to_string(), |new_id, resumed| {
                 session::rekey(&self.inner, session, new_id, resumed)
             });
             if line.get("type").and_then(serde_json::Value::as_str) == Some("result") {
                 session.learn_cache_ttl();
             }
+        }
+    }
+
+    /// A model picked in the TUI (a `system:init` naming another pick) replaces
+    /// the chat's, so a restart doesn't bring the chat's back.
+    fn forget_replaced_pick(&self, session: &AgentSession, line: &serde_json::Value) {
+        let Some(choice) = line
+            .get("modelChoice")
+            .and_then(serde_json::Value::as_str)
+            .filter(|_| line["type"] == "system" && line["subtype"] == "init")
+        else {
+            return;
+        };
+        let mut picks = lock(&self.model_picks);
+        let id = session.id();
+        if picks
+            .get(&id)
+            .is_some_and(|p| p["request"]["model"] != choice)
+        {
+            picks.remove(&id);
         }
     }
 

@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,46 +28,53 @@ const FRESH_TTL: Duration = Duration::from_secs(10);
 /// and served stale while a newer one is fetched, so a chat never waits on it
 /// once an account and cwd have been seen.
 const MODELS_TTL: Duration = Duration::from_secs(60 * 60);
+/// A list saved longer ago than this is not served at all.
+const MODELS_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// A failed run is kept this long at most, so a slow start isn't replayed for an hour.
 const FAILURE_TTL: Duration = Duration::from_secs(30);
 /// How often `/usage` is still run beside a live reading, for the per-model
 /// weekly limits only it prints.
 const PER_MODEL_TTL: Duration = Duration::from_secs(15 * 60);
-/// How long a reading without reset times stands: the session window's length.
-const READING_TTL: Duration = Duration::from_secs(5 * 60 * 60);
 
-type Entry<T> = (Instant, Result<T, String>);
-
-/// One key's last outcome, failures included (so a timing-out CLI isn't
-/// retried by every waiting request in turn), and the lock a run holds.
+/// One key's last good result and last failure, and the lock a run holds. A
+/// failure is kept (so a timing-out CLI isn't retried by every waiting
+/// request in turn) beside the good result, which it never replaces.
 struct Slot<T> {
-    value: Mutex<Option<Entry<T>>>,
+    good: Mutex<Option<(Instant, T)>>,
+    failed: Mutex<Option<(Instant, String)>>,
     run: tokio::sync::Mutex<()>,
 }
 
 impl<T> Default for Slot<T> {
     fn default() -> Self {
         Self {
-            value: Mutex::new(None),
+            good: Mutex::new(None),
+            failed: Mutex::new(None),
             run: tokio::sync::Mutex::new(()),
         }
     }
 }
 
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 impl<T: Clone> Slot<T> {
-    fn held(&self) -> Option<Entry<T>> {
-        self.value.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    fn good(&self) -> Option<(Instant, T)> {
+        lock(&self.good).clone()
     }
 
-    /// The outcome, if younger than `max` (a failure's at most [`FAILURE_TTL`]).
-    fn within(&self, max: Duration) -> Option<Result<T, String>> {
-        let (at, result) = self.held()?;
-        let max = if result.is_err() {
-            max.min(FAILURE_TTL)
-        } else {
-            max
-        };
-        (at.elapsed() < max).then_some(result)
+    /// A good result younger than `max`; else, within [`FAILURE_TTL`] of a
+    /// failure, the last good result however old, or that failure.
+    fn cached(&self, max: Duration) -> Option<Result<T, String>> {
+        let good = self.good();
+        if let Some((at, value)) = &good {
+            if at.elapsed() < max {
+                return Some(Ok(value.clone()));
+            }
+        }
+        let (at, err) = lock(&self.failed).clone()?;
+        (at.elapsed() < max.min(FAILURE_TTL)).then(|| good.map(|(_, v)| v).ok_or(err))
     }
 }
 
@@ -80,13 +88,25 @@ struct Saved<K, T> {
     value: T,
 }
 
+/// Where a cache's good results outlive a restart.
+struct Store {
+    file: PathBuf,
+    /// Saves are numbered as taken; an older one never overwrites a newer.
+    taken: AtomicU64,
+    written: Mutex<u64>,
+}
+
+/// Called with a result a background refresh fetched.
+pub type OnRefresh<T> = Box<dyn FnOnce(T) + Send>;
+
 /// One CLI run's result per key (an account), shared by concurrent requests.
 pub struct AccountCache<K, T> {
     slots: Arc<Mutex<HashMap<K, Arc<Slot<T>>>>>,
     ttl: Duration,
     fresh_ttl: Duration,
-    /// Where good results outlive a restart, if anywhere.
-    file: Option<PathBuf>,
+    store: Option<Arc<Store>>,
+    /// Which keys are still worth keeping (a cwd that no longer exists isn't).
+    keep: fn(&K) -> bool,
 }
 
 impl<K, T> Clone for AccountCache<K, T> {
@@ -95,7 +115,8 @@ impl<K, T> Clone for AccountCache<K, T> {
             slots: self.slots.clone(),
             ttl: self.ttl,
             fresh_ttl: self.fresh_ttl,
-            file: self.file.clone(),
+            store: self.store.clone(),
+            keep: self.keep,
         }
     }
 }
@@ -105,17 +126,40 @@ pub type ModelsCache = AccountCache<(Option<String>, PathBuf), Vec<ModelOption>>
 
 impl Default for ModelsCache {
     fn default() -> Self {
-        Self::new(MODELS_TTL, MODELS_TTL)
-            .persisted(workbench_core::paths::workbench_config_dir().join("models-cache.json"))
+        Self::new(MODELS_TTL, FRESH_TTL).persisted(
+            workbench_core::paths::workbench_config_dir().join("models-cache.json"),
+            |(_, cwd)| cwd.exists(),
+        )
     }
 }
 
 impl ModelsCache {
     /// `account_id` must already be a known account (see `claude_accounts::resolve`)
-    /// and `cwd` a session's, so request input can't grow the map.
-    pub async fn get(&self, account_id: Option<String>, cwd: PathBuf) -> Result<Vec<ModelOption>> {
+    /// and `cwd` a session's, so request input can't grow the map. A stale
+    /// list comes at once; `on_refresh` gets the newer one fetched behind it.
+    pub async fn get(
+        &self,
+        account_id: Option<String>,
+        cwd: PathBuf,
+        on_refresh: OnRefresh<Vec<ModelOption>>,
+    ) -> Result<Vec<ModelOption>> {
         let key = (account_id.clone(), cwd.clone());
-        self.get_stale_with(key, move || {
+        self.get_stale_with(
+            key,
+            move || claude_accounts::models(account_id.as_deref(), &cwd),
+            on_refresh,
+        )
+        .await
+    }
+
+    /// A list fetched in the last few seconds, run now if there is none.
+    pub async fn refresh(
+        &self,
+        account_id: Option<String>,
+        cwd: PathBuf,
+    ) -> Result<Vec<ModelOption>> {
+        let key = (account_id.clone(), cwd.clone());
+        self.get_with(key, true, move || {
             claude_accounts::models(account_id.as_deref(), &cwd)
         })
         .await
@@ -139,103 +183,132 @@ where
             slots: Arc::default(),
             ttl,
             fresh_ttl,
-            file: None,
+            store: None,
+            keep: |_| true,
         }
     }
 
-    /// Keep good results in `file`, starting from what it holds.
-    fn persisted(mut self, file: PathBuf) -> Self {
+    /// Keep good results in `file`, starting from what it holds that `keep`
+    /// accepts and is younger than [`MODELS_MAX_AGE`].
+    fn persisted(mut self, file: PathBuf, keep: fn(&K) -> bool) -> Self {
         let saved: Vec<Saved<K, T>> = workbench_core::paths::load_json(&file, Vec::new());
         let now = unix_now();
-        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slots = lock(&self.slots);
         for entry in saved {
             let age = Duration::from_secs(now.saturating_sub(entry.saved_at));
+            if age >= MODELS_MAX_AGE || !keep(&entry.key) {
+                continue;
+            }
             // Older than this process's clock reaches: due a refresh.
             let at = Instant::now()
                 .checked_sub(age)
                 .or_else(|| Instant::now().checked_sub(self.ttl))
                 .unwrap_or_else(Instant::now);
             let slot = Slot::default();
-            *slot.value.lock().unwrap_or_else(|e| e.into_inner()) = Some((at, Ok(entry.value)));
+            *lock(&slot.good) = Some((at, entry.value));
             slots.insert(entry.key, Arc::new(slot));
         }
         drop(slots);
-        self.file = Some(file);
+        self.store = Some(Arc::new(Store {
+            file,
+            taken: AtomicU64::new(0),
+            written: Mutex::new(0),
+        }));
+        self.keep = keep;
         self
     }
 
+    /// Snapshot the good results now; the write happens off the async thread.
     fn save(&self) {
-        let Some(file) = &self.file else {
+        let Some(store) = self.store.clone() else {
             return;
         };
-        // Held while writing, so two saves can't interleave on the temp file.
-        let slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         let now = unix_now();
-        let saved: Vec<Saved<&K, T>> = slots
-            .iter()
-            .filter_map(|(key, slot)| match slot.held()? {
-                (at, Ok(value)) => Some(Saved {
-                    key,
-                    saved_at: now.saturating_sub(at.elapsed().as_secs()),
-                    value,
-                }),
-                _ => None,
-            })
-            .collect();
-        if let Err(e) = workbench_core::paths::save_json(file, &saved) {
-            tracing::warn!("could not save {}: {e:#}", file.display());
-        }
+        let snapshot = {
+            let slots = lock(&self.slots);
+            let saved: Vec<Saved<&K, T>> = slots
+                .iter()
+                .filter(|(key, _)| (self.keep)(key))
+                .filter_map(|(key, slot)| {
+                    let (at, value) = slot.good()?;
+                    Some(Saved {
+                        key,
+                        saved_at: now.saturating_sub(at.elapsed().as_secs()),
+                        value,
+                    })
+                })
+                .collect();
+            serde_json::to_string_pretty(&saved)
+        };
+        let content = match snapshot {
+            Ok(content) => content,
+            Err(e) => return tracing::warn!("could not save the models cache: {e}"),
+        };
+        let taken = store.taken.fetch_add(1, Ordering::SeqCst) + 1;
+        tokio::task::spawn_blocking(move || {
+            let mut written = lock(&store.written);
+            if taken <= *written {
+                return;
+            }
+            match workbench_core::paths::atomic_write(&store.file, &content) {
+                Ok(()) => *written = taken,
+                Err(e) => tracing::warn!("could not save {}: {e:#}", store.file.display()),
+            }
+        });
     }
 
     fn slot(&self, key: K) -> Arc<Slot<T>> {
-        self.slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(key)
-            .or_default()
-            .clone()
+        lock(&self.slots).entry(key).or_default().clone()
     }
 
-    /// The result, run now unless one younger than the TTL is cached.
+    /// The result, run now unless one younger than the TTL is cached. A
+    /// failed run answers with the last good result when there is one.
     async fn get_with<F>(&self, key: K, fresh: bool, fetch: F) -> Result<T>
     where
         F: FnOnce() -> Result<T> + Send + 'static,
     {
         let slot = self.slot(key);
         let max = if fresh { self.fresh_ttl } else { self.ttl };
-        if let Some(result) = slot.within(max) {
+        if let Some(result) = slot.cached(max) {
             return result.map_err(anyhow::Error::msg);
         }
         // Concurrent requests wait for one run rather than start their own.
         let _run = slot.run.lock().await;
-        if let Some(result) = slot.within(max) {
+        if let Some(result) = slot.cached(max) {
             return result.map_err(anyhow::Error::msg);
         }
-        let result = tokio::task::spawn_blocking(fetch)
-            .await?
-            .map_err(|e| format!("{e:#}"));
-        *slot.value.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((Instant::now(), result.clone()));
-        if result.is_ok() {
-            self.save();
+        match tokio::task::spawn_blocking(fetch).await? {
+            Ok(value) => {
+                *lock(&slot.good) = Some((Instant::now(), value.clone()));
+                *lock(&slot.failed) = None;
+                self.save();
+                Ok(value)
+            }
+            Err(e) => {
+                let e = format!("{e:#}");
+                *lock(&slot.failed) = Some((Instant::now(), e.clone()));
+                slot.good()
+                    .map(|(_, v)| v)
+                    .ok_or_else(|| anyhow::Error::msg(e))
+            }
         }
-        result.map_err(anyhow::Error::msg)
     }
 
     /// A good result at once, however old, refreshed behind once past the
-    /// TTL. Only a key with no good result waits for a run.
-    async fn get_stale_with<F>(&self, key: K, fetch: F) -> Result<T>
+    /// TTL (`on_refresh` gets the newer one). Only a key with no good result
+    /// waits for a run.
+    async fn get_stale_with<F>(&self, key: K, fetch: F, on_refresh: OnRefresh<T>) -> Result<T>
     where
         F: FnOnce() -> Result<T> + Send + 'static,
     {
-        match self.slot(key.clone()).held() {
-            Some((at, Ok(value))) => {
+        match self.slot(key.clone()).good() {
+            Some((at, value)) => {
                 if at.elapsed() >= self.ttl {
-                    self.refresh_behind(key, fetch);
+                    self.refresh_behind(key, fetch, Some(on_refresh));
                 }
                 Ok(value)
             }
-            _ => self.get_with(key, false, fetch).await,
+            None => self.get_with(key, false, fetch).await,
         }
     }
 
@@ -245,25 +318,26 @@ where
     where
         F: FnOnce() -> Result<T> + Send + 'static,
     {
-        let held = self.slot(key.clone()).held();
-        let good = match &held {
-            Some((at, Ok(value))) => Some((*at, value.clone())),
-            _ => None,
-        };
+        let good = self.slot(key.clone()).good();
         if good.as_ref().is_none_or(|(at, _)| at.elapsed() >= max) {
-            self.refresh_behind(key, fetch);
+            self.refresh_behind(key, fetch, None);
         }
         good.map(|(_, value)| value)
     }
 
-    fn refresh_behind<F>(&self, key: K, fetch: F)
+    fn refresh_behind<F>(&self, key: K, fetch: F, on_refresh: Option<OnRefresh<T>>)
     where
         F: FnOnce() -> Result<T> + Send + 'static,
     {
         let cache = self.clone();
         tokio::spawn(async move {
-            if let Err(e) = cache.get_with(key, false, fetch).await {
-                tracing::warn!("background refresh failed: {e:#}");
+            match cache.get_with(key, false, fetch).await {
+                Ok(value) => {
+                    if let Some(done) = on_refresh {
+                        done(value);
+                    }
+                }
+                Err(e) => tracing::warn!("background refresh failed: {e:#}"),
             }
         });
     }
@@ -277,13 +351,15 @@ struct Reading {
 }
 
 impl Reading {
-    /// Until a window it reports resets, after which its figure is stale.
-    fn current(&self) -> bool {
+    /// While a session of the account is linked, or for [`TTL`] after the last
+    /// one reported; never past a reset of a window it reports.
+    fn current(&self, live: bool) -> bool {
         let now = unix_now();
-        self.limits.iter().all(|l| match l.resets_at {
-            Some(reset) => reset > now,
-            None => self.at.elapsed() < READING_TTL,
-        })
+        (live || self.at.elapsed() < TTL)
+            && self
+                .limits
+                .iter()
+                .all(|l| l.resets_at.is_none_or(|reset| reset > now))
     }
 }
 
@@ -324,23 +400,26 @@ impl UsageCache {
             at: Instant::now(),
             limits: claude_accounts::limits_from_windows(windows),
         };
-        self.readings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(account_id, reading);
+        lock(&self.readings).insert(account_id, reading);
     }
 
-    fn reading(&self, account_id: &Option<String>) -> Option<Vec<UsageLimit>> {
-        let readings = self.readings.lock().unwrap_or_else(|e| e.into_inner());
-        let reading = readings.get(account_id).filter(|r| r.current())?;
+    fn reading(&self, account_id: &Option<String>, live: bool) -> Option<Vec<UsageLimit>> {
+        let readings = lock(&self.readings);
+        let reading = readings.get(account_id).filter(|r| r.current(live))?;
         Some(reading.limits.clone())
     }
 
     /// `account_id` must already be a known account (see `claude_accounts::resolve`),
-    /// so request input can't grow the map.
-    pub async fn get(&self, account_id: Option<String>, fresh: bool) -> Result<Vec<UsageLimit>> {
+    /// so request input can't grow the map. `live`: a session of that account
+    /// is linked, so its reading stands however old.
+    pub async fn get(
+        &self,
+        account_id: Option<String>,
+        fresh: bool,
+        live: bool,
+    ) -> Result<Vec<UsageLimit>> {
         let id = account_id.clone();
-        self.get_with(account_id, fresh, move || {
+        self.get_with(account_id, fresh, live, move || {
             claude_accounts::usage(id.as_deref())
         })
         .await
@@ -350,12 +429,19 @@ impl UsageCache {
         &self,
         account_id: Option<String>,
         fresh: bool,
+        live: bool,
         probe: F,
     ) -> Result<Vec<UsageLimit>>
     where
         F: FnOnce() -> Result<Vec<UsageLimit>> + Send + 'static,
     {
-        let Some(mut limits) = self.reading(&account_id) else {
+        // A fresh request with no session running wants what `/usage` says now.
+        let reading = if fresh && !live {
+            None
+        } else {
+            self.reading(&account_id, live)
+        };
+        let Some(mut limits) = reading else {
             return self.probe.get_with(account_id, fresh, probe).await;
         };
         let probed = self
@@ -379,7 +465,7 @@ impl UsageCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
 
     fn limit(percent: u8) -> Vec<UsageLimit> {
         vec![UsageLimit {
@@ -390,8 +476,14 @@ mod tests {
         }]
     }
 
-    fn probe() -> AccountCache<Option<String>, Vec<UsageLimit>> {
+    type Probe = AccountCache<Option<String>, Vec<UsageLimit>>;
+
+    fn probe() -> Probe {
         AccountCache::new(TTL, FRESH_TTL)
+    }
+
+    fn no_refresh<T>() -> OnRefresh<T> {
+        Box::new(|_| {})
     }
 
     #[tokio::test]
@@ -427,11 +519,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_requests_rerun_only_past_the_floor() {
-        let cache = probe();
-        let cache = AccountCache {
-            fresh_ttl: Duration::from_millis(50),
-            ..cache
-        };
+        let cache: Probe = AccountCache::new(TTL, Duration::from_millis(50));
         cache.get_with(None, false, || Ok(limit(1))).await.unwrap();
         let shared = cache.get_with(None, true, || Ok(limit(2))).await.unwrap();
         assert_eq!(
@@ -459,23 +547,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_refresh_keeps_the_last_good_result() {
+        let cache: Probe = AccountCache::new(Duration::from_millis(20), Duration::from_millis(20));
+        cache.get_with(None, false, || Ok(limit(1))).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let kept = cache
+            .get_with(None, false, || anyhow::bail!("timed out"))
+            .await
+            .unwrap();
+        assert_eq!(kept, limit(1));
+        let throttled = cache
+            .get_with(None, false, || -> Result<_> {
+                unreachable!("failed just now")
+            })
+            .await
+            .unwrap();
+        assert_eq!(throttled, limit(1), "no rerun within the failure TTL");
+        assert_eq!(
+            cache.peek_with(None, Duration::ZERO, || anyhow::bail!("again")),
+            Some(limit(1))
+        );
+    }
+
+    #[tokio::test]
     async fn an_expired_result_is_served_stale_and_refreshed_behind() {
-        let cache: AccountCache<Option<String>, _> =
-            AccountCache::new(Duration::from_millis(50), Duration::from_millis(50));
-        let first = cache.get_stale_with(None, || Ok(limit(1))).await.unwrap();
+        let cache: Probe = AccountCache::new(Duration::from_millis(50), Duration::from_millis(50));
+        let first = cache
+            .get_stale_with(None, || Ok(limit(1)), no_refresh())
+            .await
+            .unwrap();
         assert_eq!(first, limit(1), "a missing entry waits for its run");
         tokio::time::sleep(Duration::from_millis(60)).await;
         let slow = || {
             std::thread::sleep(Duration::from_millis(100));
             Ok(limit(2))
         };
+        let (tx, rx) = tokio::sync::oneshot::channel();
         let started = Instant::now();
-        let stale = cache.get_stale_with(None, slow).await.unwrap();
+        let stale = cache
+            .get_stale_with(
+                None,
+                slow,
+                Box::new(move |v| {
+                    let _ = tx.send(v);
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(stale, limit(1), "past the TTL the old result comes at once");
         assert!(started.elapsed() < Duration::from_millis(50));
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(rx.await.unwrap(), limit(2), "the refresh is handed on");
         let refreshed = cache
-            .get_stale_with(None, || -> Result<_> { unreachable!("fresh again") })
+            .get_stale_with(
+                None,
+                || -> Result<_> { unreachable!("fresh again") },
+                no_refresh(),
+            )
             .await
             .unwrap();
         assert_eq!(refreshed, limit(2));
@@ -485,29 +612,63 @@ mod tests {
     async fn good_results_outlive_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("cache.json");
-        let key = (Some("work".to_string()), PathBuf::from("/project"));
-        let cache = AccountCache::new(TTL, TTL).persisted(file.clone());
+        let key = (Some("work".to_string()), dir.path().to_path_buf());
+        let gone = (None, dir.path().join("gone"));
+        let keep: fn(&(Option<String>, PathBuf)) -> bool = |(_, cwd)| cwd.exists();
+        let cache = AccountCache::new(TTL, TTL).persisted(file.clone(), keep);
         cache
-            .get_stale_with(key.clone(), || Ok(limit(5)))
+            .get_stale_with(key.clone(), || Ok(limit(5)), no_refresh())
             .await
             .unwrap();
+        std::fs::create_dir(&gone.1).unwrap();
         cache
-            .get_stale_with((None, PathBuf::from("/other")), || anyhow::bail!("no"))
+            .get_stale_with(gone.clone(), || Ok(limit(7)), no_refresh())
+            .await
+            .unwrap();
+        std::fs::remove_dir(&gone.1).unwrap();
+        cache
+            .get_stale_with(
+                (None, PathBuf::from("/other")),
+                || anyhow::bail!("no"),
+                no_refresh(),
+            )
             .await
             .unwrap_err();
+        // The last save runs behind; wait for it to land.
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let restarted: AccountCache<_, Vec<UsageLimit>> =
-            AccountCache::new(TTL, TTL).persisted(file);
+            AccountCache::new(TTL, TTL).persisted(file.clone(), keep);
         let kept = restarted
-            .get_stale_with(key, || -> Result<_> { unreachable!("loaded from disk") })
+            .get_stale_with(
+                key,
+                || -> Result<_> { unreachable!("loaded from disk") },
+                no_refresh(),
+            )
             .await
             .unwrap();
         assert_eq!(kept, limit(5));
-        let failed = restarted
-            .get_stale_with((None, PathBuf::from("/other")), || Ok(limit(6)))
+        let pruned = restarted
+            .get_stale_with(gone, || Ok(limit(8)), no_refresh())
             .await
             .unwrap();
-        assert_eq!(failed, limit(6), "failures aren't kept");
+        assert_eq!(pruned, limit(8), "a cwd that's gone isn't kept");
+
+        // Past the maximum age a saved list is ignored.
+        let old =
+            serde_json::json!([{ "key": [null, dir.path()], "savedAt": 0, "value": limit(9) }]);
+        std::fs::write(&file, old.to_string()).unwrap();
+        let ancient: AccountCache<_, Vec<UsageLimit>> =
+            AccountCache::new(TTL, TTL).persisted(file, keep);
+        let fetched = ancient
+            .get_stale_with(
+                (None, dir.path().to_path_buf()),
+                || Ok(limit(10)),
+                no_refresh(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fetched, limit(10));
     }
 
     fn windows(five_hour: f64, resets_at: u64) -> Vec<RateWindow> {
@@ -545,8 +706,9 @@ mod tests {
                 probed()
             }
         };
+        let work = || Some("work".to_string());
         let first = usage
-            .get_with(Some("work".into()), false, counted(runs.clone()))
+            .get_with(work(), false, true, counted(runs.clone()))
             .await
             .unwrap();
         let labels: Vec<_> = first
@@ -556,7 +718,7 @@ mod tests {
         assert_eq!(labels, [("session", 24), ("week (all models)", 40)]);
         tokio::time::sleep(Duration::from_millis(50)).await;
         let second = usage
-            .get_with(Some("work".into()), true, counted(runs.clone()))
+            .get_with(work(), true, true, counted(runs.clone()))
             .await
             .unwrap();
         assert_eq!(
@@ -567,10 +729,24 @@ mod tests {
         assert_eq!(second[2].label, "week (Fable)");
         assert_eq!(runs.load(Ordering::SeqCst), 1, "run once, behind");
 
+        // No session linked: a fresh request asks `/usage`.
+        let unlinked = usage.get_with(work(), true, false, probed).await.unwrap();
+        assert_eq!(unlinked[0].percent, 1);
+
         // The default login's reading reports a window that has reset since:
-        // stale, so the probe answers, and is waited for.
+        // stale, so the probe answers.
         usage.note(None, &windows(90.0, unix_now() - 1));
-        let default = usage.get_with(None, false, probed).await.unwrap();
+        let default = usage.get_with(None, false, true, probed).await.unwrap();
         assert_eq!(default[0].percent, 1);
+    }
+
+    #[test]
+    fn a_reading_stands_a_minute_past_its_session() {
+        let reading = Reading {
+            at: Instant::now() - TTL - Duration::from_secs(1),
+            limits: limit(5),
+        };
+        assert!(reading.current(true));
+        assert!(!reading.current(false));
     }
 }

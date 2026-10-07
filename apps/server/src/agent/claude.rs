@@ -106,22 +106,10 @@ pub(super) fn interrupt() -> Effects {
     }
 }
 
-/// The model id a pick names: the plugin switches this session's requests
-/// (`turn.step`), which take an id, never an alias. A full id passes as is;
-/// `[1m]` stays on a 1M-context pick.
-fn resolved_model(t: &Transcript, pick: &str) -> Option<String> {
-    let listed = t.meta().models.iter().find(|m| m.value == pick);
-    let id = match listed {
-        Some(m) => m.resolved_model.clone()?,
-        None if pick.starts_with("claude-") => return Some(pick.to_string()),
-        None => return None,
-    };
-    let wide = pick.ends_with("[1m]") && !id.ends_with("[1m]");
-    Some(if wide { format!("{id}[1m]") } else { id })
-}
-
 /// Shown at once; the transcript puts the old model back if the CLI refuses.
-/// For this session only: the user's default model is left alone.
+/// For this session only: the plugin switches the session's requests
+/// (`turn.step`), which take an id, never an alias, so the pick goes with its
+/// resolved id and the effort levels that model takes (absent: unknown).
 pub(super) fn set_model(t: &mut Transcript, model: &str) -> Result<Effects> {
     let valid = !model.is_empty()
         && model.len() <= 80
@@ -131,8 +119,17 @@ pub(super) fn set_model(t: &mut Transcript, model: &str) -> Result<Effects> {
     if !valid {
         bail!("unknown model: {model}");
     }
-    let resolved = resolved_model(t, model);
-    let msg = control(json!({"subtype": "set_model", "model": model, "resolvedModel": resolved}));
+    let Some(resolved) = t.resolve_model(model) else {
+        bail!("Claude's model list has no id for {model} yet. Try again in a moment.");
+    };
+    let levels = t
+        .meta()
+        .models
+        .iter()
+        .find(|m| m.value == model)
+        .map(|m| m.effort_levels.clone());
+    let msg = control(json!({"subtype": "set_model", "model": model,
+        "resolvedModel": resolved, "effortLevels": levels}));
     t.request_model(msg["request_id"].as_str().unwrap_or_default(), model);
     Ok(changed_meta(msg))
 }
@@ -163,8 +160,8 @@ mod tests {
     fn a_refused_model_switch_is_rolled_back() {
         let mut t = Transcript::default();
         t.apply(&json!({"type": "system", "subtype": "init", "model": "claude-opus-5-5"}));
-        let fx = set_model(&mut t, "sonnet").unwrap();
-        assert_eq!(t.meta().model_choice.as_deref(), Some("sonnet"));
+        let fx = set_model(&mut t, "claude-sonnet-5-5").unwrap();
+        assert_eq!(t.meta().model_choice.as_deref(), Some("claude-sonnet-5-5"));
         let id = fx.send[0]["request_id"].as_str().unwrap();
         t.apply(&json!({"type": "control_response", "response": {
             "subtype": "error", "request_id": id, "error": "Model: no"}}));
@@ -173,31 +170,28 @@ mod tests {
     }
 
     #[test]
-    fn a_model_pick_is_sent_with_its_resolved_id() {
+    fn a_model_pick_is_sent_with_its_resolved_id_and_effort_levels() {
         let mut t = Transcript::default();
         t.apply(&json!({"type": "control_response", "response": {
             "subtype": "success", "request_id": "i", "response": {"models": [
                 {"value": "opus[1m]", "resolvedModel": "claude-opus-5-5"},
-                {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5"},
+                {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5",
+                    "supportedEffortLevels": ["low", "high"]},
                 {"value": "haiku"}]}}}));
         let sent =
             |t: &mut Transcript, pick| set_model(t, pick).unwrap().send[0]["request"].clone();
         assert_eq!(
             sent(&mut t, "sonnet"),
-            json!({"subtype": "set_model", "model": "sonnet", "resolvedModel": "claude-sonnet-5-5"})
+            json!({"subtype": "set_model", "model": "sonnet",
+                "resolvedModel": "claude-sonnet-5-5", "effortLevels": ["low", "high"]})
         );
-        assert_eq!(
-            sent(&mut t, "opus[1m]")["resolvedModel"],
-            "claude-opus-5-5[1m]"
-        );
-        assert_eq!(
-            sent(&mut t, "claude-fable-5-1")["resolvedModel"],
-            "claude-fable-5-1"
-        );
-        assert_eq!(
-            sent(&mut t, "haiku")["resolvedModel"],
-            Value::Null,
-            "no id: the plugin refuses"
-        );
+        let wide = sent(&mut t, "opus[1m]");
+        assert_eq!(wide["resolvedModel"], "claude-opus-5-5[1m]");
+        assert_eq!(wide["effortLevels"], json!([]), "a model without effort");
+        let full = sent(&mut t, "claude-fable-5-1");
+        assert_eq!(full["resolvedModel"], "claude-fable-5-1");
+        assert_eq!(full["effortLevels"], Value::Null, "unknown levels");
+        let err = set_model(&mut t, "haiku").unwrap_err();
+        assert!(err.to_string().contains("no id for haiku"), "{err}");
     }
 }

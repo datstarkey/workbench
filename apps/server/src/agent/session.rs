@@ -639,8 +639,25 @@ impl AgentSession {
         self.run(|d| d.set_mode(mode))
     }
 
-    pub fn set_model(&self, model: &str) -> Result<()> {
-        self.run(|d| d.set_model(model))
+    /// The `set_model` request a Claude session was sent, for a restart to repeat.
+    pub fn set_model(&self, model: &str) -> Result<Option<Value>> {
+        let mut sent = None;
+        self.run(|d| {
+            let effects = d.set_model(model)?;
+            if matches!(d, Driver::Claude(_)) {
+                sent = effects.send.first().cloned();
+            }
+            Ok(effects)
+        })?;
+        Ok(sent)
+    }
+
+    /// Whether a Claude session's model list gives `pick` an id.
+    pub fn resolves_model(&self, pick: &str) -> bool {
+        match &*lock(&self.driver) {
+            Driver::Claude(t) => t.resolve_model(pick).is_some(),
+            _ => true,
+        }
     }
 
     pub fn set_effort(&self, level: &str) -> Result<()> {

@@ -560,6 +560,15 @@ export function currentModel(meta: TranscriptMeta | null): ModelOption | null {
 	);
 }
 
+/**
+ * Whether a model can be picked: the server switches a Claude session by the
+ * id the CLI's own list resolves, which the plugin's stand-in list lacks
+ * until that list is pinned. The current model stays shown as picked.
+ */
+export function canPickModel(option: ModelOption, current: ModelOption | null): boolean {
+	return option.resolvedModel != null || option.value === current?.value;
+}
+
 const EFFORT_LABELS: Record<EffortLevel, string> = {
 	none: 'No reasoning',
 	minimal: 'Minimal',

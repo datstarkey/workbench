@@ -7,6 +7,7 @@ import {
 	answerFor,
 	applyChanges,
 	contextUsed,
+	canPickModel,
 	currentModel,
 	effortLabel,
 	formatBytes,
@@ -505,6 +506,13 @@ describe('model and effort', () => {
 		expect(currentModel({ ...meta, models, model: 'claude-opus-5-5[1m]' })?.value).toBe('opus');
 		expect(currentModel({ ...meta, models, model: 'something-else' })?.value).toBe('default');
 		expect(currentModel({ ...meta, models: [] })).toBe(null);
+	});
+
+	it('offers only models with a resolved id, besides the current one', () => {
+		const guessed = { ...models[2], value: 'haiku', resolvedModel: null };
+		expect(canPickModel(models[2], null)).toBe(true);
+		expect(canPickModel(guessed, models[0])).toBe(false);
+		expect(canPickModel(guessed, guessed)).toBe(true);
 	});
 
 	it('labels effort', () => {

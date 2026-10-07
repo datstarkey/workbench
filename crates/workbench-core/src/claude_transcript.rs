@@ -283,8 +283,10 @@ impl Transcript {
                     if let Some(mode) = str_at(obj, "permissionMode") {
                         self.meta.permission_mode = Some(mode.to_string());
                     }
-                    if let Some(effort) = str_at(obj, "effort") {
-                        self.meta.effort = Some(effort.to_string());
+                    match obj.get("effort") {
+                        Some(Value::String(effort)) => self.meta.effort = Some(effort.clone()),
+                        Some(Value::Null) => self.meta.effort = None,
+                        _ => {}
                     }
                     if let Some(choice) = str_at(obj, "modelChoice") {
                         self.meta.model_choice = Some(choice.to_string());
@@ -574,16 +576,22 @@ impl Transcript {
 
     fn set_model_choice(&mut self, value: &str) {
         self.meta.model_choice = Some(value.to_string());
-        let resolved = self
-            .meta
-            .models
-            .iter()
-            .find(|m| m.value == value)
-            .and_then(|m| m.resolved_model.clone());
-        if let Some(model) = resolved {
-            let wide = value.ends_with("[1m]") && !model.ends_with("[1m]");
-            self.set_model(Some(if wide { format!("{model}[1m]") } else { model }));
+        if let Some(model) = self.resolve_model(value) {
+            self.set_model(Some(model));
         }
+    }
+
+    /// The model id a pick names: the listed model's resolved id (`[1m]` kept
+    /// on a 1M-context pick), or a full `claude-` id as is. `None` when the
+    /// list doesn't resolve it (the plugin's stand-in list has no ids).
+    pub fn resolve_model(&self, pick: &str) -> Option<String> {
+        let id = match self.meta.models.iter().find(|m| m.value == pick) {
+            Some(m) => m.resolved_model.clone()?,
+            None if pick.starts_with("claude-") => return Some(pick.to_string()),
+            None => return None,
+        };
+        let wide = pick.ends_with("[1m]") && !id.ends_with("[1m]");
+        Some(if wide { format!("{id}[1m]") } else { id })
     }
 
     /// The effort level just requested.

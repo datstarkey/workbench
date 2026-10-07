@@ -376,7 +376,10 @@ pub async fn agent_usage(
     // An unknown id is refused, never answered with the default login's usage.
     claude_accounts::resolve(&settings, q.claude_account_id.as_deref())
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    Ok(Json(state.usage.get(q.claude_account_id, q.fresh).await?))
+    let live = state.agents.has_linked_claude(&q.claude_account_id);
+    Ok(Json(
+        state.usage.get(q.claude_account_id, q.fresh, live).await?,
+    ))
 }
 
 pub async fn agent_attach(
@@ -583,7 +586,18 @@ fn handle(
             }
         }
         ClientMsg::Mode { mode } => session.set_mode(&mode),
-        ClientMsg::Model { model } => session.set_model(&model),
+        ClientMsg::Model { model } => {
+            // The plugin's stand-in list has no ids: ask the CLI for its own once.
+            if !session.resolves_model(&model) {
+                let (account, cwd) = (session.claude_account_id(), session.cwd());
+                let fresh = tokio::runtime::Handle::current()
+                    .block_on(state.models.refresh(account.clone(), cwd.clone()));
+                if let Ok(models) = fresh {
+                    state.agents.pin_models_for(&account, &cwd, &models);
+                }
+            }
+            state.agents.set_model(session, &model)
+        }
         ClientMsg::Effort { effort } => session.set_effort(&effort),
         ClientMsg::CachePing => session.keep_cache_warm(),
         ClientMsg::CachePolicy { policy } => state.agents.set_cache_policy(session, policy),

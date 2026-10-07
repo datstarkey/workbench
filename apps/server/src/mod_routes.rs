@@ -70,12 +70,16 @@ pub async fn hello(
         crate::routes::blocking(move || agents.attach_mod(&token, &body.session_id)).await?;
     // The plugin can only guess the model list; the CLI's own replaces it
     // when the (cached) probe answers.
+    // A stale list is pinned at once; a newer one fetched behind it goes to
+    // every session of that account and cwd.
     tokio::spawn(async move {
-        match state
-            .models
-            .get(session.claude_account_id(), session.cwd())
-            .await
-        {
+        let (account, cwd) = (session.claude_account_id(), session.cwd());
+        let agents = state.agents.clone();
+        let repin = {
+            let (account, cwd) = (account.clone(), cwd.clone());
+            Box::new(move |models: Vec<_>| agents.pin_models_for(&account, &cwd, &models))
+        };
+        match state.models.get(account, cwd, repin).await {
             Ok(models) => session.pin_models(models),
             Err(e) => tracing::warn!("could not list Claude models: {e:#}"),
         }

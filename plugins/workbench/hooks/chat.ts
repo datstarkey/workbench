@@ -39,9 +39,11 @@ let effort: TurnStepInput['effort'];
 // The effort the engine resolved on its own when the chat's was applied first.
 let effortBase: { value: TurnStepInput['effort'] } | undefined;
 // Model picked in chat, for this session only: the resolved id each
-// main-thread request names, and the pick as the chat shows it. A pick in the
-// TUI (`/model`, `/config`) clears it.
-let modelPick: { id: string; choice: string } | undefined;
+// main-thread request names, the pick as the chat shows it, the effort levels
+// that model takes (absent: unknown), and the model the engine names on its
+// own (`base`, from the first request after the pick). A request naming
+// another (a fallback) keeps it. A pick in the TUI (`/model`, `/config`) clears it.
+let modelPick: { id: string; choice: string; effortLevels?: string[]; base?: string } | undefined;
 // The slash commands the chat was last sent, to send a changed list once.
 let commandList = '';
 // The session title the chat was last sent.
@@ -241,6 +243,7 @@ export const register: Register = (on) => {
 				subtype?: string;
 				model?: string;
 				resolvedModel?: string;
+				effortLevels?: string[];
 				settings?: { effortLevel?: string };
 			};
 			const sub = req.subtype;
@@ -265,7 +268,7 @@ export const register: Register = (on) => {
 					reply(line.request_id, `Model: ${req.model} isn't in Claude's model list.`);
 					return;
 				}
-				modelPick = { id: req.resolvedModel, choice: req.model };
+				modelPick = { id: req.resolvedModel, choice: req.model, effortLevels: req.effortLevels };
 				model = req.resolvedModel;
 				reply(line.request_id);
 				emit({ type: 'system', subtype: 'init', model, modelChoice: req.model });
@@ -294,10 +297,16 @@ export const register: Register = (on) => {
 				void $.http
 					.fetch(`${link.url}/mod/hello`, server.init('POST', { sessionId: link.sessionId }))
 					.then(async (res) => {
-						if (!res.ok) server.hello.needed = true;
+						if (!res.ok) {
+							server.hello.needed = true;
+							return;
+						}
 						// A restarted server has no plan usage reading until a window moves.
-						const limits = rateLimitLine((await $.session.usage()).rateLimits);
-						if (res.ok && limits) emit(limits);
+						const limits = await $.session
+							.usage()
+							.then((u) => rateLimitLine(u.rateLimits))
+							.catch(() => undefined);
+						if (limits) emit(limits);
 					})
 					.catch(() => (server.hello.needed = true));
 			}
@@ -320,7 +329,10 @@ export const register: Register = (on) => {
 		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);
 		reportedMode = permissionMode ?? '';
 		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
-		const limits = rateLimitLine((await $.session.usage()).rateLimits);
+		const limits = await $.session
+			.usage()
+			.then((u) => rateLimitLine(u.rateLimits))
+			.catch(() => undefined);
 		if (limits) emit(limits);
 		return result;
 	});
@@ -380,17 +392,19 @@ export const register: Register = (on) => {
 			if (!effortBase) effortBase = { value: e.effort };
 			else if (e.effort !== effortBase.value) effort = effortBase = undefined;
 		}
-		const step = {
-			...e,
-			...(effort ? { effort } : {}),
-			...(modelPick ? { model: modelPick.id } : {})
-		};
+		if (modelPick && modelPick.base === undefined) modelPick.base = e.model;
+		const pick = modelPick && e.model === modelPick.base ? modelPick : undefined;
+		// What this request really runs with: the engine resolved both. A picked
+		// model that doesn't take the effort goes without.
+		let sent = effort ?? e.effort;
+		if (pick?.effortLevels && !(typeof sent === 'string' && pick.effortLevels.includes(sent)))
+			sent = undefined;
+		const step = { ...e, ...(pick ? { model: pick.id } : {}) };
+		if (sent !== e.effort) step.effort = sent;
 		const stream = next(step);
 		currentMessage = `wbmod-${sessionId.slice(0, 8)}-${++messageSeq}`;
 		startedBlocks.clear();
 		model = step.model || model;
-		// What this request really runs with: the engine resolved both.
-		const sent = effort ?? e.effort;
 		const settings = `${model} ${sent ?? ''}`;
 		if (settings !== lastSettings) {
 			lastSettings = settings;
@@ -398,7 +412,8 @@ export const register: Register = (on) => {
 				type: 'system',
 				subtype: 'init',
 				model,
-				...(typeof sent === 'string' ? { effort: sent } : {})
+				// `null`: this model runs without effort.
+				effort: typeof sent === 'string' ? sent : null
 			});
 		}
 		emit({

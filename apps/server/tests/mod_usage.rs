@@ -124,9 +124,8 @@ async fn plugin_usage_answers_plan_usage_and_a_model_pick_is_resolved() {
     }
     assert_eq!(
         set_model,
-        Some(
-            json!({"subtype": "set_model", "model": "sonnet", "resolvedModel": "claude-sonnet-5-5"})
-        )
+        Some(json!({"subtype": "set_model", "model": "sonnet",
+                "resolvedModel": "claude-sonnet-5-5", "effortLevels": []}))
     );
 
     let res = client

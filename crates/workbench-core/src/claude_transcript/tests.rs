@@ -1160,3 +1160,33 @@ fn plugin_framing_stays_out_of_the_chat() {
     );
     assert!(t.meta().busy, "the nudge still starts a turn");
 }
+
+#[test]
+fn a_pick_resolves_through_the_model_list() {
+    let mut t = Transcript::default();
+    t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[{"value":"opus[1m]","resolvedModel":"claude-opus-5-5"},
+            {"value":"haiku"}]}}}),
+    );
+    assert_eq!(
+        t.resolve_model("opus[1m]").as_deref(),
+        Some("claude-opus-5-5[1m]")
+    );
+    assert_eq!(
+        t.resolve_model("claude-fable-5-1").as_deref(),
+        Some("claude-fable-5-1")
+    );
+    assert_eq!(t.resolve_model("haiku"), None, "a stand-in entry has no id");
+    assert_eq!(t.resolve_model("sonnet"), None);
+}
+
+#[test]
+fn an_init_without_effort_clears_it_only_when_it_says_so() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5","effort":"high"}));
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5"}));
+    assert_eq!(t.meta().effort.as_deref(), Some("high"));
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-haiku-4-5","effort":null}));
+    assert_eq!(t.meta().effort, None);
+}

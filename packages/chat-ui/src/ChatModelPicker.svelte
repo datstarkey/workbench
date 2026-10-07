@@ -2,7 +2,7 @@
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import type { EffortLevel, TranscriptMeta } from '@workbench/types';
-	import { currentModel, effortLabel } from './chat-format';
+	import { canPickModel, currentModel, effortLabel } from './chat-format';
 
 	let {
 		meta,
@@ -38,7 +38,11 @@
 		<DropdownMenu.Content align="start" class="w-72">
 			<DropdownMenu.RadioGroup value={model?.value ?? ''} onValueChange={(value) => onModel(value)}>
 				{#each meta.models as option (option.value)}
-					<DropdownMenu.RadioItem value={option.value} class="flex-col items-start gap-0">
+					<DropdownMenu.RadioItem
+						value={option.value}
+						disabled={!canPickModel(option, model)}
+						class="flex-col items-start gap-0"
+					>
 						<span>{option.displayName}</span>
 						{#if option.description}
 							<span class="text-[11px] text-muted-foreground">{option.description}</span>
