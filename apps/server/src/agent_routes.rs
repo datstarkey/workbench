@@ -42,7 +42,7 @@ use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
     AgentKind, AgentManager, AgentSession, AgentSummary, CachePolicy, Launch, PromptFile,
-    PromptImage, StartAgent, MAX_FILES, MAX_IMAGES,
+    PromptImage, StartAgent, TerminalStart, MAX_FILES, MAX_IMAGES,
 };
 use crate::error::{ApiError, ApiResult};
 use crate::cwd::resolve_cwd;
@@ -55,7 +55,6 @@ pub struct StartBody {
     pub project_path: String,
     pub worktree_path: Option<String>,
     pub session_id: String,
-    pub permission_mode: Option<String>,
     pub pane_id: Option<String>,
     pub hook_socket: Option<String>,
     /// Claude account to run under; an id, never a path (see `claude_accounts`).
@@ -83,8 +82,6 @@ pub async fn agent_start(
         .map(Json)
 }
 
-/// How long a new terminal's `claude` gets to start and attach through the plugin.
-const TERMINAL_START: Duration = Duration::from_secs(30);
 /// Between Claude Code's trust dialog appearing and it reading keys.
 const TRUST_SETTLE: Duration = Duration::from_secs(1);
 /// After answering the trust dialog, how long before answering once more.
@@ -98,7 +95,7 @@ fn claude_start(
     terminals: &crate::terminal::TerminalManager,
     body: StartBody,
 ) -> anyhow::Result<Value> {
-    claude_validate(&body.session_id, body.permission_mode.as_deref())?;
+    crate::agent::validate_claude_session_id(&body.session_id)?;
     let starting = agents.start_lock(&body.session_id);
     let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = agents.get(&body.session_id) {
@@ -112,72 +109,52 @@ fn claude_start(
         .clone()
         .unwrap_or_else(|| body.project_path.clone());
     let trust_folder = body.trust_folder;
-    let terminal = crate::terminal::create_from_body(
-        terminals,
-        agents,
-        crate::terminal::CreateTerminalBody {
-            project_path: body.project_path,
-            worktree_path: body.worktree_path,
-            name: None,
-            command: None,
-            claude_session: Some(crate::terminal::ClaudeSessionLaunch {
-                id: body.session_id.clone(),
-                resume,
-                ..Default::default()
-            }),
-            cols: 120,
-            rows: 40,
-            pane_id: body.pane_id,
-            hook_socket: body.hook_socket,
-            shell: None,
-            claude_account_id: body.claude_account_id,
-        },
-    )?;
-    let deadline = Instant::now() + TERMINAL_START;
+    let launch = crate::terminal::CreateTerminalBody {
+        project_path: body.project_path,
+        worktree_path: body.worktree_path,
+        name: None,
+        command: None,
+        claude_session: Some(crate::terminal::ClaudeSessionLaunch {
+            id: body.session_id,
+            resume,
+            ..Default::default()
+        }),
+        cols: 120,
+        rows: 40,
+        pane_id: body.pane_id,
+        hook_socket: body.hook_socket,
+        shell: None,
+        claude_account_id: body.claude_account_id,
+    };
     // When the trust dialog was answered; again once if `claude` still hasn't attached.
     let mut trust_answers: Vec<Instant> = Vec::new();
-    while Instant::now() < deadline {
-        if let Some(session) = agents.get(&body.session_id) {
-            return Ok(start_reply(&session));
-        }
+    let started = agents.open_terminal(terminals, launch, |terminal| {
         let answer_again = trust_answers.len() == 1 && trust_answers[0].elapsed() > TRUST_RETRY;
-        if (trust_answers.is_empty() || answer_again)
+        let asks = (trust_answers.is_empty() || answer_again)
             && terminals
-                .recent_output(&terminal.id)
-                .is_some_and(|out| claude_launch::shows_trust_prompt(&out))
-        {
-            if !trust_folder {
-                // The chat asks instead; trusting starts it again with `trustFolder`.
-                terminals.kill(&terminal.id);
-                return Ok(json!({ "needsTrust": cwd }));
-            }
-            // Keys typed as the dialog first draws are lost.
-            std::thread::sleep(TRUST_SETTLE);
-            for keys in claude_launch::TRUST_ACCEPT_KEYS {
-                terminals.type_keys(&terminal.id, keys);
-                std::thread::sleep(Duration::from_millis(300));
-            }
-            trust_answers.push(Instant::now());
+                .recent_output(terminal)
+                .is_some_and(|out| claude_launch::shows_trust_prompt(&out));
+        if !asks {
+            return None;
         }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    terminals.kill(&terminal.id);
-    anyhow::bail!(
-        "Claude didn't start in its terminal within {}s. Open it as a terminal to see why (a login, an error).",
-        TERMINAL_START.as_secs()
-    )
-}
-
-fn claude_validate(session_id: &str, permission_mode: Option<&str>) -> anyhow::Result<()> {
-    if !workbench_core::claude_transcript::is_uuid(session_id) {
-        anyhow::bail!("session id must be a UUID");
-    }
-    if let Some(mode) = permission_mode {
-        if !workbench_core::claude_launch::PERMISSION_MODES.contains(&mode) {
-            anyhow::bail!("unknown permission mode: {mode}");
+        if !trust_folder {
+            // The chat asks instead; trusting starts it again with `trustFolder`.
+            terminals.kill(terminal);
+            return Some(json!({ "needsTrust": cwd }));
         }
-    }
-    Ok(())
+        // Keys typed as the dialog first draws are lost.
+        std::thread::sleep(TRUST_SETTLE);
+        for keys in claude_launch::TRUST_ACCEPT_KEYS {
+            terminals.type_keys(terminal, keys);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        trust_answers.push(Instant::now());
+        None
+    })?;
+    Ok(match started {
+        TerminalStart::Attached(session) => start_reply(&session),
+        TerminalStart::Stopped(answer) => answer,
+    })
 }
 
 fn start_reply(session: &AgentSession) -> Value {
@@ -353,17 +330,7 @@ pub async fn agent_stop(
     Query(q): Query<StopQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    let terminals = state.terminals.clone();
-    crate::routes::blocking(move || {
-        // A Claude chat's process is its terminal `claude`: stopping it ends that.
-        let terminal = agents.get(&id).and_then(|s| s.summary().terminal_id);
-        let stopped = agents.stop(&id, q.end);
-        if let Some(terminal) = terminal {
-            terminals.kill(&terminal);
-        }
-        Ok(stopped)
-    })
-    .await?;
+    crate::routes::blocking(move || Ok(agents.stop(&id, q.end))).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -378,21 +345,7 @@ pub async fn agent_stop_pane(
     Query(q): Query<PaneQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    let terminals = state.terminals.clone();
-    crate::routes::blocking(move || {
-        let owned: Vec<String> = agents
-            .summaries(None)
-            .into_iter()
-            .filter(|s| s.pane_id.as_deref() == Some(q.pane_id.as_str()))
-            .filter_map(|s| s.terminal_id)
-            .collect();
-        let stopped = agents.stop_pane(&q.pane_id);
-        for terminal in owned {
-            terminals.kill(&terminal);
-        }
-        Ok(stopped)
-    })
-    .await?;
+    crate::routes::blocking(move || Ok(agents.stop_pane(&q.pane_id))).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -610,9 +563,14 @@ fn handle(
             content,
         } => session.elicit(&request_id, action, content.as_ref()),
         ClientMsg::Interrupt => session.interrupt(),
-        // A Claude terminal session restarts in the mode; Codex switches in place.
-        ClientMsg::Mode { mode } if session.mod_link().is_some_and(|l| l.terminal_id.is_some()) => {
-            state.agents.mode_terminal(&state.terminals, session, &mode)
+        // A Claude terminal session restarts in the mode; Codex switches in
+        // place. A desktop native terminal's `claude` can't be restarted from here.
+        ClientMsg::Mode { mode } if session.kind == AgentKind::Claude => {
+            if session.mod_link().is_some_and(|l| l.terminal_id.is_some()) {
+                state.agents.mode_terminal(&state.terminals, session, &mode)
+            } else {
+                anyhow::bail!("Switch it in the terminal with Shift+Tab.")
+            }
         }
         ClientMsg::Mode { mode } => session.set_mode(&mode),
         ClientMsg::Model { model } => session.set_model(&model),
@@ -623,8 +581,12 @@ fn handle(
     reply.map(|()| None)
 }
 
-/// Files first, while the process that tracked them still runs; a file
-/// restore that fails leaves the conversation alone.
+/// A plugin has no way to restore Claude's file checkpoints: a code rewind
+/// answers `canRewind: false`, which the rewind panel shows as its own note,
+/// and a real one is refused before the conversation is touched.
+const NO_FILE_REWIND: &str =
+    "files can't be restored in a terminal chat yet. Rewind the conversation only, or undo the changes with git.";
+
 fn rewind(
     state: &AppState,
     session: &Arc<AgentSession>,
@@ -633,21 +595,18 @@ fn rewind(
     conversation: bool,
     dry_run: bool,
 ) -> anyhow::Result<Option<Value>> {
-    let files = if code {
-        Some(session.rewind_files(message_id, dry_run)?)
-    } else {
-        None
-    };
+    if session.kind != AgentKind::Claude {
+        anyhow::bail!("Codex chats can't rewind");
+    }
+    if !workbench_core::claude_transcript::is_uuid(message_id) {
+        anyhow::bail!("message id must be a UUID");
+    }
+    if code && !dry_run {
+        anyhow::bail!("{NO_FILE_REWIND}");
+    }
+    let files = code.then(|| json!({"canRewind": false, "error": NO_FILE_REWIND}));
     if dry_run {
         return Ok(files);
-    }
-    if let Some(f) = &files {
-        if f["canRewind"] != true {
-            let why = f["error"]
-                .as_str()
-                .unwrap_or("Claude couldn't restore the files.");
-            anyhow::bail!("{why}");
-        }
     }
     if conversation {
         state
@@ -695,8 +654,8 @@ async fn stream(
             }
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(text))) => {
-                    // Pipe writes (a prompt full of images) and the task-output
-                    // directory walk block, so keep them off the async workers.
+                    // Restarts (a rewind, a mode switch), saving attachments and the
+                    // task-output directory walk block, so keep them off the async workers.
                     let worker = session.clone();
                     let state = state.clone();
                     let result =

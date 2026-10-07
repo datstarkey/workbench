@@ -72,9 +72,10 @@ pub fn attachment_dir(session_id: &str) -> std::path::PathBuf {
     std::env::temp_dir().join("workbench-chat").join(session_id)
 }
 
-/// Save uploads and append `@path` references to the prompt. Claude
-/// resolves these through its terminal plugin (images included); Codex
-/// reads document uploads with tools and keeps images as native input.
+/// Save uploads and append `@path` references to the prompt. A terminal
+/// plugin's prompt never has its mentions expanded, so the plugin lists the
+/// files for Claude to Read (images included); Codex reads document uploads
+/// with tools and keeps images as native input.
 pub fn attachments_as_mentions(
     session_id: &str,
     text: &str,

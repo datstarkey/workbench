@@ -1,10 +1,9 @@
-//! Inventory of every message kind Claude Code can write, so a CLI update
-//! that adds one is noticed instead of silently dropped.
+//! Inventory of every message kind a Claude transcript folds, so one that
+//! appears unexpectedly is noticed instead of silently dropped.
 //!
-//! Stream-json kinds come from the `SDKMessage` union and the inbound control
-//! messages of `@anthropic-ai/claude-agent-sdk` 0.3.286 (CLI 2.1.286); the
-//! rest are session-JSONL entries. When bumping the tested CLI version, diff
-//! that union against these lists.
+//! Live kinds are the SDK `SDKMessage` shapes (`@anthropic-ai/claude-agent-sdk`
+//! 0.3.286, CLI 2.1.286) that the Workbench plugin translates a terminal
+//! `claude` into, plus the plugin's own; the rest are session-JSONL entries.
 
 use serde_json::Value;
 
@@ -21,24 +20,19 @@ const HANDLED: &[&str] = &[
     "control_response",
     "conversation_reset",
     "system:init",
-    "system:status",
     "system:local_command_output",
     "system:compact_boundary",
     "system:task_started",
     "system:task_progress",
     "system:task_updated",
     "system:task_notification",
-    "system:background_tasks_changed",
-    "system:api_retry",
     "rate_limit_event",
-    "system:commands_changed",
-    "system:elicitation_complete",
     "system:permission_denied",
-    "system:hook_response",
-    "system:memory_recall",
-    "system:model_refusal_fallback",
     "system:model_refusal_no_fallback",
     "prompt_suggestion",
+    // The plugin's own: an MCP elicitation the terminal asks, and its answer.
+    super::TERMINAL_ELICITATION,
+    super::TERMINAL_ELICITATION_ANSWERED,
     // JSONL only
     "attachment",
     "ai-title",

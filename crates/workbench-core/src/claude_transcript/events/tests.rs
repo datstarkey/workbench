@@ -68,72 +68,7 @@ fn a_denial_without_a_reason_shows_the_message() {
 }
 
 #[test]
-fn only_hooks_that_fail_block_or_speak_are_shown() {
-    let mut t = Transcript::default();
-    let hook = |uuid: &str, outcome: &str, exit: i64, stdout: &str, stderr: &str| {
-        system(
-            "hook_response",
-            uuid,
-            json!({"hook_id": uuid, "hook_name": "PreToolUse:Bash", "hook_event": "PreToolUse",
-                "output": "", "stdout": stdout, "stderr": stderr, "exit_code": exit, "outcome": outcome}),
-        )
-    };
-    t.apply(&hook("h1", "success", 0, "", ""));
-    t.apply(&hook("h2", "success", 0, r#"{"suppressOutput":true}"#, ""));
-    t.apply(&hook("h3", "cancelled", 0, "", ""));
-    assert!(
-        events(&t).is_empty(),
-        "successful and cancelled hooks stay quiet"
-    );
-
-    t.apply(&hook("h4", "error", 2, "", "rm -rf is not allowed"));
-    t.apply(&hook("h5", "error", 1, "", "node: command not found"));
-    t.apply(&hook(
-        "h6",
-        "success",
-        0,
-        r#"{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"Use the task runner"}}"#,
-        "",
-    ));
-    t.apply(&hook(
-        "h7",
-        "success",
-        0,
-        r#"{"systemMessage":"Formatted 3 files"}"#,
-        "",
-    ));
-    let shown: Vec<(String, Option<String>)> = events(&t)
-        .into_iter()
-        .map(|(kind, title, detail, _)| {
-            assert_eq!(kind, EventKind::Hook);
-            (title, detail)
-        })
-        .collect();
-    assert_eq!(
-        shown,
-        vec![
-            (
-                "PreToolUse:Bash hook blocked".into(),
-                Some("rm -rf is not allowed".into())
-            ),
-            (
-                "PreToolUse:Bash hook failed (exit 1)".into(),
-                Some("node: command not found".into())
-            ),
-            (
-                "PreToolUse:Bash hook blocked".into(),
-                Some("Use the task runner".into())
-            ),
-            (
-                "PreToolUse:Bash hook".into(),
-                Some("Formatted 3 files".into())
-            ),
-        ]
-    );
-}
-
-#[test]
-fn jsonl_hook_attachments_match_the_live_notices() {
+fn jsonl_hook_attachments_show_only_failures_blocks_and_stops() {
     let mut t = Transcript::default();
     t.apply(&attachment(
         "a1",
@@ -198,16 +133,7 @@ fn queued_prompts_still_fold_alongside_hook_attachments() {
 }
 
 #[test]
-fn recalled_memories_list_their_files_from_either_source() {
-    let mut live = Transcript::default();
-    live.apply(&system(
-        "memory_recall",
-        "m1",
-        json!({"mode": "select", "memories": [
-            {"path": "/home/u/.claude/memory/style.md", "scope": "personal"},
-            {"path": "/home/u/.claude/memory/release.md", "scope": "personal"}
-        ]}),
-    ));
+fn recalled_memories_list_their_files() {
     let mut history = Transcript::default();
     history.apply(&attachment(
         "m1",
@@ -216,23 +142,20 @@ fn recalled_memories_list_their_files_from_either_source() {
             {"path": "/home/u/.claude/memory/release.md", "content": "Tag first."}
         ]}),
     ));
-    for t in [&live, &history] {
-        let (kind, title, detail, files) = &events(t)[0];
-        assert_eq!(*kind, EventKind::Memory);
-        assert_eq!(title, "Recalled 2 memories");
-        assert_eq!(*detail, None);
-        assert_eq!(files.len(), 2);
-    }
+    let (kind, title, detail, files) = &events(&history)[0];
+    assert_eq!(*kind, EventKind::Memory);
+    assert_eq!(title, "Recalled 2 memories");
+    assert_eq!(*detail, None);
+    assert_eq!(files.len(), 2);
 }
 
 #[test]
 fn a_synthesised_memory_shows_its_text() {
     let mut t = Transcript::default();
-    t.apply(&system(
-        "memory_recall",
+    t.apply(&attachment(
         "m1",
-        json!({"mode": "synthesize", "memories": [
-            {"path": "<synthesis:/home/u/.claude/memory>", "scope": "personal", "content": "Prefers bun."}
+        json!({"type": "relevant_memories", "memories": [
+            {"path": "<synthesis:/home/u/.claude/memory>", "content": "Prefers bun."}
         ]}),
     ));
     let (_, title, detail, files) = &events(&t)[0];
@@ -244,17 +167,16 @@ fn a_synthesised_memory_shows_its_text() {
 #[test]
 fn refusals_say_what_happened() {
     let mut t = Transcript::default();
-    t.apply(&system(
-        "model_refusal_fallback",
-        "r1",
-        json!({"trigger": "refusal", "direction": "retry", "scope": "session",
-            "original_model": "claude-opus-5-5", "fallback_model": "claude-sonnet-5",
-            "request_id": null, "api_refusal_explanation": "Flagged as cyber", "content": "Retrying"}),
-    ));
+    // As the plugin sends a refusal that ended the turn.
     t.apply(&system(
         "model_refusal_no_fallback",
         "r2",
-        json!({"original_model": "claude-opus-5-5", "request_id": null, "content": "The model declined."}),
+        json!({"original_model": "claude-opus-5-5", "api_refusal_explanation": "Flagged as cyber"}),
+    ));
+    t.apply(&system(
+        "model_refusal_no_fallback",
+        "r3",
+        json!({"original_model": "claude-opus-5-5", "api_refusal_explanation": null}),
     ));
     let got: Vec<(EventKind, String, Option<String>)> = events(&t)
         .into_iter()
@@ -265,13 +187,13 @@ fn refusals_say_what_happened() {
         vec![
             (
                 EventKind::Refusal,
-                "claude-opus-5-5 refused, retried on claude-sonnet-5".into(),
+                "claude-opus-5-5 refused this request".into(),
                 Some("Flagged as cyber".into())
             ),
             (
                 EventKind::Refusal,
                 "claude-opus-5-5 refused this request".into(),
-                Some("The model declined.".into())
+                None
             ),
         ]
     );
