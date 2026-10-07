@@ -39,6 +39,10 @@ const FILES: &[(&str, &str)] = &[
         "hooks/lines.ts",
         include_str!("../../../plugins/workbench/hooks/lines.ts"),
     ),
+    (
+        "hooks/jobs.ts",
+        include_str!("../../../plugins/workbench/hooks/jobs.ts"),
+    ),
 ];
 
 fn ensure_in(dir: &Path) -> Result<()> {
@@ -96,6 +100,37 @@ mod tests {
         ensure_in(tmp.path()).unwrap();
         assert_ne!(fs::read_to_string(&module).unwrap(), "stale");
         assert!(tmp.path().join(".claude-plugin/plugin.json").exists());
+    }
+
+    #[test]
+    fn embeds_every_hooks_file() {
+        let hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/workbench/hooks");
+        for entry in fs::read_dir(hooks).unwrap() {
+            let rel = format!("hooks/{}", entry.unwrap().file_name().to_string_lossy());
+            assert!(
+                FILES.iter().any(|(r, _)| *r == rel),
+                "{rel} is missing from FILES"
+            );
+        }
+    }
+
+    #[test]
+    fn every_relative_import_is_embedded() {
+        for (rel, body) in FILES.iter().filter(|(r, _)| r.ends_with(".ts")) {
+            let dir = Path::new(rel).parent().unwrap();
+            let specs = body.lines().filter_map(|l| {
+                let rest = l.split_once(" from ")?.1.trim_start();
+                let quote = rest.chars().next().filter(|c| *c == '\'' || *c == '"')?;
+                rest[1..].split(quote).next()
+            });
+            for spec in specs.filter(|s| s.starts_with("./")) {
+                let target = format!("{}/{}.ts", dir.display(), &spec[2..]);
+                assert!(
+                    FILES.iter().any(|(r, _)| *r == target),
+                    "{rel} imports {spec}, which is missing from FILES"
+                );
+            }
+        }
     }
 
     #[test]
