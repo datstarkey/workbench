@@ -56,6 +56,8 @@
 		client.agents,
 		{ draft: drafts.get(ref), reconnectOnWake: true }
 	);
+	// Ended on another device (e.g. the desktop closed its tab): leave the screen.
+	chat.onEnded = () => client.chatEnded(chat.sessionId);
 	const draft = chat.draft;
 	const name = agentName(chat.agent);
 	const isClaude = chat.agent === 'claude';

@@ -7,7 +7,7 @@
 //! attaching and messaging work by id whatever runs behind it. What differs
 //! per CLI lives in a driver (`claude`, `codex`); the plumbing in `session`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -188,7 +188,13 @@ pub struct AgentManager {
     /// The terminals grants are issued for (to drop a dead one's grant) and
     /// the loopback port their plugins reach: set by the first listener.
     terminals: Arc<Terminals>,
+    /// Ids of sessions the person ended lately, newest last: an attach-only
+    /// start on one is told it was ended, not that it's merely gone (a crash).
+    ended: Arc<Mutex<VecDeque<String>>>,
 }
+
+/// How many ended ids are remembered.
+const ENDED_KEPT: usize = 64;
 
 impl AgentManager {
     pub fn get(&self, session_id: &str) -> Option<Arc<AgentSession>> {
@@ -228,7 +234,12 @@ impl AgentManager {
                     }
                     let launch =
                         codex::launch(&req, thread_id.as_deref(), mode.as_deref(), options.clone());
-                    self.spawn(req, launch)?
+                    let session = self.spawn(req, launch)?;
+                    // A new thread's id is new; a resumed one runs again.
+                    if let Some(id) = &known_id {
+                        self.unmark_ended(id);
+                    }
+                    session
                 }
             }
         };
@@ -404,6 +415,7 @@ impl AgentManager {
         );
         session.send(&claude::hello())?;
         lock(&self.inner).insert(session_id.to_string(), session.clone());
+        self.unmark_ended(session_id);
         self.start_upkeep();
         Ok(session)
     }
@@ -636,12 +648,7 @@ impl AgentManager {
             let Some(session) = self.get(session_id) else {
                 return false;
             };
-            self.forget(&session);
-            if end {
-                session.end();
-            } else {
-                session.shutdown();
-            }
+            self.halt(&session, end);
             session
         };
         self.kill_terminal(&session);
@@ -662,14 +669,14 @@ impl AgentManager {
         }
     }
 
-    /// Stop whatever chat sessions (either kind) a closed pane owned. Blocking.
-    pub fn stop_pane(&self, pane_id: &str) -> usize {
+    /// Stop whatever chat sessions (either kind) a closed pane owned; `end` as
+    /// for [`Self::stop`]. Blocking.
+    pub fn stop_pane(&self, pane_id: &str, end: bool) -> usize {
         let owned = {
             let _lifecycle = lock(&self.lifecycle);
             let owned = self.sessions(|s| s.pane_id.as_deref() == Some(pane_id));
             for session in &owned {
-                self.forget(session);
-                session.shutdown();
+                self.halt(session, end);
             }
             owned
         };
@@ -737,6 +744,37 @@ impl AgentManager {
         found.sort_by_key(|s| Arc::as_ptr(s) as usize);
         found.dedup_by(|a, b| Arc::ptr_eq(a, b));
         found
+    }
+
+    /// Unregister and stop a session; an `end` is remembered by its ids.
+    /// Under the lifecycle lock.
+    fn halt(&self, session: &Arc<AgentSession>, end: bool) {
+        if end {
+            let ids: Vec<String> = lock(&self.inner)
+                .iter()
+                .filter(|(_, s)| Arc::ptr_eq(s, session))
+                .map(|(id, _)| id.clone())
+                .collect();
+            let mut ended = lock(&self.ended);
+            ended.extend(ids);
+            let excess = ended.len().saturating_sub(ENDED_KEPT);
+            ended.drain(..excess);
+        }
+        self.forget(session);
+        if end {
+            session.end();
+        } else {
+            session.shutdown();
+        }
+    }
+
+    /// The session under this id was ended by the person and not started since.
+    pub fn was_ended(&self, session_id: &str) -> bool {
+        lock(&self.ended).iter().any(|id| id == session_id)
+    }
+
+    fn unmark_ended(&self, session_id: &str) {
+        lock(&self.ended).retain(|id| id != session_id);
     }
 
     /// Drop every id (aliases included) that points at this session.

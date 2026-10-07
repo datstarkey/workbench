@@ -500,6 +500,14 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         }
     }
     assert!(list("/agent").await.is_empty());
+    // A joiner learns an ended chat was ended, not merely that it exited.
+    for (id, ended) in [(OLD_THREAD, true), (NEW_THREAD, false)] {
+        let res = start(json!({ "projectPath": "/nowhere", "sessionId": id, "attachOnly": true }))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 404, "{id}");
+        assert_eq!(res.json::<Value>().await.unwrap()["ended"], ended, "{id}");
+    }
     assert!(
         !attachment_dir.exists(),
         "stopping Codex removes its uploads"

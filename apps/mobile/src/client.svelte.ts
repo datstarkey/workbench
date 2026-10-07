@@ -102,6 +102,8 @@ export class MobileClient {
 	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
 	/** A Claude view switch is finding and attaching to the existing session. */
 	switching = $state(false);
+	/** The chat this client is ending; not UI state. */
+	private ending: string | null = null;
 	/** Why the last action failed (switch, approve, open); shown on whichever screen is up. */
 	notice = $state<string | null>(null);
 
@@ -408,6 +410,11 @@ export class MobileClient {
 		if (this.activeChat && id) this.activeChat = { ...this.activeChat, sessionId: id };
 	}
 
+	/** The open chat was ended on another device: leave it. An End from here leaves by itself. */
+	chatEnded = (sessionId: string): void => {
+		if (sessionId !== this.ending) this.closeChat();
+	};
+
 	/** Arrow field — the chat view's Back. The session keeps running on the server. */
 	closeChat = (): void => {
 		this.activeChat = null;
@@ -432,11 +439,14 @@ export class MobileClient {
 		const live = this.live();
 		// A Codex chat that never got a thread id has nothing running to stop.
 		this.notice = null;
+		this.ending = sessionId;
 		try {
 			if (sessionId) await this.agents.stop(sessionId, { end: true });
 		} catch (e) {
 			if (live()) this.notice = `Couldn't end the session: ${errorText(e)}`;
 			return;
+		} finally {
+			this.ending = null;
 		}
 		if (!live()) return;
 		this.activeChat = null;

@@ -51,12 +51,14 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 			body: body ? JSON.stringify(body) : undefined
 		});
 		if (!resp.ok) {
-			const message = await resp
+			const err = await resp
 				.json()
-				.then((j: { error?: string }) => j.error)
+				.then((j: { error?: string; ended?: boolean }) => j)
 				.catch(() => undefined);
-			throw Object.assign(new Error(message || `${resp.status} ${resp.statusText}`), {
-				status: resp.status
+			// `ended`: an attach-only start on a chat someone ended.
+			throw Object.assign(new Error(err?.error || `${resp.status} ${resp.statusText}`), {
+				status: resp.status,
+				ended: err?.ended === true
 			});
 		}
 		return resp.status === 204 ? null : ((await resp.json()) as T);
@@ -104,9 +106,12 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		async stop(sessionId: string, opts?: { end?: boolean }): Promise<void> {
 			await call('DELETE', `${path(sessionId)}${opts?.end ? '?end=true' : ''}`);
 		},
-		/** Stop whatever chat session a closed pane owned. */
-		async stopPane(paneId: string): Promise<void> {
-			await call('DELETE', `/agent/claude?paneId=${encodeURIComponent(paneId)}`);
+		/** Stop whatever chat session a pane owned; `end` as for `stop`. */
+		async stopPane(paneId: string, opts?: { end?: boolean }): Promise<void> {
+			await call(
+				'DELETE',
+				`/agent/claude?paneId=${encodeURIComponent(paneId)}${opts?.end ? '&end=true' : ''}`
+			);
 		},
 		/** Every live session, Claude and Codex. Servers older than Codex chat list Claude only. */
 		async list(): Promise<AgentSummary[]> {

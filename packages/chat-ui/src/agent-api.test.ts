@@ -49,6 +49,26 @@ describe('agentClient', () => {
 		]);
 	});
 
+	it('ends a closed pane’s chat only when asked, and says when a joined chat was ended', async () => {
+		const fetch = stubFetch(null);
+		await api.stopPane('p 1');
+		await api.stopPane('p 1', { end: true });
+		expect(fetch.mock.calls.map((c) => c[0])).toEqual([
+			'http://box/agent/claude?paneId=p%201',
+			'http://box/agent/claude?paneId=p%201&end=true'
+		]);
+
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(
+				async () => new Response(JSON.stringify({ error: 'gone', ended: true }), { status: 404 })
+			)
+		);
+		await expect(
+			api.start({ projectPath: '/repo', sessionId: 'sid', attachOnly: true })
+		).rejects.toMatchObject({ status: 404, ended: true, message: 'gone' });
+	});
+
 	it('reads a subagent transcript, null before it exists', async () => {
 		const fetch = stubFetch(null);
 		await expect(api.taskTranscript('sid', 'toolu_1/x')).resolves.toBeNull();
