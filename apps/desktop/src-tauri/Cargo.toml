@@ -45,7 +45,11 @@ e2e = ["dep:tauri-plugin-wdio-webdriver"]
 libc = "0.2"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-tauri-plugin-autostart = "2"
+auto-launch = "0.5"
+
+# Same version auto-launch uses, to read back the Run value it writes.
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
