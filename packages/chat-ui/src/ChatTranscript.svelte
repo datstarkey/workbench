@@ -254,6 +254,11 @@
 		{:else}
 			<p class="text-center text-xs whitespace-pre-wrap text-wb-ink-soft">
 				{block.item.text}
+				{#if block.item.inTerminal && onShowTerminal}
+					<button type="button" class="underline hover:text-wb-ink" onclick={onShowTerminal}
+						>Show terminal</button
+					>
+				{/if}
 			</p>
 		{/if}
 	{/each}

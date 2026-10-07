@@ -632,7 +632,7 @@ export type TranscriptItem =
 			/** What an accepted form sent. */
 			content?: Record<string, unknown>;
 	  }
-	| { kind: 'notice'; id: string; text: string }
+	| { kind: 'notice'; id: string; text: string; inTerminal?: true }
 	/** Something around the conversation: a denied tool, a hook that failed or blocked, recalled memories, a refusal. */
 	| {
 			kind: 'event';

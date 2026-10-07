@@ -10,6 +10,7 @@ import {
 	QUEUED_PREFIX,
 	rateLimitLine,
 	slimResult,
+	slashCommand,
 	withAttachments,
 	type Line
 } from './lines';
@@ -78,6 +79,12 @@ const runningSkills = new Map<string, { skill: string; before: Set<string> }>();
 // Whether the latest prompt came from a chat: what it asks waits for a chat's
 // answer even before one has it open (a phone in the background).
 let chatTurn = false;
+// The chat's latest command: whether it started a turn or compaction or got its
+// `result` (`answered`), and whether `$.command.run` has resolved (`settled`).
+type ChatCommand = { answered: boolean; settled: boolean };
+let chatCommand: ChatCommand | undefined;
+const PANEL_WAIT_MS = 3000;
+const LIVE_AGENT = new Set(['pending', 'running', 'waiting']);
 // Chat prompts appended into the running turn that no request has read yet.
 let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
@@ -112,6 +119,71 @@ function reply(requestId: unknown, error?: string, response: Line = {}) {
 function linkAgent(agent: string, task: string) {
 	agentTasks.set(agent, task);
 	taskAgents.set(task, agent);
+}
+
+// What a command printed, and the agents it started (a forked skill's has no
+// `agent.spawn`): each joins the tasks panel, and its own `turn.complete` ends it.
+function commandRan(
+	command: string,
+	args: string,
+	text: string | undefined,
+	agents: readonly {
+		id: string;
+		parentId?: string;
+		description?: string;
+		type?: string;
+		status: string;
+	}[],
+	before: Set<string>
+) {
+	for (const agent of agents) {
+		// A finished one is a turn's that ran while the command waited, not the command's.
+		if (before.has(agent.id) || agent.parentId || agentTasks.has(agent.id)) continue;
+		if (!LIVE_AGENT.has(agent.status)) continue;
+		linkAgent(agent.id, agent.id);
+		asyncAgents.add(agent.id);
+		emit(
+			{
+				type: 'system',
+				subtype: 'task_started',
+				task_id: agent.id,
+				description: agent.description || `/${command}`,
+				subagent_type: agent.type,
+				task_type: 'local_agent',
+				uuid: `wbmod-task-${agent.id}`
+			},
+			{
+				type: 'system',
+				subtype: 'task_updated',
+				task_id: agent.id,
+				output_id: agent.id,
+				uuid: `wbmod-task-out-${agent.id}`
+			}
+		);
+	}
+	// Written to the JSONL only: the chat would see it on its next load.
+	if (command === 'rename') noteTitle(args);
+	if (text !== undefined) commandOutput(text);
+}
+
+function commandOutput(content: string, inTerminal = false) {
+	emit({
+		type: 'system',
+		subtype: 'local_command_output',
+		content,
+		...(inTerminal && { workbench_in_terminal: true }),
+		uuid: `wbmod-command-${++askSeq}`
+	});
+}
+
+// The `result` a chat's command that ran no turn ends with, once.
+function answerCommand(command: ChatCommand, failed = false) {
+	command.answered = true;
+	emit(
+		failed
+			? { type: 'result', subtype: 'error_during_execution', is_error: true }
+			: { type: 'result', subtype: 'success', is_error: false }
+	);
 }
 
 function startSkillTask(task: string, agent: string) {
@@ -218,6 +290,49 @@ export const register: Register = (on) => {
 			const message = line.message as { content?: unknown } | undefined;
 			const text = promptText(message?.content);
 			if (!text) return;
+			// A plugin's submit refuses a leading `/`, so a known command runs as one
+			// (queued until idle); `/tmp is full` stays a prompt. A command that starts
+			// no turn (a forked skill, `/rename`) resolves to nothing for the model, so
+			// the chat gets its `result` here; a prompt-type one's turn ends with its own.
+			const slash = slashCommand(text);
+			if (slash && (await $.command.list()).some((c) => c.name === slash.command)) {
+				const before = new Set((await $.agent.list()).map((a) => a.id));
+				const command: ChatCommand = { answered: false, settled: false };
+				chatCommand = command;
+				// Queued behind a turn typed at the terminal, it isn't that turn's to ask for.
+				if (!runningTurn) chatTurn = true;
+				const idle = (async () => {
+					while (runningTurn) await $.clock.sleep(250);
+				})();
+				void $.command.run({ command: slash.command, args: withAttachments(slash.args) }).then(
+					async (result) => {
+						command.settled = true;
+						if (!server.current()) return;
+						await server.rekey(() => $.session.id());
+						commandRan(slash.command, slash.args, result.text, await $.agent.list(), before);
+						if (!command.answered && !runningTurn) answerCommand(command);
+					},
+					(err: unknown) => {
+						command.settled = true;
+						if (!server.current()) return;
+						commandOutput(`/${slash.command} failed: ${String(err)}`);
+						if (!command.answered) answerCommand(command, true);
+					}
+				);
+				// A panel (`/usage`, `/config`) resolves only once it's closed in the TUI,
+				// and nothing tells it from a slow command: the chat is told where it is.
+				void (async () => {
+					await idle;
+					await $.clock.sleep(PANEL_WAIT_MS);
+					if (command.settled || command.answered || runningTurn || !server.current()) return;
+					commandOutput(
+						`/${slash.command} opened in the terminal: switch to Terminal to use or close it.`,
+						true
+					);
+					answerCommand(command);
+				})();
+				return;
+			}
 			const appended = runningTurn
 				? await $.session
 						.append({ message: { type: 'user', content: [{ type: 'text', text: midTurn(text) }] } })
@@ -374,6 +489,8 @@ export const register: Register = (on) => {
 	// re-read here.
 	on('turn.start', async ($, e, next) => {
 		runningTurn = e.turnId;
+		// A prompt-type command's turn ends with its own `result`.
+		if (chatCommand) chatCommand.answered = true;
 		failure = undefined;
 		failedResult = undefined;
 		const result = await next(e);
@@ -645,52 +762,17 @@ export const register: Register = (on) => {
 		return next(e);
 	});
 
-	// A command that runs no model turn (`/cost`, a forked skill like `/code-review`)
-	// prints instead: a chat that sent it waits for that and a `result`, as `-p`
-	// prints them. A forked skill's agent has no `agent.spawn`, so it joins the
-	// tasks panel here; its own `turn.complete` ends the task.
+	// A command typed at the terminal. A chat's runs through `$.command.run`, which
+	// skips this plugin's own hook, so `chatPrompt` does the same itself.
 	on('command.run', async ($, e, next) => {
+		if (e.origin.kind === 'composer') chatTurn = false;
 		if (!server.current()) return next(e);
 		await server.rekey(() => $.session.id());
 		const before = new Set((await $.agent.list()).map((a) => a.id));
 		const result = await next(e);
 		if (!server.current()) return result;
 		await server.rekey(() => $.session.id());
-		for (const agent of await $.agent.list()) {
-			if (before.has(agent.id) || agent.parentId || agentTasks.has(agent.id)) continue;
-			linkAgent(agent.id, agent.id);
-			asyncAgents.add(agent.id);
-			emit(
-				{
-					type: 'system',
-					subtype: 'task_started',
-					task_id: agent.id,
-					description: agent.description || `/${e.command}`,
-					subagent_type: agent.type,
-					task_type: 'local_agent',
-					uuid: `wbmod-task-${agent.id}`
-				},
-				{
-					type: 'system',
-					subtype: 'task_updated',
-					task_id: agent.id,
-					output_id: agent.id,
-					uuid: `wbmod-task-out-${agent.id}`
-				}
-			);
-		}
-		// Written to the JSONL only: the chat would see it on its next load.
-		if (e.command === 'rename') noteTitle(e.args);
-		if (result.text !== undefined) {
-			emit({
-				type: 'system',
-				subtype: 'local_command_output',
-				content: result.text,
-				uuid: `wbmod-command-${++askSeq}`
-			});
-			const fromChat = e.origin.kind === 'plugin' && e.origin.name === 'workbench';
-			if (fromChat && !runningTurn) emit({ type: 'result', subtype: 'success', is_error: false });
-		}
+		commandRan(e.command, e.args, result.text, await $.agent.list(), before);
 		return result;
 	});
 
@@ -698,8 +780,11 @@ export const register: Register = (on) => {
 	// needs the boundary and a `result`. Auto compaction runs inside a turn, which
 	// ends with its own.
 	on('session.compact', async ($, e, next) => {
+		const ours = !e.agentId && e.trigger !== 'precompute';
+		// The chat's `/compact` running: not a panel waiting to be closed, however long it takes.
+		if (ours && e.trigger === 'manual' && chatCommand) chatCommand.answered = true;
 		const result = await next(e);
-		if (!server.current() || e.agentId || e.trigger === 'precompute') return result;
+		if (!server.current() || !ours) return result;
 		if (!result.messages) {
 			emit({
 				type: 'system',

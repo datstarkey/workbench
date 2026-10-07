@@ -141,8 +141,29 @@ macro_rules! build_invoke_handler {
     };
 }
 
+/// `tauri dev` is its own instance (`~/.workbench-dev`), so it never rewrites
+/// the installed app's projects, settings or Claude plugin copy; a `--debug`
+/// build stays on `~/.workbench`. The first run copies the project list over.
+fn use_dev_config_dir() {
+    if std::env::var_os("WORKBENCH_CONFIG_DIR").is_some() {
+        return;
+    }
+    let dir = paths::home_dir().join(".workbench-dev");
+    let projects = dir.join("projects.json");
+    if !projects.exists() && std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::copy(
+            paths::home_dir().join(".workbench/projects.json"),
+            &projects,
+        );
+    }
+    paths::set_workbench_config_dir(dir);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if tauri::is_dev() {
+        use_dev_config_dir();
+    }
     let context = tauri::generate_context!();
 
     // Initialise backend error reporting before building the app so panics in

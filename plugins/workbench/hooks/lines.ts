@@ -96,6 +96,12 @@ export function withAttachments(text: string): string {
 	return files.length ? `${text}${ATTACHED_FILES}${files.map((f) => `- ${f}`).join('\n')}` : text;
 }
 
+/** `/name args` as `$.command.run` takes it; a path like `/Users/x` is no command. */
+export function slashCommand(text: string): { command: string; args: string } | undefined {
+	const m = /^\/([\w:.-]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+	return m ? { command: m[1], args: m[2]?.trim() ?? '' } : undefined;
+}
+
 /** A chat prompt put into a running turn, framed as the CLI frames a typed one. */
 export function midTurn(text: string): string {
 	return `${QUEUED_PREFIX}${withAttachments(text)}\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.`;
