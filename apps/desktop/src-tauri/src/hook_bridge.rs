@@ -70,58 +70,6 @@ enum HookBridgeEnvelope {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ClaudeHookEvent {
-    pane_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hook_event_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cwd: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    transcript_path: Option<String>,
-    hook_payload: Value,
-}
-
-impl ClaudeHookEvent {
-    fn from_payload(pane_id: String, hook_payload: Value) -> Self {
-        let session_id = hook_payload
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let hook_event_name = hook_payload
-            .get("hook_event_name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let source = hook_payload
-            .get("source")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let cwd = hook_payload
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let transcript_path = hook_payload
-            .get("transcript_path")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        Self {
-            pane_id,
-            session_id,
-            hook_event_name,
-            source,
-            cwd,
-            transcript_path,
-            hook_payload,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct CodexNotifyEvent {
     pane_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -308,9 +256,6 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
                 };
                 push_log(logs, log_entry.clone());
                 let _ = handle.emit("hook-bridge:log", log_entry);
-
-                let event = ClaudeHookEvent::from_payload(pane_id, hook);
-                let _ = handle.emit("claude:hook", event);
             }
             HookBridgeEnvelope::Codex { pane_id, codex } => {
                 let event_name = codex
@@ -412,66 +357,6 @@ mod tests {
 
         state.clear_logs();
         assert_eq!(state.get_logs().len(), 0);
-    }
-
-    // --- ClaudeHookEvent::from_payload ---
-
-    #[test]
-    fn claude_hook_all_fields() {
-        let payload = json!({
-            "session_id": "abc-123",
-            "hook_event_name": "tool_use",
-            "source": "claude",
-            "cwd": "/Users/jake/project",
-            "transcript_path": "/tmp/transcript.jsonl",
-            "extra_field": true
-        });
-        let event = ClaudeHookEvent::from_payload("pane-1".into(), payload.clone());
-
-        assert_eq!(event.pane_id, "pane-1");
-        assert_eq!(event.session_id.as_deref(), Some("abc-123"));
-        assert_eq!(event.hook_event_name.as_deref(), Some("tool_use"));
-        assert_eq!(event.source.as_deref(), Some("claude"));
-        assert_eq!(event.cwd.as_deref(), Some("/Users/jake/project"));
-        assert_eq!(
-            event.transcript_path.as_deref(),
-            Some("/tmp/transcript.jsonl")
-        );
-        assert_eq!(event.hook_payload, payload);
-    }
-
-    #[test]
-    fn claude_hook_missing_optional_fields() {
-        let payload = json!({"session_id": "s1"});
-        let event = ClaudeHookEvent::from_payload("pane-2".into(), payload);
-
-        assert_eq!(event.session_id.as_deref(), Some("s1"));
-        assert!(event.hook_event_name.is_none());
-        assert!(event.source.is_none());
-        assert!(event.cwd.is_none());
-        assert!(event.transcript_path.is_none());
-    }
-
-    #[test]
-    fn claude_hook_empty_payload() {
-        let payload = json!({});
-        let event = ClaudeHookEvent::from_payload("pane-3".into(), payload);
-
-        assert_eq!(event.pane_id, "pane-3");
-        assert!(event.session_id.is_none());
-        assert!(event.hook_event_name.is_none());
-        assert!(event.source.is_none());
-        assert!(event.cwd.is_none());
-        assert!(event.transcript_path.is_none());
-    }
-
-    #[test]
-    fn claude_hook_non_string_values_ignored() {
-        let payload = json!({"session_id": 42, "cwd": true});
-        let event = ClaudeHookEvent::from_payload("pane-4".into(), payload);
-
-        assert!(event.session_id.is_none());
-        assert!(event.cwd.is_none());
     }
 
     // --- CodexNotifyEvent::from_payload ---

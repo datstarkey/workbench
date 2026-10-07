@@ -1,7 +1,0 @@
-{
-	"identifier": "autostart",
-	"description": "Manage launch at login from the settings window on Windows and macOS",
-	"windows": ["settings"],
-	"platforms": ["macOS", "windows"],
-	"permissions": ["autostart:allow-is-enabled", "autostart:allow-enable", "autostart:allow-disable"]
-}

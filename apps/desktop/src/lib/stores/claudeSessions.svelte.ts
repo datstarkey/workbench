@@ -269,7 +269,7 @@ export class ClaudeSessionStore {
 	 * panes. Server-hosted xterm panes stream output over the WebSocket and never
 	 * emit those events, so TerminalPane calls this directly to keep Codex
 	 * in-progress/quiescence working. Claude panes don't need it: their state
-	 * comes from the plugin (`claude:hook`, `agent:attention`).
+	 * comes from the server's agent summaries and `agent:attention`.
 	 */
 	noteTerminalOutput(paneId: string, data: string): void {
 		// Replicate terminal:activity: mark inactive after a quiet window with no
