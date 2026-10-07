@@ -236,6 +236,10 @@ impl Transcript {
                 self.apply_control_response(obj, &mut changed);
                 applied.commands = self.read_commands(obj.pointer("/response/response/commands"));
             }
+            // The plugin's: the list changed since `initialize` (a plugin or skill loaded).
+            Some("workbench_commands") => {
+                applied.commands = self.read_commands(obj.get("commands"))
+            }
             Some(TERMINAL_ELICITATION) => self.apply_terminal_elicitation(obj, &mut changed),
             Some(TERMINAL_ELICITATION_ANSWERED) => {
                 self.answer_terminal_elicitation(obj, &mut changed)
@@ -559,7 +563,13 @@ impl Transcript {
         }
         let why = obj.pointer("/response/error").and_then(Value::as_str);
         let text = why.unwrap_or("Claude didn't switch the model.").to_string();
-        self.upsert(TranscriptItem::Notice { id: asked.request_id, text }, changed);
+        self.upsert(
+            TranscriptItem::Notice {
+                id: asked.request_id,
+                text,
+            },
+            changed,
+        );
     }
 
     fn set_model_choice(&mut self, value: &str) {

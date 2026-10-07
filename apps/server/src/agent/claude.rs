@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
-use workbench_core::claude_transcript::{self, ApprovalDecision, Transcript};
+use workbench_core::claude_transcript::{self, ApprovalDecision, ChatView, Transcript};
 
 use super::driver::Effects;
 
@@ -106,7 +106,22 @@ pub(super) fn interrupt() -> Effects {
     }
 }
 
+/// The model id a pick names: the plugin switches this session's requests
+/// (`turn.step`), which take an id, never an alias. A full id passes as is;
+/// `[1m]` stays on a 1M-context pick.
+fn resolved_model(t: &Transcript, pick: &str) -> Option<String> {
+    let listed = t.meta().models.iter().find(|m| m.value == pick);
+    let id = match listed {
+        Some(m) => m.resolved_model.clone()?,
+        None if pick.starts_with("claude-") => return Some(pick.to_string()),
+        None => return None,
+    };
+    let wide = pick.ends_with("[1m]") && !id.ends_with("[1m]");
+    Some(if wide { format!("{id}[1m]") } else { id })
+}
+
 /// Shown at once; the transcript puts the old model back if the CLI refuses.
+/// For this session only: the user's default model is left alone.
 pub(super) fn set_model(t: &mut Transcript, model: &str) -> Result<Effects> {
     let valid = !model.is_empty()
         && model.len() <= 80
@@ -116,7 +131,8 @@ pub(super) fn set_model(t: &mut Transcript, model: &str) -> Result<Effects> {
     if !valid {
         bail!("unknown model: {model}");
     }
-    let msg = control(json!({"subtype": "set_model", "model": model}));
+    let resolved = resolved_model(t, model);
+    let msg = control(json!({"subtype": "set_model", "model": model, "resolvedModel": resolved}));
     t.request_model(msg["request_id"].as_str().unwrap_or_default(), model);
     Ok(changed_meta(msg))
 }
@@ -142,7 +158,6 @@ fn changed_meta(msg: Value) -> Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workbench_core::claude_transcript::ChatView;
 
     #[test]
     fn a_refused_model_switch_is_rolled_back() {
@@ -155,5 +170,34 @@ mod tests {
             "subtype": "error", "request_id": id, "error": "Model: no"}}));
         assert_eq!(t.meta().model_choice, None);
         assert!(set_model(&mut t, "rm -rf").is_err());
+    }
+
+    #[test]
+    fn a_model_pick_is_sent_with_its_resolved_id() {
+        let mut t = Transcript::default();
+        t.apply(&json!({"type": "control_response", "response": {
+            "subtype": "success", "request_id": "i", "response": {"models": [
+                {"value": "opus[1m]", "resolvedModel": "claude-opus-5-5"},
+                {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5"},
+                {"value": "haiku"}]}}}));
+        let sent =
+            |t: &mut Transcript, pick| set_model(t, pick).unwrap().send[0]["request"].clone();
+        assert_eq!(
+            sent(&mut t, "sonnet"),
+            json!({"subtype": "set_model", "model": "sonnet", "resolvedModel": "claude-sonnet-5-5"})
+        );
+        assert_eq!(
+            sent(&mut t, "opus[1m]")["resolvedModel"],
+            "claude-opus-5-5[1m]"
+        );
+        assert_eq!(
+            sent(&mut t, "claude-fable-5-1")["resolvedModel"],
+            "claude-fable-5-1"
+        );
+        assert_eq!(
+            sent(&mut t, "haiku")["resolvedModel"],
+            Value::Null,
+            "no id: the plugin refuses"
+        );
     }
 }
