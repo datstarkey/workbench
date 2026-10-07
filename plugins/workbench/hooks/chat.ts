@@ -60,9 +60,13 @@ const taskAgents = new Map<string, string>();
 // Background agents: their Agent call returned at launch, so their own
 // `turn.complete` ends the task.
 const asyncAgents = new Set<string>();
-// Main-thread Skill calls still running, call id → skill. A forked skill's
-// agent has no `agent.spawn`: its first call names it, its Skill call is its task.
-const runningSkills = new Map<string, string>();
+// Main-thread Skill calls still running: call id → the skill and the agents
+// there were before it. A forked skill's agent has no `agent.spawn`: the first
+// call of an agent new since then names it, and its Skill call is its task.
+const runningSkills = new Map<string, { skill: string; before: Set<string> }>();
+// Whether the latest prompt came from a chat: what it asks waits for a chat's
+// answer even before one has it open (a phone in the background).
+let chatTurn = false;
 // Chat prompts appended into the running turn that no request has read yet.
 let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
@@ -109,7 +113,7 @@ function startSkillTask(task: string, agent: string) {
 			subtype: 'task_started',
 			task_id: task,
 			tool_use_id: task,
-			description: `/${runningSkills.get(task) ?? 'skill'}`,
+			description: `/${runningSkills.get(task)?.skill ?? 'skill'}`,
 			task_type: 'local_agent',
 			uuid: `wbmod-task-${task}`
 		},
@@ -665,6 +669,14 @@ export const register: Register = (on) => {
 		return result;
 	});
 
+	// A chat's prompt reaches the session through this plugin's own submit;
+	// one typed at the terminal hands what the turn asks back to the terminal.
+	on('prompt.submit', async ($, e, next) => {
+		if (e.origin.kind === 'plugin') chatTurn = e.origin.name === $.plugin.name;
+		else if (e.origin.kind === 'composer') chatTurn = false;
+		return next(e);
+	});
+
 	// Structured results (an Artifact's link) and subagents for the tasks panel.
 	on('tool.call', async ($, e, next) => {
 		if (!server.current()) return next(e);
@@ -682,7 +694,8 @@ export const register: Register = (on) => {
 				(u, i) => $.http.fetch(u, i),
 				requestId,
 				askLine(requestId, e.tool, input, id),
-				next.signal
+				next.signal,
+				chatTurn
 			);
 			if (answer) {
 				if (answer.behavior !== 'allow')
@@ -694,10 +707,19 @@ export const register: Register = (on) => {
 		const input = e as unknown as { description?: string; subagent_type?: string };
 		const isAgent = !e.agentId && e.tool === 'Agent';
 		const isSkill = !e.agentId && e.tool === 'Skill';
-		if (isSkill && id) runningSkills.set(id, (e as unknown as { skill?: string }).skill ?? 'skill');
-		// An agent nothing spawned while one Skill call runs is that skill's fork.
-		if (e.agentId && !agentTasks.has(e.agentId) && runningSkills.size === 1 && !runningAgents.size)
-			startSkillTask([...runningSkills.keys()][0], e.agentId);
+		if (isSkill && id) {
+			const before = new Set((await $.agent.list()).map((a) => a.id));
+			runningSkills.set(id, {
+				skill: (e as unknown as { skill?: string }).skill ?? 'skill',
+				before
+			});
+		}
+		const skillTask = runningSkills.size === 1 ? [...runningSkills.keys()][0] : undefined;
+		if (e.agentId && skillTask && !taskAgents.has(skillTask) && !agentTasks.has(e.agentId)) {
+			const agent = (await $.agent.list()).find((a) => a.id === e.agentId);
+			if (agent && !agent.parentId && !runningSkills.get(skillTask)!.before.has(agent.id))
+				startSkillTask(skillTask, agent.id);
+		}
 		if (isAgent && id) {
 			runningAgents.add(id);
 			emit({
@@ -729,19 +751,21 @@ export const register: Register = (on) => {
 			runningAgents.delete(id);
 		}
 		if (isSkill && id) {
-			if (launched?.status === 'forked' && launched.agentId) {
-				if (!taskAgents.has(id)) startSkillTask(id, launched.agentId);
-				if (launched.background) asyncAgents.add(launched.agentId);
-				else {
-					unlinkTask(id);
-					emit({
-						type: 'system',
-						subtype: 'task_notification',
-						task_id: id,
-						status: launched.success === false || result.isError ? 'failed' : 'completed',
-						uuid: `wbmod-done-${id}`
-					});
-				}
+			const forked = launched?.status === 'forked' ? launched.agentId : undefined;
+			const guessed = taskAgents.get(id);
+			if (guessed && guessed !== forked) unlinkTask(id);
+			if (forked && guessed !== forked) startSkillTask(id, forked);
+			if (forked && launched?.background) asyncAgents.add(forked);
+			else if (taskAgents.has(id) || guessed) {
+				unlinkTask(id);
+				emit({
+					type: 'system',
+					subtype: 'task_notification',
+					task_id: id,
+					status:
+						launched?.success === false || result.isError || result.deny ? 'failed' : 'completed',
+					uuid: `wbmod-done-${id}`
+				});
 			}
 			runningSkills.delete(id);
 		}
@@ -846,7 +870,8 @@ export const register: Register = (on) => {
 			(u, i) => $.http.fetch(u, i),
 			requestId,
 			line,
-			next.signal
+			next.signal,
+			chatTurn
 		);
 		if (!answer) {
 			// The terminal asks now; the server shows it waiting until it's answered.

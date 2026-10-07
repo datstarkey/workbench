@@ -297,7 +297,10 @@ async fn terminal_create_rejects_unknown_worktree() {
     assert!(res.status().is_server_error());
     let body: Value = res.json().await.unwrap();
     assert!(
-        body["error"].as_str().unwrap().contains("not a known worktree"),
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("not a known worktree"),
         "{body}"
     );
 
@@ -1339,7 +1342,10 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         received.contains(r#""subtype":"initialize""#),
         "handshake first"
     );
-    assert!(received.contains(r#""content":"hello""#), "prompt relayed as text: {received}");
+    assert!(
+        received.contains(r#""content":"hello""#),
+        "prompt relayed as text: {received}"
+    );
     assert!(
         received.contains(r#""behavior":"allow""#),
         "approval relayed: {received}"

@@ -105,13 +105,15 @@ function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<T | und
 
 /**
  * Ask in chat and hold until a client answers: `null` falls back to the
- * terminal's dialog. An abort (Esc) withdraws the card at once.
+ * terminal's dialog. `hold` keeps it a chat's even before one has it open.
+ * An abort (Esc) withdraws the card at once.
  */
 export async function askInChat(
 	fetch: Fetch,
 	requestId: string,
 	line: Line,
-	signal: AbortSignal
+	signal: AbortSignal,
+	hold: boolean
 ): Promise<Answer | null> {
 	// The tool's card reaches the chat before its approval does.
 	await flush(fetch);
@@ -122,7 +124,7 @@ export async function askInChat(
 			signal,
 			fetch(
 				`${link.url}/mod/ask`,
-				init('POST', { sessionId: link.sessionId, requestId, line: first })
+				init('POST', { sessionId: link.sessionId, requestId, line: first, hold })
 			).catch(() => null)
 		);
 		first = undefined;

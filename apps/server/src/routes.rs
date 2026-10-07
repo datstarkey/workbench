@@ -264,4 +264,3 @@ async fn settings_sync_stub() -> ApiError {
         message: "settings sync is not implemented yet".to_string(),
     }
 }
-

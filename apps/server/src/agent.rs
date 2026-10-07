@@ -25,8 +25,8 @@ mod modlink;
 mod session;
 
 pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
-pub(crate) use claude::validate as validate_claude_session_id;
 pub use cache::CachePolicy;
+pub(crate) use claude::validate as validate_claude_session_id;
 pub use modlink::{ModGrant, ModLink};
 pub use session::AgentSession;
 
@@ -652,7 +652,11 @@ impl AgentManager {
     /// keep the terminal, which is the person's shell again.
     pub fn detach(&self, session: &Arc<AgentSession>) {
         let _lifecycle = lock(&self.lifecycle);
-        if self.sessions(|_| true).iter().any(|s| Arc::ptr_eq(s, session)) {
+        if self
+            .sessions(|_| true)
+            .iter()
+            .any(|s| Arc::ptr_eq(s, session))
+        {
             self.forget(session);
             session.shutdown();
         }

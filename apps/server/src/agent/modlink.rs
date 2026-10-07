@@ -100,12 +100,10 @@ impl ModLink {
     /// Once one has, it stays a chat's to answer however long nobody looks:
     /// a phone drops its socket whenever the app is backgrounded.
     pub fn shown(&self, request_id: &str, viewing: bool) -> bool {
-        lock(&self.asks)
-            .get_mut(request_id)
-            .map_or(viewing, |ask| {
-                ask.shown |= viewing;
-                ask.shown
-            })
+        lock(&self.asks).get_mut(request_id).map_or(viewing, |ask| {
+            ask.shown |= viewing;
+            ask.shown
+        })
     }
 
     /// Take a client's answer to an approval the plugin waits on; `false` when
@@ -188,7 +186,12 @@ impl ModLink {
             }
             Some("result") => asked.clear(),
             Some("control_cancel_request") => {
-                asked.retain(|(w, _)| Some(w.id.as_str()) != str_at("/request_id"));
+                let id = str_at("/request_id");
+                asked.retain(|(w, _)| Some(w.id.as_str()) != id);
+                // Withdrawn (Esc): the plugin no longer waits on it.
+                if let Some(id) = id {
+                    lock(&self.asks).remove(id);
+                }
             }
             Some("user") => {
                 let results: Vec<&str> = line
@@ -265,7 +268,13 @@ mod tests {
         assert!(!link.shown("r1", false), "nobody has looked yet");
         assert!(link.shown("r1", true));
         assert!(link.shown("r1", false), "the phone backgrounded");
-        assert!(!link.shown("gone", false), "not waited on: only while viewed");
+        assert!(
+            !link.shown("gone", false),
+            "not waited on: only while viewed"
+        );
+
+        link.note_line(&json!({"type": "control_cancel_request", "request_id": "r1"}));
+        assert!(!link.shown("r1", false), "withdrawn: no longer held");
     }
 
     #[test]
@@ -311,14 +320,21 @@ mod tests {
             "mcp_server_name": "deploy", "message": "Pick one"}));
         let w = link.terminal_waiting().unwrap();
         assert_eq!(
-            (w.id.as_str(), w.tool.as_str(), w.preview.as_str(), w.in_terminal),
+            (
+                w.id.as_str(),
+                w.tool.as_str(),
+                w.preview.as_str(),
+                w.in_terminal
+            ),
             ("e1", "Elicitation", "deploy: Pick one", true)
         );
         link.note_line(
             &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_9"}]}}),
         );
         assert!(link.terminal_waiting().is_some(), "another call's result");
-        link.note_line(&json!({"type": TERMINAL_ELICITATION_ANSWERED, "id": "e1", "action": "accept"}));
+        link.note_line(
+            &json!({"type": TERMINAL_ELICITATION_ANSWERED, "id": "e1", "action": "accept"}),
+        );
         assert!(link.terminal_waiting().is_none());
     }
 
