@@ -7,10 +7,10 @@ pub mod attention;
 pub mod attention_feed;
 pub mod auth;
 pub mod cli;
+pub mod cwd;
 pub mod error;
 pub mod mod_routes;
 pub mod routes;
-pub mod spawn;
 pub mod state;
 pub mod terminal;
 pub mod usage;
@@ -19,7 +19,6 @@ use anyhow::Context;
 use std::net::SocketAddr;
 use tokio::sync::{oneshot, watch};
 
-pub use spawn::RemoteControlManager;
 pub use state::{AppState, Managers};
 pub use terminal::TerminalManager;
 

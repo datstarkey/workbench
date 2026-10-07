@@ -52,7 +52,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 
 use crate::error::{ApiError, ApiResult};
-use crate::spawn::RemoteControlManager;
 use crate::state::AppState;
 
 /// Scrollback kept per session for replay on reattach.
@@ -64,7 +63,7 @@ const STARTUP_QUIET: Duration = Duration::from_millis(150);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
 const STARTUP_POLL: Duration = Duration::from_millis(20);
 
-/// Backstop against runaway terminal creation (see RemoteControlManager).
+/// Backstop against runaway terminal creation.
 /// Overridable via `WORKBENCH_MAX_TERMINALS` (defaults to 64).
 fn max_terminals() -> usize {
     std::env::var("WORKBENCH_MAX_TERMINALS")
@@ -182,8 +181,7 @@ impl TerminalManager {
         })?;
 
         // Prefer the caller's shell (desktop forwards the project's configured
-        // shell for parity with the local PtyManager path); fall back to the
-        // platform default.
+        // shell); fall back to the platform default.
         let shell_path = match shell {
             Some(s) if !s.is_empty() => s,
             _ => workbench_core::shell::default_shell(),
@@ -218,8 +216,8 @@ impl TerminalManager {
 
         // Shell integration (OSC 133): when launching a bare zsh (no startup
         // command), point ZDOTDIR at our generated rc dir so prompt/command marks
-        // are emitted. Mirrors the desktop PtyManager path; the dir resolver lives
-        // in workbench-core so the server can call it directly (no frontend seam).
+        // are emitted. The dir resolver lives in workbench-core so the server can
+        // call it directly (no frontend seam).
         if command.is_none() && shell_path.contains("zsh") {
             if let Ok(zsh_dir) = workbench_core::shell_integration::ensure_shell_integration_dir() {
                 if let Ok(orig) = std::env::var("ZDOTDIR") {
@@ -494,15 +492,7 @@ pub fn create_from_body(
     agents: &crate::agent::AgentManager,
     mut body: CreateTerminalBody,
 ) -> anyhow::Result<TerminalMeta> {
-    let registered: Vec<String> = workbench_core::config::load_projects()?
-        .into_iter()
-        .map(|p| p.path)
-        .collect();
-    let cwd = RemoteControlManager::resolve_cwd(
-        &body.project_path,
-        body.worktree_path.as_deref(),
-        &registered,
-    )?;
+    let cwd = crate::cwd::resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
     let claude_config_dir =
         workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
     // Resume whatever has a transcript, as a chat start does: a client can't
@@ -675,7 +665,7 @@ fn wait_for_shell_prompt(session: &TerminalSession) {
 ///
 /// Signal-BEFORE-reap is load-bearing: the group is signalled while the leader still
 /// holds the pgid, so `killpg` never targets a freed (and possibly recycled) PID.
-/// Mirrors the desktop PtyManager path. Best-effort; the SIGTERM→grace→SIGKILL
+/// Best-effort; the SIGTERM→grace→SIGKILL
 /// escalation blocks, so callers run it on a dedicated thread or the reader thread.
 #[cfg(unix)]
 fn terminate_process_group(session: &TerminalSession) {

@@ -1,7 +1,7 @@
 //! End-to-end tests for the headless control-plane server: a real server is
-//! bound on an ephemeral port and driven over HTTP with reqwest. The
-//! `claude remote-control` spawn is exercised against a fake binary (set via
-//! `WORKBENCH_CLAUDE_BIN`) so no real Claude CLI / network is needed.
+//! bound on an ephemeral port and driven over HTTP with reqwest. Claude is a
+//! fake binary (set via `WORKBENCH_CLAUDE_BIN`), so no real Claude CLI / network
+//! is needed.
 
 use std::time::Duration;
 
@@ -46,28 +46,13 @@ fn ws_url(addr: &str, id: &str) -> String {
     format!("ws://{addr}/remote/terminals/{id}/ws?token={TOKEN}")
 }
 
-#[cfg(unix)]
-fn write_fake_claude(dir: &std::path::Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let path = dir.join("fake-claude.sh");
-    // Prints a session URL (so extract_url has something), then stays alive so
-    // the session reports as running until killed.
-    std::fs::write(
-        &path,
-        "#!/bin/sh\necho \"Session: https://claude.ai/code/test-abc\"\nsleep 30\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    path
-}
-
 /// Serializes tests that mutate process-global env (WORKBENCH_CONFIG_DIR /
 /// WORKBENCH_CLAUDE_BIN / WORKBENCH_MAX_*) so they don't clobber each other.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Holds the global env lock for the test and records every env var it sets,
 /// removing them on Drop — so a panicking (failing) test can't leak a global like
-/// WORKBENCH_MAX_SESSIONS=1 into sibling tests.
+/// WORKBENCH_MAX_TERMINALS=1 into sibling tests.
 struct EnvGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
     keys: std::cell::RefCell<Vec<&'static str>>,
@@ -96,7 +81,7 @@ fn env_guard() -> EnvGuard {
 }
 
 /// Point WORKBENCH_CONFIG_DIR at a fresh dir that registers `project_path` as a
-/// Workbench project (so the spawn/terminal cwd allowlist accepts it). The var is
+/// Workbench project (so the terminal/chat cwd allowlist accepts it). The var is
 /// tracked by `env` so it's cleaned up on drop; keep the returned TempDir alive.
 fn register_project(env: &EnvGuard, project_path: &std::path::Path) -> tempfile::TempDir {
     let cfg = tempfile::tempdir().unwrap();
@@ -122,7 +107,7 @@ fn git_init(dir: &std::path::Path) {
 }
 
 #[tokio::test]
-async fn health_sync_and_validation() {
+async fn health_and_settings_sync_stub() {
     let (handle, base) = start().await;
     let http = client();
 
@@ -137,15 +122,6 @@ async fn health_sync_and_validation() {
         .await
         .unwrap();
     assert_eq!(sync.status(), 501);
-
-    // empty projectPath is a client error.
-    let bad = http
-        .post(format!("{base}/remote/spawn"))
-        .json(&json!({ "projectPath": "" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(bad.status(), 400);
 
     handle.stop().await;
 }
@@ -198,7 +174,7 @@ async fn auth_gate() {
         200
     );
 
-    for path in ["/remote/sessions", "/remote/terminals", "/projects"] {
+    for path in ["/remote/terminals", "/projects"] {
         // No token → 401.
         assert_eq!(
             http.get(format!("{base}{path}"))
@@ -224,7 +200,7 @@ async fn auth_gate() {
 
     // Correct token → 200.
     assert_eq!(
-        http.get(format!("{base}/remote/sessions"))
+        http.get(format!("{base}/projects"))
             .bearer_auth(TOKEN)
             .send()
             .await
@@ -242,153 +218,6 @@ async fn embedded_server_refuses_a_weak_token() {
         let res = spawn_embedded("127.0.0.1", 0, Managers::default(), token.to_string()).await;
         assert!(res.is_err(), "token {token:?} must be refused");
     }
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn spawn_list_kill_cycle() {
-    let env = env_guard();
-    let tmp = tempfile::tempdir().unwrap();
-    let fake = write_fake_claude(tmp.path());
-    env.set("WORKBENCH_CLAUDE_BIN", &fake);
-    // Register tmp as a Workbench project so the spawn cwd allowlist accepts it.
-    let _cfg = register_project(&env, tmp.path());
-
-    let (handle, base) = start().await;
-    let http = client();
-
-    // Spawn in the registered project directory.
-    let spawned: Value = http
-        .post(format!("{base}/remote/spawn"))
-        .json(&json!({ "projectPath": tmp.path(), "name": "test" }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = spawned["id"].as_str().expect("id").to_string();
-    assert_eq!(spawned["name"], "test");
-
-    // Poll until the reader thread captures the URL and flips to running.
-    let mut url_seen = false;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let sessions: Value = http
-            .get(format!("{base}/remote/sessions"))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let arr = sessions.as_array().unwrap();
-        assert_eq!(arr.len(), 1, "exactly one tracked session");
-        if arr[0]["sessionUrl"].as_str() == Some("https://claude.ai/code/test-abc") {
-            assert_eq!(arr[0]["status"], "running");
-            url_seen = true;
-            break;
-        }
-    }
-    assert!(url_seen, "session URL should be captured (race fix)");
-
-    // Kill it.
-    let killed = http
-        .delete(format!("{base}/remote/sessions/{id}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(killed.status(), 204);
-
-    // Killed session is removed from the map.
-    let after: Value = http
-        .get(format!("{base}/remote/sessions"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(after.as_array().unwrap().len(), 0);
-
-    handle.stop().await;
-    // EnvGuard drop removes WORKBENCH_CLAUDE_BIN / WORKBENCH_CONFIG_DIR.
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn spawn_rejects_unknown_worktree() {
-    let env = env_guard();
-    let tmp = tempfile::tempdir().unwrap();
-    // A real repo so list_worktrees succeeds and the known-worktree guard actually
-    // runs (otherwise list_worktrees errors first and the test passes vacuously).
-    git_init(tmp.path());
-    let _cfg = register_project(&env, tmp.path());
-
-    let (handle, base) = start().await;
-    let http = client();
-
-    // Registered project + real repo, but the worktree path is not a known worktree
-    // of it → rejected by the known-worktree guard.
-    let res = http
-        .post(format!("{base}/remote/spawn"))
-        .json(&json!({
-            "projectPath": tmp.path(),
-            "worktreePath": "/nonexistent/worktree"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_server_error());
-
-    handle.stop().await;
-}
-
-#[tokio::test]
-async fn remote_kill_is_idempotent() {
-    // A delete for an unknown / already-self-exited session is a normal race, so it
-    // must return 204 (idempotent) — never 500.
-    let (handle, base) = start().await;
-    let http = client();
-
-    for _ in 0..2 {
-        let res = http
-            .delete(format!("{base}/remote/sessions/does-not-exist"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 204);
-    }
-
-    handle.stop().await;
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn spawn_rejects_unregistered_dir() {
-    let env = env_guard();
-    // A config dir with no projects.json → zero registered projects.
-    let cfg = tempfile::tempdir().unwrap();
-    env.set("WORKBENCH_CONFIG_DIR", cfg.path());
-    let tmp = tempfile::tempdir().unwrap();
-
-    let (handle, base) = start().await;
-    let http = client();
-
-    // tmp exists but is not a registered Workbench project → rejected by the
-    // allowlist (500 from resolve_cwd, not an earlier validation error).
-    let res = http
-        .post(format!("{base}/remote/spawn"))
-        .json(&json!({ "projectPath": tmp.path(), "name": "x" }))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        res.status().is_server_error(),
-        "spawning in an unregistered directory must be rejected"
-    );
-
-    handle.stop().await;
 }
 
 #[cfg(unix)]
@@ -448,35 +277,28 @@ async fn agent_files_lists_a_registered_cwd_only() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn spawn_respects_session_cap() {
+async fn terminal_create_rejects_unknown_worktree() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
-    let fake = write_fake_claude(tmp.path());
-    env.set("WORKBENCH_CLAUDE_BIN", &fake);
-    env.set("WORKBENCH_MAX_SESSIONS", "1");
+    // A real repo, so the known-worktree guard runs rather than list_worktrees failing.
+    git_init(tmp.path());
     let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start().await;
-    let http = client();
-
-    let spawn = |c: &reqwest::Client| {
-        c.post(format!("{base}/remote/spawn"))
-            .json(&json!({ "projectPath": tmp.path() }))
-            .send()
-    };
-
-    let first = spawn(&http).await.unwrap();
-    assert_eq!(
-        first.status(),
-        200,
-        "first spawn under the cap should succeed"
-    );
-
-    // The fake claude stays alive, so the slot is still taken → second hits the cap.
-    let second = spawn(&http).await.unwrap();
+    let res = client()
+        .post(format!("{base}/remote/terminals"))
+        .json(&json!({
+            "projectPath": tmp.path(),
+            "worktreePath": "/nonexistent/worktree"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_server_error());
+    let body: Value = res.json().await.unwrap();
     assert!(
-        second.status().is_server_error(),
-        "spawning past the session cap should be rejected"
+        body["error"].as_str().unwrap().contains("not a known worktree"),
+        "{body}"
     );
 
     handle.stop().await;

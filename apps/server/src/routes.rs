@@ -1,10 +1,10 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::Html;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -31,9 +31,6 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/claude", get(load_claude_settings))
         .route("/settings/workbench", get(load_workbench_settings))
         .route("/settings/sync", put(settings_sync_stub))
-        .route("/remote/spawn", post(remote_spawn))
-        .route("/remote/sessions", get(remote_sessions))
-        .route("/remote/sessions/:id", delete(remote_kill))
         .route(
             "/remote/terminals",
             get(crate::terminal::terminal_list).post(crate::terminal::terminal_create),
@@ -183,15 +180,7 @@ struct GitReviewQuery {
 }
 
 fn review_cwd(q: &GitReviewQuery) -> anyhow::Result<String> {
-    let registered = workbench_core::config::load_projects()?
-        .into_iter()
-        .map(|p| p.path)
-        .collect::<Vec<_>>();
-    crate::spawn::RemoteControlManager::resolve_cwd(
-        &q.project_path,
-        q.worktree_path.as_deref(),
-        &registered,
-    )
+    crate::cwd::resolve_cwd(&q.project_path, q.worktree_path.as_deref())
 }
 
 async fn git_status(Query(q): Query<GitReviewQuery>) -> ApiResult<Json<Value>> {
@@ -276,49 +265,3 @@ async fn settings_sync_stub() -> ApiError {
     }
 }
 
-// --- remote-control spawn (Claude only; Codex has no remote-control) ---
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SpawnBody {
-    project_path: String,
-    worktree_path: Option<String>,
-    name: Option<String>,
-}
-
-async fn remote_spawn(
-    State(state): State<AppState>,
-    Json(body): Json<SpawnBody>,
-) -> ApiResult<Json<Value>> {
-    if body.project_path.trim().is_empty() {
-        return Err(ApiError::bad_request("projectPath is required"));
-    }
-    let spawn = state.spawn.clone();
-    let session = blocking(move || {
-        // Allowlist of registered project paths (loaded here, off the executor) so a
-        // bare project_path can only resolve to a directory Workbench manages.
-        let registered: Vec<String> = workbench_core::config::load_projects()?
-            .into_iter()
-            .map(|p| p.path)
-            .collect();
-        spawn.spawn(
-            &body.project_path,
-            body.worktree_path.as_deref(),
-            body.name,
-            &registered,
-        )
-    })
-    .await?;
-    Ok(Json(serde_json::to_value(session)?))
-}
-
-async fn remote_sessions(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.spawn.list()))
-}
-
-async fn remote_kill(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
-    // Idempotent: a session that self-exited is reaped by its reader thread, so a
-    // delete for an unknown id is a normal race, not a 500 (matches terminal_kill).
-    state.spawn.kill(&id);
-    StatusCode::NO_CONTENT
-}

@@ -1,6 +1,6 @@
 //! "Server mode" for the desktop app: run the embedded Workbench control-plane
 //! server so other devices (phone, another machine) can list/create worktrees
-//! and spawn `claude remote-control` sessions on this machine.
+//! and run terminals and chat sessions on this machine.
 //!
 //! There are two listener slots over ONE set of session managers, so a terminal
 //! opened on this machine is visible (and can be taken over) from a phone and
@@ -356,7 +356,7 @@ pub fn terminal_server_status(state: tauri::State<'_, ServerControl>) -> ServerS
     }
 }
 
-/// Kill every terminal and remote-control session and wait for them to exit.
+/// Kill every terminal and chat process and wait for them to exit.
 /// The updater calls this before installing: children outliving the old process
 /// keep its macOS Dock tile alive and leave stray console windows on Windows.
 #[tauri::command]

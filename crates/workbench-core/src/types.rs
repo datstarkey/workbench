@@ -51,23 +51,6 @@ pub struct ProjectsFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateTerminalRequest {
-    pub id: String,
-    pub project_path: String,
-    pub shell: String,
-    pub cols: u16,
-    pub rows: u16,
-    pub startup_command: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateTerminalResponse {
-    pub id: String,
-    pub backend: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TerminalDataEvent {
     pub session_id: String,
     pub data: String,

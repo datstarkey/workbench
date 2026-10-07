@@ -4,7 +4,7 @@ import type { ClaudeSessionLaunch, IntegrationStatus, TerminalExitEvent } from '
 
 // ── Exit event listener for native SwiftTerm terminals ─────────────────────
 // The xterm path uses TerminalConnection (WS), so these listeners are only
-// needed for NativeTerminalPane (PtyManager IPC path).
+// needed for NativeTerminalPane.
 
 type ExitCallback = (payload: TerminalExitEvent) => void;
 

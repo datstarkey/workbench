@@ -1,19 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createMockTransport, type MockTransport } from '@workbench/transport';
 import { ControlPlaneStore } from './control-plane.svelte.ts';
-
-function session(over: Record<string, unknown> = {}) {
-	return {
-		id: 'sess-1',
-		name: 'test',
-		cwd: '/p',
-		pid: 123,
-		status: 'starting',
-		sessionUrl: null,
-		startedAt: 0,
-		...over
-	};
-}
 
 describe('ControlPlaneStore', () => {
 	let transport: MockTransport;
@@ -22,10 +9,6 @@ describe('ControlPlaneStore', () => {
 	beforeEach(() => {
 		transport = createMockTransport();
 		store = new ControlPlaneStore(transport);
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
 	});
 
 	it('loadProjects populates projects', async () => {
@@ -88,7 +71,6 @@ describe('ControlPlaneStore', () => {
 		it('is re-fetched by refresh()', async () => {
 			remote(null);
 			transport.mockInvoke('list_projects', () => []);
-			transport.mockInvoke('remote_sessions', () => []);
 			await store.loadGithubUrl('/a');
 
 			remote({ owner: 'o', repo: 'r', htmlUrl: 'https://github.com/o/r' });
@@ -113,39 +95,6 @@ describe('ControlPlaneStore', () => {
 		expect(calls).toEqual(['create', 'list']);
 	});
 
-	it('spawn refreshes sessions and polls for the async URL update', async () => {
-		vi.useFakeTimers();
-		transport.mockInvoke('remote_spawn', () => session());
-		let listCalls = 0;
-		transport.mockInvoke('remote_sessions', () => {
-			listCalls++;
-			return [session({ status: listCalls > 2 ? 'running' : 'starting' })];
-		});
-
-		await store.spawn('/p', undefined, 'test');
-		expect(listCalls).toBe(1); // immediate refresh after spawn
-
-		// Polls every 2s up to 5 times.
-		await vi.advanceTimersByTimeAsync(2000);
-		await vi.advanceTimersByTimeAsync(2000);
-		expect(listCalls).toBeGreaterThanOrEqual(3);
-		expect(store.sessions[0].status).toBe('running');
-	});
-
-	it('killSession invokes remote_kill then refreshes', async () => {
-		const order: string[] = [];
-		transport.mockInvoke('remote_kill', () => {
-			order.push('kill');
-		});
-		transport.mockInvoke('remote_sessions', () => {
-			order.push('refresh');
-			return [];
-		});
-		await store.killSession('sess-1');
-		expect(order).toEqual(['kill', 'refresh']);
-		expect(store.sessions).toEqual([]);
-	});
-
 	it('captures errors from the transport into store.error', async () => {
 		transport.mockInvoke('list_projects', () => {
 			throw new Error('network down');
@@ -153,22 +102,5 @@ describe('ControlPlaneStore', () => {
 		await store.loadProjects();
 		expect(store.error).toBe('network down');
 		expect(store.projects).toEqual([]);
-	});
-
-	it('dispose() cancels the spawn status poll so it stops hitting the server', async () => {
-		vi.useFakeTimers();
-		transport.mockInvoke('remote_spawn', () => session());
-		let listCalls = 0;
-		transport.mockInvoke('remote_sessions', () => {
-			listCalls++;
-			return [session()];
-		});
-
-		await store.spawn('/p', undefined, 'test');
-		expect(listCalls).toBe(1); // immediate refresh after spawn
-
-		store.dispose(); // cancel the still-running poll
-		await vi.advanceTimersByTimeAsync(10000);
-		expect(listCalls).toBe(1); // no further polling after dispose
 	});
 });

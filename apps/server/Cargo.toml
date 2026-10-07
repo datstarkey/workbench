@@ -3,7 +3,7 @@ name = "workbench-server"
 version = "0.2.0"
 edition.workspace = true
 license.workspace = true
-description = "Headless Workbench control-plane server: list/create worktrees, list sessions, and spawn `claude remote-control` sessions for access from the Claude mobile app."
+description = "Headless Workbench control-plane server: projects, worktrees, terminals and Claude/Codex chat sessions for the desktop and mobile apps."
 
 [[bin]]
 name = "workbench-server"
@@ -24,8 +24,8 @@ base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Process-GROUP termination (kill the shell + its descendants) on Unix — parity
-# with the desktop PtyManager so closing a terminal doesn't orphan child processes.
+# Process-GROUP termination (kill the shell + its descendants) on Unix, so
+# closing a terminal doesn't orphan child processes.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

@@ -80,25 +80,6 @@ describe('HttpTransport route mapping', () => {
 		expect(path).toBe('/repo-feature');
 	});
 
-	it('remote_spawn POSTs the body', async () => {
-		const f = mockFetch(() => json({ id: 'x', status: 'starting' }));
-		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
-		await t.invoke('remote_spawn', { projectPath: '/p', name: 'n' });
-		const [url, init] = f.mock.calls[0];
-		expect(url).toBe('http://host:4317/remote/spawn');
-		expect(init.method).toBe('POST');
-		expect(JSON.parse(init.body as string)).toEqual({ projectPath: '/p', name: 'n' });
-	});
-
-	it('remote_kill maps to DELETE with the id in the path', async () => {
-		const f = mockFetch(() => new Response(null, { status: 204 }));
-		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
-		const res = await t.invoke('remote_kill', { id: 'abc 1' });
-		expect(f.mock.calls[0][0]).toBe('http://host:4317/remote/sessions/abc%201');
-		expect(f.mock.calls[0][1].method).toBe('DELETE');
-		expect(res).toBeUndefined();
-	});
-
 	it('sends the bearer token when configured', async () => {
 		const f = mockFetch(() => json([]));
 		const t = createHttpTransport({ baseUrl: 'http://host:4317', token: 'secret' });

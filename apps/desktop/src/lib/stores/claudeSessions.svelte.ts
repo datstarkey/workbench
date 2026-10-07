@@ -20,7 +20,7 @@ import type { ProjectStore } from './projects.svelte';
 
 const SUBMIT_START_FALLBACK_MS = 5000;
 /** Quiet window after which a server-hosted Codex pane is marked inactive — mirrors
- *  the local PtyManager `terminal:activity` debounce (TERMINAL_QUIET_THRESHOLD_MS). */
+ *  the native terminal's `terminal:activity` debounce. */
 const OUTPUT_QUIESCENCE_MS = 1000;
 const LOCAL_ECHO_SUPPRESS_MS = 180;
 const LOCAL_ECHO_MAX_CHARS = 4;
@@ -265,7 +265,7 @@ export class ClaudeSessionStore {
 
 	/**
 	 * Feed PTY output for a pane through the same activity/quiescence logic the
-	 * `terminal:data` + `terminal:activity` Tauri events drive for local PtyManager
+	 * `terminal:data` + `terminal:activity` Tauri events drive for native terminal
 	 * panes. Server-hosted xterm panes stream output over the WebSocket and never
 	 * emit those events, so TerminalPane calls this directly to keep Codex
 	 * in-progress/quiescence working. Claude panes don't need it: their state

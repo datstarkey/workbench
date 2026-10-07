@@ -13,12 +13,11 @@ use crate::github;
 use crate::github_poller::GitHubPoller;
 use crate::hook_bridge::{HookBridgeState, HookLogEntry};
 use crate::package_scripts;
-use crate::pty::PtyManager;
 use crate::sandbox_runtime;
 use crate::settings;
 use crate::types::GitHubProjectStatusEvent;
 use crate::types::{
-    BranchInfo, CreateTerminalRequest, CreateTerminalResponse, CreateWorktreeRequest,
+    BranchInfo, CreateWorktreeRequest,
     DiscoveredClaudeSession, GitHubRemote, GitHubRepo, GitInfo, HookScriptInfo, IntegrationStatus,
     PackageInfo, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile,
     WorktreeInfo,
@@ -51,69 +50,6 @@ pub fn save_projects(
     // Project roots are the sandbox's writable set, so a newly added project has
     // to reach the srt settings file before its first Claude launch.
     refresh_sandbox_runtime_settings(None, &hook_bridge);
-    Ok(true)
-}
-
-#[tauri::command]
-pub fn create_terminal(
-    request: CreateTerminalRequest,
-    pty_manager: State<'_, PtyManager>,
-    hook_bridge: State<'_, HookBridgeState>,
-    app_handle: tauri::AppHandle,
-) -> Result<CreateTerminalResponse, String> {
-    pty_manager
-        .spawn(
-            request.id.clone(),
-            request.project_path,
-            request.shell,
-            request.cols,
-            request.rows,
-            request.startup_command,
-            hook_bridge.socket_path().map(str::to_string),
-            app_handle,
-        )
-        .map_err(|e| e.to_string())?;
-
-    Ok(CreateTerminalResponse {
-        id: request.id,
-        backend: "pty".to_string(),
-    })
-}
-
-#[tauri::command]
-pub fn write_terminal(
-    session_id: String,
-    data: String,
-    pty_manager: State<'_, PtyManager>,
-) -> Result<bool, String> {
-    pty_manager
-        .write(&session_id, &data)
-        .map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-#[tauri::command]
-pub fn resize_terminal(
-    session_id: String,
-    cols: u16,
-    rows: u16,
-    pty_manager: State<'_, PtyManager>,
-) -> Result<bool, String> {
-    pty_manager
-        .resize(&session_id, cols, rows)
-        .map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-#[tauri::command]
-pub fn kill_terminal(
-    session_id: String,
-    pty_manager: State<'_, PtyManager>,
-    app_handle: tauri::AppHandle,
-) -> Result<bool, String> {
-    pty_manager
-        .kill(&session_id, &app_handle)
-        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 

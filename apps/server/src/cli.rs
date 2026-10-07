@@ -3,10 +3,7 @@ use clap::Parser;
 /// Headless Workbench control-plane server.
 ///
 /// Exposes the same project / worktree / session operations the desktop app uses
-/// over HTTP, plus an endpoint to spawn `claude remote-control` sessions on this
-/// machine. Spawned sessions register with Anthropic's API and appear in the
-/// Claude mobile app / claude.ai automatically — this server never proxies
-/// terminal IO.
+/// over HTTP, plus terminals and Claude/Codex chat sessions over WebSocket.
 #[derive(Debug, Clone, Parser)]
 #[command(name = "workbench-server", version, about)]
 pub struct Cli {

@@ -8,11 +8,9 @@
  *  - {@link HttpTransport} — a remote `workbench-server`, talking over HTTP +
  *    WebSocket (used by the mobile app and by the desktop in "remote" mode).
  *
- * It deliberately covers the **control plane only**. Terminal IO
- * (`create/write/resize/kill_terminal`) is desktop-local and is NOT part of this
- * interface — remote clients spawn `claude remote-control` sessions instead and
- * continue them in the Claude mobile app. Use {@link Capabilities.terminalIO} to
- * feature-detect.
+ * It deliberately covers the **control plane only**. Terminal IO goes over the
+ * server's terminal WebSocket and is NOT part of this interface. Use
+ * {@link Capabilities.terminalIO} to feature-detect.
  */
 
 import type {
@@ -27,17 +25,6 @@ import type {
 	ProjectRefreshRequestedEvent,
 	WorktreeInfo
 } from '@workbench/types';
-
-/** A spawned `claude remote-control` session (mirrors the server's RemoteSession). */
-export interface RemoteSession {
-	id: string;
-	name: string | null;
-	cwd: string;
-	pid: number | null;
-	status: 'starting' | 'running' | { exited: { code: number } };
-	sessionUrl: string | null;
-	startedAt: number;
-}
 
 /** A control-plane command name and its argument/result shapes. */
 export interface ControlPlaneCommands {
@@ -64,13 +51,6 @@ export interface ControlPlaneCommands {
 	discover_codex_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
 	load_claude_settings: { args: { scope: string; projectPath?: string }; result: unknown };
 	load_workbench_settings: { args: void; result: unknown };
-	/** Spawn `claude remote-control` on the server (Claude only; Codex has none). */
-	remote_spawn: {
-		args: { projectPath: string; worktreePath?: string; name?: string };
-		result: RemoteSession;
-	};
-	remote_sessions: { args: void; result: RemoteSession[] };
-	remote_kill: { args: { id: string }; result: void };
 }
 
 /** Control-plane events streamed from the backend (NOT `terminal:data/exit`). */

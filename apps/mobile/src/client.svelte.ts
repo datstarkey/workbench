@@ -209,7 +209,7 @@ export class MobileClient {
 			if (superseded()) return;
 			const next = new ControlPlaneStore(createHttpTransport({ baseUrl: base, token }));
 			await next.refresh();
-			if (superseded()) return next.dispose();
+			if (superseded()) return;
 
 			this.teardown();
 			const machine = this.machines.save(base, token, nickname);
@@ -293,7 +293,6 @@ export class MobileClient {
 	/** Drop the connection: every screen of it goes, and late responses for it are dropped. */
 	private teardown(): void {
 		this.generation++;
-		this.store?.dispose();
 		this.store = null;
 		this.connection = null;
 		this.controlPlane = null;

@@ -190,18 +190,15 @@ describe('MobileClient', () => {
 		expect(c.terminals.map((t) => t.id)).toContain('new-2');
 	});
 
-	it('disconnect() disposes the store and clears terminal state', async () => {
+	it('disconnect() drops the store and clears terminal state', async () => {
 		const c = await connected({
 			'/remote/terminals': () => jsonResponse([{ id: 't1', cwd: '/p', createdAt: 0, alive: true }])
 		});
-		const store = c.store;
-		expect(store).not.toBeNull();
-		const disposeSpy = vi.spyOn(store!, 'dispose');
+		expect(c.store).not.toBeNull();
 		c.selectTerminal('t1');
 
 		c.disconnect();
 
-		expect(disposeSpy).toHaveBeenCalled();
 		expect(c.store).toBeNull();
 		expect(c.terminals).toEqual([]);
 		expect(c.activeTerminalId).toBeNull();
