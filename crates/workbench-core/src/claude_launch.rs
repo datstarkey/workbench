@@ -93,7 +93,7 @@ pub fn terminal_command(
             shell_quote(path)
         ));
     }
-    // Tests point it at a fake (`WORKBENCH_CLAUDE_BIN`, as for remote-control).
+    // Tests point it at a fake (`WORKBENCH_CLAUDE_BIN`).
     match std::env::var("WORKBENCH_CLAUDE_BIN") {
         Ok(bin) if !bin.is_empty() => cmd.push_str(&shell_quote(&bin)),
         _ => cmd.push_str("claude"),

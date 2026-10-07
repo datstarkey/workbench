@@ -120,16 +120,6 @@ export interface TerminalActivityEvent {
 	active: boolean;
 }
 
-export interface ClaudeHookEvent {
-	paneId: string;
-	sessionId?: string;
-	hookEventName?: string;
-	source?: string;
-	cwd?: string;
-	transcriptPath?: string;
-	hookPayload: Record<string, unknown>;
-}
-
 export interface CodexNotifyEvent {
 	paneId: string;
 	sessionId?: string;
