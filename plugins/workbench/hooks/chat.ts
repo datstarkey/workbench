@@ -60,6 +60,9 @@ const taskAgents = new Map<string, string>();
 // Background agents: their Agent call returned at launch, so their own
 // `turn.complete` ends the task.
 const asyncAgents = new Set<string>();
+// Main-thread Skill calls still running, call id → skill. A forked skill's
+// agent has no `agent.spawn`: its first call names it, its Skill call is its task.
+const runningSkills = new Map<string, string>();
 // Chat prompts appended into the running turn that no request has read yet.
 let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
@@ -96,6 +99,28 @@ function reply(requestId: unknown, error?: string, response: Line = {}) {
 function linkAgent(agent: string, task: string) {
 	agentTasks.set(agent, task);
 	taskAgents.set(task, agent);
+}
+
+function startSkillTask(task: string, agent: string) {
+	linkAgent(agent, task);
+	emit(
+		{
+			type: 'system',
+			subtype: 'task_started',
+			task_id: task,
+			tool_use_id: task,
+			description: `/${runningSkills.get(task) ?? 'skill'}`,
+			task_type: 'local_agent',
+			uuid: `wbmod-task-${task}`
+		},
+		{
+			type: 'system',
+			subtype: 'task_updated',
+			task_id: task,
+			output_id: agent,
+			uuid: `wbmod-task-out-${task}`
+		}
+	);
 }
 
 function unlinkTask(task: string) {
@@ -668,6 +693,11 @@ export const register: Register = (on) => {
 		}
 		const input = e as unknown as { description?: string; subagent_type?: string };
 		const isAgent = !e.agentId && e.tool === 'Agent';
+		const isSkill = !e.agentId && e.tool === 'Skill';
+		if (isSkill && id) runningSkills.set(id, (e as unknown as { skill?: string }).skill ?? 'skill');
+		// An agent nothing spawned while one Skill call runs is that skill's fork.
+		if (e.agentId && !agentTasks.has(e.agentId) && runningSkills.size === 1 && !runningAgents.size)
+			startSkillTask([...runningSkills.keys()][0], e.agentId);
 		if (isAgent && id) {
 			runningAgents.add(id);
 			emit({
@@ -692,9 +722,28 @@ export const register: Register = (on) => {
 		const main = id && !e.agentId ? id : undefined;
 		if (main) callsRunning.add(main);
 		const result = await next(e);
-		const launched = result.result as { status?: string; agentId?: string } | undefined;
+		const launched = result.result as
+			| { status?: string; agentId?: string; success?: boolean; background?: boolean }
+			| undefined;
 		if (isAgent && id) {
 			runningAgents.delete(id);
+		}
+		if (isSkill && id) {
+			if (launched?.status === 'forked' && launched.agentId) {
+				if (!taskAgents.has(id)) startSkillTask(id, launched.agentId);
+				if (launched.background) asyncAgents.add(launched.agentId);
+				else {
+					unlinkTask(id);
+					emit({
+						type: 'system',
+						subtype: 'task_notification',
+						task_id: id,
+						status: launched.success === false || result.isError ? 'failed' : 'completed',
+						uuid: `wbmod-done-${id}`
+					});
+				}
+			}
+			runningSkills.delete(id);
 		}
 		if (isAgent && id && launched?.status === 'async_launched' && launched.agentId) {
 			asyncAgents.add(launched.agentId);
@@ -777,7 +826,7 @@ export const register: Register = (on) => {
 
 	// Fires only when the mode's decider would show its dialog: rules, the mode
 	// and auto mode's classifier have all had their say. Asked in chat while one
-	// is open; the server answers `fallback` when none is (or it closes), and the
+	// is open; the server answers `fallback` when none has shown it, and the
 	// terminal's dialog asks instead. A held request in flight doesn't spend the
 	// hook's time budget, however long the person takes.
 	on('classic.PermissionRequest', async ($, e, next) => {

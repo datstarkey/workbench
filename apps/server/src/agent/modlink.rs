@@ -57,6 +57,8 @@ struct Ask {
     tool_use_id: Option<String>,
     /// A client's answer, once given.
     answer: Option<Value>,
+    /// A chat had it open at some point.
+    shown: bool,
 }
 
 /// What else ends a wait on the terminal's dialog.
@@ -89,8 +91,21 @@ impl ModLink {
             Ask {
                 tool_use_id,
                 answer: None,
+                shown: false,
             },
         );
+    }
+
+    /// Whether a chat has shown `request_id`, counting now when `viewing`.
+    /// Once one has, it stays a chat's to answer however long nobody looks:
+    /// a phone drops its socket whenever the app is backgrounded.
+    pub fn shown(&self, request_id: &str, viewing: bool) -> bool {
+        lock(&self.asks)
+            .get_mut(request_id)
+            .map_or(viewing, |ask| {
+                ask.shown |= viewing;
+                ask.shown
+            })
     }
 
     /// Take a client's answer to an approval the plugin waits on; `false` when
@@ -241,6 +256,16 @@ mod tests {
             preview: "ls".into(),
             in_terminal: false,
         }
+    }
+
+    #[test]
+    fn an_ask_a_chat_has_shown_stays_shown_after_it_closes() {
+        let link = ModLink::new("t".into(), None);
+        link.expect_answer("r1", None);
+        assert!(!link.shown("r1", false), "nobody has looked yet");
+        assert!(link.shown("r1", true));
+        assert!(link.shown("r1", false), "the phone backgrounded");
+        assert!(!link.shown("gone", false), "not waited on: only while viewed");
     }
 
     #[test]
