@@ -29,6 +29,9 @@ pub(super) const SNAPSHOT_ITEMS: usize = 500;
 const STOP_GRACE: Duration = Duration::from_secs(3);
 /// How much of a background task's output the panel shows.
 const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
+/// `assistant` lines per session id that may read the cache's lifetime
+/// from its transcript until it names one.
+const EARLY_TTL_READS: u8 = 8;
 
 pub(super) type Registry = Arc<Mutex<HashMap<String, Arc<AgentSession>>>>;
 
@@ -90,6 +93,9 @@ pub struct AgentSession {
     upkept_for: Mutex<Option<u64>>,
     /// The session JSONL, found once per session id (`learn_cache_ttl`).
     transcript_path: Mutex<Option<(String, PathBuf)>>,
+    /// Early reads of the cache's lifetime left, for the id they're for
+    /// (`learn_cache_ttl_early`).
+    early_ttl_reads: Mutex<(String, u8)>,
 }
 
 /// The command a chat process starts from: cwd, pipes, the inherited
@@ -301,6 +307,7 @@ impl AgentSession {
             cache_policies: cache_policies.clone(),
             upkept_for: Mutex::new(None),
             transcript_path: Mutex::new(None),
+            early_ttl_reads: Mutex::new((String::new(), EARLY_TTL_READS)),
         });
         if let Some(receiver) = receiver {
             let writer = Arc::downgrade(&session);
@@ -385,18 +392,40 @@ impl AgentSession {
     /// The plugin's usage has no `cache_creation` split, so a terminal's
     /// session reads the cache's lifetime from its transcript file each time
     /// a turn ends (its rows are written by then); the CLI may change it.
-    pub(super) fn learn_cache_ttl(&self) {
+    /// False when the file names none yet.
+    pub(super) fn learn_cache_ttl(&self) -> bool {
         let Some(ttl) = self
             .history_path()
             .and_then(|p| workbench_core::claude_transcript::written_cache_ttl(&p))
         else {
-            return;
+            return false;
         };
         let mut d = lock(&self.driver);
         if let Driver::Claude(t) = &mut *d {
             if t.learn_cache_ttl(ttl) {
                 self.broadcast_update(t, &[]);
             }
+        }
+        true
+    }
+
+    /// An `assistant` line's read, so a first turn doesn't show the 5m
+    /// default until its `result`. Bounded per session id: a session that
+    /// never writes the cache (caching off) would otherwise scan each line.
+    pub(super) fn learn_cache_ttl_early(&self) {
+        let id = self.id();
+        {
+            let mut reads = lock(&self.early_ttl_reads);
+            if reads.0 != id {
+                *reads = (id, EARLY_TTL_READS);
+            }
+            if reads.1 == 0 {
+                return;
+            }
+            reads.1 -= 1;
+        }
+        if self.learn_cache_ttl() {
+            lock(&self.early_ttl_reads).1 = 0;
         }
     }
 
