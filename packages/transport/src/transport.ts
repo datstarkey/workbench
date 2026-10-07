@@ -20,6 +20,8 @@ import type {
 	GitHubRemote,
 	GitInfo,
 	GitStatusResult,
+	HostUpdateStarted,
+	HostUpdateStatus,
 	ProjectConfig,
 	ProjectRefreshRequestedEvent,
 	WorktreeInfo
@@ -50,6 +52,10 @@ export interface ControlPlaneCommands {
 	discover_codex_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
 	load_claude_settings: { args: { scope: string; projectPath?: string }; result: unknown };
 	load_workbench_settings: { args: void; result: unknown };
+	/** Server only: the app hosting it (the desktop). 501 from a standalone server. */
+	host_update_status: { args: void; result: HostUpdateStatus };
+	/** Server only: install the host's update; it restarts. 501 from a standalone server. */
+	host_update_install: { args: void; result: HostUpdateStarted };
 }
 
 /** Control-plane events streamed from the backend (NOT `terminal:data/exit`). */

@@ -77,6 +77,16 @@ describe('MobileClient', () => {
 		expect(c.notice).toContain('desktop');
 	});
 
+	it("checks the host's update on connect and drops it on disconnect", async () => {
+		const c = await connected({
+			'/host/update': () =>
+				jsonResponse({ current: '1.0.0', available: '1.1.0', installing: false })
+		});
+		await vi.waitFor(() => expect(c.hostUpdate?.status?.available).toBe('1.1.0'));
+		c.disconnect();
+		expect(c.hostUpdate).toBeNull();
+	});
+
 	it('connect() normalizes the url, sets the store, and loads terminals', async () => {
 		const c = await connected({
 			'/remote/terminals': () => jsonResponse([{ id: 't1', cwd: '/p', createdAt: 0, alive: true }])

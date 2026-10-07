@@ -18,13 +18,15 @@
 //!   strong token (`workbench_core::token::is_strong`), enforced here.
 //!
 //! Terminals live in the shared managers, so they survive LAN stop/start.
+//! Both listeners carry the [`HostControl`] that lets a phone update this app.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::async_runtime::Mutex as AsyncMutex;
 use tauri::Emitter;
+use workbench_server::host::HostControl;
 use workbench_server::{Managers, ServerHandle};
 
 struct Loopback {
@@ -44,6 +46,8 @@ struct Lan {
 #[derive(Default)]
 pub struct ServerControl {
     managers: Managers,
+    /// Set once in setup, before the loopback listener starts.
+    host: OnceLock<Arc<dyn HostControl>>,
     loopback: Mutex<Option<Loopback>>,
     /// Async mutex held across start/stop, so concurrent commands serialize.
     lan: AsyncMutex<Option<Lan>>,
@@ -179,13 +183,29 @@ impl ServerControl {
         Self::default()
     }
 
+    pub fn set_host(&self, host: Arc<dyn HostControl>) {
+        let _ = self.host.set(host);
+    }
+
+    /// What a listener serves: the shared managers plus the host control.
+    fn listener_managers(&self) -> Managers {
+        Managers {
+            host: self.host.get().cloned(),
+            ..self.managers.clone()
+        }
+    }
+
     /// Start the loopback listener with a fresh in-memory token. Called from
     /// `lib.rs` setup before the webview is shown.
     pub async fn start_loopback(&self) -> anyhow::Result<()> {
         let token = workbench_core::token::generate()?;
-        let handle =
-            workbench_server::spawn_embedded("127.0.0.1", 0, self.managers.clone(), token.clone())
-                .await?;
+        let handle = workbench_server::spawn_embedded(
+            "127.0.0.1",
+            0,
+            self.listener_managers(),
+            token.clone(),
+        )
+        .await?;
         let mut guard = self.loopback.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(Loopback { handle, token });
         Ok(())
@@ -203,7 +223,7 @@ impl ServerControl {
             old.handle.stop().await;
         }
         let handle =
-            workbench_server::spawn_embedded(bind, port, self.managers.clone(), token.clone())
+            workbench_server::spawn_embedded(bind, port, self.listener_managers(), token.clone())
                 .await
                 .map_err(|e| e.to_string())?;
         let address = handle.addr().to_string();

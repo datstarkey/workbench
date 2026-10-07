@@ -10,6 +10,7 @@ import type {
 	WorkbenchSettings
 } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { HostUpdate } from './host-update.svelte.ts';
 import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { verifyServer } from './server-check.ts';
@@ -56,6 +57,8 @@ export class MobileClient {
 	projectPrefs = $state.raw(new ProjectPrefs('disconnected'));
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
 	accountId = $state<string | undefined>(undefined);
+	/** The connected host's version and update; null while disconnected. */
+	hostUpdate = $state.raw<HostUpdate | null>(null);
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
 
 	setAccount(id: string): void {
@@ -223,9 +226,12 @@ export class MobileClient {
 			this.machineId = machine.id;
 			this.drafts = new Drafts(machine.id);
 			this.projectPrefs = new ProjectPrefs(machine.id);
-			this.controlPlane = createHttpTransport({ baseUrl: base, token });
+			const controlPlane = createHttpTransport({ baseUrl: base, token });
+			this.controlPlane = controlPlane;
 			this.online = true;
 			this.store = next;
+			this.hostUpdate = new HostUpdate(controlPlane);
+			void this.hostUpdate.check();
 			await Promise.all([this.refreshTerminals(), this.refreshChats(), this.loadAccounts()]);
 		} catch (e) {
 			if (superseded()) return;
@@ -298,6 +304,7 @@ export class MobileClient {
 		this.store = null;
 		this.connection = null;
 		this.controlPlane = null;
+		this.hostUpdate = null;
 		this.accounts = [];
 		this.accountId = undefined;
 		this.machineId = null;
@@ -333,6 +340,8 @@ export class MobileClient {
 	watch(): () => void {
 		const onHome = () => !document.hidden && this.store && !this.activeChat && !this.activeTerminal;
 		const timer = setInterval(() => {
+			// The host is restarting into its update: its first answer ends "Updating host…".
+			if (!document.hidden && this.hostUpdate?.updating) void this.hostUpdate.check();
 			if (!onHome()) return;
 			void this.refreshTerminals();
 			void this.refreshChats();
@@ -640,5 +649,6 @@ export class MobileClient {
 		void this.store?.refresh();
 		void this.refreshTerminals();
 		void this.refreshChats();
+		void this.hostUpdate?.check();
 	}
 }

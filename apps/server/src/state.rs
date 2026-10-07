@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use tokio::sync::watch;
 
 use crate::agent::AgentManager;
+use crate::host::HostControl;
 use crate::terminal::TerminalManager;
 use crate::usage::{ModelsCache, UsageCache};
 
@@ -13,6 +16,8 @@ pub struct Managers {
     pub agents: AgentManager,
     pub usage: UsageCache,
     pub models: ModelsCache,
+    /// The app embedding this server, when it can update itself (the desktop).
+    pub host: Option<Arc<dyn HostControl>>,
 }
 
 impl Managers {
@@ -29,6 +34,7 @@ pub struct AppState {
     pub agents: AgentManager,
     pub usage: UsageCache,
     pub models: ModelsCache,
+    pub host: Option<Arc<dyn HostControl>>,
     /// When `Some`, requests must present this as a bearer token. Only the
     /// standalone binary on a loopback bind (or with `--insecure-no-token`) runs
     /// with `None`; embedded listeners always carry one.
@@ -49,6 +55,7 @@ impl AppState {
             agents: managers.agents,
             usage: managers.usage,
             models: managers.models,
+            host: managers.host,
             token,
             revoked,
             local_port: None,

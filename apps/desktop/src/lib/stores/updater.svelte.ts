@@ -8,6 +8,8 @@ export type UpdateStatus =
 	| 'checking'
 	| 'available'
 	| 'downloading'
+	/** Another device asked this host to install `version`; it restarts when done. */
+	| 'remote'
 	| 'up-to-date'
 	| 'error';
 
@@ -22,9 +24,24 @@ export class UpdaterStore {
 
 	private update: Update | null = null;
 
+	/** Installing: the dialog can't be dismissed. */
+	get busy(): boolean {
+		return this.status === 'downloading' || this.status === 'remote';
+	}
+
 	constructor() {
 		listen('menu:check-for-updates', () => {
 			this.manualCheck();
+		});
+		listen<string>('update:remote', ({ payload }) => {
+			this.version = payload;
+			this.status = 'remote';
+			this.dialogOpen = true;
+		});
+		listen<string>('update:remote-failed', ({ payload }) => {
+			this.status = 'error';
+			this.error = `The update started from another device failed: ${payload}`;
+			this.dialogOpen = true;
 		});
 
 		// Auto-check after a short delay on startup
@@ -34,7 +51,7 @@ export class UpdaterStore {
 	/** Manual check from the menu or rail — always opens the dialog, which shows a check already running. */
 	async manualCheck() {
 		this.dialogOpen = true;
-		if (this.status === 'checking' || this.status === 'downloading') return;
+		if (this.status === 'checking' || this.busy) return;
 		await this.checkForUpdates();
 	}
 
@@ -69,6 +86,14 @@ export class UpdaterStore {
 		this.progress = 0;
 
 		try {
+			// One install at a time: a phone may have started this one already.
+			await invoke('begin_update', { version: this.update.version });
+		} catch (e) {
+			this.status = 'error';
+			this.error = e instanceof Error ? e.message : String(e);
+			return;
+		}
+		try {
 			await this.update.download((event) => {
 				if (event.event === 'Started') {
 					this.contentLength = event.data.contentLength ?? 0;
@@ -83,6 +108,7 @@ export class UpdaterStore {
 			await this.update.install();
 			await relaunch();
 		} catch (e) {
+			void invoke('end_update');
 			this.status = 'error';
 			this.error = e instanceof Error ? e.message : String(e);
 		}
@@ -90,7 +116,7 @@ export class UpdaterStore {
 
 	dismiss() {
 		this.dialogOpen = false;
-		if (this.status !== 'downloading') {
+		if (!this.busy) {
 			this.status = 'idle';
 		}
 	}

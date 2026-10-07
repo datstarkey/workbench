@@ -72,6 +72,9 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 		}
 		case 'load_workbench_settings':
 			return { method: 'GET', path: '/settings/workbench' };
+		case 'host_update_status':
+		case 'host_update_install':
+			return { method: name === 'host_update_status' ? 'GET' : 'POST', path: '/host/update' };
 		default:
 			throw new Error(`HttpTransport: command "${String(name)}" is not supported by the server`);
 	}
@@ -172,7 +175,7 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 				} catch {
 					/* keep status text */
 				}
-				throw new Error(`workbench-server: ${message}`);
+				throw Object.assign(new Error(`workbench-server: ${message}`), { status: res.status });
 			}
 			if (res.status === 204) return undefined as never;
 			const text = await res.text();
