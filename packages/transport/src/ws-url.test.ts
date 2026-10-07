@@ -13,3 +13,18 @@ describe('agentWsUrl', () => {
 		expect(terminalWsUrl('https://box', 'id')).toBe('wss://box/remote/terminals/id/ws');
 	});
 });
+
+describe('terminalWsUrl', () => {
+	it('url-encodes the token and leaves it out when empty', () => {
+		expect(terminalWsUrl('http://box:4317', 'abc', 'se cr/et')).toBe(
+			'ws://box:4317/remote/terminals/abc/ws?token=se%20cr%2Fet'
+		);
+		expect(terminalWsUrl('http://box:4317', 'abc', '')).toBe(
+			'ws://box:4317/remote/terminals/abc/ws'
+		);
+	});
+
+	it('strips a trailing slash from the server url', () => {
+		expect(terminalWsUrl('http://box:4317/', 'abc')).toBe('ws://box:4317/remote/terminals/abc/ws');
+	});
+});

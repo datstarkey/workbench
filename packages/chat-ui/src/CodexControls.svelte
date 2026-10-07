@@ -4,7 +4,7 @@
 	import type { AgentChat } from './agent-chat.svelte';
 	import { CodexControlsStore } from './codex-controls.svelte';
 	import { getChatPlatform } from './platform';
-	import { safeExternalUrl } from './codex-helpers';
+	import { safeExternalUrl } from './url';
 	let { chat, onThread }: { chat: AgentChat; onThread: (id: string, label: string) => void } =
 		$props();
 	// svelte-ignore state_referenced_locally

@@ -12,6 +12,7 @@ import {
 	formatBytes,
 	formatCount,
 	limitNotice,
+	chatTitle,
 	matchCommands,
 	slashQuery,
 	isWholeCommand,
@@ -21,7 +22,6 @@ import {
 	taskViews,
 	approvalPreview,
 	formatElapsed,
-	formatTokens,
 	groupBlocks,
 	jsonAsMarkdown,
 	outputMarkdown,
@@ -344,11 +344,13 @@ describe('latestTodos', () => {
 	});
 });
 
-describe('formatTokens', () => {
-	it('abbreviates thousands', () => {
-		expect(formatTokens(225684)).toBe('226k');
-		expect(formatTokens(512)).toBe('512');
-		expect(formatTokens(null)).toBe('');
+describe('chatTitle', () => {
+	const user = (text: string) => ({ kind: 'user', id: text || 'empty', text }) as TranscriptItem;
+	it('prefers the title, then the first prompt, then the agent', () => {
+		const items = [user(''), user('Fix the build'), user('And the tests')];
+		expect(chatTitle(items, { title: 'Build fix' } as TranscriptMeta, 'claude')).toBe('Build fix');
+		expect(chatTitle(items, null, 'claude')).toBe('Fix the build');
+		expect(chatTitle([], null, 'codex')).toBe('Codex');
 	});
 });
 

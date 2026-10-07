@@ -10,13 +10,24 @@ vi.mock('@workbench/chat-ui', () => ({
 	AgentChat: class {
 		sessionId: string;
 		agent: string;
+		draft: unknown;
 		dispose = vi.fn();
 		open = vi.fn(async () => {});
-		constructor(body: { sessionId?: string; agent?: string }) {
+		constructor(
+			body: { sessionId?: string; agent?: string },
+			_api: unknown,
+			opts: { draft: unknown }
+		) {
 			this.sessionId = body.sessionId ?? '';
 			this.agent = body.agent ?? 'claude';
+			this.draft = opts.draft;
 			created.push(this);
 		}
+	},
+	ChatDraft: class {
+		text = '';
+		images: unknown[] = [];
+		files: unknown[] = [];
 	}
 }));
 
@@ -51,6 +62,16 @@ describe('chat registry', () => {
 		first.sessionId = 'thread-1';
 		expect(acquireChat('p1', { ...codex, sessionId: 'thread-1' }).chat).toBe(first);
 		expect(created).toHaveLength(1);
+	});
+
+	it("keeps the pane's draft when its chat is released, and drops it once empty", () => {
+		const draft = acquireChat('p1', body('s1')).chat.draft;
+		draft.text = 'half a thought';
+		releaseChat('p1');
+		expect(acquireChat('p1', body('s1')).chat.draft).toBe(draft);
+		draft.text = '';
+		releaseChat('p1');
+		expect(acquireChat('p1', body('s1')).chat.draft).not.toBe(draft);
 	});
 
 	it('disposes on release', () => {

@@ -3,7 +3,7 @@ import { defineConfig } from 'vitest/config';
 
 // Unit tests for the mobile app's logic (MobileClient store + pure helpers). The
 // Svelte components themselves (xterm-backed Terminal) aren't rendered here — the
-// testable logic lives in client.svelte.ts / terminal-url.ts.
+// testable logic lives in client.svelte.ts and its helpers.
 export default defineConfig({
 	plugins: [svelte()],
 	test: {

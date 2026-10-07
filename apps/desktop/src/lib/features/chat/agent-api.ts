@@ -7,15 +7,12 @@ const loopback = agentClient(resolveServer);
 
 /** Chat sessions on the loopback server. */
 export const loopbackAgentApi: AgentApi = {
+	...loopback,
 	async start(body) {
 		// Hooks then report this session's activity to the sidebar, as for terminals.
 		const hookSocket = body.hookSocket ?? (await terminalHookSocket().catch(() => null));
 		return loopback.start({ ...body, hookSocket: hookSocket ?? undefined });
-	},
-	socketUrl: loopback.socketUrl,
-	terminalId: loopback.terminalId,
-	files: loopback.files,
-	taskTranscript: loopback.taskTranscript
+	}
 };
 
 /** A Claude account's plan limits, cached by the loopback server. */

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StartAgentBody, TranscriptMeta } from '@workbench/types';
 import { NeedsTrustError, type AgentApi } from './agent-api';
 import { AgentChat } from './agent-chat.svelte';
+import { ChatDraft } from './chat-draft.svelte';
 
 class FakeSocket {
 	static OPEN = 1;
@@ -723,5 +724,90 @@ describe('AgentChat prompt cache', () => {
 			{ t: 'cachePolicy', policy: { compactOnExpiry: false } }
 		]);
 		expect(chat.cachePolicy).toEqual({ compactOnExpiry: false });
+	});
+});
+
+describe('AgentChat host lifecycle', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.stubGlobal('WebSocket', FakeSocket);
+		FakeSocket.last = null;
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	it('keeps its draft for the life of the chat, or uses the one the host passes', async () => {
+		const { chat } = await connected();
+		chat.draft.text = 'half a thought';
+		chat.draft.images = [{ name: 'a.png', mediaType: 'image/png', data: 'AA==' }];
+		expect(chat.draft.text).toBe('half a thought');
+		chat.dispose();
+
+		const kept = new ChatDraft('saved');
+		const other = new AgentChat(body, fakeApi(), { draft: kept });
+		expect(other.draft).toBe(kept);
+		other.dispose();
+	});
+
+	it('re-attaches after the page was hidden a while, and stops listening once disposed', async () => {
+		const doc = Object.assign(new EventTarget(), { hidden: false });
+		vi.stubGlobal('document', doc);
+		const chat = new AgentChat(body, fakeApi(), { reconnectOnWake: true });
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		const ws = FakeSocket.last!;
+		ws.emit({
+			t: 'snapshot',
+			sessionId: 'sid',
+			start: 0,
+			items: [],
+			meta: meta(),
+			commands: [],
+			exited: false
+		});
+		const output = chat.fullOutput('t1');
+		const wake = (hiddenFor: number) => {
+			doc.hidden = true;
+			doc.dispatchEvent(new Event('visibilitychange'));
+			vi.advanceTimersByTime(hiddenFor);
+			doc.hidden = false;
+			doc.dispatchEvent(new Event('visibilitychange'));
+		};
+		wake(2_000);
+		expect(chat.status).toBe('live');
+		wake(60_000);
+		expect(chat.status).toBe('reconnecting');
+		await expect(output).resolves.toBeNull();
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
+
+		const remove = vi.spyOn(doc, 'removeEventListener');
+		chat.dispose();
+		expect(remove).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+	});
+
+	it('ends a joined chat that is gone on reconnect instead of retrying', async () => {
+		const start = vi.fn<AgentApi['start']>(async (b) => b.sessionId ?? 'sid');
+		const { chat } = await connected(fakeApi(start), { ...body, attachOnly: true });
+		start.mockRejectedValue(Object.assign(new Error('ended'), { status: 404 }));
+		chat.reconnect();
+		await vi.waitFor(() => expect(chat.status).toBe('exited'));
+		expect(chat.error).toBe('ended');
+		chat.dispose();
+	});
+
+	it('counts sends, so the transcript can scroll back down', async () => {
+		const { chat } = await connected();
+		chat.prompt('hello');
+		expect(chat.sends).toBe(1);
+		chat.dispose();
+	});
+
+	it('names the agent when its session ends', async () => {
+		const { chat, ws } = await connected();
+		const action = chat.codexAction('history');
+		ws.emit({ t: 'exit', code: 0, message: null });
+		await expect(action).rejects.toThrow('The Claude session ended');
+		chat.dispose();
 	});
 });

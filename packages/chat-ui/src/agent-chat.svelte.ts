@@ -20,9 +20,19 @@ import type {
 	TranscriptMeta
 } from '@workbench/types';
 import { NeedsTrustError, type AgentApi } from './agent-api';
-import { agentName, applyChanges, awaitsAnswer } from './chat-format';
+import {
+	activity,
+	agentName,
+	applyChanges,
+	awaitsAnswer,
+	chatTitle,
+	isRunning,
+	latestTodos
+} from './chat-format';
 import type { ElicitationValue } from './elicitation-form';
 import { previewUrl } from './attachment-intake';
+import { chatArtifacts } from './artifacts';
+import { ChatDraft } from './chat-draft.svelte';
 
 /**
  * - `starting`: launching or resuming the `claude` / `codex` process.
@@ -49,6 +59,8 @@ export interface PendingPrompt {
 }
 
 const RECONNECT_MS = 1500;
+/** Hidden this long (a sleeping phone or laptop), the socket may be dead while it still reads open. */
+const WAKE_RECONNECT_MS = 10_000;
 /** How long the `@` menu's file list is reused before it's fetched again. */
 const FILES_TTL_MS = 30_000;
 
@@ -103,7 +115,6 @@ export class AgentChat {
 	historyItems = $state.raw<TranscriptItem[]>([]);
 	private historyCursor = $state<string | null | undefined>(undefined);
 	private loadingHistory = false;
-	codexEvents = $state.raw<{ method: string; params: Record<string, unknown> }[]>([]);
 	onCodexEvent: ((method: string, params: Record<string, unknown>) => void) | null = null;
 	private controls = new Map<
 		string,
@@ -118,6 +129,16 @@ export class AgentChat {
 	rewind = $state.raw<RewindState | null>(null);
 	/** What the server does as the prompt cache nears expiry (Claude only). */
 	cachePolicy = $state.raw<CachePolicy>({ compactOnExpiry: false });
+
+	readonly live = $derived(this.status === 'live');
+	/** What the agent is doing now, or the request it waits on. */
+	readonly now = $derived(activity(this.items, this.meta));
+	/** The oldest approval, question or elicitation still waiting on the person. */
+	readonly waiting = $derived(this.items.find(awaitsAnswer) ?? null);
+	readonly tasks = $derived(this.meta?.tasks ?? []);
+	readonly runningTasks = $derived(this.tasks.filter(isRunning).length);
+	readonly todos = $derived(latestTodos(this.items));
+	readonly artifactList = $derived(chatArtifacts(this.meta?.artifacts));
 
 	private body: StartAgentBody;
 	private readonly api: AgentApi;
@@ -139,14 +160,39 @@ export class AgentChat {
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
 	private fileList: { at: number; files: Promise<string[]> } | null = null;
 	private rewindWaiters: Record<string, (reply: RewindReply | null) => void> = {};
+	/** Prompts sent from here; the transcript scrolls back to the newest on each. */
+	sends = $state(0);
+	readonly draft: ChatDraft;
+	private hiddenAt = 0;
+	private readonly reconnectOnWake: boolean;
 
-	constructor(body: StartAgentBody, api: AgentApi) {
+	/**
+	 * `draft`: hosts that keep the composer beyond this chat pass their own.
+	 * `reconnectOnWake`: re-attach when the page shows again after a long sleep
+	 * (a phone), since the socket can read open after the server let it go.
+	 */
+	constructor(
+		body: StartAgentBody,
+		api: AgentApi,
+		opts: { draft?: ChatDraft; reconnectOnWake?: boolean } = {}
+	) {
 		this.body = body;
 		this.api = api;
 		this.agent = body.agent ?? 'claude';
 		this.sessionId = body.sessionId ?? '';
+		this.draft = opts.draft ?? new ChatDraft();
+		this.reconnectOnWake = !!opts.reconnectOnWake && typeof document !== 'undefined';
+		if (this.reconnectOnWake) {
+			if (document.hidden) this.hiddenAt = Date.now();
+			document.addEventListener('visibilitychange', this.onVisibility);
+		}
 		void this.open();
 	}
+
+	private onVisibility = () => {
+		if (document.hidden) this.hiddenAt = Date.now();
+		else if (Date.now() - this.hiddenAt > WAKE_RECONNECT_MS) this.reconnect();
+	};
 
 	/**
 	 * Start (or resume) the process, then attach. Also the "Restart" action: an
@@ -157,6 +203,7 @@ export class AgentChat {
 			this.body = { ...this.body, attachOnly: false };
 			this.onTakeOver?.();
 		}
+		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close(); // a Restart must not leave the old socket behind
 		this.ws = null;
 		this.status = 'starting';
@@ -212,9 +259,11 @@ export class AgentChat {
 				this.trustPath = e.path;
 				return;
 			}
-			// Waking phones lose the network for a moment; keep retrying rather than give up.
-			if (this.status === 'reconnecting') return this.scheduleReconnect();
-			this.status = 'failed';
+			// Waking phones lose the network for a moment; keep retrying rather than give up,
+			// unless a joined session is gone (it ended on the other device).
+			const gone = this.body.attachOnly && (e as { status?: number }).status === 404;
+			if (this.status === 'reconnecting' && !gone) return this.scheduleReconnect();
+			this.status = this.status === 'reconnecting' ? 'exited' : 'failed';
 			this.error = e instanceof Error ? e.message : String(e);
 			return;
 		}
@@ -222,6 +271,7 @@ export class AgentChat {
 		const ws = new WebSocket(url);
 		this.ws = ws;
 		ws.onmessage = (event) => {
+			if (this.ws !== ws) return; // a frame still arriving after a Restart closed it
 			try {
 				this.receive(JSON.parse(String(event.data)) as AgentServerMsg);
 			} catch (e) {
@@ -258,10 +308,6 @@ export class AgentChat {
 				break;
 			}
 			case 'codexEvent':
-				this.codexEvents = [
-					...this.codexEvents.slice(-19),
-					{ method: msg.method, params: msg.params }
-				];
 				this.onCodexEvent?.(msg.method, msg.params);
 				break;
 			case 'artifacts':
@@ -299,7 +345,7 @@ export class AgentChat {
 				this.settlePending();
 				break;
 			case 'exit':
-				this.rejectControls('The Codex session ended');
+				this.rejectControls(`The ${agentName(this.agent)} session ended`);
 				this.status = 'exited';
 				this.error = msg.message;
 				this.pending = [];
@@ -389,6 +435,10 @@ export class AgentChat {
 		}
 	}
 
+	get title(): string {
+		return chatTitle(this.items, this.meta, this.agent);
+	}
+
 	/**
 	 * The conversation has something on disk to resume. A snapshot that starts
 	 * past item 0 left older history out, prompts included.
@@ -447,7 +497,10 @@ export class AgentChat {
 				images: images.map(({ mediaType, data }) => ({ mediaType, data })),
 				files
 			}).then(
-				() => true,
+				() => {
+					this.sends++;
+					return true;
+				},
 				() => false
 			);
 		}
@@ -468,6 +521,7 @@ export class AgentChat {
 			}
 		];
 		this.busySince ??= Date.now();
+		this.sends++;
 		return true;
 	}
 
@@ -738,6 +792,9 @@ export class AgentChat {
 		if (old) {
 			old.onclose = null;
 			old.close();
+			// No reply comes over the old socket now.
+			this.rejectControls('Connection lost');
+			this.settleRewinds();
 		}
 		this.status = 'reconnecting';
 		void this.connect();
@@ -746,6 +803,7 @@ export class AgentChat {
 	dispose(): void {
 		this.rejectControls('Chat closed');
 		this.disposed = true;
+		if (this.reconnectOnWake) document.removeEventListener('visibilitychange', this.onVisibility);
 		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close();
 		this.ws = null;

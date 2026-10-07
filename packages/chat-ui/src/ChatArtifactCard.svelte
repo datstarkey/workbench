@@ -2,13 +2,14 @@
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import PanelsTopLeftIcon from '@lucide/svelte/icons/panels-top-left';
 	import type { ArtifactInfo } from '@workbench/types';
-	import { artifactActionLabel, artifactLink, artifactName } from './artifacts';
+	import { artifactActionLabel, artifactName } from './artifacts';
+	import { safeExternalUrl } from './url';
 	import { getChatPlatform } from './platform';
 
 	let { artifact }: { artifact: ArtifactInfo } = $props();
 
 	const platform = getChatPlatform();
-	const href = $derived(artifactLink(artifact.url));
+	const href = $derived(safeExternalUrl(artifact.url));
 </script>
 
 <div class="flex items-center gap-2.5 rounded-md border border-wb-hair bg-wb-panel px-2.5 py-2">

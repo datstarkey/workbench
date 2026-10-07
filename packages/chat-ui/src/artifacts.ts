@@ -1,4 +1,5 @@
 import type { ArtifactInfo, TranscriptMeta } from '@workbench/types';
+import { safeExternalUrl } from './url';
 
 /** One artifact this chat touched, however many calls published to it. */
 export interface ChatArtifact {
@@ -16,27 +17,17 @@ export function isArtifactTool(name: string): boolean {
 	return name === 'Artifact';
 }
 
-/** The link if it is http(s); anything else is never opened. */
-export function artifactLink(url: string): string | null {
-	try {
-		const parsed = new URL(url);
-		return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null;
-	} catch {
-		return null;
-	}
-}
-
 /** The artifact a tool call published or opened, if it returned a link. */
 export function artifactFor(meta: TranscriptMeta | null, toolId: string): ArtifactInfo | null {
 	const found = meta?.artifacts?.find((a) => a.toolUseId === toolId);
-	return found && artifactLink(found.url) ? found : null;
+	return found && safeExternalUrl(found.url) ? found : null;
 }
 
 /** The chat's artifacts, most recently touched first, one row per link. */
 export function chatArtifacts(list: ArtifactInfo[] | undefined): ChatArtifact[] {
 	const byUrl = new Map<string, ChatArtifact>();
 	for (const info of list ?? []) {
-		const url = artifactLink(info.url);
+		const url = safeExternalUrl(info.url);
 		if (!url) continue;
 		const prev = byUrl.get(url);
 		byUrl.delete(url);

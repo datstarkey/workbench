@@ -7,44 +7,22 @@
 	import PanelsTopLeftIcon from '@lucide/svelte/icons/panels-top-left';
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import {
-		activity,
 		agentName,
 		ChatArtifacts,
-		chatArtifacts,
-		ChatComposer,
-		CodexControls,
 		ChatCache,
-		ChatCacheHint,
 		ChatContext,
-		ChatModelPicker,
-		ChatPlan,
-		ChatSuggestions,
+		ChatDock,
 		ChatTasks,
 		ChatTranscript,
 		ChatUsage,
-		isRunning,
-		latestTodos,
-		limitNotice,
+		followLatest,
 		metaUsageChips,
-		promptSuggestions,
 		setChatPlatform,
 		usePlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
-	import type {
-		AgentKind,
-		ChatFile,
-		ChatImage,
-		DiscoveredClaudeSession,
-		ProjectConfig,
-		SlashCommand
-	} from '$types/workbench';
-	import {
-		getClaudeSessionStore,
-		getGitHubStore,
-		getWorkbenchSettingsStore,
-		getWorkspaceStore
-	} from '$stores/context';
+	import type { AgentKind, DiscoveredClaudeSession, ProjectConfig } from '$types/workbench';
+	import { getClaudeSessionStore, getGitHubStore, getWorkspaceStore } from '$stores/context';
 	import PRStatusBadge from '$features/projects/PRStatusBadge.svelte';
 	import { openUrl } from '$lib/utils/open-url';
 	import { planUsage } from './agent-api';
@@ -84,7 +62,6 @@
 
 	const workdir = $derived(cwd ?? project.path);
 	const claudeSessionStore = getClaudeSessionStore();
-	const settingsStore = getWorkbenchSettingsStore();
 	const workspaceStore = getWorkspaceStore();
 	const githubStore = getGitHubStore();
 	// svelte-ignore state_referenced_locally
@@ -96,13 +73,8 @@
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
 		...(sessionId ? { sessionId } : {}),
 		paneId,
-		// Codex launch defaults are resolved on the server for both hosts.
-		...(agent === 'claude' && {
-			...(claudeAccountId ? { claudeAccountId } : {}),
-			...(settingsStore.claudePermissionMode !== 'default'
-				? { permissionMode: settingsStore.claudePermissionMode }
-				: {})
-		}),
+		// Launch defaults (permission mode, Codex policies) are resolved on the server.
+		...(agent === 'claude' && claudeAccountId ? { claudeAccountId } : {}),
 		// Another device's chat, or this pane's own terminal `claude`: join its
 		// process, never start one behind its back.
 		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)
@@ -128,19 +100,7 @@
 		}
 	);
 
-	/** `/resume` is a terminal picker the CLI doesn't offer in chat, so the app provides it. */
-	const RESUME: SlashCommand = {
-		name: 'resume',
-		description: 'Continue an earlier conversation from this folder'
-	};
 	let resumeOpen = $state(false);
-	const commandList = $derived([RESUME, ...chat.commands.filter((c) => c.name !== 'resume')]);
-
-	function clientCommand(name: string): boolean {
-		if (name !== 'resume') return false;
-		resumeOpen = true;
-		return true;
-	}
 
 	async function earlierSessions(): Promise<DiscoveredClaudeSession[]> {
 		const all = await claudeSessionStore.peekSessions(workdir, agent);
@@ -158,8 +118,6 @@
 		void workspaceStore.resumeInChat(paneId, session.sessionId, session.label);
 	}
 
-	let draft = $state('');
-	let stickToBottom = true;
 	/** The tasks panel as an overlay, for panes too narrow to dock it. */
 	let tasksOpen = $state(false);
 	let artifactsOpen = $state(false);
@@ -171,18 +129,8 @@
 		return () => observer.disconnect();
 	};
 
-	const limit = $derived(
-		limitNotice(chat.meta?.rateLimit ?? null, (secs) =>
-			new Date(secs * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-		)
-	);
-	const tasks = $derived(chat.meta?.tasks ?? []);
-	const runningTasks = $derived(tasks.filter(isRunning).length);
-	const todos = $derived(latestTodos(chat.items));
-	const artifacts = $derived(chatArtifacts(chat.meta?.artifacts));
-	const now = $derived(activity(chat.items, chat.meta));
-	const live = $derived(chat.status === 'live');
-	const suggestions = $derived(promptSuggestions(chat.meta, live && !chat.rewind, draft));
+	const tasks = $derived(chat.tasks);
+	const artifacts = $derived(chat.artifactList);
 	// Codex reports its limits in the stream; Claude's come from the server's `/usage` check.
 	// svelte-ignore state_referenced_locally
 	const planLimits =
@@ -194,50 +142,14 @@
 				)
 			: null;
 	const chips = $derived(planLimits?.chips ?? metaUsageChips(chat.meta));
-	const disabledReason = $derived.by(() => {
-		switch (chat.status) {
-			case 'starting':
-				return `Starting ${agentLabel}…`;
-			case 'reconnecting':
-				return 'Reconnecting…';
-			case 'trust':
-				return 'Trust the folder to start';
-			case 'exited':
-			case 'failed':
-				return 'Restart the session to send messages';
-			default:
-				return asking ? `Answer ${agentLabel} above first` : null;
-		}
-	});
-	const asking = $derived(now.kind === 'approval' || now.kind === 'elicitation');
-
 	/**
-	 * Keep the newest message in view, unless the reader has scrolled up.
 	 * Attached after `overlayScrollbars()`, so it scrolls the viewport that
 	 * library generates rather than the host element.
 	 */
-	const followLatest: Attachment<HTMLDivElement> = (host) => {
-		const node = OverlayScrollbars(host)?.elements().viewport ?? host;
-		const onScroll = () => {
-			stickToBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
-		};
-		node.addEventListener('scroll', onScroll);
-		watch(
-			() => [chat.items, chat.pending, now.kind],
-			() => {
-				if (stickToBottom) node.scrollTop = node.scrollHeight;
-			}
-		);
-		return () => node.removeEventListener('scroll', onScroll);
-	};
-
-	function send(text: string, images: ChatImage[], files: ChatFile[]): boolean | Promise<boolean> {
-		stickToBottom = true;
-		return chat.prompt(text, images, files);
-	}
+	const follow = followLatest(chat, (host) => OverlayScrollbars(host)?.elements().viewport ?? host);
 
 	function onKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape' && chat.meta?.busy && !asking) {
+		if (event.key === 'Escape' && chat.meta?.busy && !chat.waiting) {
 			event.preventDefault();
 			chat.interrupt();
 		}
@@ -255,14 +167,14 @@
 		<span
 			class={cn(
 				'size-1.5 shrink-0 rounded-full',
-				live && (agent === 'codex' ? 'bg-wb-codex' : 'bg-wb-claude'),
+				chat.live && (agent === 'codex' ? 'bg-wb-codex' : 'bg-wb-claude'),
 				(chat.status === 'starting' || chat.status === 'reconnecting') &&
 					'animate-pulse bg-wb-warn',
 				(chat.status === 'exited' || chat.status === 'failed') && 'bg-wb-ink-soft'
 			)}
 		></span>
 		<AgentIcon {agent} class="size-4" /><span class="min-w-0 truncate font-medium"
-			>{chat.meta?.title ?? agentLabel}</span
+			>{chat.title}</span
 		>
 		{#if chat.meta?.model}
 			<span class="shrink-0 text-wb-ink-soft">{chat.meta.model.replace(/\[1m\]$/, '')}</span>
@@ -296,7 +208,7 @@
 					type="button"
 					class={cn(
 						'flex shrink-0 items-center gap-1.5 rounded-md px-2 py-0.5 hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none',
-						runningTasks > 0
+						chat.runningTasks > 0
 							? agent === 'codex'
 								? 'text-wb-codex'
 								: 'text-wb-claude'
@@ -306,7 +218,7 @@
 					onclick={() => (tasksOpen = !tasksOpen)}
 				>
 					<AgentIcon {agent} class="size-3.5" />
-					{runningTasks > 0 ? `${runningTasks} running` : 'Tasks'}
+					{chat.runningTasks > 0 ? `${chat.runningTasks} running` : 'Tasks'}
 				</button>
 			{/if}
 		</div>
@@ -322,7 +234,7 @@
 
 			<div
 				{@attach overlayScrollbars()}
-				{@attach followLatest}
+				{@attach follow}
 				class="min-h-0 flex-1"
 				role="log"
 				aria-live="polite"
@@ -332,74 +244,33 @@
 					cwd={workdir}
 					projectName={project.name}
 					{onShowTerminal}
-					onStarter={(text) => (draft = text)}
+					onStarter={(text) => (chat.draft.text = text)}
 					class="mx-auto max-w-3xl px-5 py-5"
 				/>
 			</div>
 
-			<div class="mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-2 px-5 pb-4">
-				{#if chat.notice}
-					<p class="text-xs text-wb-err" role="alert">{chat.notice}</p>
-				{/if}
-				{#if limit}
-					<p
-						class={cn(
-							'rounded-md border px-3 py-2 text-xs',
-							limit.tone === 'blocked'
-								? 'border-wb-warn/50 bg-wb-warn/10 text-wb-ink'
-								: 'border-wb-hair text-wb-ink-mute'
-						)}
-						role={limit.tone === 'blocked' ? 'alert' : undefined}
-					>
-						{limit.text}
-					</p>
-				{/if}
-				{#if todos.length > 0}
-					<ChatPlan steps={todos} />
-				{/if}
-				<CodexControls
-					{chat}
-					onThread={(id, label) => {
-						if (workspace)
-							workspaceStore.resumeAISession(workspace.id, id, label, 'codex', undefined, 'chat');
-					}}
-				/>
-				<ChatCacheHint {chat} />
-				<ChatSuggestions {suggestions} onPick={(text) => (draft = text)} />
-				<ChatComposer
-					id="chat-draft-{paneId}"
-					{agent}
-					bind:draft
-					mode={chat.meta?.permissionMode ?? null}
-					busy={Boolean(chat.meta?.busy) && live}
-					{disabledReason}
-					onSend={send}
-					onStop={() => chat.interrupt()}
-					commands={commandList}
-					onCommand={clientCommand}
-					loadFiles={() => chat.listFiles()}
-					onMode={(mode) => chat.setMode(mode)}
-				>
-					{#snippet popover()}
-						{#if resumeOpen}
-							<ChatResumePicker
-								{agent}
-								load={earlierSessions}
-								onPick={resume}
-								onClose={() => (resumeOpen = false)}
-							/>
-						{/if}
-					{/snippet}
-					{#snippet controls()}
-						<ChatModelPicker
-							meta={chat.meta}
-							disabled={disabledReason !== null}
-							onModel={(model) => chat.setModel(model)}
-							onEffort={(effort) => chat.setEffort(effort)}
+			<ChatDock
+				{chat}
+				id="chat-draft-{paneId}"
+				answerHint="Answer {agentLabel} above first"
+				onResume={() => (resumeOpen = true)}
+				onThread={(id, label) => {
+					if (workspace)
+						workspaceStore.resumeAISession(workspace.id, id, label, 'codex', undefined, 'chat');
+				}}
+				class="mx-auto w-full max-w-3xl shrink-0 px-5 pb-4"
+			>
+				{#snippet popover()}
+					{#if resumeOpen}
+						<ChatResumePicker
+							{agent}
+							load={earlierSessions}
+							onPick={resume}
+							onClose={() => (resumeOpen = false)}
 						/>
-					{/snippet}
-				</ChatComposer>
-			</div>
+					{/if}
+				{/snippet}
+			</ChatDock>
 		</div>
 		{#if tasks.length > 0 && wide}
 			<!-- The saved width is shared by every pane; a narrower pane keeps half for the chat. -->
