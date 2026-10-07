@@ -4,7 +4,7 @@
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import '@xterm/xterm/css/xterm.css';
-	import { terminalWsUrl } from './terminal-url.ts';
+	import { terminalWsUrl } from '@workbench/transport';
 	import { touchScroll } from './touch-scroll.ts';
 	import ViewSwitch from './ViewSwitch.svelte';
 	import { useBack } from './back-navigation';

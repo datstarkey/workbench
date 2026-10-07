@@ -1,4 +1,4 @@
-import type { ChatFile, ChatImage } from '@workbench/types';
+import { ChatDraft } from '@workbench/chat-ui';
 import { lsGet, lsRemove, lsSet } from './storage';
 import type { ChatRef } from './types';
 
@@ -11,15 +11,6 @@ export function draftKey(ref: ChatRef): string {
 		ref.worktreePath ?? '',
 		ref.claudeAccountId ?? ''
 	]);
-}
-
-export class ChatDraft {
-	text = $state('');
-	images = $state<ChatImage[]>([]);
-	files = $state<ChatFile[]>([]);
-	constructor(text = '') {
-		this.text = text;
-	}
 }
 
 /** Text survives relaunch; attachments stay in memory while navigating between chats. */

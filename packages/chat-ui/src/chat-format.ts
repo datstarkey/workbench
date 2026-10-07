@@ -289,11 +289,6 @@ function taskListPlan(output: string, known: Map<string, TodoStep>): Map<string,
 	return plan;
 }
 
-export function formatTokens(n: number | null): string {
-	if (n == null) return '';
-	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
-}
-
 export interface QuestionOption {
 	label: string;
 	description: string;
@@ -361,6 +356,16 @@ export type Activity =
 	| { kind: 'tool'; tool: ToolItem }
 	| { kind: 'writing' }
 	| { kind: 'thinking' };
+
+/** The chat's title, else its first prompt, else the agent's name. */
+export function chatTitle(
+	items: TranscriptItem[],
+	meta: TranscriptMeta | null,
+	agent: AgentKind
+): string {
+	const prompt = items.find((i) => i.kind === 'user' && i.text !== '');
+	return meta?.title || (prompt?.kind === 'user' ? prompt.text : '') || agentName(agent);
+}
 
 /** An approval, question or MCP elicitation still waiting on the person. */
 export function awaitsAnswer(item: TranscriptItem): item is ApprovalItem | ElicitationItem {
@@ -511,10 +516,13 @@ const LIMIT_NAMES: Record<string, string> = {
 	seven_day_sonnet: 'weekly Sonnet'
 };
 
+const clockTime = (unixSeconds: number) =>
+	new Date(unixSeconds * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
 /** What to tell the person about their usage limit, if anything. */
 export function limitNotice(
 	info: RateLimitInfo | null,
-	formatTime: (unixSeconds: number) => string
+	formatTime: (unixSeconds: number) => string = clockTime
 ): { tone: 'warn' | 'blocked'; text: string } | null {
 	if (!info || info.status === 'allowed') return null;
 	const name = info.kind ? `${LIMIT_NAMES[info.kind] ?? info.kind.replace(/_/g, ' ')} ` : '';
