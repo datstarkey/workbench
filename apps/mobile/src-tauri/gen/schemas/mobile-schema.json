@@ -2547,10 +2547,22 @@
           "markdownDescription": "Denies the reveal_item_in_dir command without any pre-configured scope."
         },
         {
-          "description": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`",
+          "description": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "session-notifications:default",
-          "markdownDescription": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`"
+          "markdownDescription": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`\n- `allow-register-listener`\n- `allow-remove-listener`"
+        },
+        {
+          "description": "Enables the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "session-notifications:allow-register-listener",
+          "markdownDescription": "Enables the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "session-notifications:allow-remove-listener",
+          "markdownDescription": "Enables the remove_listener command without any pre-configured scope."
         },
         {
           "description": "Enables the start command without any pre-configured scope.",
@@ -2569,6 +2581,18 @@
           "type": "string",
           "const": "session-notifications:allow-take-open-session",
           "markdownDescription": "Enables the take_open_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "session-notifications:deny-register-listener",
+          "markdownDescription": "Denies the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "session-notifications:deny-remove-listener",
+          "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
         },
         {
           "description": "Denies the start command without any pre-configured scope.",

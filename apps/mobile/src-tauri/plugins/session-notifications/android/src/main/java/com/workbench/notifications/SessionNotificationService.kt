@@ -1,5 +1,6 @@
 package com.workbench.notifications
 
+import android.app.ActivityManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -23,7 +24,6 @@ import java.util.concurrent.TimeUnit
 
 /** Native notification delivery survives a suspended WebView. Tokens stay in memory only. */
 class SessionNotificationService : Service() {
-  companion object { @Volatile var visible = true }
   private val executor = Executors.newSingleThreadScheduledExecutor()
   private val main = Handler(Looper.getMainLooper())
   private var task: ScheduledFuture<*>? = null
@@ -118,7 +118,7 @@ class SessionNotificationService : Service() {
       manager.cancel(2 + (aliases.getString(i).hashCode() and 0x3fffffff))
     }
     if (event.message == null) { manager.cancel(notificationId); return }
-    if (visible) { Telemetry.breadcrumb("alert skipped: app visible"); return }
+    if (appVisible()) { Telemetry.breadcrumb("alert skipped: app visible"); return }
     noteBlocked()
     val payload = JSONObject().put("machineId", machineId).put("chat", s).toString()
     val notification = NotificationCompat.Builder(this, "sessions")
@@ -128,6 +128,13 @@ class SessionNotificationService : Service() {
       .setContentIntent(open(payload, notificationId)).build()
     manager.notify(notificationId, notification)
     Telemetry.breadcrumb("alert posted: ${event.message}")
+  }
+
+  /** Asked at post time: Tauri never registers the observer that forwards onPause to plugins. */
+  private fun appVisible(): Boolean {
+    val state = ActivityManager.RunningAppProcessInfo()
+    ActivityManager.getMyMemoryState(state)
+    return state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
   }
 
   /** A gap past long polling's timeout means the CPU slept or the network stalled. */
