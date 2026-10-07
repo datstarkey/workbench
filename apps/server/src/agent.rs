@@ -753,6 +753,19 @@ impl AgentManager {
         owned.len()
     }
 
+    /// A terminal is being closed on purpose: End the chats it hosts first, so
+    /// every device sees an End, not an exit. Blocking.
+    pub fn end_terminal(&self, terminal_id: &str) {
+        let _lifecycle = lock(&self.lifecycle);
+        let hosted = self.sessions(|s| {
+            s.mod_link()
+                .is_some_and(|l| l.terminal_id.as_deref() == Some(terminal_id))
+        });
+        for session in &hosted {
+            self.halt(session, true);
+        }
+    }
+
     fn kill_terminal(&self, session: &AgentSession) {
         let terminal = session.mod_link().and_then(|l| l.terminal_id.as_deref());
         if let (Some(id), Some((terminals, _))) = (terminal, self.terminals.get()) {

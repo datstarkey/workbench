@@ -8,7 +8,15 @@
 	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { MobileClient } from './client.svelte.ts';
-	import { age, answerableFromHome, chatWhere, waitingLabel } from './home-format.ts';
+	import {
+		age,
+		answerableFromHome,
+		chatWhere,
+		baseName,
+		groupByWorkspace,
+		pathKey,
+		waitingLabel
+	} from './home-format.ts';
 	import MachinesSheet from './MachinesSheet.svelte';
 	import ProjectList from './ProjectList.svelte';
 	import Sheet from './Sheet.svelte';
@@ -35,6 +43,20 @@
 
 	const needsYou = $derived(client.chats.filter((c) => !c.exited && c.waiting));
 	const runningChats = $derived(client.chats.filter((c) => !c.exited && !c.waiting));
+	/** Folder names as the project list shows them: `project`, `project · branch`. */
+	const folderLabels = $derived(
+		new Map(
+			store.projects.flatMap((p) => [
+				[pathKey(p.path), p.name] as const,
+				...(store.worktrees[p.path] ?? [])
+					.filter((w) => !w.isMain)
+					.map((w) => [pathKey(w.path), `${p.name} · ${w.branch || baseName(w.path)}`] as const)
+			])
+		)
+	);
+	const running = $derived(
+		groupByWorkspace(runningChats, client.standaloneTerminals, folderLabels)
+	);
 </script>
 
 {#snippet sectionTitle(label: string, count?: number, dot?: boolean)}
@@ -159,98 +181,104 @@
 			</section>
 		{/if}
 
-		{#if runningChats.length > 0 || client.standaloneTerminals.length > 0}
+		{#if running.length > 0}
 			<section class="flex flex-col gap-2">
 				{@render sectionTitle('Running', runningChats.length + client.standaloneTerminals.length)}
-				{#each runningChats as chat (chat.sessionId)}
-					<button
-						type="button"
-						class="grid w-full grid-cols-[auto_1fr_auto] items-center gap-x-2.5 gap-y-0.5 rounded-xl border border-wb-hair-soft bg-wb-panel px-3 py-2.5 text-left active:bg-wb-panel2"
-						onclick={() => client.openChat(client.chatRef(chat))}
-					>
-						<span
-							class={cn(
-								'row-span-2 grid size-8 place-items-center rounded-lg bg-wb-panel2',
-								chat.agent === 'codex' ? 'text-wb-codex' : 'text-wb-claude'
-							)}
-						>
-							<AgentIcon agent={chat.agent} class="size-4" />
-						</span>
-						<span class="truncate text-[13.5px] font-medium">{chat.title ?? 'New chat'}</span>
-						<span
-							class="row-span-2 flex flex-col items-end gap-1 font-mono text-[11px] text-wb-ink-soft"
-						>
-							{#if chat.busy && chat.busySince}
-								<span class="spinner size-3"></span>
-								<Elapsed since={chat.busySince} />
-							{:else}
-								<span class="size-1.5 rounded-full bg-wb-ink-soft"></span>
-								{age(chat.updatedAt, now)}
-							{/if}
-						</span>
-						<span class="flex min-w-0 items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
-							{#if chat.agent === 'codex'}
+				{#each running as group (group.key)}
+					<div class="flex flex-col gap-2">
+						<h3 class="truncate px-0.5 pt-1 font-mono text-[11px] text-wb-ink-mute">
+							{group.label}
+						</h3>
+						{#each group.chats as chat (chat.sessionId)}
+							<button
+								type="button"
+								class="grid w-full grid-cols-[auto_1fr_auto] items-center gap-x-2.5 gap-y-0.5 rounded-xl border border-wb-hair-soft bg-wb-panel px-3 py-2.5 text-left active:bg-wb-panel2"
+								onclick={() => client.openChat(client.chatRef(chat))}
+							>
 								<span
-									class="shrink-0 rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-codex"
-									>codex</span
+									class={cn(
+										'row-span-2 grid size-8 place-items-center rounded-lg bg-wb-panel2',
+										chat.agent === 'codex' ? 'text-wb-codex' : 'text-wb-claude'
+									)}
 								>
-							{/if}
-							<span
-								class="shrink-0 rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-ink-mute"
-								>{chatWhere(chat)}</span
-							>
-							{#if chat.running}
-								<span class="truncate font-mono text-[11px] text-wb-ink"
-									>{shortPath(chat.running.detail, chat.worktreePath ?? chat.projectPath) ||
-										chat.running.name}</span
-								>
-							{:else if chat.busy}
-								<span class="truncate">Thinking</span>
-							{:else}
-								<span class="truncate">Your turn</span>
-							{/if}
-						</span>
-					</button>
-				{/each}
-				{#each client.standaloneTerminals as t (t.id)}
-					{@const claude = client.terminalChats[t.id]}
-					<div
-						class="flex items-center gap-2.5 rounded-xl border border-wb-hair-soft bg-wb-panel py-2.5 pr-1.5 pl-3"
-					>
-						<button
-							type="button"
-							class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-							onclick={() => client.selectTerminal(t.id)}
-						>
-							<span
-								class={cn(
-									'grid size-8 shrink-0 place-items-center rounded-lg bg-wb-panel2',
-									claude ? 'text-wb-claude' : 'text-wb-shell'
-								)}
-							>
-								{#if claude}<AgentIcon agent="claude" class="size-4" />{:else}<SquareTerminalIcon
-										class="size-4"
-									/>{/if}
-							</span>
-							<span class="flex min-w-0 flex-col">
-								<span class="truncate text-[13.5px] font-medium">{t.name ?? t.id.slice(0, 8)}</span>
-								<span class="flex items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
-									<span
-										class="rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-shell"
-										>{claude ? 'claude · terminal' : 'terminal'}</span
-									>
-									{#if !t.alive}exited{/if}
+									<AgentIcon agent={chat.agent} class="size-4" />
 								</span>
-							</span>
-						</button>
-						<button
-							type="button"
-							class="grid size-8 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-err"
-							aria-label="Close {t.name ?? 'terminal'}"
-							onclick={() => client.killTerminal(t.id)}
-						>
-							<XIcon class="size-4" />
-						</button>
+								<span class="truncate text-[13.5px] font-medium">{chat.title ?? 'New chat'}</span>
+								<span
+									class="row-span-2 flex flex-col items-end gap-1 font-mono text-[11px] text-wb-ink-soft"
+								>
+									{#if chat.busy && chat.busySince}
+										<span class="spinner size-3"></span>
+										<Elapsed since={chat.busySince} />
+									{:else}
+										<span class="size-1.5 rounded-full bg-wb-ink-soft"></span>
+										{age(chat.updatedAt, now)}
+									{/if}
+								</span>
+								<span class="flex min-w-0 items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
+									{#if chat.agent === 'codex'}
+										<span
+											class="shrink-0 rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-codex"
+											>codex</span
+										>
+									{/if}
+									{#if chat.running}
+										<span class="truncate font-mono text-[11px] text-wb-ink"
+											>{shortPath(chat.running.detail, chat.worktreePath ?? chat.projectPath) ||
+												chat.running.name}</span
+										>
+									{:else if chat.busy}
+										<span class="truncate">Thinking</span>
+									{:else}
+										<span class="truncate">Your turn</span>
+									{/if}
+								</span>
+							</button>
+						{/each}
+						{#each group.terminals as t (t.id)}
+							{@const claude = client.terminalChats[t.id]}
+							<div
+								class="flex items-center gap-2.5 rounded-xl border border-wb-hair-soft bg-wb-panel py-2.5 pr-1.5 pl-3"
+							>
+								<button
+									type="button"
+									class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+									onclick={() => client.selectTerminal(t.id)}
+								>
+									<span
+										class={cn(
+											'grid size-8 shrink-0 place-items-center rounded-lg bg-wb-panel2',
+											claude ? 'text-wb-claude' : 'text-wb-shell'
+										)}
+									>
+										{#if claude}<AgentIcon
+												agent="claude"
+												class="size-4"
+											/>{:else}<SquareTerminalIcon class="size-4" />{/if}
+									</span>
+									<span class="flex min-w-0 flex-col">
+										<span class="truncate text-[13.5px] font-medium"
+											>{t.name ?? t.id.slice(0, 8)}</span
+										>
+										<span class="flex items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
+											<span
+												class="rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-shell"
+												>{claude ? 'claude · terminal' : 'terminal'}</span
+											>
+											{#if !t.alive}exited{/if}
+										</span>
+									</span>
+								</button>
+								<button
+									type="button"
+									class="grid size-8 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-err"
+									aria-label="Close {t.name ?? 'terminal'}"
+									onclick={() => client.killTerminal(t.id)}
+								>
+									<XIcon class="size-4" />
+								</button>
+							</div>
+						{/each}
 					</div>
 				{/each}
 			</section>

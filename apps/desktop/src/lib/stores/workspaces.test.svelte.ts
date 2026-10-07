@@ -1798,7 +1798,7 @@ describe('WorkspaceStore', () => {
 				snapshot: { workspaces: ProjectWorkspace[]; serverTerminalIds: Record<string, string> };
 			};
 
-		it('closing an adopted tab only detaches and is not re-adopted on the next poll', () => {
+		it('closing an adopted tab kills its terminal and does not re-adopt it on the next poll', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.adoptServerTerminal(remote);
 			const tab = store.workspaces[0].terminalTabs[0];
@@ -1806,21 +1806,23 @@ describe('WorkspaceStore', () => {
 
 			store.closeTerminalTab('ws-a', tab.id);
 
-			expect(deleteServerTerminal).not.toHaveBeenCalled();
+			expect(deleteServerTerminal).toHaveBeenCalledWith(remote.id);
 			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
 			const known = new Set(store.knownServerTerminalIds());
 			expect(adoptableTerminals([remote], known, () => false)).toEqual([]);
 		});
 
-		it('closing a normal tab still kills its server terminal', () => {
+		it('closing a normal tab kills its server terminal without stopping an agent', () => {
 			const tab = makeTab({ id: 'tab-own' });
 			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab] })];
 			store.setServerTerminalId(tab.panes[0].id, 'srv-own');
 			vi.mocked(deleteServerTerminal).mockClear();
+			vi.mocked(stopAgentForPane).mockClear();
 
 			store.closeTerminalTab('ws-a', 'tab-own');
 
 			expect(deleteServerTerminal).toHaveBeenCalledWith('srv-own');
+			expect(stopAgentForPane).not.toHaveBeenCalled();
 		});
 
 		it('leaves adopted tabs and their server ids out of the persisted snapshot', () => {
@@ -1988,15 +1990,15 @@ describe('WorkspaceStore', () => {
 			expect(store.workspaces[0].terminalTabs).toHaveLength(2);
 		});
 
-		it('closing an adopted chat only detaches and is not re-adopted', () => {
+		it('closing an adopted chat ends it everywhere and does not re-adopt it', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			adopt();
 			const tab = store.workspaces[0].terminalTabs[0];
 
 			store.closeTerminalTab('ws-a', tab.id);
 
+			expect(stopAgent).toHaveBeenCalledWith('sess-phone', { end: true });
 			expect(stopAgentForPane).not.toHaveBeenCalled();
-			expect(stopAgent).not.toHaveBeenCalled();
 			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
 			expect(adoptable()).toEqual([]);
 		});
@@ -2109,7 +2111,7 @@ describe('WorkspaceStore', () => {
 			expect(store.workspaces[0].terminalTabs).toHaveLength(1);
 		});
 
-		it('closing an own chat lets its stop kill its terminal first', async () => {
+		it('closing an own chat ends it and kills its terminal', () => {
 			const own = makeTab({
 				id: 'tab-own',
 				type: 'claude',
@@ -2121,11 +2123,25 @@ describe('WorkspaceStore', () => {
 			store.closeTerminalTab('ws-a', 'tab-own');
 
 			expect(stopAgentForPane).toHaveBeenCalledWith('pane-own', { end: true });
-			expect(deleteServerTerminal).not.toHaveBeenCalled();
-			await vi.waitFor(() => expect(deleteServerTerminal).toHaveBeenCalledWith('term-own'));
+			expect(deleteServerTerminal).toHaveBeenCalledWith('term-own');
 		});
 
-		it('switches an adopted Claude chat through its existing terminal and only detaches on close', async () => {
+		it('closing a workspace ends a terminal-view Claude pane and kills its terminal', () => {
+			const own = makeTab({
+				id: 'tab-own',
+				type: 'claude',
+				panes: [{ id: 'pane-own', type: 'claude', view: 'terminal' }]
+			});
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [own] })];
+			store.setServerTerminalId('pane-own', 'term-own');
+
+			store.close('ws-a');
+
+			expect(stopAgentForPane).toHaveBeenCalledWith('pane-own', { end: true });
+			expect(deleteServerTerminal).toHaveBeenCalledWith('term-own');
+		});
+
+		it('switches an adopted Claude chat through its existing terminal and ends it on close', async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			adopt({ ...remote, terminalId: 'phone-terminal' });
 			const tab = store.workspaces[0].terminalTabs[0];
@@ -2142,6 +2158,8 @@ describe('WorkspaceStore', () => {
 			expect(lastSnapshot().snapshot.workspaces[0].terminalTabs).toHaveLength(0);
 			store.closeTerminalTab('ws-a', tab.id);
 			expect(stopAgentForPane).not.toHaveBeenCalled();
+			expect(stopAgent).toHaveBeenCalledWith('sess-phone', { end: true });
+			expect(deleteServerTerminal).toHaveBeenCalledWith('phone-terminal');
 		});
 
 		it('follows a replaced adopted terminal without attaching it underneath chat', () => {

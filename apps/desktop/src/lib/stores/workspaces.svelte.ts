@@ -24,7 +24,7 @@ import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { visibleSplit } from '$features/terminal/split-view';
-import { claimServerTerminal, deleteServerTerminal } from '$features/terminal/terminal-connection';
+import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
 import { paneAgent, codexTerminalAfterChat } from '$features/chat/pane-handoff';
 import {
@@ -72,7 +72,7 @@ export class WorkspaceStore {
 	/**
 	 * Panes adopted from another device's terminal or chat. Terminals mount
 	 * detached (offering "Take control") instead of kicking that device, chats
-	 * attach only; closing one only detaches, and they're left out of the
+	 * attach only; closing one ends it everywhere, and they're left out of the
 	 * persisted snapshot (a loopback PTY dies with the app).
 	 */
 	private adoption = new PaneAdoption();
@@ -440,45 +440,44 @@ export class WorkspaceStore {
 	 * Kill the server-side PTYs (and any chat-mode agent process) for panes
 	 * being intentionally closed (vs a webview reload, which only detaches). Without this the PTYs leak on the server and
 	 * count against the terminal cap. Best-effort / fire-and-forget. `end`: the
-	 * person closed them, so other devices showing their chats close them too
-	 * (a restart isn't an end). Adopted panes belong to another device, so
-	 * closing one only detaches and releases it.
+	 * person closed them, so other devices showing them close them too (a
+	 * restart isn't an end). A session is the same whichever device started it,
+	 * so an adopted pane is ended like an own one: the server Ends a chat whose
+	 * terminal is deleted, and a chat without one stops by session id (the
+	 * other device sent no pane id).
 	 */
 	private disposeServerTerminals(panes: Iterable<TerminalPaneState>, { end }: { end: boolean }) {
-		for (const [pane, serverId] of this.releasePanes(panes)) {
-			const stopped = stopAgentForPane(pane.id, { end });
-			if (!serverId) continue;
-			if (!pane.liveTerminal) {
-				void deleteServerTerminal(serverId);
-				continue;
+		for (const [pane, serverId, adopted] of this.releasePanes(panes)) {
+			if (adopted && pane.claudeSessionId) {
+				void stopAgent(pane.claudeSessionId, { end }).catch(() => {});
+			} else if (!adopted && isAISessionType(pane.type)) {
+				void stopAgentForPane(pane.id, { end });
 			}
-			// The chat's stop kills its own terminal: killing that first would end
-			// the chat as an exit, not an End. After, it only catches a terminal
-			// whose `claude` already left.
-			claimServerTerminal(serverId);
-			void stopped.then(() => deleteServerTerminal(serverId));
+			if (serverId) void deleteServerTerminal(serverId);
 		}
 	}
 
 	/**
 	 * Let go of closing panes: their chats, adoption and persisted re-attach
-	 * mappings (so a stale id is never reused). Returns the panes this window
-	 * owns, with their server terminal ids.
+	 * mappings (so a stale id is never reused). Returns each pane with its
+	 * server terminal id and whether it was adopted.
 	 */
-	private releasePanes(panes: Iterable<TerminalPaneState>): [TerminalPaneState, string?][] {
+	private releasePanes(
+		panes: Iterable<TerminalPaneState>
+	): [TerminalPaneState, string | undefined, boolean][] {
 		const next = { ...this.serverTerminalIds };
-		const owned: [TerminalPaneState, string?][] = [];
+		const released: [TerminalPaneState, string | undefined, boolean][] = [];
 		for (const pane of panes) {
 			releaseChat(pane.id);
 			const serverId = next[pane.id];
-			if (this.adoption.release(pane, serverId)) owned.push([pane, serverId]);
+			released.push([pane, serverId, this.adoption.release(pane, serverId)]);
 			delete next[pane.id];
 		}
 		if (Object.keys(next).length !== Object.keys(this.serverTerminalIds).length) {
 			this.serverTerminalIds = next;
 			this.persist();
 		}
-		return owned;
+		return released;
 	}
 
 	private openInternal(project: ProjectConfig, opts?: { worktreePath: string; branch: string }) {

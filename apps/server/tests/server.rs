@@ -1499,6 +1499,49 @@ async fn concurrent_chat_starts_share_one_process() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn closing_a_chats_terminal_ends_the_chat_everywhere() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    env.set(
+        "WORKBENCH_FAKE_CLAUDE",
+        write_fake_stream_claude(tmp.path()),
+    );
+    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
+    env.set("FAKE_CLAUDE_LOG", tmp.path().join("received.jsonl"));
+
+    let (handle, base) = start().await;
+    let id = "4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(), "sessionId": id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let terminal = body["terminalId"].as_str().unwrap().to_string();
+
+    // Whichever device started it, closing its terminal is an End, not an exit.
+    let res = client()
+        .delete(format!("{base}/remote/terminals/{terminal}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "attachOnly": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    assert_eq!(res.json::<Value>().await.unwrap()["ended"], true);
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn chat_resume_lists_the_title_before_a_client_opens_the_chat() {
     use futures_util::StreamExt;
 

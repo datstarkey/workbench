@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentSummary } from '@workbench/types';
-import { age, answerableFromHome, repoLabel, tildePath, waitingLabel } from './home-format.ts';
+import {
+	age,
+	answerableFromHome,
+	groupByWorkspace,
+	pathKey,
+	repoLabel,
+	tildePath,
+	waitingLabel
+} from './home-format.ts';
 
 const approval = (tool: string): NonNullable<AgentSummary['waiting']> => ({
 	id: 'r1',
@@ -54,5 +62,41 @@ describe('tildePath', () => {
 		expect(tildePath('C:\\Users\\jake\\src')).toBe('~\\src');
 		expect(tildePath('/srv/Users/jake')).toBe('/srv/Users/jake');
 		expect(tildePath('/Users/Shared/app')).toBe('/Users/Shared/app');
+	});
+});
+
+describe('groupByWorkspace', () => {
+	const chat = (sessionId: string, worktreePath?: string) =>
+		({ sessionId, projectPath: '/r/app', worktreePath }) as AgentSummary;
+
+	it('groups chats and terminals by worktree, else project, sorted by label', () => {
+		const groups = groupByWorkspace(
+			[chat('a', '/r/app-feat'), chat('b'), chat('c', '/r/app-feat')],
+			[{ cwd: '/r/app/' }, { cwd: '/r/other' }]
+		);
+
+		expect(
+			groups.map((g) => [g.label, g.chats.map((c) => c.sessionId), g.terminals.length])
+		).toEqual([
+			['app', ['b'], 1],
+			['app · app-feat', ['a', 'c'], 0],
+			['other', [], 1]
+		]);
+	});
+
+	it('names a known folder from the project list, whatever runs there', () => {
+		const labels = new Map([['/r/app-feat', 'app · feat']]);
+		const groups = groupByWorkspace([], [{ cwd: '/r/app-feat' }], labels);
+
+		expect(groups.map((g) => g.label)).toEqual(['app · feat']);
+	});
+});
+
+describe('pathKey', () => {
+	it('spells one folder one way', () => {
+		expect(pathKey('/r/app/')).toBe('/r/app');
+		expect(pathKey('/')).toBe('/');
+		expect(pathKey('C:\\R\\App\\')).toBe('c:/r/app');
+		expect(pathKey('C:/r/app')).toBe('c:/r/app');
 	});
 });

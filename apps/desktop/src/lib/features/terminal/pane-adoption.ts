@@ -24,8 +24,8 @@ const panesOf = (workspaces: ProjectWorkspace[]): TerminalPaneState[] =>
 
 /**
  * Bookkeeping for panes adopted from another device's terminals and chats.
- * Adopted panes are left out of the persisted snapshot and closing one only
- * detaches; a pane stops being adopted once it runs its own session here.
+ * Adopted panes are left out of the persisted snapshot; closing one ends it
+ * like an own pane. A pane stops being adopted once it runs its own session here.
  */
 export class PaneAdoption {
 	private adopted = new Set<string>();
@@ -169,14 +169,11 @@ export class PaneAdoption {
 		return adoptableChats(list, known, isClaimed);
 	}
 
-	/**
-	 * A pane is closing. True when its server sessions are this window's to end;
-	 * an adopted pane's belong to the other device, so it only lets go of them.
-	 */
+	/** A pane is closing: never adopt its sessions again. True when it was adopted. */
 	release(pane: TerminalPaneState, serverTerminalId: string | undefined): boolean {
 		if (pane.claudeSessionId) this.closedChats.add(pane.claudeSessionId);
 		const adopted = this.adopted.delete(pane.id);
 		if (adopted && serverTerminalId) this.releasedTerminals.add(serverTerminalId);
-		return !adopted;
+		return adopted;
 	}
 }
