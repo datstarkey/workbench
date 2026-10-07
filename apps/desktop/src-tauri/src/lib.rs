@@ -18,6 +18,7 @@ mod git_commands;
 mod git_watcher;
 mod github_poller;
 mod hook_bridge;
+mod host_update;
 // Windows and Linux menu bars can't follow the dark theme (Win32 draws a light
 // one regardless), and their title bars already have the window controls.
 #[cfg(target_os = "macos")]
@@ -133,6 +134,8 @@ macro_rules! build_invoke_handler {
             server_control::rotate_server_token,
             server_control::pairing_addresses,
             server_control::kill_all_sessions,
+            host_update::begin_update,
+            host_update::end_update,
             $( $extra ),*
         ]
     };
@@ -156,6 +159,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(RefreshDispatcher::new())
         .manage(server_control::ServerControl::new())
+        .manage(host_update::UpdateGuard::default())
         .setup(|app| {
             autostart::on_startup(app.handle());
 
@@ -189,6 +193,9 @@ pub fn run() {
             // before the webview mounts. `spawn_embedded` binds before
             // returning, so by the time setup() returns the server is ready.
             let sc = app.state::<server_control::ServerControl>();
+            sc.set_host(std::sync::Arc::new(host_update::DesktopHost::new(
+                app.handle().clone(),
+            )));
             // Degrade instead of aborting launch: terminals will fail to connect
             // (surfaced per-pane) but the rest of the app still works. A hard
             // panic here would take down the whole window on a transient bind

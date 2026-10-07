@@ -9,8 +9,6 @@
 
 	const updaterStore = getUpdaterStore();
 
-	let isDownloading = $derived(updaterStore.status === 'downloading');
-
 	let progressPercent = $derived(
 		updaterStore.contentLength > 0
 			? Math.round((updaterStore.progress / updaterStore.contentLength) * 100)
@@ -18,7 +16,7 @@
 	);
 
 	function handleOpenChange(open: boolean) {
-		if (!open && !isDownloading) {
+		if (!open && !updaterStore.busy) {
 			updaterStore.dismiss();
 		}
 	}
@@ -27,12 +25,12 @@
 <Dialog.Root open={updaterStore.dialogOpen} onOpenChange={handleOpenChange}>
 	<Dialog.Content
 		class="sm:max-w-sm"
-		showCloseButton={!isDownloading}
+		showCloseButton={!updaterStore.busy}
 		onInteractOutside={(e) => {
-			if (isDownloading) e.preventDefault();
+			if (updaterStore.busy) e.preventDefault();
 		}}
 		onEscapeKeydown={(e) => {
-			if (isDownloading) e.preventDefault();
+			if (updaterStore.busy) e.preventDefault();
 		}}
 	>
 		{#if updaterStore.status === 'checking'}
@@ -81,6 +79,19 @@
 					{:else}
 						<div class="h-full w-1/3 animate-pulse rounded-full bg-primary"></div>
 					{/if}
+				</div>
+			</div>
+		{:else if updaterStore.status === 'remote'}
+			<Dialog.Header>
+				<Dialog.Title>Updating from another device</Dialog.Title>
+				<Dialog.Description>
+					Workbench {updaterStore.version} is installing. Every terminal and chat will end, then Workbench
+					restarts.
+				</Dialog.Description>
+			</Dialog.Header>
+			<div class="py-2">
+				<div class="h-2 w-full overflow-hidden rounded-full bg-secondary">
+					<div class="h-full w-1/3 animate-pulse rounded-full bg-primary"></div>
 				</div>
 			</div>
 		{:else if updaterStore.status === 'up-to-date'}

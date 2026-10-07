@@ -32,6 +32,10 @@ pub fn router(state: AppState) -> Router {
         .route("/settings/workbench", get(load_workbench_settings))
         .route("/settings/sync", put(settings_sync_stub))
         .route(
+            "/host/update",
+            get(crate::host::update_status).post(crate::host::update_install),
+        )
+        .route(
             "/remote/terminals",
             get(crate::terminal::terminal_list).post(crate::terminal::terminal_create),
         )

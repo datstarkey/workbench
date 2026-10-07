@@ -94,6 +94,21 @@ describe('HttpTransport route mapping', () => {
 		await expect(t.invoke('list_projects', undefined)).rejects.toThrow(/boom/);
 	});
 
+	it('maps the host update to GET/POST /host/update and keeps the HTTP status on errors', async () => {
+		const f = mockFetch((_url, init) =>
+			init.method === 'POST'
+				? json({ version: '1.1.0' }, 202)
+				: json({ error: "this server can't update its host" }, 501)
+		);
+		const t = createHttpTransport({ baseUrl: 'http://host:4317', token: 'secret' });
+		await expect(t.invoke('host_update_status', undefined)).rejects.toMatchObject({ status: 501 });
+		expect(await t.invoke('host_update_install', undefined)).toEqual({ version: '1.1.0' });
+		expect(f.mock.calls.map(([url, init]) => [init.method, url])).toEqual([
+			['GET', 'http://host:4317/host/update'],
+			['POST', 'http://host:4317/host/update']
+		]);
+	});
+
 	it('throws for commands the server does not expose', async () => {
 		mockFetch(() => json(null));
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });

@@ -23,6 +23,7 @@ uuid = { workspace = true }
 base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3"
 
 # Process-GROUP termination (kill the shell + its descendants) on Unix, so
 # closing a terminal doesn't orphan child processes.
@@ -33,4 +34,3 @@ libc = "0.2"
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 tokio-tungstenite = "0.24"
-futures-util = "0.3"

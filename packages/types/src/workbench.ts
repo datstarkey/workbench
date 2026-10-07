@@ -115,6 +115,19 @@ export interface ServerTerminalMeta {
 	notice?: string;
 }
 
+/** `GET /host/update`. Mirrors `HostUpdateStatus` in crates/workbench-core/src/types.rs. */
+export interface HostUpdateStatus {
+	current: string;
+	available: string | null;
+	/** An install started by `POST /host/update` is still running. */
+	installing: boolean;
+}
+
+/** `POST /host/update`'s 202. Mirrors `HostUpdateStarted` in crates/workbench-core/src/types.rs. */
+export interface HostUpdateStarted {
+	version: string;
+}
+
 export interface TerminalActivityEvent {
 	sessionId: string;
 	active: boolean;

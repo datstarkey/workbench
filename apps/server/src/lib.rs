@@ -9,6 +9,7 @@ pub mod auth;
 pub mod cli;
 pub mod cwd;
 pub mod error;
+pub mod host;
 pub mod mod_routes;
 pub mod routes;
 pub mod state;
