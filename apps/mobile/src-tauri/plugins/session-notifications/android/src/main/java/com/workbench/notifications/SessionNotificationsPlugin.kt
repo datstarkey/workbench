@@ -3,7 +3,10 @@ package com.workbench.notifications
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import android.webkit.WebView
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -29,6 +32,7 @@ class StartArgs {
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications")])
 class SessionNotificationsPlugin(private val activity: Activity) : Plugin(activity) {
   private var pending: String? = null
+  private var askedBattery = false
 
   override fun load(webView: WebView) { Telemetry.init(activity) }
 
@@ -59,8 +63,19 @@ class SessionNotificationsPlugin(private val activity: Activity) : Plugin(activi
         .putExtra("url", args.url.trimEnd('/')).putExtra("token", args.token)
         .putExtra("machineId", args.machineId).putExtra("name", args.name)
       ContextCompat.startForegroundService(activity, service)
+      askToSkipBatteryOptimization()
       invoke.resolve()
     } catch (e: Exception) { invoke.reject(e.message ?: "Couldn't start notifications") }
+  }
+
+  /** Doze cuts an optimised app's network even with a foreground service, so polls time out while locked. Asked once per launch. */
+  private fun askToSkipBatteryOptimization() {
+    val power = activity.getSystemService(PowerManager::class.java)
+    if (askedBattery || power.isIgnoringBatteryOptimizations(activity.packageName)) return
+    askedBattery = true
+    try {
+      activity.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${activity.packageName}")))
+    } catch (e: Exception) { Telemetry.exceptionOnce(e) }
   }
 
   @Command
@@ -83,6 +98,4 @@ class SessionNotificationsPlugin(private val activity: Activity) : Plugin(activi
     pending = intent.getStringExtra("workbench.session")
     if (pending != null) trigger("open", JSObject())
   }
-  override fun onResume() { SessionNotificationService.visible = true }
-  override fun onPause() { SessionNotificationService.visible = false }
 }

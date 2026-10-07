@@ -1,3 +1,3 @@
 [default]
 description = "Allows opting into background session alerts and opening their conversations."
-permissions = ["allow-start", "allow-stop", "allow-take-open-session"]
+permissions = ["allow-start", "allow-stop", "allow-take-open-session", "allow-register-listener", "allow-remove-listener"]

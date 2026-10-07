@@ -295,6 +295,30 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-register-listener",
+          "markdownDescription": "Enables the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-register-listener",
+          "markdownDescription": "Denies the register_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-listener",
+          "markdownDescription": "Enables the remove_listener command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_listener command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-listener",
+          "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
+        },
+        {
           "description": "Enables the start command without any pre-configured scope.",
           "type": "string",
           "const": "allow-start",
@@ -331,10 +355,10 @@
           "markdownDescription": "Denies the take_open_session command without any pre-configured scope."
         },
         {
-          "description": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`",
+          "description": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`"
+          "markdownDescription": "Allows opting into background session alerts and opening their conversations.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-take-open-session`\n- `allow-register-listener`\n- `allow-remove-listener`"
         }
       ]
     }
