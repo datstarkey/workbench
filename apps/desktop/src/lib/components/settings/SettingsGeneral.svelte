@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Button } from '@workbench/ui/button';
-	import { AutostartStore } from '$stores/autostart.svelte';
+	import { AutostartStore } from './autostart.svelte';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 	import { selectFolder } from '$lib/utils/dialog';
 	import type { AccentColor } from '$types/workbench';
@@ -33,11 +33,14 @@
 	}
 </script>
 
+<!-- Login Items / Task Manager can change it while this window is open. -->
+<svelte:window onfocus={() => autostart.refresh()} />
+
 {#if autostart.supported}
 	<SettingsSection title="Startup">
 		<SettingsToggle
 			label="Start on startup"
-			description="Launch Workbench when you sign in to your computer. Changes apply immediately."
+			description="Open Workbench, minimised, when you sign in to your computer. Applies straight away; Save and Reset don't affect it."
 			checked={autostart.enabled ?? false}
 			disabled={autostart.disabled}
 			onCheckedChange={(v) => {
@@ -51,7 +54,7 @@
 					variant="outline"
 					size="sm"
 					disabled={autostart.busy}
-					onclick={() => autostart.load()}>Retry</Button
+					onclick={() => autostart.retry()}>Retry</Button
 				>
 			</div>
 		{/if}

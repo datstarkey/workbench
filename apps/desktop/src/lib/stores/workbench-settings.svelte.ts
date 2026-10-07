@@ -20,8 +20,8 @@ import { invoke } from '$lib/transport';
 // Desktop-local, like terminal IO: the srt settings file lives on this machine,
 // so this one call must never be routed to a remote instance's control plane.
 import { invoke as invokeLocal } from '@tauri-apps/api/core';
+import { IS_WINDOWS } from '$lib/utils/platform';
 import {
-	IS_WINDOWS,
 	isClaudePermissionMode,
 	isCodexApprovalPolicy,
 	isCodexSandboxMode,

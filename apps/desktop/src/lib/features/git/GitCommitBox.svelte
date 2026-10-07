@@ -7,6 +7,7 @@
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import { primaryButton } from '$features/sidebar/styles';
 	import { getGitStore } from '$stores/context';
+	import { IS_MAC } from '$lib/utils/platform';
 	import { toast } from 'svelte-sonner';
 	import { commitButtonLabel, subjectLength } from './git-view';
 
@@ -18,7 +19,7 @@
 
 	const gitStore = getGitStore();
 	const SUBJECT_LIMIT = 72;
-	const mod = navigator.userAgent.includes('Mac') ? '⌘' : 'Ctrl+';
+	const mod = IS_MAC ? '⌘' : 'Ctrl+';
 
 	let message = $state('');
 	let amend = $state(false);
