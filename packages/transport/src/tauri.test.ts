@@ -40,8 +40,8 @@ describe('TauriTransport', () => {
 			return Promise.resolve(unlisten);
 		});
 		const cb = vi.fn();
-		const off = await createTauriTransport().subscribe('claude:hook', cb);
-		expect(listen).toHaveBeenCalledWith('claude:hook', expect.any(Function));
+		const off = await createTauriTransport().subscribe('codex:notify', cb);
+		expect(listen).toHaveBeenCalledWith('codex:notify', expect.any(Function));
 		expect(cb).toHaveBeenCalledWith({ hello: 'world' });
 		expect(off).toBe(unlisten);
 	});
