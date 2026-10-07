@@ -168,11 +168,13 @@ jobs:
           key: e2e
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Not cache-apt-pkgs: it restores .debs captured on an older runner image,
+      # and a cached libegl-mesa0 over the image's newer Mesa breaks WebKit's
+      # rendering, so every WebDriver command fails ("webview unknown").
       - name: Install system dependencies
-        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
-        with:
-          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
-          version: 1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
 
       - name: Install dependencies
         run: bun install
