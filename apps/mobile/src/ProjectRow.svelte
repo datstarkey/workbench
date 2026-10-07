@@ -10,7 +10,7 @@
 	import { openExternal, type MobileClient } from './client.svelte.ts';
 	import { baseName, repoLabel, tildePath } from './home-format.ts';
 	import type { ReviewFolder } from './project-review.svelte';
-	import { matchParts } from './project-sections.ts';
+	import { matchParts } from './match-parts.ts';
 	import StartButtons from './StartButtons.svelte';
 
 	let {

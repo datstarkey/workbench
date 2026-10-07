@@ -1,21 +1,34 @@
-import { groupProjects, type ProjectGroup } from '@workbench/control-plane-ui';
+import { groupProjects } from '@workbench/control-plane-ui';
+import { SvelteSet } from 'svelte/reactivity';
 import { invoke } from '$lib/transport';
 import type { ProjectConfig } from '$types/workbench';
 import type { WorkspaceStore } from './workspaces.svelte';
 
-export type { ProjectGroup };
+const FAVOURITES_KEY = 'workbench.favourites';
+
+function readFavourites(): string[] {
+	try {
+		const parsed: unknown = JSON.parse(localStorage.getItem(FAVOURITES_KEY) ?? '[]');
+		return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
+	} catch {
+		return [];
+	}
+}
 
 export class ProjectStore {
 	projects: ProjectConfig[] = $state([]);
 	loaded = $state(false);
+	/** Favourite project paths, pinned to the top of the sidebar; remembered per machine. */
+	readonly favourites = new SvelteSet<string>(readFavourites());
+	/** Sidebar section keys (`projectSections`) the user collapsed; this session only. */
+	readonly collapsedSections = new SvelteSet<string>();
 	private workspaces: WorkspaceStore;
 
-	/** Projects grouped for display: named groups first (in array order), ungrouped at bottom */
-	groupedProjects: ProjectGroup[] = $derived(groupProjects(this.projects));
-
-	/** Unique group names in first-appearance order (derived from groupedProjects) */
+	/** Unique group names in first-appearance order */
 	groupNames: string[] = $derived(
-		this.groupedProjects.map((g) => g.group).filter((g): g is string => g !== null)
+		groupProjects(this.projects)
+			.map((g) => g.group)
+			.filter((g): g is string => g !== null)
 	);
 
 	constructor(workspaces: WorkspaceStore) {
@@ -41,11 +54,16 @@ export class ProjectStore {
 	}
 
 	async update(previousPath: string, project: ProjectConfig) {
+		if (previousPath !== project.path && this.favourites.delete(previousPath)) {
+			this.favourites.add(project.path);
+			this.saveFavourites();
+		}
 		this.projects = this.projects.map((p) => (p.path === previousPath ? project : p));
 		await this.persist();
 	}
 
 	async remove(projectPath: string) {
+		if (this.favourites.delete(projectPath)) this.saveFavourites();
 		this.projects = this.projects.filter((p) => p.path !== projectPath);
 		await this.persist();
 	}
@@ -60,6 +78,29 @@ export class ProjectStore {
 		next.splice(toIndex, 0, moved);
 		this.projects = next;
 		this.persist();
+	}
+
+	toggleFavourite(projectPath: string) {
+		if (this.favourites.delete(projectPath)) {
+			this.saveFavourites();
+			return;
+		}
+		this.favourites.add(projectPath);
+		// A new favourite must stay visible, so a collapsed Favourites reopens.
+		this.collapsedSections.delete('favourites');
+		this.saveFavourites();
+	}
+
+	toggleSection(key: string) {
+		if (!this.collapsedSections.delete(key)) this.collapsedSections.add(key);
+	}
+
+	private saveFavourites() {
+		try {
+			localStorage.setItem(FAVOURITES_KEY, JSON.stringify([...this.favourites]));
+		} catch {
+			// Blocked storage only loses the preference.
+		}
 	}
 
 	/** Set or clear the group for a project */

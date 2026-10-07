@@ -10,6 +10,7 @@
 	import PlayCircleIcon from '@lucide/svelte/icons/play-circle';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import StarIcon from '@lucide/svelte/icons/star';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
 	import {
@@ -93,6 +94,10 @@
 		</SubContent>
 	</Sub>
 {/if}
+<Item onclick={() => projectStore.toggleFavourite(project.path)}>
+	<StarIcon class="size-3.5" />
+	{projectStore.favourites.has(project.path) ? 'Remove from Favourites' : 'Add to Favourites'}
+</Item>
 <Item onclick={() => worktreeManager.add(project.path)}>
 	<GitBranchIcon class="size-3.5" />
 	Add Worktree
