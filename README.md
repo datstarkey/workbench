@@ -103,7 +103,6 @@ src-tauri/              # Rust backend
     codex.rs            # Codex session discovery and config
     claude_sessions.rs  # Claude session discovery and hooks
     git.rs              # Git CLI wrappers (branches, worktrees)
-    pty.rs              # PTY session management
     settings.rs         # Claude Code settings CRUD
     paths.rs            # Path helpers and atomic file writes
 ```
