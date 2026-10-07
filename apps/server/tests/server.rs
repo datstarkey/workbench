@@ -220,6 +220,21 @@ async fn embedded_server_refuses_a_weak_token() {
     }
 }
 
+#[tokio::test]
+async fn host_update_needs_a_token_and_a_host_that_can_update() {
+    let (handle, base) = start().await;
+    let url = format!("{base}/host/update");
+    let anon = reqwest::Client::new();
+    assert_eq!(anon.get(&url).send().await.unwrap().status(), 401);
+    assert_eq!(anon.post(&url).send().await.unwrap().status(), 401);
+
+    let http = client();
+    assert_eq!(http.get(&url).send().await.unwrap().status(), 501);
+    assert_eq!(http.post(&url).send().await.unwrap().status(), 501);
+
+    handle.stop().await;
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn agent_files_lists_a_registered_cwd_only() {

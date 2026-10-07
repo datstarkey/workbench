@@ -1,6 +1,7 @@
 <script lang="ts">
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import type { MobileClient } from './client.svelte.ts';
+	import HostUpdateRow from './HostUpdateRow.svelte';
 	import MachineList from './MachineList.svelte';
 	import Sheet from './Sheet.svelte';
 
@@ -13,6 +14,7 @@
 		<p class="text-[12px] text-wb-ink-mute">
 			Give your hosts nicknames with the pencil button. You can rename an offline host too.
 		</p>
+		{#if client.hostUpdate}<HostUpdateRow update={client.hostUpdate} />{/if}
 		<div class="flex flex-col gap-2">
 			<span class="text-[13px] font-semibold">Switch to</span>
 			<MachineList {client} onPick={onClose} />

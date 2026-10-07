@@ -17,10 +17,9 @@ use crate::sandbox_runtime;
 use crate::settings;
 use crate::types::GitHubProjectStatusEvent;
 use crate::types::{
-    BranchInfo, CreateWorktreeRequest,
-    DiscoveredClaudeSession, GitHubRemote, GitHubRepo, GitInfo, HookScriptInfo, IntegrationStatus,
-    PackageInfo, PluginInfo, ProjectConfig, SkillInfo, WorkbenchSettings, WorkspaceFile,
-    WorktreeInfo,
+    BranchInfo, CreateWorktreeRequest, DiscoveredClaudeSession, GitHubRemote, GitHubRepo, GitInfo,
+    HookScriptInfo, IntegrationStatus, PackageInfo, PluginInfo, ProjectConfig, SkillInfo,
+    WorkbenchSettings, WorkspaceFile, WorktreeInfo,
 };
 
 /// Read a file dropped onto a chat (image, PDF or text) so it can be attached to the message.

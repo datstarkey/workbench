@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { invokeSpy, mockInvoke, clearInvokeMocks, clearListeners } from '../../test/tauri-mocks';
+import {
+	invokeSpy,
+	mockInvoke,
+	clearInvokeMocks,
+	clearListeners,
+	emitMockEvent
+} from '../../test/tauri-mocks';
 
 const calls: string[] = [];
 const update = {
@@ -53,6 +59,8 @@ describe('UpdaterStore.downloadAndInstall', () => {
 	beforeEach(async () => {
 		vi.useFakeTimers();
 		calls.length = 0;
+		mockInvoke('begin_update', () => calls.push('begin_update'));
+		mockInvoke('end_update', () => calls.push('end_update'));
 		mockInvoke('kill_all_sessions', () => calls.push('kill_all_sessions'));
 		store = new UpdaterStore();
 		await store.checkForUpdates();
@@ -68,7 +76,32 @@ describe('UpdaterStore.downloadAndInstall', () => {
 	it('kills every session after downloading and before installing', async () => {
 		await store.downloadAndInstall();
 
-		expect(calls).toEqual(['download', 'kill_all_sessions', 'install', 'relaunch']);
+		expect(calls).toEqual(['begin_update', 'download', 'kill_all_sessions', 'install', 'relaunch']);
+		expect(invokeSpy).toHaveBeenCalledWith('begin_update', { version: '9.9.9' });
+	});
+
+	it("doesn't download while another device's install holds the host", async () => {
+		mockInvoke('begin_update', () => {
+			throw new Error('Workbench 9.9.9 is already being installed from another device');
+		});
+
+		await store.downloadAndInstall();
+
+		expect(update.download).not.toHaveBeenCalled();
+		expect(invokeSpy).not.toHaveBeenCalledWith('end_update');
+		expect(store.status).toBe('error');
+		expect(store.error).toMatch(/another device/);
+	});
+
+	it('shows an install started from another device until it fails', async () => {
+		emitMockEvent('update:remote', '9.9.9');
+		expect(store.status).toBe('remote');
+		expect(store.busy).toBe(true);
+		expect(store.dialogOpen).toBe(true);
+
+		emitMockEvent('update:remote-failed', 'offline');
+		expect(store.status).toBe('error');
+		expect(store.error).toMatch(/another device failed: offline/);
 	});
 
 	it('leaves sessions running when the download fails', async () => {
@@ -77,6 +110,7 @@ describe('UpdaterStore.downloadAndInstall', () => {
 		await store.downloadAndInstall();
 
 		expect(invokeSpy).not.toHaveBeenCalledWith('kill_all_sessions');
+		expect(invokeSpy).toHaveBeenCalledWith('end_update');
 		expect(update.install).not.toHaveBeenCalled();
 		expect(store.status).toBe('error');
 		expect(store.error).toBe('offline');

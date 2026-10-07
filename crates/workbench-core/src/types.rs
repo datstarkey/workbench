@@ -675,6 +675,23 @@ pub struct GitHubBranchRuns {
     pub runs: Vec<GitHubWorkflowRun>,
 }
 
+/// `GET /host/update`: the host app's version and the update it can install.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUpdateStatus {
+    pub current: String,
+    pub available: Option<String>,
+    /// An install started by `POST /host/update` is still running.
+    pub installing: bool,
+}
+
+/// `POST /host/update`'s 202: the version the host is installing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUpdateStarted {
+    pub version: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
