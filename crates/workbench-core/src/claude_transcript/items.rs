@@ -1,7 +1,7 @@
 //! The chat items and session meta sent to clients (mirrored in
 //! `@workbench/types` as `TranscriptItem` / `TranscriptMeta`).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -165,7 +165,8 @@ pub struct SlashCommand {
 }
 
 /// A model the session can switch to (from the CLI's `initialize` reply).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// Deserialized only from the server's own models cache.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelOption {
     /// What `set_model` takes: an alias (`opus`), `default`, or a full id.
@@ -175,11 +176,11 @@ pub struct ModelOption {
     pub resolved_model: Option<String>,
     /// Effort levels it accepts; empty when it has no effort setting.
     pub effort_levels: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_effort: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_modalities: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub service_tiers: Vec<Value>,
 }
 

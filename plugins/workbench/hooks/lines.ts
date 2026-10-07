@@ -119,21 +119,51 @@ export function askAnswer(text: string | undefined): Answer | null | undefined {
 		: (response.response ?? { behavior: 'deny' });
 }
 
-/** The most used rate-limit window, as the SDK's `rate_limit_event` reports one. */
+const unixSeconds = (iso: string | undefined) => {
+	const ms = iso ? Date.parse(iso) : NaN;
+	return Number.isNaN(ms) ? undefined : Math.floor(ms / 1000);
+};
+
+/**
+ * The most used rate-limit window, as the SDK's `rate_limit_event` reports one,
+ * plus every window (`windows`): the server answers plan usage from them.
+ */
 export function rateLimitLine(windows: readonly SessionRateLimit[]): Line | undefined {
 	const top = [...windows].sort((a, b) => b.percentUsed - a.percentUsed)[0];
 	if (!top) return undefined;
 	// The SDK warns past its own thresholds; 90% is where the chat starts to.
 	const status =
 		top.percentUsed >= 100 ? 'rejected' : top.percentUsed >= 90 ? 'allowed_warning' : 'allowed';
-	const resets = top.resetsAt ? Date.parse(top.resetsAt) : NaN;
+	const resetsAt = unixSeconds(top.resetsAt);
 	return {
 		type: 'rate_limit_event',
 		rate_limit_info: {
 			status,
 			rateLimitType: top.kind,
 			utilization: top.percentUsed / 100,
-			...(Number.isNaN(resets) ? {} : { resetsAt: Math.floor(resets / 1000) })
-		}
+			...(resetsAt === undefined ? {} : { resetsAt })
+		},
+		windows: windows.map((w) => ({
+			kind: w.kind,
+			percentUsed: w.percentUsed,
+			resetsAt: unixSeconds(w.resetsAt)
+		}))
 	};
+}
+
+/** A task status as the SDK's `task_notification` names an end, or `running`. */
+export function taskStatus(status: string): string {
+	if (status === 'running' || status === 'pending') return 'running';
+	if (status === 'killed' || status === 'stopped') return 'stopped';
+	return status === 'failed' ? 'failed' : 'completed';
+}
+
+/** The task and outcome a `<task-notification>` delivery names. */
+export function taskNotification(
+	text: string
+): { id: string; status: string; summary?: string } | undefined {
+	const tag = (name: string) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(text)?.[1]?.trim();
+	const id = tag('task-id');
+	const status = tag('status');
+	return id && status ? { id, status: taskStatus(status), summary: tag('summary') } : undefined;
 }

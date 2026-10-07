@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use workbench_core::claude_accounts::RateWindow;
 
 use crate::agent::AgentSession;
 use crate::error::{ApiError, ApiResult};
@@ -88,6 +89,7 @@ pub async fn out(
     Json(body): Json<OutBody>,
 ) -> ApiResult<StatusCode> {
     let session = session(&state, &headers, &body.session_id)?;
+    note_usage(&state, &session, &body.lines);
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
         agents.feed_mod(&session, &body.lines);
@@ -95,6 +97,19 @@ pub async fn out(
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The plan usage windows a `rate_limit_event` carries, as the account's
+/// latest reading (`GET /agent/usage` answers from it).
+fn note_usage(state: &AppState, session: &AgentSession, lines: &[Value]) {
+    for line in lines.iter().filter(|l| l["type"] == "rate_limit_event") {
+        let windows = line
+            .get("windows")
+            .and_then(|w| Vec::<RateWindow>::deserialize(w).ok());
+        if let Some(windows) = windows {
+            state.usage.note(session.claude_account_id(), &windows);
+        }
+    }
 }
 
 pub async fn poll(
@@ -188,6 +203,7 @@ pub async fn bye(
     Json(body): Json<OutBody>,
 ) -> ApiResult<StatusCode> {
     let session = session(&state, &headers, &body.session_id)?;
+    note_usage(&state, &session, &body.lines);
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
         agents.feed_mod(&session, &body.lines);

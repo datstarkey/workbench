@@ -21,7 +21,8 @@
 //!
 //! Ids are global, so the stop/message/WS routes of either kind reach any session.
 //! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
-//!   usage (`claude -p /usage`), cached by [`crate::usage::UsageCache`].
+//!   usage (a live session's reading, else `claude -p /usage`), from
+//!   [`crate::usage::UsageCache`].
 //! - `GET /agent/files?projectPath=[&worktreePath=]` lists a chat cwd's files
 //!   (git-tracked and untracked, not ignored) for the composer's `@` mentions.
 
