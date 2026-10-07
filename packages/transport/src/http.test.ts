@@ -111,10 +111,10 @@ describe('MockTransport', () => {
 	it('delivers emitted events to subscribers and stops after unsubscribe', async () => {
 		const t = createMockTransport();
 		const seen: unknown[] = [];
-		const unsub = await t.subscribe('claude:hook', (p) => seen.push(p));
-		t.emitMockEvent('claude:hook', { a: 1 });
+		const unsub = await t.subscribe('codex:notify', (p) => seen.push(p));
+		t.emitMockEvent('codex:notify', { a: 1 });
 		unsub();
-		t.emitMockEvent('claude:hook', { a: 2 });
+		t.emitMockEvent('codex:notify', { a: 2 });
 		expect(seen).toEqual([{ a: 1 }]);
 	});
 });
@@ -155,7 +155,7 @@ describe('HttpTransport event socket reconnect backoff', () => {
 		vi.stubGlobal('WebSocket', FakeWS);
 
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
-		await t.subscribe('claude:hook', () => {});
+		await t.subscribe('codex:notify', () => {});
 		expect(FakeWS.instances).toHaveLength(1);
 		expect(FakeWS.instances[0].url).toBe('ws://host:4317/events');
 
@@ -177,7 +177,7 @@ describe('HttpTransport event socket reconnect backoff', () => {
 		vi.stubGlobal('WebSocket', FakeWS);
 
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
-		await t.subscribe('claude:hook', () => {});
+		await t.subscribe('codex:notify', () => {});
 
 		// Fail twice so the next scheduled delay has backed off (2s→4s→8s).
 		FakeWS.instances[0].fail();
