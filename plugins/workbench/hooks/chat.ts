@@ -72,6 +72,11 @@ const taskAgents = new Map<string, string>();
 // Background agents: their Agent call returned at launch, so their own
 // `turn.complete` ends the task.
 const asyncAgents = new Set<string>();
+// Background agents the chat's Stop asked to end. No call stops one, so each ends
+// at its next model request or tool call (`endedByStop`), and then its "finished"
+// notification starts no turn. One that answered first keeps its notification.
+const stoppedAgents = new Set<string>();
+const endedByStop = new Set<string>();
 // Main-thread Skill calls still running: call id → the skill and the agents
 // there were before it. A forked skill's agent has no `agent.spawn`: the first
 // call of an agent new since then names it, and its Skill call is its task.
@@ -150,6 +155,7 @@ function commandRan(
 				description: agent.description || `/${command}`,
 				subagent_type: agent.type,
 				task_type: 'local_agent',
+				is_backgrounded: true,
 				uuid: `wbmod-task-${agent.id}`
 			},
 			{
@@ -364,6 +370,9 @@ export const register: Register = (on) => {
 			const sub = req.subtype;
 			if (sub === 'interrupt') {
 				if (runningTurn) await $.turn.abort({ turnId: runningTurn }).catch(() => {});
+				for (const agent of await $.agent.list().catch(() => []))
+					if (asyncAgents.has(agent.id) && LIVE_AGENT.has(agent.status))
+						stoppedAgents.add(agent.id);
 				reply(line.request_id);
 			} else if (sub === 'initialize') {
 				// A fallback list: the server replaces it with the CLI's own.
@@ -457,6 +466,8 @@ export const register: Register = (on) => {
 		if (link && (e.reason === 'clear' || e.reason === 'resume')) {
 			server.expectRekey(e.reason);
 			for (const task of [...taskAgents.keys()]) unlinkTask(task);
+			stoppedAgents.clear();
+			endedByStop.clear();
 			return next(e);
 		}
 		if (link) {
@@ -500,6 +511,17 @@ export const register: Register = (on) => {
 	});
 
 	on('turn.step', async function* ($, e, next) {
+		if (e.agentId && stoppedAgents.has(e.agentId)) {
+			endedByStop.add(e.agentId);
+			return {
+				turnId: e.turnId,
+				index: e.index,
+				answer: '',
+				toolUses: [],
+				stopReason: 'end_turn',
+				usage: null
+			};
+		}
 		if (!server.current() || e.agentId) return yield* next(e);
 		await server.rekey(() => $.session.id());
 		const sessionId = server.current()?.sessionId ?? '';
@@ -639,13 +661,19 @@ export const register: Register = (on) => {
 	on('turn.complete', ($, e, next) => {
 		const linked = server.current() !== null;
 		const task = e.agentId && asyncAgents.has(e.agentId) ? agentTasks.get(e.agentId) : undefined;
+		if (e.agentId) stoppedAgents.delete(e.agentId);
 		if (linked && task && e.agentId) {
 			unlinkTask(task);
 			emit({
 				type: 'system',
 				subtype: 'task_notification',
 				task_id: task,
-				status: e.reason === 'aborted' ? 'stopped' : e.reason === 'answer' ? 'completed' : 'failed',
+				status:
+					e.reason === 'aborted' || endedByStop.has(e.agentId)
+						? 'stopped'
+						: e.reason === 'answer'
+							? 'completed'
+							: 'failed',
 				uuid: `wbmod-done-${task}`
 			});
 		}
@@ -807,6 +835,14 @@ export const register: Register = (on) => {
 	// A chat's prompt reaches the session through this plugin's own submit;
 	// one typed at the terminal hands what the turn asks back to the terminal.
 	on('prompt.submit', async ($, e, next) => {
+		const tasks =
+			e.origin.kind === 'task-notification'
+				? [...e.text.matchAll(/<task-id>([^<]+)<\/task-id>/g)].map((m) => m[1] ?? '')
+				: [];
+		if (tasks.length && tasks.every((t) => endedByStop.has(t))) {
+			for (const t of tasks) endedByStop.delete(t);
+			return { drop: 'Stopped in Workbench chat' };
+		}
 		if (e.origin.kind === 'plugin') chatTurn = e.origin.name === $.plugin.name;
 		else if (e.origin.kind === 'composer') chatTurn = false;
 		return next(e);
@@ -825,6 +861,7 @@ export const register: Register = (on) => {
 
 	// Structured results (an Artifact's link) and subagents for the tasks panel.
 	on('tool.call', async ($, e, next) => {
+		if (e.agentId && stoppedAgents.has(e.agentId)) return { deny: 'Stopped in Workbench chat' };
 		if (!server.current()) return next(e);
 		const id = e.tool_use_id;
 		// Approved in the terminal's dialog: it no longer waits, however long the call runs.

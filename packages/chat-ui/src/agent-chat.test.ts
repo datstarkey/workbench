@@ -149,6 +149,26 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('offers Stop while a background agent runs, not for a background shell alone', async () => {
+		const { chat, ws } = await connected();
+		const task = (kind: string) => ({
+			id: kind,
+			kind,
+			description: kind,
+			status: 'running' as const,
+			background: true,
+			toolUses: 0,
+			tokens: 0,
+			durationMs: 0
+		});
+		expect(chat.stoppable).toBe(false);
+		ws.emit({ t: 'update', changes: [], meta: { ...meta(), tasks: [task('local_bash')] } });
+		expect(chat.stoppable).toBe(false);
+		ws.emit({ t: 'update', changes: [], meta: { ...meta(), tasks: [task('agent')] } });
+		expect(chat.stoppable).toBe(true);
+		chat.dispose();
+	});
+
 	it('keeps a slash command queued behind a busy turn until the turn ends', async () => {
 		const { chat, ws } = await connected();
 		chat.prompt('/design-login');

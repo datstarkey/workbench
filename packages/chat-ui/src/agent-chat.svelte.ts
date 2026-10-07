@@ -137,6 +137,15 @@ export class AgentChat {
 	readonly waiting = $derived(this.items.find(awaitsAnswer) ?? null);
 	readonly tasks = $derived(this.meta?.tasks ?? []);
 	readonly runningTasks = $derived(this.tasks.filter(isRunning).length);
+	/** Stop also ends a Claude chat's background agents (a forked skill's), idle or not. */
+	get stoppable(): boolean {
+		return (
+			this.live &&
+			(Boolean(this.meta?.busy) ||
+				(this.agent === 'claude' &&
+					this.tasks.some((t) => t.kind === 'agent' && t.background && isRunning(t))))
+		);
+	}
 	readonly todos = $derived(latestTodos(this.items));
 	readonly artifactList = $derived(chatArtifacts(this.meta?.artifacts));
 

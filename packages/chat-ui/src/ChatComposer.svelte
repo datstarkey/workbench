@@ -44,6 +44,7 @@
 		files = $bindable<ChatFile[]>([]),
 		mode,
 		busy,
+		stoppable,
 		disabledReason,
 		onSend,
 		onStop,
@@ -63,6 +64,8 @@
 		files?: ChatFile[];
 		mode: PermissionMode | CodexMode | null;
 		busy: boolean;
+		/** Whether Stop shows: also while only background agents run (the chat is idle). */
+		stoppable: boolean;
 		/** Set when nothing can be sent right now; shown as the placeholder. */
 		disabledReason: string | null;
 		/** Returns false if the message could not be sent (the draft is kept). */
@@ -479,7 +482,7 @@
 				<MicIcon class={cn('size-4', dictation.busy && 'text-wb-accent')} />
 			</button>
 		{/if}
-		{#if busy}
+		{#if stoppable}
 			<button
 				type="button"
 				class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-wb-hair bg-wb-panel2 text-wb-ink-mute hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none"

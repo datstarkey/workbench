@@ -104,6 +104,7 @@
 		bind:files={chat.draft.files}
 		mode={chat.meta?.permissionMode ?? null}
 		busy={Boolean(chat.meta?.busy) && chat.live}
+		stoppable={chat.stoppable}
 		{disabledReason}
 		onSend={(text, images, files) => chat.prompt(text, images, files)}
 		onStop={() => chat.interrupt()}
