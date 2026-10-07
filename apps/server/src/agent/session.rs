@@ -90,6 +90,8 @@ pub struct AgentSession {
     upkept_for: Mutex<Option<u64>>,
     /// The session JSONL, found once per session id (`learn_cache_ttl`).
     transcript_path: Mutex<Option<(String, PathBuf)>>,
+    /// Whether the transcript file has named the cache's lifetime yet.
+    cache_ttl_read: AtomicBool,
 }
 
 /// The command a chat process starts from: cwd, pipes, the inherited
@@ -301,6 +303,7 @@ impl AgentSession {
             cache_policies: cache_policies.clone(),
             upkept_for: Mutex::new(None),
             transcript_path: Mutex::new(None),
+            cache_ttl_read: AtomicBool::new(false),
         });
         if let Some(receiver) = receiver {
             let writer = Arc::downgrade(&session);
@@ -385,6 +388,8 @@ impl AgentSession {
     /// The plugin's usage has no `cache_creation` split, so a terminal's
     /// session reads the cache's lifetime from its transcript file each time
     /// a turn ends (its rows are written by then); the CLI may change it.
+    /// Until the file has named one, `assistant` lines read it too
+    /// (`learn_cache_ttl_early`), so a first turn doesn't show the 5m default.
     pub(super) fn learn_cache_ttl(&self) {
         let Some(ttl) = self
             .history_path()
@@ -392,11 +397,18 @@ impl AgentSession {
         else {
             return;
         };
+        self.cache_ttl_read.store(true, Ordering::Relaxed);
         let mut d = lock(&self.driver);
         if let Driver::Claude(t) = &mut *d {
             if t.learn_cache_ttl(ttl) {
                 self.broadcast_update(t, &[]);
             }
+        }
+    }
+
+    pub(super) fn learn_cache_ttl_early(&self) {
+        if !self.cache_ttl_read.load(Ordering::Relaxed) {
+            self.learn_cache_ttl();
         }
     }
 

@@ -280,6 +280,9 @@ impl Transcript {
                 // with changes, and on a model switch (with the pick it came from).
                 Some("init") => {
                     self.set_model(str_at(obj, "model").map(String::from));
+                    if let Some(window) = obj.get("contextWindow").and_then(Value::as_u64) {
+                        self.meta.context_window = Some(window);
+                    }
                     if let Some(mode) = str_at(obj, "permissionMode") {
                         self.meta.permission_mode = Some(mode.to_string());
                     }

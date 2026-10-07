@@ -374,6 +374,15 @@ fn the_plugins_one_model_sets_the_window_without_the_1m_suffix() {
 }
 
 #[test]
+fn the_plugins_init_sets_the_window_before_any_result() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5","contextWindow":1000000}));
+    assert_eq!(t.meta().context_window, Some(1_000_000));
+    t.apply(&json!({"type":"assistant","uuid":"a1","message":{"id":"m1","model":"claude-opus-5-5","content":[]}}));
+    assert_eq!(t.meta().context_window, Some(1_000_000));
+}
+
+#[test]
 fn picking_a_model_forgets_the_old_window() {
     let mut t = Transcript::default();
     t.apply(

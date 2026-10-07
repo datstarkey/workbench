@@ -452,11 +452,17 @@ export const register: Register = (on) => {
 		const configMode = rows.find((r) => r.key === 'permissionMode')?.value;
 		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);
 		reportedMode = permissionMode ?? '';
-		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
-		const limits = await $.session
-			.usage()
-			.then((u) => rateLimitLine(u.rateLimits))
-			.catch(() => undefined);
+		const usage = await $.session.usage().catch(() => undefined);
+		contextWindow = usage?.context.window;
+		emit({
+			type: 'system',
+			subtype: 'init',
+			session_id: sessionId,
+			model,
+			permissionMode,
+			contextWindow
+		});
+		const limits = usage && rateLimitLine(usage.rateLimits);
 		if (limits) emit(limits);
 		return result;
 	});
@@ -488,6 +494,9 @@ export const register: Register = (on) => {
 
 	on('session.measure', ($, e, next) => {
 		if (server.current()) {
+			// Sent now, not only with the turn's `result`, so a first turn shows it.
+			if (e.context.window !== contextWindow)
+				emit({ type: 'system', subtype: 'init', model, contextWindow: e.context.window });
 			contextWindow = e.context.window;
 			const limit = e.changed.includes('rateLimits') ? rateLimitLine(e.rateLimits) : undefined;
 			if (limit) emit(limit);
