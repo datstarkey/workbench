@@ -385,6 +385,20 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('reports a joined chat someone ended as ended, but not one that exited', async () => {
+		for (const ended of [false, true]) {
+			const start = vi
+				.fn<AgentApi['start']>()
+				.mockRejectedValue(Object.assign(new Error('gone'), { status: 404, ended }));
+			const chat = new AgentChat({ ...body, attachOnly: true }, fakeApi(start));
+			const onEnded = vi.fn();
+			chat.onEnded = onEnded;
+			await vi.waitFor(() => expect(chat.status).toBe('failed'));
+			expect(onEnded).toHaveBeenCalledTimes(ended ? 1 : 0);
+			chat.dispose();
+		}
+	});
+
 	it('reconnects after a dropped socket, starting the session again', async () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));

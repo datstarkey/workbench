@@ -26,7 +26,7 @@ export function listAgents(): Promise<AgentSummary[] | null> {
 	return loopback.list().catch(() => null);
 }
 
-/** Stop whatever chat session a closed pane owned. Best-effort. */
-export function stopAgentForPane(paneId: string): Promise<void> {
-	return loopback.stopPane(paneId).catch(() => {});
+/** Stop whatever chat session a pane owned; `end` when it closed. Best-effort. */
+export function stopAgentForPane(paneId: string, opts?: { end?: boolean }): Promise<void> {
+	return loopback.stopPane(paneId, opts).catch(() => {});
 }

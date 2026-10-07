@@ -260,11 +260,13 @@ export class AgentChat {
 				return;
 			}
 			// Waking phones lose the network for a moment; keep retrying rather than give up,
-			// unless a joined session is gone (it ended on the other device).
-			const gone = this.body.attachOnly && (e as { status?: number }).status === 404;
+			// unless a joined session is gone (it exited, or someone ended it).
+			const { status, ended } = e as { status?: number; ended?: boolean };
+			const gone = this.body.attachOnly && status === 404;
 			if (this.status === 'reconnecting' && !gone) return this.scheduleReconnect();
 			this.status = this.status === 'reconnecting' ? 'exited' : 'failed';
 			this.error = e instanceof Error ? e.message : String(e);
+			if (gone && ended) this.onEnded?.();
 			return;
 		}
 		if (stale()) return;

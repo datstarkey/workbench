@@ -4,7 +4,7 @@ import { CHAT_SERVER_UNREACHABLE, CLAUDE_NOT_IN_CHAT, WorkspaceStore } from './w
 import { deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { adoptableTerminals } from '$features/terminal/server-terminals';
 import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
-import { chatHasHistory, reopenChat } from '$features/chat/chat-registry';
+import { acquireChat, chatHasHistory, reopenChat } from '$features/chat/chat-registry';
 import type {
 	AgentSummary,
 	ProjectConfig,
@@ -34,6 +34,7 @@ vi.mock('$features/chat/agent-api', async (importOriginal) => ({
 vi.mock('$features/chat/chat-registry', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$features/chat/chat-registry')>()),
 	chatHasHistory: vi.fn(() => true),
+	acquireChat: vi.fn(() => ({ chat: { onEnded: null }, created: true })),
 	reopenChat: vi.fn()
 }));
 
@@ -1174,6 +1175,8 @@ describe('WorkspaceStore', () => {
 			expect(updated.terminalTabs[0].panes[0].claudeSessionId).toBe(sessionId);
 			expect(updated.terminalTabs[0].panes[0].startupCommand).toBeUndefined();
 			expect(updated.activeTerminalTabId).toBe(updated.terminalTabs[0].id);
+			// A restart isn't an End: other devices keep the chat.
+			expect(stopAgentForPane).toHaveBeenLastCalledWith('pane-1', { end: false });
 		});
 
 		it('starts a new session when the pane has no session ID', () => {
@@ -2031,7 +2034,7 @@ describe('WorkspaceStore', () => {
 			expect(store.isAdoptedPane(paneId)).toBe(false);
 			expect(lastSnapshot().snapshot.workspaces[0].terminalTabs).toHaveLength(1);
 			store.closeTerminalTab('ws-a', tab.id);
-			expect(stopAgentForPane).toHaveBeenCalledWith(paneId);
+			expect(stopAgentForPane).toHaveBeenCalledWith(paneId, { end: true });
 		});
 
 		it('closing an own chat stops it and does not adopt it while it stops', () => {
@@ -2044,8 +2047,82 @@ describe('WorkspaceStore', () => {
 
 			store.closeTerminalTab('ws-a', 'tab-own');
 
-			expect(stopAgentForPane).toHaveBeenCalledWith('pane-own');
+			expect(stopAgentForPane).toHaveBeenCalledWith('pane-own', { end: true });
 			expect(adoptable([{ ...remote, sessionId: 'sess-own', paneId: 'pane-own' }])).toEqual([]);
+		});
+
+		it('closing an own chat ended elsewhere stops nothing again', () => {
+			const own = makeTab({
+				id: 'tab-own',
+				type: 'claude',
+				panes: [{ id: 'pane-own', type: 'claude', claudeSessionId: 'sess-own', view: 'chat' }]
+			});
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [own] })];
+			store.setServerTerminalId('pane-own', 'term-own');
+
+			store.closeEndedChat('pane-own');
+
+			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
+			expect(stopAgentForPane).not.toHaveBeenCalled();
+			expect(deleteServerTerminal).not.toHaveBeenCalled();
+		});
+
+		it('closing an adopted chat ended elsewhere only detaches it', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			adopt();
+
+			store.closeEndedChat(store.workspaces[0].terminalTabs[0].panes[0].id);
+
+			expect(store.workspaces[0].terminalTabs).toHaveLength(0);
+			expect(stopAgentForPane).not.toHaveBeenCalled();
+			expect(adoptable([])).toEqual([]);
+		});
+
+		it('joins an adopted chat at once, so an End on the other device closes its tab', () => {
+			const own = makeTab({ id: 'tab-own' });
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [own] })];
+			adopt();
+			const paneId = store.workspaces[0].terminalTabs[1].panes[0].id;
+
+			expect(acquireChat).toHaveBeenLastCalledWith(paneId, {
+				agent: 'claude',
+				projectPath: '/projects/test',
+				sessionId: 'sess-phone',
+				paneId,
+				claudeAccountId: 'work',
+				attachOnly: true
+			});
+			const results = vi.mocked(acquireChat).mock.results;
+			const { chat } = results[results.length - 1].value as { chat: { onEnded: () => void } };
+			chat.onEnded();
+
+			expect(store.workspaces[0].terminalTabs.map((t) => t.id)).toEqual(['tab-own']);
+			expect(stopAgentForPane).not.toHaveBeenCalled();
+		});
+
+		it('keeps an adopted chat the server stops listing: it may have exited or be restarting', () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
+			adopt();
+
+			adoptable([]);
+
+			expect(store.workspaces[0].terminalTabs).toHaveLength(1);
+		});
+
+		it('closing an own chat lets its stop kill its terminal first', async () => {
+			const own = makeTab({
+				id: 'tab-own',
+				type: 'claude',
+				panes: [{ id: 'pane-own', type: 'claude', view: 'chat', liveTerminal: true }]
+			});
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [own] })];
+			store.setServerTerminalId('pane-own', 'term-own');
+
+			store.closeTerminalTab('ws-a', 'tab-own');
+
+			expect(stopAgentForPane).toHaveBeenCalledWith('pane-own', { end: true });
+			expect(deleteServerTerminal).not.toHaveBeenCalled();
+			await vi.waitFor(() => expect(deleteServerTerminal).toHaveBeenCalledWith('term-own'));
 		});
 
 		it('switches an adopted Claude chat through its existing terminal and only detaches on close', async () => {

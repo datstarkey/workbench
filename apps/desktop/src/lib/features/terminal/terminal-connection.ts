@@ -103,6 +103,11 @@ export function isClaimedLocally(id: string): boolean {
 	return claimedIds.has(id);
 }
 
+/** A terminal something else kills (a chat's stop): never adopt it meanwhile. */
+export function claimServerTerminal(id: string): void {
+	claimedIds.add(id);
+}
+
 /** Test-only: drop the memoized server-info cache and claims so tests stay isolated. */
 export function __resetServerInfoCache(): void {
 	serverInfoCache = null;

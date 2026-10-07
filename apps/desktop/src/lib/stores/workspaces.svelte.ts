@@ -24,10 +24,11 @@ import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { uid } from '$lib/utils/uid';
 import { suppressLayout } from '$features/terminal/layout-guard';
 import { visibleSplit } from '$features/terminal/split-view';
-import { deleteServerTerminal } from '$features/terminal/terminal-connection';
+import { claimServerTerminal, deleteServerTerminal } from '$features/terminal/terminal-connection';
 import { listAgents, stopAgent, stopAgentForPane } from '$features/chat/agent-api';
 import { paneAgent, codexTerminalAfterChat } from '$features/chat/pane-handoff';
 import {
+	acquireChat,
 	chatHasHistory,
 	isChatClaimed,
 	releaseChat,
@@ -302,15 +303,21 @@ export class WorkspaceStore {
 		if (this.adoption.takeOver(paneId)) this.persist();
 	}
 
-	/** The pane's chat was ended elsewhere (End on the phone): close it here too. */
+	/**
+	 * The pane's chat was ended elsewhere (End on the phone): close it here too.
+	 * Its session is already stopped, so nothing is stopped again.
+	 */
 	closeEndedChat(paneId: string): void {
 		const at = this.findPaneLocation(paneId);
 		if (!at) return;
 		const tab = this.workspaces
 			.find((w) => w.id === at.workspaceId)
 			?.terminalTabs.find((t) => t.id === at.tabId);
-		if (tab && tab.panes.length > 1) this.removePane(at.workspaceId, paneId);
-		else this.closeTerminalTab(at.workspaceId, at.tabId);
+		const pane = tab?.panes.find((p) => p.id === paneId);
+		if (!tab || !pane) return;
+		this.releasePanes([pane]);
+		if (tab.panes.length > 1) this.dropPane(at.workspaceId, paneId);
+		else this.dropTab(at.workspaceId, at.tabId);
 	}
 
 	/** Readable server-side name for a pane, e.g. `app [feat] · Claude 1`. */
@@ -363,10 +370,33 @@ export class WorkspaceStore {
 		}
 		if (adopted) {
 			this.addBackgroundTab(adopted);
+			const paneId = adopted.tab.panes[0].id;
 			if (chat.agent === 'claude' && chat.terminalId)
-				this.setServerTerminalId(adopted.tab.panes[0].id, chat.terminalId);
+				this.setServerTerminalId(paneId, chat.terminalId);
+			this.attachAdoptedChat(paneId, chat);
 		}
 		return adopted !== null;
+	}
+
+	/**
+	 * Join an adopted chat now, not when its tab is first shown, so an End on
+	 * the other device closes the tab here even if nobody looked at it.
+	 */
+	private attachAdoptedChat(paneId: string, chat: AgentSummary): void {
+		const { chat: joined } = acquireChat(paneId, {
+			agent: chat.agent,
+			projectPath: chat.projectPath,
+			...(chat.worktreePath && chat.worktreePath !== chat.projectPath
+				? { worktreePath: chat.worktreePath }
+				: {}),
+			sessionId: chat.sessionId,
+			paneId,
+			...(chat.agent === 'claude' && chat.claudeAccountId
+				? { claudeAccountId: chat.claudeAccountId }
+				: {}),
+			attachOnly: true
+		});
+		joined.onEnded = () => this.closeEndedChat(paneId);
 	}
 
 	/** A background workspace for an adopted chat (server terminals need xterm). */
@@ -409,28 +439,46 @@ export class WorkspaceStore {
 	/**
 	 * Kill the server-side PTYs (and any chat-mode agent process) for panes
 	 * being intentionally closed (vs a webview reload, which only detaches). Without this the PTYs leak on the server and
-	 * count against the terminal cap. Best-effort / fire-and-forget; also drops the
-	 * persisted re-attach mappings so a stale id is never reused. Adopted panes
-	 * belong to another device, so closing one only detaches and releases it.
+	 * count against the terminal cap. Best-effort / fire-and-forget. `end`: the
+	 * person closed them, so other devices showing their chats close them too
+	 * (a restart isn't an end). Adopted panes belong to another device, so
+	 * closing one only detaches and releases it.
 	 */
-	private disposeServerTerminals(panes: Iterable<TerminalPaneState>): void {
+	private disposeServerTerminals(panes: Iterable<TerminalPaneState>, { end }: { end: boolean }) {
+		for (const [pane, serverId] of this.releasePanes(panes)) {
+			const stopped = stopAgentForPane(pane.id, { end });
+			if (!serverId) continue;
+			if (!pane.liveTerminal) {
+				void deleteServerTerminal(serverId);
+				continue;
+			}
+			// The chat's stop kills its own terminal: killing that first would end
+			// the chat as an exit, not an End. After, it only catches a terminal
+			// whose `claude` already left.
+			claimServerTerminal(serverId);
+			void stopped.then(() => deleteServerTerminal(serverId));
+		}
+	}
+
+	/**
+	 * Let go of closing panes: their chats, adoption and persisted re-attach
+	 * mappings (so a stale id is never reused). Returns the panes this window
+	 * owns, with their server terminal ids.
+	 */
+	private releasePanes(panes: Iterable<TerminalPaneState>): [TerminalPaneState, string?][] {
 		const next = { ...this.serverTerminalIds };
-		let changed = false;
+		const owned: [TerminalPaneState, string?][] = [];
 		for (const pane of panes) {
 			releaseChat(pane.id);
 			const serverId = next[pane.id];
-			const owned = this.adoption.release(pane, serverId);
-			if (owned) void stopAgentForPane(pane.id);
-			if (serverId) {
-				if (owned) void deleteServerTerminal(serverId);
-				delete next[pane.id];
-				changed = true;
-			}
+			if (this.adoption.release(pane, serverId)) owned.push([pane, serverId]);
+			delete next[pane.id];
 		}
-		if (changed) {
+		if (Object.keys(next).length !== Object.keys(this.serverTerminalIds).length) {
 			this.serverTerminalIds = next;
 			this.persist();
 		}
+		return owned;
 	}
 
 	private openInternal(project: ProjectConfig, opts?: { worktreePath: string; branch: string }) {
@@ -471,7 +519,10 @@ export class WorkspaceStore {
 		const ids = closing.map((w) => w.id);
 		if (ids.length === 0) return;
 
-		this.disposeServerTerminals(closing.flatMap((w) => this.panesOf(w)));
+		this.disposeServerTerminals(
+			closing.flatMap((w) => this.panesOf(w)),
+			{ end: true }
+		);
 		this.workspaces = this.workspaces.filter((w) => !ids.includes(w.id));
 
 		if (this.selectedId && ids.includes(this.selectedId)) {
@@ -484,7 +535,7 @@ export class WorkspaceStore {
 		const ws = this.workspaces.find((w) => w.id === workspaceId);
 		if (!ws) return;
 
-		this.disposeServerTerminals(this.panesOf(ws));
+		this.disposeServerTerminals(this.panesOf(ws), { end: true });
 		const idx = this.workspaces.indexOf(ws);
 		this.workspaces = this.workspaces.filter((w) => w.id !== workspaceId);
 
@@ -547,7 +598,12 @@ export class WorkspaceStore {
 		const tab = this.workspaces
 			.find((w) => w.id === workspaceId)
 			?.terminalTabs.find((t) => t.id === tabId);
-		if (tab) this.disposeServerTerminals(tab.panes);
+		if (tab) this.disposeServerTerminals(tab.panes, { end: true });
+		this.dropTab(workspaceId, tabId);
+	}
+
+	/** Take a tab out of the layout; its panes' server state is the caller's. */
+	private dropTab(workspaceId: string, tabId: string) {
 		this.updateWorkspace(workspaceId, (w) => {
 			const tabIndex = w.terminalTabs.findIndex((t) => t.id === tabId);
 			const updatedTabs = w.terminalTabs.filter((t) => t.id !== tabId);
@@ -601,6 +657,13 @@ export class WorkspaceStore {
 	}
 
 	removePane(workspaceId: string, paneId: string) {
+		const removed = this.dropPane(workspaceId, paneId);
+		// Kill the removed pane's server PTY so it doesn't leak.
+		if (removed) this.disposeServerTerminals([removed], { end: true });
+	}
+
+	/** Take a pane out of its split (never a tab's last); its server state is the caller's. */
+	private dropPane(workspaceId: string, paneId: string): TerminalPaneState | undefined {
 		let removed: TerminalPaneState | undefined;
 		suppressLayout(() => {
 			this.updateWorkspace(workspaceId, (w) => {
@@ -619,8 +682,7 @@ export class WorkspaceStore {
 				};
 			});
 		});
-		// Kill the removed pane's server PTY so it doesn't leak.
-		if (removed) this.disposeServerTerminals([removed]);
+		return removed;
 	}
 
 	/** Add a new AI session tab (Claude or Codex) */
@@ -879,7 +941,7 @@ export class WorkspaceStore {
 			await stopAgent(pane.claudeSessionId).catch(() => {});
 		}
 		if (oldTab && isAISessionType(oldTab.type)) {
-			this.disposeServerTerminals(oldTab.panes);
+			this.disposeServerTerminals(oldTab.panes, { end: false });
 		}
 		this.updateWorkspace(workspaceId, (w) => {
 			const tab = w.terminalTabs.find((t) => t.id === tabId);

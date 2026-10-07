@@ -70,16 +70,16 @@ pub struct StartBody {
 pub async fn agent_start(
     State(state): State<AppState>,
     Json(body): Json<StartBody>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     if body.attach_only {
         // Spawns nothing, so neither the sandbox nor the cwd checks apply.
-        return attach_only(&state, &body.session_id);
+        return Ok(attach_only(&state, &body.session_id));
     }
     let agents = state.agents.clone();
     let terminals = state.terminals.clone();
     crate::routes::blocking(move || claude_start(&agents, &terminals, body))
         .await
-        .map(Json)
+        .map(|v| Json(v).into_response())
 }
 
 /// Between Claude Code's trust dialog appearing and it reading keys.
@@ -184,12 +184,12 @@ pub struct CodexStartBody {
 pub async fn codex_start(
     State(state): State<AppState>,
     Json(body): Json<CodexStartBody>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     if body.attach_only {
         let id = body
             .session_id
             .ok_or_else(|| ApiError::bad_request("attachOnly needs a sessionId"))?;
-        return attach_only(&state, &id);
+        return Ok(attach_only(&state, &id));
     }
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
@@ -222,16 +222,23 @@ pub async fn codex_start(
         Ok(json!({"sessionId": session.id()}))
     })
     .await
-    .map(Json)
+    .map(|v| Json(v).into_response())
 }
 
-/// The running session for `id`, or 404: a chat another device owns.
-fn attach_only(state: &AppState, id: &str) -> ApiResult<Json<Value>> {
-    let session = state.agents.get(id).ok_or_else(|| ApiError {
-        status: StatusCode::NOT_FOUND,
-        message: "This chat ended on the other device.".into(),
-    })?;
-    Ok(Json(start_reply(&session)))
+/// The running session for `id`, or 404: a chat another device owns. The
+/// body's `ended` says someone ended it, vs it exited.
+fn attach_only(state: &AppState, id: &str) -> Response {
+    match state.agents.get(id) {
+        Some(session) => Json(start_reply(&session)).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "This chat ended on the other device.",
+                "ended": state.agents.was_ended(id),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 pub async fn agent_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
@@ -338,6 +345,8 @@ pub async fn agent_stop(
 #[serde(rename_all = "camelCase")]
 pub struct PaneQuery {
     pane_id: String,
+    #[serde(default)]
+    end: bool,
 }
 
 pub async fn agent_stop_pane(
@@ -345,7 +354,7 @@ pub async fn agent_stop_pane(
     Query(q): Query<PaneQuery>,
 ) -> ApiResult<StatusCode> {
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop_pane(&q.pane_id))).await?;
+    crate::routes::blocking(move || Ok(agents.stop_pane(&q.pane_id, q.end))).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

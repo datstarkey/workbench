@@ -559,6 +559,22 @@ describe('MobileClient', () => {
 			expect(calls.some((x) => x.method === 'DELETE')).toBe(false);
 		});
 
+		it('leaves a chat ended on another device, but lets its own End finish', async () => {
+			const c = await connected();
+			fakeServer();
+			c.openChat(c.chatRef(summary));
+			const closeChat = vi.spyOn(c, 'closeChat');
+			const ending = c.endChat(summary.sessionId);
+			c.chatEnded(summary.sessionId);
+			expect(closeChat).not.toHaveBeenCalled();
+			await ending;
+			expect(c.activeChat).toBeNull();
+
+			c.openChat(c.chatRef(summary));
+			c.chatEnded(summary.sessionId);
+			expect(c.activeChat).toBeNull();
+		});
+
 		it('ending a chat leaves its screen even after /clear changed its id', async () => {
 			const c = await connected();
 			fakeServer();
