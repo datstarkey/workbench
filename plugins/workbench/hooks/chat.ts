@@ -1,4 +1,17 @@
 import type { PermissionRequestDecision, Register, TurnStepInput } from 'claude-code';
+import * as server from './link';
+import {
+	askLine,
+	midTurn,
+	modelOption,
+	promptText,
+	QUEUED_NUDGE,
+	QUEUED_PREFIX,
+	rateLimitLine,
+	slimResult,
+	withAttachments,
+	type Line
+} from './lines';
 
 // Runs this interactive `claude` as a Workbench chat too: what `claude -p`
 // would print as stream-json is posted to the server (`/mod/out`), and what it
@@ -6,26 +19,8 @@ import type { PermissionRequestDecision, Register, TurnStepInput } from 'claude-
 // one process. Workbench sets both variables on terminal shells it starts;
 // outside Workbench the module does nothing.
 
-type Line = Record<string, unknown>;
-type Answer = {
-	behavior?: string;
-	message?: string;
-	updatedInput?: Record<string, unknown>;
-	updatedPermissions?: Extract<
-		PermissionRequestDecision,
-		{ behavior: 'allow' }
-	>['updatedPermissions'];
-};
+const { emit } = server;
 
-interface Link {
-	url: string;
-	token: string;
-	sessionId: string;
-}
-
-let link: Link | null = null;
-let outbox: Line[] = [];
-let flushing = false;
 let polling = false;
 let model = '';
 // The model and effort last reported, so a change is sent once.
@@ -37,19 +32,25 @@ let messageSeq = 0;
 let currentMessage = '';
 const startedBlocks = new Set<number>();
 let askSeq = 0;
-// The server lost this session (it restarted, or a stop detached it): say hello again.
-let needsHello = false;
-let lastHello = 0;
-// Effort picked in chat; applied to each main-thread model request.
+// Effort picked in chat; applied to each main-thread model request until the
+// TUI picks another, which then wins as the later pick does in the TUI.
 let effort: TurnStepInput['effort'];
+// The effort the engine resolved on its own when the chat's was applied first.
+let effortBase: { value: TurnStepInput['effort'] } | undefined;
 // The running main-thread turn, for an interrupt from chat.
 let runningTurn: string | undefined;
-// The last request's token counts, stamped on its assistant rows (context
-// size and the prompt-cache timer read them).
-let lastUsage: unknown;
-// Tool results the transcript row doesn't carry (an Artifact's link), by call id.
-const toolResults = new Map<string, unknown>();
+// The live model's context window, from the latest measurement.
+let contextWindow: number | undefined;
+// Why the last turn failed (StopFailure), and the id of the `result` that
+// reported it, whose notice takes the reason when StopFailure comes after.
+let failure: string | undefined;
+let failedResult: string | undefined;
+// The parts of tool results the transcript row doesn't carry (an edit's patch,
+// an Artifact's link), by call id, until the row and the result have met.
+const toolResults = new Map<string, Line>();
 const toolRows = new Map<string, Line>();
+const callsRunning = new Set<string>();
+const TOOL_RESULTS_KEPT = 50;
 // Main-thread Agent calls still running (task ids = tool call ids); progress
 // goes to the only one when a subagent wasn't linked.
 const runningAgents = new Set<string>();
@@ -59,9 +60,9 @@ const taskAgents = new Map<string, string>();
 // Background agents: their Agent call returned at launch, so their own
 // `turn.complete` ends the task.
 const asyncAgents = new Set<string>();
-// Chat prompts appended into the running turn that no request has read yet;
-// any left when the turn ends run as their own turn (echoed once already).
+// Chat prompts appended into the running turn that no request has read yet.
 let injected: string[] = [];
+// Prompts the plugin submitted itself, kept out of the chat (each echoes once).
 const echoed = new Set<string>();
 
 // Questions and plans are asked from `tool.call` (an answer edits the input);
@@ -75,34 +76,13 @@ const PENDING_ASKS_KEPT = 50;
 const answeredInChat = new Set<string>();
 // Approvals the terminal's own dialog asks (no chat was open): tool call id → request id.
 const askedInTerminal = new Map<string, string>();
+// MCP elicitations the terminal shows, by server and elicitation id, oldest first.
+const terminalElicitations = new Map<string, string[]>();
 // Background jobs reported to the tasks panel, by id, with their last status.
 const backgroundJobs = new Map<string, string>();
-// `/clear` ends the session and the process carries on under a new id.
-let clearPending = false;
-
-function init(method: string, body?: unknown) {
-	return {
-		method,
-		headers: { 'content-type': 'application/json', 'x-workbench-mod-token': link?.token ?? '' },
-		body: body === undefined ? undefined : JSON.stringify(body)
-	};
-}
-
-function sessionQuery() {
-	return `sessionId=${encodeURIComponent(link?.sessionId ?? '')}`;
-}
-
-// Queued, then posted by the flush timer one request at a time, so lines
-// reach the server in the order they happened.
-function emit(...lines: Line[]) {
-	if (link) outbox.push(...lines);
-}
-
-function takeOutbox() {
-	const lines = outbox;
-	outbox = [];
-	return { sessionId: link?.sessionId, lines };
-}
+// Model switches the person made (`/model`, `/config`, the chat's pick); an
+// automatic fallback or a resume keeps the pick the chat shows.
+const PICKED_MODEL = new Set(['command', 'picker', 'sdk']);
 
 function reply(requestId: unknown, error?: string, response: Line = {}) {
 	emit({
@@ -111,20 +91,6 @@ function reply(requestId: unknown, error?: string, response: Line = {}) {
 			? { subtype: 'error', request_id: requestId, error }
 			: { subtype: 'success', request_id: requestId, response }
 	});
-}
-
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
-
-/** A `/config` model value as the chat's picker shows it. */
-function modelOption(value: string) {
-	const wide = value.endsWith('[1m]');
-	const base = value.replace('[1m]', '');
-	const name = base === 'opusplan' ? 'Opus Plan' : base.charAt(0).toUpperCase() + base.slice(1);
-	return {
-		value,
-		displayName: wide ? `${name} (1M context)` : name,
-		...(base === 'haiku' ? {} : { supportedEffortLevels: EFFORT_LEVELS })
-	};
 }
 
 function linkAgent(agent: string, task: string) {
@@ -145,19 +111,6 @@ function denial(result: { deny?: string } | undefined, what: string): string | u
 	return result?.deny ? `${what}: ${result.deny}` : undefined;
 }
 
-// The server turns attachments into `@path` mentions, so a prompt is text.
-function promptText(content: unknown): string {
-	if (typeof content === 'string') return content;
-	const blocks = Array.isArray(content) ? (content as { type?: string; text?: string }[]) : [];
-	return blocks
-		.filter((b) => b.type === 'text')
-		.map((b) => b.text ?? '')
-		.join('\n');
-}
-
-// A shell approval covers one command, never every later one.
-const NO_SESSION_ALLOW = new Set(['Bash', 'PowerShell']);
-
 const askKey = (tool: string, input: unknown) => `${tool}\0${JSON.stringify(input)}`;
 
 /** The pending call a `PermissionRequest` is about. */
@@ -168,69 +121,8 @@ function takeAsk(tool: string, input: unknown) {
 	return ask;
 }
 
-function askLine(
-	requestId: string,
-	tool: string,
-	input: unknown,
-	toolUseId?: string,
-	reason?: string
-): Line {
-	const suggestions =
-		NO_SESSION_ALLOW.has(tool) || ASKED_IN_CALL.has(tool)
-			? undefined
-			: [
-					{
-						type: 'addRules',
-						rules: [{ toolName: tool }],
-						behavior: 'allow',
-						destination: 'session'
-					}
-				];
-	return {
-		type: 'control_request',
-		request_id: requestId,
-		request: {
-			subtype: 'can_use_tool',
-			tool_name: tool,
-			input,
-			tool_use_id: toolUseId,
-			description: reason,
-			permission_suggestions: suggestions
-		}
-	};
-}
-
-/**
- * How the CLI frames a prompt typed while a turn runs, so the model takes it up.
- * `@` mentions (chat images and files) are only expanded for a submitted
- * prompt, so an appended one names them for the model to Read. Core's
- * `QUEUED_PROMPT_PREFIX` unwraps this wording when history is reloaded.
- */
-function midTurn(text: string): string {
-	const files = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|(\S+))/g)].map((m) => m[1] ?? m[2]);
-	const attached = files.length
-		? `\n\nAttached files (read each with the Read tool):\n${files.map((f) => `- ${f}`).join('\n')}`
-		: '';
-	return `The user sent a new message while you were working:\n${text}${attached}\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.`;
-}
-
-/**
- * One `/mod/ask` reply: the answer, `null` to fall back to the terminal (no
- * chat open, or the server is unreachable), or `undefined` to keep waiting.
- */
-function askAnswer(text: string | undefined): Answer | null | undefined {
-	if (text === undefined) return null;
-	const reply = JSON.parse(text) as {
-		answer?: { response?: { subtype?: string; response?: Answer; error?: string } };
-		fallback?: boolean;
-	};
-	if (reply.fallback) return null;
-	const response = reply.answer?.response;
-	if (!response) return undefined;
-	return response.subtype === 'error'
-		? { behavior: 'deny', message: response.error }
-		: (response.response ?? { behavior: 'deny' });
-}
+const elicitationKey = (e: { mcp_server_name: string; elicitation_id?: string }) =>
+	`${e.mcp_server_name}\0${e.elicitation_id ?? ''}`;
 
 /**
  * The session's live permission mode, from a classic hook's input: the
@@ -240,29 +132,14 @@ function askAnswer(text: string | undefined): Answer | null | undefined {
 export function notePermissionMode(mode: string | undefined) {
 	if (!mode) return;
 	liveMode = mode;
-	if (!link || mode === reportedMode) return;
+	if (!server.current() || mode === reportedMode) return;
 	reportedMode = mode;
 	emit({ type: 'permission-mode', permissionMode: mode });
 }
 
-/**
- * The terminal shows an MCP elicitation, which never comes through `tool.check`:
- * the server lists the session as waiting on it (`workbench_terminal_waiting`)
- * until the call returns. Called from the Notification hook.
- */
-export function noteTerminalElicitation(message: string | undefined) {
-	if (!link) return;
-	emit({
-		type: 'workbench_terminal_waiting',
-		id: `wbmod-elicit-${++askSeq}`,
-		tool: 'Elicitation',
-		preview: message ?? ''
-	});
-}
-
 /** Report background jobs that finished; called from the Stop hook with its job list. */
 export function noteBackgroundTasks(tasks: readonly { id: string; status: string }[] = []) {
-	if (!link) return;
+	if (!server.current()) return;
 	const live = new Map(tasks.map((t) => [t.id, t.status]));
 	for (const [job, status] of backgroundJobs) {
 		const now = live.get(job) ?? 'completed';
@@ -287,169 +164,169 @@ export const register: Register = (on) => {
 		if (!url || !token) return result;
 		const sessionId = await $.session.id();
 		model = await $.session.model();
-		link = { url, token, sessionId };
+		server.open({ url, token, sessionId });
 		const hello = await $.http
-			.fetch(`${url}/mod/hello`, init('POST', { sessionId }))
+			.fetch(`${url}/mod/hello`, server.init('POST', { sessionId }))
 			.catch(() => null);
 		if (!hello?.ok) {
-			link = null;
+			server.open(null);
 			return result;
 		}
-		const rows = await $.config.list();
-		const configMode = rows.find((r) => r.key === 'permissionMode')?.value;
-		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);
-		reportedMode = permissionMode ?? '';
-		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
+
+		// A chat prompt. A plugin's submit waits for the turn to end, so
+		// mid-turn it joins the running turn the way a typed prompt would.
+		const chatPrompt = async (line: Line) => {
+			const message = line.message as { content?: unknown } | undefined;
+			const text = promptText(message?.content);
+			if (!text) return;
+			const appended = runningTurn
+				? await $.session
+						.append({ message: { type: 'user', content: [{ type: 'text', text: midTurn(text) }] } })
+						.catch((err: unknown) => ({ deny: String(err) }))
+				: undefined;
+			if (appended && !appended.deny && runningTurn) {
+				injected.push(text);
+				emit({
+					type: 'user',
+					uuid: `wbmod-queued-${++askSeq}`,
+					session_id: server.current()?.sessionId,
+					message: { role: 'user', content: text }
+				});
+			} else {
+				// Not awaited: it resolves when its turn starts, and polling must go
+				// on meanwhile (approval answers, interrupts).
+				void $.prompt.submit({ text: withAttachments(text), asUser: true });
+			}
+		};
+
+		const controlRequest = async (line: Line) => {
+			const req = (line.request ?? {}) as {
+				subtype?: string;
+				model?: string;
+				settings?: { effortLevel?: string };
+			};
+			const sub = req.subtype;
+			if (sub === 'interrupt') {
+				if (runningTurn) await $.turn.abort({ turnId: runningTurn }).catch(() => {});
+				reply(line.request_id);
+			} else if (sub === 'initialize') {
+				// A fallback list: the server replaces it with the CLI's own.
+				const row = (await $.config.list()).find((r) => r.key === 'model');
+				const models = (row?.options ?? []).map(modelOption);
+				const commands = (await $.command.list()).map((c) => ({
+					name: c.name,
+					description: c.description
+				}));
+				const modelChoice = typeof row?.value === 'string' ? row.value : undefined;
+				reply(line.request_id, undefined, { models, commands, modelChoice });
+			} else if (sub === 'set_model' && req.model) {
+				// As the TUI's `/config` does (aliases resolve there; a plugin can't
+				// switch a session to an alias on its own).
+				const set = await $.config.set({ key: 'model', value: req.model });
+				reply(line.request_id, denial(set, 'Model'));
+			} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
+				effort = req.settings.effortLevel as TurnStepInput['effort'];
+				effortBase = undefined;
+				reply(line.request_id);
+			} else {
+				reply(line.request_id, `${sub ?? 'This'} isn't available in a terminal session yet.`);
+			}
+		};
 
 		$.clock.every(50, () => {
-			if (flushing || outbox.length === 0 || !link) return;
-			flushing = true;
-			$.http
-				.fetch(`${link.url}/mod/out`, init('POST', takeOutbox()))
-				.then((res) => {
-					if (res.status === 404) needsHello = true;
-				})
-				.catch(() => {})
-				.finally(() => (flushing = false));
+			if (!server.isFlushing()) void server.flush((u, i) => $.http.fetch(u, i));
 		});
-
 		$.clock.every(300, () => {
+			const link = server.current();
 			if (polling || !link) return;
 			polling = true;
-			if (clearPending) {
-				// The server finds the session by token until the reset re-keys it.
-				void $.session.id().then((id) => {
-					if (!link || id === link.sessionId) return;
-					clearPending = false;
-					emit({ type: 'conversation_reset', new_conversation_id: id, session_id: link.sessionId });
-					link = { ...link, sessionId: id };
-				});
-			}
-			if (needsHello && Date.now() - lastHello > 5000) {
-				needsHello = false;
-				lastHello = Date.now();
+			void server.rekey(() => $.session.id());
+			if (server.hello.needed && Date.now() - server.hello.last > 5000) {
+				server.hello.needed = false;
+				server.hello.last = Date.now();
 				lastSettings = '';
 				reportedMode = '';
 				void $.http
-					.fetch(`${link.url}/mod/hello`, init('POST', { sessionId: link.sessionId }))
+					.fetch(`${link.url}/mod/hello`, server.init('POST', { sessionId: link.sessionId }))
 					.then((res) => {
-						if (!res.ok) needsHello = true;
+						if (!res.ok) server.hello.needed = true;
 					})
-					.catch(() => (needsHello = true));
+					.catch(() => (server.hello.needed = true));
 			}
 			$.http
-				.fetch(`${link.url}/mod/in?${sessionQuery()}`, init('GET'))
+				.fetch(`${link.url}/mod/in?${server.sessionQuery()}`, server.init('GET'))
 				.then(async (res) => {
-					if (res.status === 404) needsHello = true;
+					if (res.status === 404) server.hello.needed = true;
 					if (!res.ok) return;
 					for (const line of JSON.parse(res.text || '[]') as Line[]) {
-						if (line.type === 'user') {
-							const message = line.message as { content?: unknown } | undefined;
-							const text = promptText(message?.content);
-							if (!text) continue;
-							// A plugin's submit waits for the turn to end, so mid-turn it
-							// joins the running turn the way a typed prompt would.
-							const appended = runningTurn
-								? await $.session
-										.append({
-											message: { type: 'user', content: [{ type: 'text', text: midTurn(text) }] }
-										})
-										.catch((err: unknown) => ({ deny: String(err) }))
-								: undefined;
-							if (appended && !appended.deny && runningTurn) {
-								injected.push(text);
-								emit({
-									type: 'user',
-									uuid: `wbmod-queued-${++askSeq}`,
-									session_id: link?.sessionId,
-									message: { role: 'user', content: text }
-								});
-							} else {
-								// Not awaited: it resolves when its turn starts, and polling
-								// must go on meanwhile (approval answers, interrupts).
-								void $.prompt.submit({ text, asUser: true });
-							}
-						} else if (line.type === 'control_request') {
-							const sub = (line.request as { subtype?: string } | undefined)?.subtype;
-							const req = (line.request ?? {}) as {
-								model?: string;
-								mode?: string;
-								settings?: { effortLevel?: string };
-							};
-							if (sub === 'interrupt') {
-								if (runningTurn) await $.turn.abort({ turnId: runningTurn }).catch(() => {});
-								reply(line.request_id);
-							} else if (sub === 'initialize') {
-								// A fallback list: the server replaces it with the CLI's own.
-								const row = (await $.config.list()).find((r) => r.key === 'model');
-								const models = (row?.options ?? []).map(modelOption);
-								const commands = (await $.command.list()).map((c) => ({
-									name: c.name,
-									description: c.description
-								}));
-								const modelChoice = typeof row?.value === 'string' ? row.value : undefined;
-								reply(line.request_id, undefined, { models, commands, modelChoice });
-							} else if (sub === 'set_model' && req.model) {
-								// As the TUI's `/config` does (aliases resolve there; a plugin can't
-								// switch a session to an alias on its own).
-								const set = await $.config.set({ key: 'model', value: req.model });
-								reply(line.request_id, denial(set, 'Model'));
-							} else if (sub === 'set_permission_mode') {
-								// A plugin can't switch the live mode: `$.config.set` would rewrite the
-								// settings default. The server restarts its own terminals in the mode
-								// instead, so only a terminal it didn't start gets here.
-								reply(line.request_id, 'Mode: switch it in the terminal with Shift+Tab');
-							} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
-								effort = req.settings.effortLevel as TurnStepInput['effort'];
-								reply(line.request_id);
-							} else if (sub === 'rewind_files') {
-								// A plugin has no way to restore Claude's file checkpoints; a
-								// `canRewind: false` result shows as the rewind panel's own note.
-								reply(line.request_id, undefined, {
-									canRewind: false,
-									error:
-										"files can't be restored in a terminal chat yet. Rewind the conversation only, or undo the changes with git."
-								});
-							} else {
-								reply(
-									line.request_id,
-									`${sub ?? 'This'} isn't available in a terminal session yet.`
-								);
-							}
-						}
+						if (line.type === 'user') await chatPrompt(line);
+						else if (line.type === 'control_request') await controlRequest(line);
 					}
 				})
 				.catch(() => {})
 				.finally(() => (polling = false));
 		});
+
+		const rows = await $.config.list().catch(() => []);
+		const configMode = rows.find((r) => r.key === 'permissionMode')?.value;
+		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);
+		reportedMode = permissionMode ?? '';
+		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
 		return result;
 	});
 
 	on('session.end', async ($, e, next) => {
-		if (link && e.reason === 'clear') {
-			clearPending = true;
+		const link = server.current();
+		if (link && (e.reason === 'clear' || e.reason === 'resume')) {
+			server.expectRekey(e.reason);
 			for (const task of [...taskAgents.keys()]) unlinkTask(task);
 			return next(e);
 		}
 		if (link) {
-			const { url } = link;
-			if (outbox.length > 0)
-				await $.http.fetch(`${url}/mod/out`, init('POST', takeOutbox())).catch(() => {});
-			await $.http
-				.fetch(`${url}/mod/bye`, init('POST', { sessionId: link.sessionId }))
-				.catch(() => {});
-			link = null;
+			// One request, inside the short bound an exit gets.
+			const bye = server.init('POST', server.takeOutbox());
+			server.open(null);
+			const left = Math.max(0, next.budget.remainingMs - 100);
+			await Promise.race([
+				(async () => {
+					await server.flush((u, i) => $.http.fetch(u, i));
+					await $.http.fetch(`${link.url}/mod/bye`, bye).catch(() => {});
+				})(),
+				$.clock.sleep(left)
+			]);
 		}
 		return next(e);
 	});
 
-	on('turn.step', async function* ($, e, next) {
-		if (!link || e.agentId) return yield* next(e);
+	on('session.measure', ($, e, next) => {
+		if (server.current()) {
+			contextWindow = e.context.window;
+			const limit = e.changed.includes('rateLimits') ? rateLimitLine(e.rateLimits) : undefined;
+			if (limit) emit(limit);
+		}
+		return next(e);
+	});
+
+	// A subagent's run raises none: this is always the main thread's turn.
+	on('turn.start', ($, e, next) => {
 		runningTurn = e.turnId;
+		failure = undefined;
+		failedResult = undefined;
+		return next(e);
+	});
+
+	on('turn.step', async function* ($, e, next) {
+		if (!server.current() || e.agentId) return yield* next(e);
+		await server.rekey(() => $.session.id());
+		const sessionId = server.current()?.sessionId ?? '';
 		// This request carries every row appended so far.
 		injected = [];
+		if (effort) {
+			if (!effortBase) effortBase = { value: e.effort };
+			else if (e.effort !== effortBase.value) effort = effortBase = undefined;
+		}
 		const stream = next(effort ? { ...e, effort } : e);
-		currentMessage = `wbmod-${link.sessionId.slice(0, 8)}-${++messageSeq}`;
+		currentMessage = `wbmod-${sessionId.slice(0, 8)}-${++messageSeq}`;
 		startedBlocks.clear();
 		model = e.model || model;
 		// What this request really runs with: the engine resolved both.
@@ -493,7 +370,6 @@ export const register: Register = (on) => {
 					}
 				});
 			} else if (chunk.kind === 'tool') {
-				startedBlocks.add(chunk.index);
 				emit({
 					type: 'stream_event',
 					event: {
@@ -503,55 +379,75 @@ export const register: Register = (on) => {
 					}
 				});
 			} else if (chunk.kind === 'stop') {
-				lastUsage = chunk.usage ?? undefined;
 				if (chunk.usage?.model) model = chunk.usage.model;
+				// The response's rows were appended block by block before its usage
+				// was known: the context size and cache timer read it from here.
+				if (chunk.usage)
+					emit({
+						type: 'assistant',
+						uuid: `${currentMessage}-usage`,
+						session_id: sessionId,
+						message: { id: currentMessage, model, content: [], usage: chunk.usage }
+					});
 			}
 			yield chunk;
 		}
 		return stream.result;
 	});
 
-	on('session.append', ($, e, next) => {
+	on('session.append', async ($, e, next) => {
 		const m = e.message;
-		if (link && !e.agentId && !m.isMeta) {
-			if (m.type === 'assistant' && e.door === 'response') {
+		if (!server.current() || e.agentId) return next(e);
+		await server.rekey(() => $.session.id());
+		const sessionId = server.current()?.sessionId;
+		if (!sessionId) return next(e);
+		if (m.type === 'attachment' && m.name === 'queued_command') {
+			// A prompt typed in the terminal while a turn ran, folded into that
+			// turn. Only a prompt is framed so (history shows only those too).
+			const text = promptText(m.content);
+			if (text.startsWith(QUEUED_PREFIX))
 				emit({
-					type: 'assistant',
+					type: 'user',
 					uuid: e.uuid,
-					session_id: link.sessionId,
-					message: {
-						...m,
-						id: currentMessage || `wbmod-${e.uuid}`,
-						model,
-						...(lastUsage ? { usage: lastUsage } : {})
-					}
+					session_id: sessionId,
+					message: { role: 'user', content: text }
 				});
-			} else if (m.type === 'user' && e.door === 'prompt') {
-				const text = promptText(m.content);
-				if (echoed.delete(text)) return next(e);
-				emit({ type: 'user', uuid: e.uuid, session_id: link.sessionId, message: m });
-			} else if (m.type === 'user' && e.door === 'tool-result') {
-				const row: Line = { type: 'user', uuid: e.uuid, session_id: link.sessionId, message: m };
-				const id = (m.content as { tool_use_id?: string }[] | undefined)?.find(
-					(b) => b.tool_use_id
-				)?.tool_use_id;
-				if (id) toolRows.set(id, row);
-				const result = id ? toolResults.get(id) : undefined;
-				emit(result === undefined ? row : { ...row, tool_use_result: result });
-			}
+		} else if (m.isMeta) {
+			return next(e);
+		} else if (m.type === 'assistant' && e.door === 'response') {
+			emit({
+				type: 'assistant',
+				uuid: e.uuid,
+				session_id: sessionId,
+				message: { ...m, id: currentMessage || `wbmod-${e.uuid}`, model }
+			});
+		} else if (m.type === 'user' && e.door === 'prompt') {
+			if (echoed.delete(promptText(m.content))) return next(e);
+			emit({ type: 'user', uuid: e.uuid, session_id: sessionId, message: m });
+		} else if (m.type === 'user' && e.door === 'tool-result') {
+			const row: Line = { type: 'user', uuid: e.uuid, session_id: sessionId, message: m };
+			const id = (m.content as { tool_use_id?: string }[] | undefined)?.find(
+				(b) => b.tool_use_id
+			)?.tool_use_id;
+			const result = id ? toolResults.get(id) : undefined;
+			if (id) toolResults.delete(id);
+			// Still running: its structured result is sent with the row once it returns.
+			if (id && result === undefined && callsRunning.has(id)) toolRows.set(id, row);
+			emit(result === undefined ? row : { ...row, tool_use_result: result });
 		}
 		return next(e);
 	});
 
 	on('prompt.suggest', async ($, e, next) => {
 		const shown = await next(e);
-		if (link) emit({ type: 'prompt_suggestion', suggestion: e.text });
+		if (server.current()) emit({ type: 'prompt_suggestion', suggestion: e.text });
 		return shown;
 	});
 
 	on('turn.complete', ($, e, next) => {
+		const linked = server.current() !== null;
 		const task = e.agentId && asyncAgents.has(e.agentId) ? agentTasks.get(e.agentId) : undefined;
-		if (link && task && e.agentId) {
+		if (linked && task && e.agentId) {
 			unlinkTask(task);
 			emit({
 				type: 'system',
@@ -561,20 +457,114 @@ export const register: Register = (on) => {
 				uuid: `wbmod-done-${task}`
 			});
 		}
-		if (link && !e.agentId) {
+		if (linked && !e.agentId) {
 			runningTurn = undefined;
-			emit({ type: 'result', subtype: 'success', is_error: e.reason === 'error' });
-			const unread = injected;
+			if (e.reason === 'refusal')
+				emit({
+					type: 'system',
+					subtype: 'model_refusal_no_fallback',
+					original_model: model,
+					api_refusal_explanation: e.refusal.explanation,
+					uuid: `wbmod-refusal-${++askSeq}`
+				});
+			const modelUsage = contextWindow ? { [model]: { contextWindow } } : undefined;
+			if (e.reason === 'error') {
+				failedResult = `wbmod-result-${++askSeq}`;
+				emit({
+					type: 'result',
+					subtype: 'error_during_execution',
+					is_error: true,
+					result: failure ?? 'The turn failed.',
+					uuid: failedResult,
+					modelUsage
+				});
+			} else {
+				emit({ type: 'result', subtype: 'success', is_error: false, modelUsage });
+			}
+			const unread = injected.length > 0;
 			injected = [];
 			// Entries live one turn at most, so a stale one can't hide a later prompt.
 			echoed.clear();
 			// Stopped: the prompt stays in the chat, as an interrupted CLI leaves it.
-			if (e.reason === 'aborted') return next(e);
-			for (const text of unread) {
-				echoed.add(text);
-				void $.prompt.submit({ text, asUser: true });
-			}
+			if (e.reason === 'aborted' || !unread) return next(e);
+			// The unread prompts are in the conversation already; only ask for an answer.
+			echoed.add(QUEUED_NUDGE);
+			void $.prompt.submit({ text: QUEUED_NUDGE, asUser: true });
 		}
+		return next(e);
+	});
+
+	// An API error ended the turn: the chat says why instead of a bare failure.
+	on('classic.StopFailure', ($, e, next) => {
+		if (server.current()) {
+			failure = e.error_details || `The turn failed: ${e.error.replace(/_/g, ' ')}.`;
+			// The turn's `result` went out already: only its notice takes the reason.
+			if (failedResult)
+				emit({
+					type: 'system',
+					subtype: 'local_command_output',
+					content: failure,
+					uuid: failedResult
+				});
+		}
+		return next(e);
+	});
+
+	on('classic.PostModelSwitch', ($, e, next) => {
+		if (server.current()) {
+			model = e.to_model;
+			emit({
+				type: 'system',
+				subtype: 'init',
+				model: e.to_model,
+				...(PICKED_MODEL.has(e.source) ? { modelChoice: e.requested_model ?? 'default' } : {})
+			});
+		}
+		return next(e);
+	});
+
+	// Fires when auto mode's classifier denies a call.
+	on('classic.PermissionDenied', ($, e, next) => {
+		notePermissionMode(e.permission_mode);
+		if (server.current() && !e.agent_id)
+			emit({
+				type: 'system',
+				subtype: 'permission_denied',
+				tool_name: e.tool_name,
+				tool_use_id: e.tool_use_id,
+				decision_reason_type: 'classifier',
+				decision_reason: e.reason,
+				uuid: `wbmod-denied-${e.tool_use_id}`
+			});
+		return next(e);
+	});
+
+	// An MCP server asks for input. The terminal's dialog answers it; the chat
+	// shows a read-only card, and the session waits on it until it's answered.
+	on('classic.Elicitation', ($, e, next) => {
+		if (server.current()) {
+			const id = `wbmod-elicit-${++askSeq}`;
+			const key = elicitationKey(e);
+			terminalElicitations.set(key, [...(terminalElicitations.get(key) ?? []), id]);
+			emit({
+				type: 'workbench_terminal_elicitation',
+				id,
+				mcp_server_name: e.mcp_server_name,
+				message: e.message,
+				mode: e.mode,
+				url: e.url,
+				requested_schema: e.requested_schema
+			});
+		}
+		return next(e);
+	});
+
+	on('classic.ElicitationResult', ($, e, next) => {
+		const key = elicitationKey(e);
+		const id = terminalElicitations.get(key)?.shift();
+		if (terminalElicitations.get(key)?.length === 0) terminalElicitations.delete(key);
+		if (server.current() && id)
+			emit({ type: 'workbench_terminal_elicitation_result', id, action: e.action });
 		return next(e);
 	});
 
@@ -583,10 +573,12 @@ export const register: Register = (on) => {
 	// prints them. A forked skill's agent has no `agent.spawn`, so it joins the
 	// tasks panel here; its own `turn.complete` ends the task.
 	on('command.run', async ($, e, next) => {
-		if (!link) return next(e);
+		if (!server.current()) return next(e);
+		await server.rekey(() => $.session.id());
 		const before = new Set((await $.agent.list()).map((a) => a.id));
 		const result = await next(e);
-		if (!link) return result;
+		if (!server.current()) return result;
+		await server.rekey(() => $.session.id());
 		for (const agent of await $.agent.list()) {
 			if (before.has(agent.id) || agent.parentId || agentTasks.has(agent.id)) continue;
 			linkAgent(agent.id, agent.id);
@@ -628,7 +620,7 @@ export const register: Register = (on) => {
 	// ends with its own.
 	on('session.compact', async ($, e, next) => {
 		const result = await next(e);
-		if (!link || e.agentId || e.trigger === 'precompute') return result;
+		if (!server.current() || e.agentId || e.trigger === 'precompute') return result;
 		if (!result.messages) {
 			emit({
 				type: 'system',
@@ -650,7 +642,7 @@ export const register: Register = (on) => {
 
 	// Structured results (an Artifact's link) and subagents for the tasks panel.
 	on('tool.call', async ($, e, next) => {
-		if (!link) return next(e);
+		if (!server.current()) return next(e);
 		const id = e.tool_use_id;
 		// Approved in the terminal's dialog: it no longer waits, however long the call runs.
 		const asked = id ? askedInTerminal.get(id) : undefined;
@@ -661,19 +653,12 @@ export const register: Register = (on) => {
 		if (ASKED_IN_CALL.has(e.tool) && !e.agentId && id) {
 			const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
 			const requestId = `wbmod-ask-${++askSeq}`;
-			let line: Line | undefined = askLine(requestId, e.tool, input, id);
-			let answer: Answer | null | undefined;
-			while (answer === undefined && link && !next.signal.aborted) {
-				const res = await $.http
-					.fetch(
-						`${link.url}/mod/ask`,
-						init('POST', { sessionId: link.sessionId, requestId, line })
-					)
-					.catch(() => null);
-				line = undefined;
-				answer = askAnswer(res?.ok ? res.text : undefined);
-			}
-			if (next.signal.aborted) emit({ type: 'control_cancel_request', request_id: requestId });
+			const answer = await server.askInChat(
+				(u, i) => $.http.fetch(u, i),
+				requestId,
+				askLine(requestId, e.tool, input, id),
+				next.signal
+			);
 			if (answer) {
 				if (answer.behavior !== 'allow')
 					return { deny: answer.message || 'Declined in Workbench chat' };
@@ -704,6 +689,8 @@ export const register: Register = (on) => {
 				uuid: `wbmod-progress-${++askSeq}`
 			});
 		}
+		const main = id && !e.agentId ? id : undefined;
+		if (main) callsRunning.add(main);
 		const result = await next(e);
 		const launched = result.result as { status?: string; agentId?: string } | undefined;
 		if (isAgent && id) {
@@ -736,10 +723,18 @@ export const register: Register = (on) => {
 				uuid: `wbmod-bg-${bg}`
 			});
 		}
-		if (id && !e.agentId && result.result !== undefined) {
-			toolResults.set(id, result.result);
-			const row = toolRows.get(id);
-			if (row) emit({ ...row, tool_use_result: result.result });
+		if (main) {
+			callsRunning.delete(main);
+			const slim = slimResult(result.result);
+			const row = toolRows.get(main);
+			toolRows.delete(main);
+			if (row && slim) emit({ ...row, tool_use_result: slim });
+			else if (slim) {
+				// The row comes after the call returns.
+				toolResults.set(main, slim);
+				if (toolResults.size > TOOL_RESULTS_KEPT)
+					toolResults.delete(toolResults.keys().next().value!);
+			}
 		}
 		return result;
 	});
@@ -748,7 +743,7 @@ export const register: Register = (on) => {
 		const result = await next(e);
 		// The spawn names its Agent call; only the main thread's calls are tasks.
 		const task = runningAgents.has(e.tool_use_id) ? e.tool_use_id : undefined;
-		if (link && task && result.agentId) {
+		if (server.current() && task && result.agentId) {
 			linkAgent(result.agentId, task);
 			// The CLI writes a subagent's log as `<agent id>.output`.
 			emit({
@@ -765,7 +760,12 @@ export const register: Register = (on) => {
 	on('tool.check', async ($, e, next) => {
 		const verdict = await next(e);
 		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
-		if (verdict.decision === 'ask' && link && e.tool_use_id && !ASKED_IN_CALL.has(e.tool)) {
+		if (
+			verdict.decision === 'ask' &&
+			server.current() &&
+			e.tool_use_id &&
+			!ASKED_IN_CALL.has(e.tool)
+		) {
 			const key = askKey(e.tool, e.input);
 			pendingAsks.delete(key);
 			pendingAsks.set(key, { id: e.tool_use_id, reason: verdict.reason });
@@ -782,25 +782,23 @@ export const register: Register = (on) => {
 	// hook's time budget, however long the person takes.
 	on('classic.PermissionRequest', async ($, e, next) => {
 		notePermissionMode(e.permission_mode);
-		if (!link || ASKED_IN_CALL.has(e.tool_name)) return next(e);
+		if (!server.current() || ASKED_IN_CALL.has(e.tool_name)) return next(e);
 		const pending = takeAsk(e.tool_name, e.tool_input);
 		const requestId = `wbmod-ask-${++askSeq}`;
-		let line: Line | undefined = askLine(
+		const line = askLine(
 			requestId,
 			e.tool_name,
 			e.tool_input,
 			pending?.id,
-			pending?.reason
+			pending?.reason,
+			e.permission_suggestions
 		);
-		let answer: Answer | null | undefined;
-		while (answer === undefined && link && !next.signal.aborted) {
-			const res = await $.http
-				.fetch(`${link.url}/mod/ask`, init('POST', { sessionId: link.sessionId, requestId, line }))
-				.catch(() => null);
-			line = undefined;
-			answer = askAnswer(res?.ok ? res.text : undefined);
-		}
-		if (next.signal.aborted) emit({ type: 'control_cancel_request', request_id: requestId });
+		const answer = await server.askInChat(
+			(u, i) => $.http.fetch(u, i),
+			requestId,
+			line,
+			next.signal
+		);
 		if (!answer) {
 			// The terminal asks now; the server shows it waiting until it's answered.
 			if (pending && !next.signal.aborted) askedInTerminal.set(pending.id, requestId);

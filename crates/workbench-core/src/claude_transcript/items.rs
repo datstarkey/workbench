@@ -102,6 +102,10 @@ pub enum TranscriptItem {
         expired: bool,
         /// URL mode: the server reported the flow finished.
         completed: bool,
+        /// Asked by the terminal's own dialog (a terminal `claude`): shown,
+        /// answered there.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        in_terminal: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         action: Option<super::ElicitationAction>,
         /// What an accepted form sent.

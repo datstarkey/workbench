@@ -1,7 +1,8 @@
 //! Rewinding a Claude chat against a fake `claude` (set via
-//! `WORKBENCH_CLAUDE_BIN`): a dry run previews the file restore, a real one
-//! restores files and restarts the process resumed before the prompt. Its
-//! own test binary because it points `HOME` at a temp dir.
+//! `WORKBENCH_CLAUDE_BIN`): files can't be restored from a terminal chat, and
+//! a conversation rewind restarts the terminal resumed before the prompt, and
+//! a `/resume` in the terminal shows the resumed session's history. Its own
+//! test binary because it points `HOME` at a temp dir.
 #![cfg(unix)]
 
 mod support;
@@ -18,20 +19,18 @@ const SID: &str = "5e5e5e5e-0000-4000-8000-000000000001";
 const FIRST: &str = "11111111-1111-4111-8111-111111111111";
 const SECOND: &str = "22222222-2222-4222-8222-222222222222";
 const REPLY: &str = "33333333-3333-4333-8333-333333333333";
+const OTHER: &str = "5e5e5e5e-0000-4000-8000-000000000002";
 
-/// Logs its argv and checkpoint env to `$FAKE_CLAUDE_ARGS`, every stdin line
-/// to `$FAKE_CLAUDE_LOG`, and answers `rewind_files` like CLI 2.1.286.
+/// Logs its argv to `$FAKE_CLAUDE_ARGS` and every stdin line to
+/// `$FAKE_CLAUDE_LOG`; `/resume` moves it to the other session, as the
+/// plugin reports a TUI `/resume`.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
-echo "$* checkpointing=$CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING" >> "$FAKE_CLAUDE_ARGS"
+echo "$*" >> "$FAKE_CLAUDE_ARGS"
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_CLAUDE_LOG"
-  id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
   case "$line" in
-    *'"dry_run":true'*)
-      echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"canRewind":true,"filesChanged":["/w/a.txt"],"insertions":1,"deletions":2}}}'
-      ;;
-    *'"rewind_files"'*)
-      echo '{"type":"control_response","response":{"subtype":"success","request_id":"'"$id"'","response":{"canRewind":true,"skippedLinks":0}}}'
+    *'"content":"/resume"'*)
+      echo '{"type":"conversation_reset","new_conversation_id":"5e5e5e5e-0000-4000-8000-000000000002","resumed":true}'
       ;;
   esac
 done
@@ -80,7 +79,7 @@ fn prompts(snapshot: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
+async fn rewind_restarts_before_the_prompt_and_says_files_stay() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
     let fake = tmp.path().join("fake-claude.sh");
@@ -103,6 +102,9 @@ async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
     let sessions = tmp.path().join(".claude/projects/-project");
     std::fs::create_dir_all(&sessions).unwrap();
     std::fs::write(sessions.join(format!("{SID}.jsonl")), history()).unwrap();
+    let other = json!({"type": "user", "uuid": "o1", "parentUuid": null,
+        "message": {"role": "user", "content": "from the other session"}});
+    std::fs::write(sessions.join(format!("{OTHER}.jsonl")), other.to_string()).unwrap();
     let args = tmp.path().join("args.log");
     let log = tmp.path().join("received.jsonl");
     std::env::set_var("HOME", tmp.path());
@@ -138,21 +140,25 @@ async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
     let snapshot = next_json(&mut ws).await;
     assert_eq!(prompts(&snapshot), ["first", "second"]);
 
-    let rewind = |dry_run: bool| {
-        json!({"t": "rewind", "messageId": SECOND, "code": true, "conversation": true,
+    let rewind = |code: bool, dry_run: bool| {
+        json!({"t": "rewind", "messageId": SECOND, "code": code, "conversation": true,
             "dryRun": dry_run})
         .to_string()
     };
-    ws.send(Message::Text(rewind(true))).await.unwrap();
+    ws.send(Message::Text(rewind(true, true))).await.unwrap();
     let reply = next_json(&mut ws).await;
     assert_eq!(reply["t"], "rewind");
     assert_eq!(reply["error"], Value::Null);
-    assert_eq!(reply["files"]["filesChanged"], json!(["/w/a.txt"]));
+    assert_eq!(reply["files"]["canRewind"], false, "{reply}");
+    assert!(reply["files"]["error"].as_str().unwrap().contains("git"));
 
-    ws.send(Message::Text(rewind(false))).await.unwrap();
+    ws.send(Message::Text(rewind(true, false))).await.unwrap();
+    let reply = next_json(&mut ws).await;
+    assert!(reply["error"].as_str().is_some(), "{reply}");
+
+    ws.send(Message::Text(rewind(false, false))).await.unwrap();
     let reply = next_json(&mut ws).await;
     assert_eq!(reply["error"], Value::Null, "{reply}");
-    assert_eq!(reply["files"]["canRewind"], true);
     assert_eq!(next_json(&mut ws).await["t"], "replaced");
 
     // Re-attaching (as clients do on `replaced`) finds the conversation cut
@@ -175,10 +181,31 @@ async fn rewind_previews_restores_files_and_restarts_before_the_prompt() {
     assert_eq!(launches.len(), 2, "{launches:?}");
     assert!(launches[1].contains(&format!("--resume {SID} --resume-session-at={REPLY}")));
     let received = std::fs::read_to_string(&log).unwrap();
-    assert!(received.contains(r#""dry_run":false"#), "{received}");
+    assert!(!received.contains("rewind_files"), "{received}");
+
+    ws.send(Message::Text(json!({"t": "prompt", "text": "/resume"}).to_string()))
+        .await
+        .unwrap();
+    let snapshot = loop {
+        let frame = next_json(&mut ws).await;
+        if frame["t"] == "snapshot" {
+            break frame;
+        }
+    };
+    assert_eq!(snapshot["sessionId"], OTHER);
+    assert_eq!(prompts(&snapshot), ["from the other session"]);
+    // Another conversation, not a continuation: the old id is free again.
+    let old = reqwest::Client::new()
+        .post(format!("{base}/agent/claude"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "projectPath": project, "sessionId": SID, "attachOnly": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old.status(), 404);
 
     let res = reqwest::Client::new()
-        .delete(format!("{base}/agent/claude/{SID}"))
+        .delete(format!("{base}/agent/claude/{OTHER}"))
         .bearer_auth(TOKEN)
         .send()
         .await

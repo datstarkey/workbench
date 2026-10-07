@@ -52,8 +52,10 @@
 		switch (elicitation.action) {
 			case 'accept':
 				if (!isUrl) return `Sent to ${elicitation.server}`;
-				return elicitation.completed
-					? `Finished with ${elicitation.server}`
+				if (elicitation.completed) return `Finished with ${elicitation.server}`;
+				// A terminal never says when the browser flow is done.
+				return elicitation.inTerminal
+					? `Finish with ${elicitation.server} in the browser`
 					: `Waiting for ${elicitation.server} to finish in the browser`;
 			case 'decline':
 				return `You declined ${elicitation.server}'s request`;
@@ -151,7 +153,9 @@
 			<p class="px-3.5 pt-1 text-xs text-wb-ink-mute">{elicitation.description}</p>
 		{/if}
 
-		{#if isUrl}
+		{#if elicitation.inTerminal}
+			<p class="px-3.5 py-3 text-xs text-wb-ink-mute">Answer this in the terminal.</p>
+		{:else if isUrl}
 			<div class="flex flex-col gap-1 px-3.5 pt-2.5 text-xs">
 				{#if url}
 					<span class="text-wb-ink-mute"
