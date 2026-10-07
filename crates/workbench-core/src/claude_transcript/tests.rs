@@ -1030,6 +1030,15 @@ fn slash_commands_come_from_initialize_and_updates() {
     assert_eq!(t.commands()[1].argument_hint, None);
     t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
     assert_eq!(t.commands().len(), 2, "/clear keeps the command list");
+    let a = t.apply(&json!({"type":"workbench_commands",
+        "commands":[{"name":"review","description":"Review a diff"}]}));
+    assert!(a.commands);
+    assert_eq!(a.unknown_kind, None);
+    assert_eq!(
+        t.commands()[0].name,
+        "review",
+        "the plugin's refresh replaces the list"
+    );
 }
 
 #[test]
@@ -1059,14 +1068,24 @@ fn a_refused_model_switch_puts_the_old_model_back() {
 #[test]
 fn each_refused_model_switch_undoes_only_its_own_pick() {
     let mut t = Transcript::default();
-    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5","modelChoice":"opus"}));
+    t.apply(
+        &json!({"type":"system","subtype":"init","model":"claude-opus-5-5","modelChoice":"opus"}),
+    );
     t.request_model("a", "sonnet");
     t.request_model("b", "haiku");
     let refuse = |id: &str| json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"no"}});
     t.apply(&refuse("a"));
-    assert_eq!(t.meta().model_choice.as_deref(), Some("haiku"), "the later pick stays");
+    assert_eq!(
+        t.meta().model_choice.as_deref(),
+        Some("haiku"),
+        "the later pick stays"
+    );
     t.apply(&refuse("b"));
-    assert_eq!(t.meta().model_choice.as_deref(), Some("opus"), "not the refused sonnet");
+    assert_eq!(
+        t.meta().model_choice.as_deref(),
+        Some("opus"),
+        "not the refused sonnet"
+    );
 }
 
 #[test]
@@ -1086,18 +1105,31 @@ fn a_terminal_elicitation_shows_read_only_until_answered() {
     assert_eq!(a.unknown_kind, None);
     assert!(matches!(&t.items()[0],
         TranscriptItem::Elicitation { in_terminal: true, action: None, server, .. } if server == "deploy"));
-    assert!(t.waiting_on().is_none(), "the terminal asks it, not the chat");
+    assert!(
+        t.waiting_on().is_none(),
+        "the terminal asks it, not the chat"
+    );
     let json = serde_json::to_value(&t.items()[0]).unwrap();
     assert_eq!(json["inTerminal"], true);
 
     t.apply(&json!({"type":"workbench_terminal_elicitation_result","id":"e1","action":"accept"}));
-    assert!(matches!(&t.items()[0],
-        TranscriptItem::Elicitation { action: Some(ElicitationAction::Accept), .. }));
+    assert!(matches!(
+        &t.items()[0],
+        TranscriptItem::Elicitation {
+            action: Some(ElicitationAction::Accept),
+            ..
+        }
+    ));
 
     t.apply(&json!({"type":"workbench_terminal_elicitation","id":"e2","mcp_server_name":"x","message":"?"}));
     t.apply(&json!({"type":"result","subtype":"success","is_error":false}));
-    assert!(matches!(&t.items()[1], TranscriptItem::Elicitation { expired: true, .. }),
-        "unanswered when the turn ended");
+    assert!(
+        matches!(
+            &t.items()[1],
+            TranscriptItem::Elicitation { expired: true, .. }
+        ),
+        "unanswered when the turn ended"
+    );
 }
 
 #[test]
@@ -1118,10 +1150,43 @@ fn resume_shows_the_resumed_conversations_history() {
 #[test]
 fn plugin_framing_stays_out_of_the_chat() {
     let mut t = Transcript::default();
-    let idle = "look at @/tmp/a.png\n\nAttached files (read each with the Read tool):\n- /tmp/a.png";
+    let idle =
+        "look at @/tmp/a.png\n\nAttached files (read each with the Read tool):\n- /tmp/a.png";
     t.apply(&user("p1", json!(idle)));
     t.apply(&json!({"type":"result","subtype":"success","is_error":false}));
     t.apply(&user("p2", json!(QUEUED_NUDGE)));
-    assert!(matches!(t.items(), [TranscriptItem::User { text, .. }] if text == "look at @/tmp/a.png"));
+    assert!(
+        matches!(t.items(), [TranscriptItem::User { text, .. }] if text == "look at @/tmp/a.png")
+    );
     assert!(t.meta().busy, "the nudge still starts a turn");
+}
+
+#[test]
+fn a_pick_resolves_through_the_model_list() {
+    let mut t = Transcript::default();
+    t.apply(
+        &json!({"type":"control_response","response":{"subtype":"success","request_id":"i",
+        "response":{"models":[{"value":"opus[1m]","resolvedModel":"claude-opus-5-5"},
+            {"value":"haiku"}]}}}),
+    );
+    assert_eq!(
+        t.resolve_model("opus[1m]").as_deref(),
+        Some("claude-opus-5-5[1m]")
+    );
+    assert_eq!(
+        t.resolve_model("claude-fable-5-1").as_deref(),
+        Some("claude-fable-5-1")
+    );
+    assert_eq!(t.resolve_model("haiku"), None, "a stand-in entry has no id");
+    assert_eq!(t.resolve_model("sonnet"), None);
+}
+
+#[test]
+fn an_init_without_effort_clears_it_only_when_it_says_so() {
+    let mut t = Transcript::default();
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5","effort":"high"}));
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-opus-5-5"}));
+    assert_eq!(t.meta().effort.as_deref(), Some("high"));
+    t.apply(&json!({"type":"system","subtype":"init","model":"claude-haiku-4-5","effort":null}));
+    assert_eq!(t.meta().effort, None);
 }

@@ -1,5 +1,6 @@
 import type { PermissionRequestDecision, Register, TurnStepInput } from 'claude-code';
 import * as server from './link';
+import { notifiedJob, startJob, stoppedJobs } from './jobs';
 import {
 	askLine,
 	midTurn,
@@ -37,6 +38,16 @@ let askSeq = 0;
 let effort: TurnStepInput['effort'];
 // The effort the engine resolved on its own when the chat's was applied first.
 let effortBase: { value: TurnStepInput['effort'] } | undefined;
+// Model picked in chat, for this session only: the resolved id each
+// main-thread request names, the pick as the chat shows it, the effort levels
+// that model takes (absent: unknown), and the model the engine names on its
+// own (`base`, from the first request after the pick). A request naming
+// another (a fallback) keeps it. A pick in the TUI (`/model`, `/config`) clears it.
+let modelPick: { id: string; choice: string; effortLevels?: string[]; base?: string } | undefined;
+// The slash commands the chat was last sent, to send a changed list once.
+let commandList = '';
+// The session title the chat was last sent.
+let title: string | undefined;
 // The running main-thread turn, for an interrupt from chat.
 let runningTurn: string | undefined;
 // The live model's context window, from the latest measurement.
@@ -85,8 +96,6 @@ const answeredInChat = new Set<string>();
 const askedInTerminal = new Map<string, string>();
 // MCP elicitations the terminal shows, by server and elicitation id, oldest first.
 const terminalElicitations = new Map<string, string[]>();
-// Background jobs reported to the tasks panel, by id, with their last status.
-const backgroundJobs = new Map<string, string>();
 // Model switches the person made (`/model`, `/config`, the chat's pick); an
 // automatic fallback or a resume keeps the pick the chat shows.
 const PICKED_MODEL = new Set(['command', 'picker', 'sdk']);
@@ -136,10 +145,6 @@ function unlinkTask(task: string) {
 	}
 }
 
-function denial(result: { deny?: string } | undefined, what: string): string | undefined {
-	return result?.deny ? `${what}: ${result.deny}` : undefined;
-}
-
 const askKey = (tool: string, input: unknown) => `${tool}\0${JSON.stringify(input)}`;
 
 /** The pending call a `PermissionRequest` is about. */
@@ -168,21 +173,26 @@ export function notePermissionMode(mode: string | undefined) {
 
 /** Report background jobs that finished; called from the Stop hook with its job list. */
 export function noteBackgroundTasks(tasks: readonly { id: string; status: string }[] = []) {
-	if (!server.current()) return;
-	const live = new Map(tasks.map((t) => [t.id, t.status]));
-	for (const [job, status] of backgroundJobs) {
-		const now = live.get(job) ?? 'completed';
-		if (now === status) continue;
-		backgroundJobs.set(job, now);
-		if (now !== 'running')
-			emit({
-				type: 'system',
-				subtype: 'task_notification',
-				task_id: job,
-				status: now === 'failed' ? 'failed' : 'completed',
-				uuid: `wbmod-bg-done-${job}`
-			});
-	}
+	if (server.current()) emit(...stoppedJobs(tasks));
+}
+
+/**
+ * The session's title (a `/rename`, or the generated one) as a hook input
+ * carries it; the chat folds it as the JSONL's rename.
+ */
+export function noteTitle(next: string | undefined) {
+	const trimmed = next?.trim();
+	if (!trimmed || trimmed === title || !server.current()) return;
+	title = trimmed;
+	emit({ type: 'custom-title', customTitle: trimmed });
+}
+
+function commandsLine(commands: readonly { name: string; description: string }[]) {
+	const list = commands.map((c) => ({ name: c.name, description: c.description }));
+	const text = JSON.stringify(list);
+	if (text === commandList) return undefined;
+	commandList = text;
+	return { type: 'workbench_commands', commands: list };
 }
 
 export const register: Register = (on) => {
@@ -232,6 +242,8 @@ export const register: Register = (on) => {
 			const req = (line.request ?? {}) as {
 				subtype?: string;
 				model?: string;
+				resolvedModel?: string;
+				effortLevels?: string[];
 				settings?: { effortLevel?: string };
 			};
 			const sub = req.subtype;
@@ -246,13 +258,20 @@ export const register: Register = (on) => {
 					name: c.name,
 					description: c.description
 				}));
-				const modelChoice = typeof row?.value === 'string' ? row.value : undefined;
+				commandList = JSON.stringify(commands);
+				const modelChoice =
+					modelPick?.choice ?? (typeof row?.value === 'string' ? row.value : undefined);
 				reply(line.request_id, undefined, { models, commands, modelChoice });
 			} else if (sub === 'set_model' && req.model) {
-				// As the TUI's `/config` does (aliases resolve there; a plugin can't
-				// switch a session to an alias on its own).
-				const set = await $.config.set({ key: 'model', value: req.model });
-				reply(line.request_id, denial(set, 'Model'));
+				// `turn.step` takes an id, not an alias: the server resolves the pick.
+				if (!req.resolvedModel) {
+					reply(line.request_id, `Model: ${req.model} isn't in Claude's model list.`);
+					return;
+				}
+				modelPick = { id: req.resolvedModel, choice: req.model, effortLevels: req.effortLevels };
+				model = req.resolvedModel;
+				reply(line.request_id);
+				emit({ type: 'system', subtype: 'init', model, modelChoice: req.model });
 			} else if (sub === 'apply_flag_settings' && req.settings?.effortLevel) {
 				effort = req.settings.effortLevel as TurnStepInput['effort'];
 				effortBase = undefined;
@@ -277,8 +296,17 @@ export const register: Register = (on) => {
 				reportedMode = '';
 				void $.http
 					.fetch(`${link.url}/mod/hello`, server.init('POST', { sessionId: link.sessionId }))
-					.then((res) => {
-						if (!res.ok) server.hello.needed = true;
+					.then(async (res) => {
+						if (!res.ok) {
+							server.hello.needed = true;
+							return;
+						}
+						// A restarted server has no plan usage reading until a window moves.
+						const limits = await $.session
+							.usage()
+							.then((u) => rateLimitLine(u.rateLimits))
+							.catch(() => undefined);
+						if (limits) emit(limits);
 					})
 					.catch(() => (server.hello.needed = true));
 			}
@@ -301,6 +329,11 @@ export const register: Register = (on) => {
 		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);
 		reportedMode = permissionMode ?? '';
 		emit({ type: 'system', subtype: 'init', session_id: sessionId, model, permissionMode });
+		const limits = await $.session
+			.usage()
+			.then((u) => rateLimitLine(u.rateLimits))
+			.catch(() => undefined);
+		if (limits) emit(limits);
 		return result;
 	});
 
@@ -337,11 +370,16 @@ export const register: Register = (on) => {
 	});
 
 	// A subagent's run raises none: this is always the main thread's turn.
-	on('turn.start', ($, e, next) => {
+	// Commands come and go (a plugin or skill loaded), so the chat's list is
+	// re-read here.
+	on('turn.start', async ($, e, next) => {
 		runningTurn = e.turnId;
 		failure = undefined;
 		failedResult = undefined;
-		return next(e);
+		const result = await next(e);
+		const commands = server.current() ? commandsLine(await $.command.list()) : undefined;
+		if (commands) emit(commands);
+		return result;
 	});
 
 	on('turn.step', async function* ($, e, next) {
@@ -354,12 +392,19 @@ export const register: Register = (on) => {
 			if (!effortBase) effortBase = { value: e.effort };
 			else if (e.effort !== effortBase.value) effort = effortBase = undefined;
 		}
-		const stream = next(effort ? { ...e, effort } : e);
+		if (modelPick && modelPick.base === undefined) modelPick.base = e.model;
+		const pick = modelPick && e.model === modelPick.base ? modelPick : undefined;
+		// What this request really runs with: the engine resolved both. A picked
+		// model that doesn't take the effort goes without.
+		let sent = effort ?? e.effort;
+		if (pick?.effortLevels && !(typeof sent === 'string' && pick.effortLevels.includes(sent)))
+			sent = undefined;
+		const step = { ...e, ...(pick ? { model: pick.id } : {}) };
+		if (sent !== e.effort) step.effort = sent;
+		const stream = next(step);
 		currentMessage = `wbmod-${sessionId.slice(0, 8)}-${++messageSeq}`;
 		startedBlocks.clear();
-		model = e.model || model;
-		// What this request really runs with: the engine resolved both.
-		const sent = effort ?? e.effort;
+		model = step.model || model;
 		const settings = `${model} ${sent ?? ''}`;
 		if (settings !== lastSettings) {
 			lastSettings = settings;
@@ -367,7 +412,8 @@ export const register: Register = (on) => {
 				type: 'system',
 				subtype: 'init',
 				model,
-				...(typeof sent === 'string' ? { effort: sent } : {})
+				// `null`: this model runs without effort.
+				effort: typeof sent === 'string' ? sent : null
 			});
 		}
 		emit({
@@ -540,6 +586,8 @@ export const register: Register = (on) => {
 	});
 
 	on('classic.PostModelSwitch', ($, e, next) => {
+		// The later pick wins, as it does in the TUI.
+		if (PICKED_MODEL.has(e.source)) modelPick = undefined;
 		if (server.current()) {
 			model = e.to_model;
 			emit({
@@ -631,6 +679,8 @@ export const register: Register = (on) => {
 				}
 			);
 		}
+		// Written to the JSONL only: the chat would see it on its next load.
+		if (e.command === 'rename') noteTitle(e.args);
 		if (result.text !== undefined) {
 			emit({
 				type: 'system',
@@ -674,6 +724,17 @@ export const register: Register = (on) => {
 	on('prompt.submit', async ($, e, next) => {
 		if (e.origin.kind === 'plugin') chatTurn = e.origin.name === $.plugin.name;
 		else if (e.origin.kind === 'composer') chatTurn = false;
+		return next(e);
+	});
+
+	// A background job's notification names how it ended (a killed one too);
+	// the Stop hook's job list can only tell running from gone.
+	on('session.receive', ($, e, next) => {
+		const line =
+			server.current() && !e.agentId && e.origin.kind === 'task-notification'
+				? notifiedJob(e.text)
+				: undefined;
+		if (line) emit(line);
 		return next(e);
 	});
 
@@ -783,8 +844,7 @@ export const register: Register = (on) => {
 			});
 		}
 		const bg = (result.result as { backgroundTaskId?: string } | undefined)?.backgroundTaskId;
-		if (e.tool === 'Bash' && bg && !backgroundJobs.has(bg)) {
-			backgroundJobs.set(bg, 'running');
+		if (e.tool === 'Bash' && bg && startJob(bg)) {
 			emit({
 				type: 'system',
 				subtype: 'task_started',

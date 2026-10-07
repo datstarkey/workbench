@@ -1,5 +1,10 @@
 import type { EngineInterface, Register } from 'claude-code';
-import { noteBackgroundTasks, notePermissionMode, register as registerChat } from './chat';
+import {
+	noteBackgroundTasks,
+	notePermissionMode,
+	noteTitle,
+	register as registerChat
+} from './chat';
 
 const REFRESH_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
 
@@ -28,8 +33,15 @@ async function forward<R>(
 
 export const register: Register = (on, options) => {
 	registerChat(on, options);
-	on('classic.SessionStart', ($, e, next) => forward($, e, () => next(e)));
-	on('classic.UserPromptSubmit', ($, e, next) => forward($, e, () => next(e)));
+	// Both carry the session's title: a generated one reaches chat at the next prompt.
+	on('classic.SessionStart', ($, e, next) => {
+		noteTitle(e.session_title);
+		return forward($, e, () => next(e));
+	});
+	on('classic.UserPromptSubmit', ($, e, next) => {
+		noteTitle(e.session_title);
+		return forward($, e, () => next(e));
+	});
 	on('classic.Stop', ($, e, next) => {
 		noteBackgroundTasks(e.background_tasks);
 		return forward($, e, () => next(e));

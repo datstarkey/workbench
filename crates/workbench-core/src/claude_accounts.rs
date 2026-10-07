@@ -126,7 +126,7 @@ fn parse_auth_status(stdout: &str) -> Result<ClaudeAuthStatus> {
 }
 
 /// One plan limit from `/usage`, e.g. label "session", 3%, resets "Oct 1 at 5:10pm (Europe/London)".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageLimit {
     pub label: String,
@@ -136,6 +136,47 @@ pub struct UsageLimit {
     /// Unix seconds; Codex reports the reset as a time rather than text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<u64>,
+}
+
+/// One rate-limit window a live session's last API response reported, as the
+/// Workbench plugin forwards it (`rate_limit_event`'s `windows`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateWindow {
+    /// `five_hour`, `seven_day`, or a gateway's `spend_limit`.
+    pub kind: String,
+    /// 0 to 100, past 100 on an exceeded spend limit.
+    pub percent_used: f64,
+    /// Unix seconds.
+    pub resets_at: Option<u64>,
+}
+
+/// Session windows under the labels `/usage` prints, so clients read either
+/// source the same way: `five_hour` is "session", `seven_day` "week (all
+/// models)", `seven_day_<model>` "week (<Model>)".
+pub fn limits_from_windows(windows: &[RateWindow]) -> Vec<UsageLimit> {
+    windows
+        .iter()
+        .map(|w| UsageLimit {
+            label: match w.kind.as_str() {
+                "five_hour" => "session".to_string(),
+                "seven_day" => "week (all models)".to_string(),
+                kind => match kind.strip_prefix("seven_day_") {
+                    Some(model) => {
+                        let mut name = model.replace('_', " ");
+                        if let Some(first) = name.get_mut(..1) {
+                            first.make_ascii_uppercase();
+                        }
+                        format!("week ({name})")
+                    }
+                    None => kind.replace('_', " "),
+                },
+            },
+            percent: w.percent_used.round().clamp(0.0, 255.0) as u8,
+            resets: None,
+            resets_at: w.resets_at,
+        })
+        .collect()
 }
 
 /// Starting the CLI and asking Anthropic for the numbers takes a couple of seconds.
@@ -321,6 +362,33 @@ Last 24h · 3270 requests · 24 sessions\n  91% of your usage came from subagent
         );
         assert_eq!(limits[1].label, "week (all models)");
         assert_eq!(limits[1].percent, 89);
+    }
+
+    #[test]
+    fn session_windows_take_the_usage_labels() {
+        let windows: Vec<RateWindow> = serde_json::from_value(json!([
+            {"kind": "five_hour", "percentUsed": 23.5, "resetsAt": 1_800_000_000u64},
+            {"kind": "seven_day", "percentUsed": 89},
+            {"kind": "seven_day_opus", "percentUsed": 4},
+            {"kind": "spend_limit", "percentUsed": 312.4}
+        ]))
+        .unwrap();
+        let limits = limits_from_windows(&windows);
+        assert_eq!(
+            limits[0],
+            UsageLimit {
+                label: "session".into(),
+                percent: 24,
+                resets: None,
+                resets_at: Some(1_800_000_000),
+            }
+        );
+        let labels: Vec<_> = limits.iter().map(|l| l.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["session", "week (all models)", "week (Opus)", "spend limit"]
+        );
+        assert_eq!(limits[3].percent, 255, "an exceeded spend limit is clamped");
     }
 
     /// Logged out (or on an API key) `/usage` prints only a cost summary.

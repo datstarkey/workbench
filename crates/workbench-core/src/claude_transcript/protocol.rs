@@ -30,9 +30,11 @@ const HANDLED: &[&str] = &[
     "system:permission_denied",
     "system:model_refusal_no_fallback",
     "prompt_suggestion",
-    // The plugin's own: an MCP elicitation the terminal asks, and its answer.
+    // The plugin's own: an MCP elicitation the terminal asks, and its answer;
+    // a changed slash command list.
     super::TERMINAL_ELICITATION,
     super::TERMINAL_ELICITATION_ANSWERED,
+    "workbench_commands",
     // JSONL only
     "attachment",
     "ai-title",
