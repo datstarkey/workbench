@@ -11,10 +11,9 @@ use crate::types::{
 };
 
 pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {
-    let output = crate::shell::command("git")
+    let output = crate::shell::tool("git")
         .args(args)
         .current_dir(cwd)
-        .env("PATH", crate::paths::enriched_path())
         .output()
         .context("Failed to run git")?;
 

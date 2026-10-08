@@ -27,6 +27,51 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
+/// A CLI tool (`git`, `gh`, ...) found on the enriched search path (GUI apps
+/// don't inherit the shell's PATH), which its children get too.
+///
+/// It is spawned by its full path: a bare name with PATH changed makes std
+/// fork and search PATH itself instead of using `posix_spawn`, and a fork in
+/// this large, many-threaded process holds the allocator's locks long enough
+/// to stall every thread. Under the git/gh polls that froze the whole app,
+/// servers included, for minutes.
+pub fn tool(program: &str) -> Command {
+    let mut cmd = command(resolve(program));
+    cmd.env("PATH", crate::paths::enriched_path());
+    cmd
+}
+
+/// `program`'s full path on the enriched search path, looked up once; the bare
+/// name if it isn't there (not cached, so a later install is found).
+fn resolve(program: &str) -> std::path::PathBuf {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    let found = FOUND.get_or_init(Default::default);
+    if let Some(path) = found.lock().unwrap_or_else(|e| e.into_inner()).get(program) {
+        return path.clone();
+    }
+    let names = if cfg!(windows) {
+        vec![format!("{program}.exe"), program.to_string()]
+    } else {
+        vec![program.to_string()]
+    };
+    let path = std::env::split_paths(&crate::paths::enriched_path())
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|p| p.is_file());
+    match path {
+        Some(path) => {
+            found
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(program.to_string(), path.clone());
+            path
+        }
+        None => PathBuf::from(program),
+    }
+}
+
 /// Run `cmd` and return its stdout if it exits successfully within `timeout`;
 /// `None` if it can't start, fails, or is killed at the deadline. Stdout is read
 /// after exit, so only for commands with small output.
@@ -186,6 +231,20 @@ pub fn submit_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_is_spawned_by_its_full_path() {
+        // A full path is what lets std use posix_spawn rather than fork.
+        assert!(resolve("sh").is_absolute());
+        assert_eq!(resolve("sh"), resolve("sh"), "looked up once");
+        assert_eq!(
+            resolve("workbench-no-such-tool"),
+            std::path::PathBuf::from("workbench-no-such-tool")
+        );
+        let out = tool("sh").args(["-c", "echo ok"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+    }
 
     #[test]
     fn open_url_accepts_only_http_urls() {
