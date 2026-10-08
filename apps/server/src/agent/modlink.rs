@@ -59,6 +59,9 @@ struct Ask {
     answer: Option<Value>,
     /// A chat had it open at some point.
     shown: bool,
+    /// The terminal asks it instead; kept so a retry after a lost reply
+    /// hears `fallback` again rather than putting the card back.
+    fell_back: bool,
 }
 
 /// What else ends a wait on the terminal's dialog.
@@ -97,6 +100,7 @@ impl ModLink {
                 tool_use_id,
                 answer: None,
                 shown: false,
+                fell_back: false,
             },
         );
         true
@@ -117,7 +121,10 @@ impl ModLink {
     pub fn answer(&self, line: &Value) -> bool {
         let id = line.pointer("/response/request_id").and_then(Value::as_str);
         let mut asks = lock(&self.asks);
-        match id.and_then(|id| asks.get_mut(id)) {
+        match id
+            .and_then(|id| asks.get_mut(id))
+            .filter(|ask| !ask.fell_back)
+        {
             Some(ask) => {
                 ask.answer = Some(line.clone());
                 self.answered.notify_waiters();
@@ -149,9 +156,10 @@ impl ModLink {
     /// `waiting` (its summary as the chat had it) stays what the session
     /// waits on, so a phone or desktop not looking still hears of it.
     pub fn fall_back(&self, request_id: &str, waiting: Option<WaitingSummary>) {
-        let tool = lock(&self.asks)
-            .remove(request_id)
-            .and_then(|a| a.tool_use_id);
+        let tool = lock(&self.asks).get_mut(request_id).and_then(|a| {
+            a.fell_back = true;
+            a.tool_use_id.clone()
+        });
         if let Some(waiting) = waiting {
             let waiting = WaitingSummary {
                 in_terminal: true,
@@ -159,6 +167,13 @@ impl ModLink {
             };
             lock(&self.in_terminal).push((waiting, Clears::ToolResult(tool)));
         }
+    }
+
+    /// Whether `request_id` went to the terminal's dialog.
+    pub fn fell_back(&self, request_id: &str) -> bool {
+        lock(&self.asks)
+            .get(request_id)
+            .is_some_and(|a| a.fell_back)
     }
 
     /// The oldest dialog the terminal waits on, if any.
@@ -192,7 +207,7 @@ impl ModLink {
             }
             Some("result") => {
                 asked.clear();
-                lock(&self.asks).retain(|_, ask| ask.answer.is_none());
+                lock(&self.asks).retain(|_, ask| ask.answer.is_none() && !ask.fell_back);
             }
             Some("control_cancel_request") => {
                 let id = str_at("/request_id");
@@ -212,7 +227,7 @@ impl ModLink {
                     .collect();
                 if !results.is_empty() {
                     lock(&self.asks).retain(|_, ask| {
-                        ask.answer.is_none()
+                        (ask.answer.is_none() && !ask.fell_back)
                             || !ask
                                 .tool_use_id
                                 .as_deref()
@@ -329,6 +344,24 @@ mod tests {
         link.fall_back("r2", Some(waiting("r2")));
         link.note_line(&json!({"type": "result", "subtype": "success"}));
         assert!(link.terminal_waiting().is_none(), "the turn ended");
+    }
+
+    #[test]
+    fn a_fallen_back_ask_stays_the_terminals_until_its_call_has_a_result() {
+        let link = ModLink::new("t".into(), None);
+        link.expect_answer("r1", Some("toolu_1".into()));
+        link.fall_back("r1", Some(waiting("r1")));
+        assert!(link.fell_back("r1"));
+        assert!(
+            !link.expect_answer("r1", Some("toolu_1".into())),
+            "a retry after a lost fallback reply is no new card"
+        );
+        let answer = json!({"type": "control_response", "response": {"request_id": "r1"}});
+        assert!(!link.answer(&answer), "the terminal answers it, not a chat");
+        link.note_line(
+            &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]}}),
+        );
+        assert!(!link.fell_back("r1"));
     }
 
     #[test]

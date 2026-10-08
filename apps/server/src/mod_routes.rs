@@ -11,6 +11,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use workbench_core::claude_accounts::RateWindow;
+use workbench_core::claude_transcript::WaitingSummary;
 
 use crate::agent::AgentSession;
 use crate::error::{ApiError, ApiResult};
@@ -143,6 +144,10 @@ pub struct AskBody {
     /// A chat's to answer even before one has it open: its turn came from chat.
     #[serde(default)]
     hold: bool,
+    /// Only the terminal's dialog can answer it (a plan): shown as waiting
+    /// there, with no card in chat.
+    #[serde(default)]
+    terminal: bool,
 }
 
 /// How long one `/mod/ask` call waits before answering `pending`.
@@ -178,7 +183,22 @@ pub async fn ask(
             .pointer("/request/tool_use_id")
             .and_then(Value::as_str)
             .map(String::from);
-        if link.expect_answer(&body.request_id, tool_use_id) {
+        let new = link.expect_answer(&body.request_id, tool_use_id);
+        if new && body.terminal {
+            note_usage(&state, &session, &body.lines);
+            feed(body.lines).await?;
+            let tool = line.pointer("/request/tool_name").and_then(Value::as_str);
+            link.fall_back(
+                &body.request_id,
+                Some(WaitingSummary {
+                    id: body.request_id.clone(),
+                    tool: tool.unwrap_or("tool").to_string(),
+                    preview: "Waiting in the terminal".to_string(),
+                    in_terminal: true,
+                }),
+            );
+            session.refresh_attention();
+        } else if new {
             if body.hold {
                 link.shown(&body.request_id, true);
             }
@@ -187,6 +207,10 @@ pub async fn ask(
             lines.push(line);
             feed(lines).await?;
         }
+    }
+    // The terminal asks it (and a retry after a lost reply hears so again).
+    if link.fell_back(&body.request_id) {
+        return Ok(Json(json!({ "fallback": true })));
     }
     let deadline = tokio::time::Instant::now() + ASK_WAIT;
     loop {

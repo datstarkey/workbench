@@ -119,3 +119,30 @@ test('Esc withdraws the card even while a post holds the queue', async () => {
 	expect(paths()).toEqual(['/mod/out', '/mod/ask', '/mod/out']);
 	expect(calls[2].body.lines).toEqual([{ type: 'control_cancel_request', request_id: 'r1' }]);
 });
+
+test('lines a failed ask took go back to the queue', async () => {
+	replies = ['throw', 'throw', 'throw'];
+	server.emit({ type: 'assistant', n: 1 });
+	await server.askInChat(fetch, 'r1', asked, new AbortController().signal, true);
+	await settle();
+	calls = [];
+	await server.flush(fetch);
+	expect(calls[0].body.lines).toEqual([{ type: 'assistant', n: 1 }]);
+});
+
+test('a deadline set before the clock is first read runs its whole time', async () => {
+	// A fresh copy of the module: nothing has read the clock yet.
+	const fresh = (await import('../hooks/link.ts?fresh')) as typeof server;
+	fresh.open({ url: 'http://127.0.0.1:1', token: 't', sessionId: 's' });
+	replies = ['hang'];
+	fresh.emit({ type: 'assistant' });
+	void fresh.flush(fetch);
+	await settle();
+	fresh.tick(1_000_000);
+	await settle();
+	expect(fresh.isFlushing()).toBe(true);
+	fresh.tick(1_010_000);
+	await settle();
+	await settle();
+	expect(fresh.isFlushing()).toBe(false);
+});

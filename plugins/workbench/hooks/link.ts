@@ -67,20 +67,22 @@ export function isFlushing() {
 }
 
 // Deadlines checked on the session's timer (`tick`, with `$.clock.now()`): a
-// `$.clock.sleep` would spend the waiting hook's budget, an approval may be
-// held for minutes, the timer runs slower than its period and `Date.now()`
-// doesn't advance in the hooks environment.
-let now = 0;
-const deadlines = new Set<{ at: number; done: () => void }>();
+// `$.clock.sleep` would spend the waiting hook's budget, and an approval may
+// be held for minutes. One set before the first reading starts at it.
+let now: number | undefined;
+const deadlines = new Set<{ at?: number; ms: number; done: () => void }>();
 
 export function tick(time: number) {
 	now = time;
-	for (const d of deadlines) if (d.at <= now) d.done();
+	for (const d of deadlines) {
+		d.at ??= time + d.ms;
+		if (d.at <= time) d.done();
+	}
 }
 
 /** `work`, or `undefined` once `ms` have passed. */
 function within<T>(ms: number, work: Promise<T>): Promise<T | undefined> {
-	const deadline = { at: now + ms, done: () => {} };
+	const deadline = { at: now === undefined ? undefined : now + ms, ms, done: () => {} };
 	const timeout = new Promise<undefined>((resolve) => (deadline.done = () => resolve(undefined)));
 	deadlines.add(deadline);
 	return Promise.race([work, timeout]).finally(() => deadlines.delete(deadline));
@@ -178,6 +180,7 @@ export async function askInChat(
 		if (!res?.ok) {
 			if (++failed < ASK_TRIES) continue;
 			// The chat's card would stay answerable with nobody waiting on it.
+			requeue(lines);
 			withdraw(fetch, requestId);
 			return null;
 		}
@@ -186,6 +189,32 @@ export async function askInChat(
 		lines = undefined;
 		answer = askAnswer(res.text);
 	}
-	if (signal.aborted) withdraw(fetch, requestId);
+	if (signal.aborted) {
+		requeue(lines);
+		withdraw(fetch, requestId);
+	}
 	return answer ?? null;
+}
+
+/** Lines a request took that the server never confirmed: back to the front of the queue. */
+function requeue(lines: Line[] | undefined) {
+	if (lines?.length && link) outbox = [...lines, ...outbox];
+}
+
+/**
+ * A request only the terminal's dialog can answer: the server shows the
+ * session waiting on it there (and says so to phone and desktop) without a
+ * card. The queued lines go first, as with `askInChat`.
+ */
+export async function askInTerminal(fetch: Fetch, requestId: string, line: Line) {
+	if (!link) return;
+	const lines = takeOutbox().lines;
+	const res = await within(
+		POST_MS,
+		fetch(
+			`${link.url}/mod/ask`,
+			init('POST', { sessionId: link.sessionId, requestId, line, lines, terminal: true })
+		).catch(() => null)
+	);
+	if (!res?.ok) requeue(lines);
 }
