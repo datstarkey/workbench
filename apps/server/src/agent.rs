@@ -536,9 +536,6 @@ impl AgentManager {
         };
         // A session nobody has written to yet has no file to `--resume`.
         let resume = claude_history_exists(config_dir.as_deref(), &session_id);
-        if let Some(pick) = lock(&self.model_picks).get(&session_id).cloned() {
-            lock(&self.restart_picks).insert(session_id.clone(), pick);
-        }
         // Clients re-attach on `replaced` by starting the session: they wait here
         // for this restart rather than open a second `claude` beside it.
         let starting = self.start_lock(&session_id);
@@ -547,6 +544,9 @@ impl AgentManager {
         // finds this old session: restarting it again would start a second `claude`.
         if session.is_replaced() {
             bail!("The chat just restarted; try again once it has reconnected.");
+        }
+        if let Some(pick) = lock(&self.model_picks).get(&session_id).cloned() {
+            lock(&self.restart_picks).insert(session_id.clone(), pick);
         }
         // Hand over before the old `claude` goes: clients re-attach (`replaced`)
         // rather than see it end, and its exit (`bye`) finds nothing to stop.
