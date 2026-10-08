@@ -10,7 +10,7 @@ import type {
 	WorkbenchSettings
 } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { untrack } from 'svelte';
+import { watch as watchValue } from 'runed';
 import { HomeStream, type OpenEventSource } from './home-stream.ts';
 import { HostUpdate } from './host-update.svelte.ts';
 import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
@@ -162,13 +162,21 @@ export class MobileClient {
 		this.visible && this.store && !this.activeChat && !this.activeTerminal ? this.connection : null
 	);
 	private readonly homeStream: HomeStream;
+	/** Bumped by every streamed list: a poll response sent before one is stale. */
+	private listsSeen = 0;
 
 	constructor(scanner?: QrScanner, openEventSource?: OpenEventSource) {
 		this.pairing = new PairingScan(scanner);
 		this.homeStream = new HomeStream(
 			{
-				agents: (list) => (this.chats = list),
-				terminals: (list) => (this.terminals = list),
+				agents: (list) => {
+					this.listsSeen++;
+					this.chats = list;
+				},
+				terminals: (list) => {
+					this.listsSeen++;
+					this.terminals = list;
+				},
 				status: (live) => {
 					if (live) this.online = true;
 				}
@@ -195,6 +203,13 @@ export class MobileClient {
 	private live(): () => boolean {
 		const generation = this.generation;
 		return () => generation === this.generation;
+	}
+
+	/** Like `live`, and no list has been streamed since: a list fetched now is still the newest. */
+	private freshList(): () => boolean {
+		const live = this.live();
+		const seen = this.listsSeen;
+		return () => live() && seen === this.listsSeen;
 	}
 
 	/** Connect to the form's server; on success it is saved and active. */
@@ -346,10 +361,10 @@ export class MobileClient {
 
 	async refreshChats(): Promise<void> {
 		if (!this.store) return;
-		const live = this.live();
+		const fresh = this.freshList();
 		try {
 			const chats = await this.agents.list();
-			if (live()) this.chats = chats;
+			if (fresh()) this.chats = chats;
 		} catch {
 			/* keep the last list */
 		}
@@ -362,12 +377,11 @@ export class MobileClient {
 	 * stop function.
 	 */
 	watch(): () => void {
-		// Opening a connection is an external side effect: an effect is the right tool.
 		const stopStream = $effect.root(() => {
-			$effect(() => {
-				const server = this.homeServer;
-				untrack(() => this.homeStream.follow(server));
-			});
+			watchValue(
+				() => this.homeServer,
+				(server) => this.homeStream.follow(server)
+			);
 		});
 		let polling = false;
 		const timer = setInterval(() => {
@@ -376,9 +390,12 @@ export class MobileClient {
 			// One round at a time: a stalled host must not pile requests up.
 			if (!this.homeServer || this.homeStream.live || polling) return;
 			polling = true;
-			void Promise.allSettled([this.refreshTerminals(), this.refreshChats()]).then(
-				() => (polling = false)
-			);
+			// Bounded too: a request without its own timeout must not stop polling for good.
+			const timeout = new Promise((done) => setTimeout(done, REQUEST_TIMEOUT_MS));
+			void Promise.race([
+				Promise.allSettled([this.refreshTerminals(), this.refreshChats()]),
+				timeout
+			]).then(() => (polling = false));
 		}, POLL_MS);
 		const wake = () => {
 			this.visible = !document.hidden;
@@ -579,6 +596,7 @@ export class MobileClient {
 	async refreshTerminals(): Promise<void> {
 		if (!this.store) return;
 		const current = this.live();
+		const fresh = this.freshList();
 		try {
 			const res = await fetch(`${this.base}/remote/terminals`, {
 				headers: this.authHeaders(),
@@ -587,7 +605,7 @@ export class MobileClient {
 			if (current()) this.online = res.ok;
 			if (res.ok) {
 				const data = await res.json();
-				if (!current()) return;
+				if (!fresh()) return;
 				// Guard the {#each terminals} render: a non-array body would throw.
 				this.terminals = Array.isArray(data) ? data : [];
 			}

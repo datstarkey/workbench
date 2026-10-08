@@ -91,7 +91,6 @@ impl AttentionFeed {
         if session.session_id.is_empty() {
             return;
         }
-        self.listed.notify();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state
             .sessions
@@ -100,6 +99,7 @@ impl AttentionFeed {
         {
             return;
         }
+        self.listed.notify();
         for alias in &session.previous_ids {
             if state
                 .sessions
@@ -120,7 +120,6 @@ impl AttentionFeed {
     }
 
     pub(crate) fn forget(&self, source: u64, id: &str) {
-        self.listed.notify();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state
             .sessions
@@ -129,6 +128,7 @@ impl AttentionFeed {
         {
             return;
         }
+        self.listed.notify();
         state.sessions.remove(id);
         let before = state.sequence;
         state.record_sessions();

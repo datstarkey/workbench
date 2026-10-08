@@ -9,7 +9,9 @@
 //!   dead connection from a quiet one (EventSource hides comment lines)
 //!
 //! Both lists are sent on connect, then whichever changed, at most once per
-//! [`MIN_GAP`]. A stream keeps only the last lists it sent, and reads the
+//! [`MIN_GAP`] (a streaming chat changes its summary with every chunk). A
+//! shell can exit with its PTY still held open by a background child, which
+//! no signal reports, so the lists are also re-read every [`REREAD`]. A stream keeps only the last lists it sent, and reads the
 //! managers again only when the client takes the next event, so a slow or
 //! backgrounded reader skips intermediate states instead of queueing them.
 //! EventSource can't send headers, so the token may come as `?token=`. The
@@ -32,8 +34,9 @@ use crate::state::{wait_revoked, AppState};
 
 pub const PATH: &str = "/events/home";
 /// The least time between two updates of one stream.
-const MIN_GAP: Duration = Duration::from_millis(250);
+const MIN_GAP: Duration = Duration::from_secs(1);
 const HEARTBEAT: Duration = Duration::from_secs(15);
+const REREAD: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
 pub struct HomeQuery {
@@ -96,6 +99,7 @@ impl Feed {
                     _ = wait_revoked(&mut self.revoked) => return None,
                     _ = changed(&mut self.agents) => {}
                     _ = changed(&mut self.terminals) => {}
+                    _ = tokio::time::sleep(REREAD) => {}
                 }
                 tokio::select! {
                     _ = wait_revoked(&mut self.revoked) => return None,

@@ -176,4 +176,33 @@ describe('home event stream', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(c.online).toBe(false);
 	});
+
+	it('drops a poll response that a streamed list overtook', async () => {
+		let answer: (r: Response) => void = () => {};
+		const c = await watching();
+		latest().emit('error');
+		fetchSpy.mockImplementation((url: string) =>
+			new URL(url).pathname === '/remote/terminals'
+				? new Promise<Response>((done) => (answer = done))
+				: Promise.resolve(jsonResponse([]))
+		);
+		await vi.advanceTimersByTimeAsync(4000);
+		latest().emit('terminals', [terminal]);
+		answer(jsonResponse([]));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(c.terminals.map((t) => t.id)).toEqual(['t1']);
+	});
+
+	it('polls again after a round that never settles', async () => {
+		const c = await watching();
+		latest().emit('error');
+		fetchSpy.mockImplementation(() => new Promise<Response>(() => {}));
+		vi.spyOn(c.agents, 'list').mockReturnValue(new Promise(() => {}));
+		const before = fetchSpy.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(16_000);
+		const polls = fetchSpy.mock.calls
+			.slice(before)
+			.filter(([url]) => new URL(url).pathname === '/remote/terminals');
+		expect(polls.length).toBe(2);
+	});
 });
