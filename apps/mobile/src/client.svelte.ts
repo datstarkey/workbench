@@ -1,6 +1,6 @@
 import { agentClient, agentName } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
-import { createHttpTransport } from '@workbench/transport';
+import { createHttpTransport, DEFAULT_TIMEOUT_MS, withTimeout } from '@workbench/transport';
 import type {
 	AgentSummary,
 	ApprovalDecision,
@@ -10,6 +10,8 @@ import type {
 	WorkbenchSettings
 } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { watch as watchValue } from 'runed';
+import { HomeStream, type OpenEventSource } from './home-stream.ts';
 import { HostUpdate } from './host-update.svelte.ts';
 import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
@@ -26,7 +28,7 @@ import type { ChatRef, ClaudeView } from './types.ts';
 type ClaudeLaunch = Pick<CreateServerTerminalBody, 'claudeSession' | 'claudeAccountId'>;
 
 const LS_VIEW = 'wb.claudeView';
-/** Home-screen refresh while the app is in front. */
+/** Home-screen refresh while the app is in front and the event stream is down. */
 const POLL_MS = 4000;
 
 function errorText(e: unknown): string {
@@ -151,8 +153,34 @@ export class MobileClient {
 	/** Bumped on every connect attempt; a newer attempt, a disconnect or forgetting its machine supersedes it. */
 	private attempt = 0;
 
-	constructor(scanner?: QrScanner) {
+	/** Whether the app is in front; follows `visibilitychange` while watching. */
+	private visible = $state(!document.hidden);
+	/** The server whose home lists to stream: only on Home, in front. */
+	private homeServer = $derived(
+		this.visible && this.store && !this.activeChat && !this.activeTerminal ? this.connection : null
+	);
+	private readonly homeStream: HomeStream;
+	/** Bumped by every streamed list: a poll response sent before one is stale. */
+	private listsSeen = 0;
+
+	constructor(scanner?: QrScanner, openEventSource?: OpenEventSource) {
 		this.pairing = new PairingScan(scanner);
+		this.homeStream = new HomeStream(
+			{
+				agents: (list) => {
+					this.listsSeen++;
+					this.chats = list;
+				},
+				terminals: (list) => {
+					this.listsSeen++;
+					this.terminals = list;
+				},
+				status: (live) => {
+					if (live) this.online = true;
+				}
+			},
+			openEventSource
+		);
 		this.exactUrl = this.url || null;
 	}
 
@@ -173,6 +201,13 @@ export class MobileClient {
 	private live(): () => boolean {
 		const generation = this.generation;
 		return () => generation === this.generation;
+	}
+
+	/** Like `live`, and no list has been streamed since: a list fetched now is still the newest. */
+	private freshList(): () => boolean {
+		const live = this.live();
+		const seen = this.listsSeen;
+		return () => live() && seen === this.listsSeen;
 	}
 
 	/** Connect to the form's server; on success it is saved and active. */
@@ -324,35 +359,49 @@ export class MobileClient {
 
 	async refreshChats(): Promise<void> {
 		if (!this.store) return;
-		const live = this.live();
+		const fresh = this.freshList();
 		try {
 			const chats = await this.agents.list();
-			if (live()) this.chats = chats;
+			if (fresh()) this.chats = chats;
 		} catch {
 			/* keep the last list */
 		}
 	}
 
 	/**
-	 * Keep the home screen current while the app is in front, and catch up as
-	 * soon as it comes back from the lock screen. Returns a stop function.
+	 * Keep the home screen current while the app is in front: streamed from
+	 * `/events/home`, polled while the stream is down (or the host predates it),
+	 * and caught up as soon as it comes back from the lock screen. Returns a
+	 * stop function.
 	 */
 	watch(): () => void {
-		const onHome = () => !document.hidden && this.store && !this.activeChat && !this.activeTerminal;
+		const stopStream = $effect.root(() => {
+			watchValue(
+				() => this.homeServer,
+				(server) => this.homeStream.follow(server)
+			);
+		});
+		let polling = false;
 		const timer = setInterval(() => {
 			// The host is restarting into its update: its first answer ends "Updating host…".
 			if (!document.hidden && this.hostUpdate?.updating) void this.hostUpdate.check();
-			if (!onHome()) return;
-			void this.refreshTerminals();
-			void this.refreshChats();
+			// One round at a time (each request times out): a stalled host must not pile requests up.
+			if (!this.homeServer || this.homeStream.live || polling) return;
+			polling = true;
+			void Promise.allSettled([this.refreshTerminals(), this.refreshChats()]).then(
+				() => (polling = false)
+			);
 		}, POLL_MS);
 		const wake = () => {
-			if (!document.hidden && this.store) this.refreshAll();
+			this.visible = !document.hidden;
+			if (this.visible && this.store) this.refreshAll();
 		};
 		document.addEventListener('visibilitychange', wake);
 		return () => {
 			clearInterval(timer);
 			document.removeEventListener('visibilitychange', wake);
+			stopStream();
+			this.homeStream.follow(null);
 		};
 	}
 
@@ -542,12 +591,22 @@ export class MobileClient {
 	async refreshTerminals(): Promise<void> {
 		if (!this.store) return;
 		const current = this.live();
+		const fresh = this.freshList();
 		try {
-			const res = await fetch(`${this.base}/remote/terminals`, { headers: this.authHeaders() });
-			if (current()) this.online = res.ok;
-			if (res.ok) {
-				const data = await res.json();
-				if (!current()) return;
+			const { ok, data } = await withTimeout(
+				'GET /remote/terminals',
+				DEFAULT_TIMEOUT_MS,
+				async (signal) => {
+					const res = await fetch(`${this.base}/remote/terminals`, {
+						headers: this.authHeaders(),
+						signal
+					});
+					return { ok: res.ok, data: res.ok ? await res.json() : null };
+				}
+			);
+			if (current()) this.online = ok;
+			if (ok) {
+				if (!fresh()) return;
 				// Guard the {#each terminals} render: a non-array body would throw.
 				this.terminals = Array.isArray(data) ? data : [];
 			}

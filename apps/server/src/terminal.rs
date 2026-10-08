@@ -134,6 +134,8 @@ struct TerminalSession {
 #[derive(Clone, Default)]
 pub struct TerminalManager {
     inner: Arc<Mutex<HashMap<String, Arc<TerminalSession>>>>,
+    /// Bumped when the list changes: a terminal opens, exits or is removed.
+    changes: crate::changes::Changes,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -143,6 +145,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl TerminalManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     pub fn terminal_for_pane(&self, pane_id: &str) -> Option<TerminalMeta> {
@@ -273,6 +279,7 @@ impl TerminalManager {
         // fan out to attached clients. On EOF mark the session not-alive.
         {
             let session = session.clone();
+            let changes = self.changes.clone();
             let mut reader = reader;
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
@@ -301,6 +308,7 @@ impl TerminalManager {
                 terminate_process_group(&session);
                 lock(&session.meta).alive = false;
                 let _ = session.done_tx.send(true);
+                changes.notify();
             });
         }
 
@@ -316,6 +324,7 @@ impl TerminalManager {
         }
 
         lock(&self.inner).insert(id, session);
+        self.changes.notify();
         Ok(meta)
     }
 
@@ -404,6 +413,7 @@ impl TerminalManager {
         // Wake attached sockets immediately (the reader thread's EOF signal can
         // race or be missed if the child is killed before producing EOF).
         let _ = session.done_tx.send(true);
+        self.changes.notify();
         Some(session)
     }
 
@@ -412,6 +422,7 @@ impl TerminalManager {
     /// Dock tile alive and leave stray console windows on Windows.
     pub fn kill_all(&self) {
         let sessions: Vec<_> = lock(&self.inner).drain().map(|(_, s)| s).collect();
+        self.changes.notify();
         let handles: Vec<_> = sessions
             .into_iter()
             .map(|s| {
