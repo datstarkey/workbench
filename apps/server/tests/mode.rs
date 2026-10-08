@@ -100,10 +100,9 @@ async fn a_new_chat_restarts_in_the_picked_mode() {
     }
     assert_eq!(frame["t"], "replaced", "{frame}");
 
-    let mut launches = String::new();
     for _ in 0..50 {
-        launches = std::fs::read_to_string(&args).unwrap_or_default();
-        if launches.lines().count() >= 2 {
+        let launched = std::fs::read_to_string(&args).unwrap_or_default();
+        if launched.lines().count() >= 2 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

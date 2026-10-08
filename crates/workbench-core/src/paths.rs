@@ -121,11 +121,18 @@ pub fn find_binary(env_var: &str, names: &[&str]) -> PathBuf {
     if let Some(bin) = std::env::var_os(env_var) {
         return bin.into();
     }
-    let dirs: Vec<PathBuf> = std::env::split_paths(&enriched_path()).collect();
+    find_on_path(names).unwrap_or_else(|| names[0].into())
+}
+
+/// The first of `names` found in an absolute directory of the enriched search
+/// path. A relative entry (`.`) would resolve against a child's own cwd.
+pub fn find_on_path(names: &[&str]) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = std::env::split_paths(&enriched_path())
+        .filter(|d| d.is_absolute())
+        .collect();
     names
         .iter()
         .find_map(|name| dirs.iter().map(|d| d.join(name)).find(|p| p.is_file()))
-        .unwrap_or_else(|| names[0].into())
 }
 
 /// Encode a project path for use as a filename-safe identifier.

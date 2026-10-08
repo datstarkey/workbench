@@ -27,6 +27,40 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
+/// A CLI tool (`git`, `gh`, `claude`, ...) by name or path, found on the
+/// enriched search path (GUI apps don't inherit the shell's PATH), which its
+/// children get too.
+///
+/// Never a bare name with PATH changed: std then forks to search PATH itself
+/// instead of using `posix_spawn`, and a fork in this large, many-threaded
+/// process holds the allocator's locks long enough to stall every thread
+/// (the git/gh polls froze the whole app, servers included, for minutes). A
+/// tool that isn't on the enriched path runs by name on the app's own PATH.
+pub fn tool(program: impl AsRef<OsStr>) -> Command {
+    let program = program.as_ref();
+    let path = std::path::Path::new(program);
+    let found = if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        program.to_str().and_then(|name| {
+            let exe = if cfg!(windows) && path.extension().is_none() {
+                format!("{name}.exe")
+            } else {
+                name.to_string()
+            };
+            crate::paths::find_on_path(&[&exe])
+        })
+    };
+    match found {
+        Some(full) => {
+            let mut cmd = command(full);
+            cmd.env("PATH", crate::paths::enriched_path());
+            cmd
+        }
+        None => command(program),
+    }
+}
+
 /// Run `cmd` and return its stdout if it exits successfully within `timeout`;
 /// `None` if it can't start, fails, or is killed at the deadline. Stdout is read
 /// after exit, so only for commands with small output.
@@ -186,6 +220,26 @@ pub fn submit_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_never_has_a_bare_name_with_path_set() {
+        // std forks (no posix_spawn) for exactly that pair.
+        let sets_path = |cmd: &Command| cmd.get_envs().any(|(k, _)| k == "PATH");
+        let found = tool("sh");
+        assert!(std::path::Path::new(found.get_program()).is_absolute());
+        assert!(
+            sets_path(&found),
+            "a found tool's children get the enriched PATH"
+        );
+
+        let missing = tool("workbench-no-such-tool");
+        assert_eq!(missing.get_program(), "workbench-no-such-tool");
+        assert!(!sets_path(&missing));
+
+        let out = tool("sh").args(["-c", "echo ok"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+    }
 
     #[test]
     fn open_url_accepts_only_http_urls() {

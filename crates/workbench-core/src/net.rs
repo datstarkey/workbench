@@ -107,12 +107,7 @@ fn tailscale_cli_ipv4() -> Vec<Ipv4Addr> {
 }
 
 fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    crate::shell::output_with_timeout(
-        crate::shell::command(program)
-            .args(args)
-            .env("PATH", crate::paths::enriched_path()),
-        timeout,
-    )
+    crate::shell::output_with_timeout(crate::shell::tool(program).args(args), timeout)
 }
 
 fn parse_ipv4_lines(out: &str) -> Vec<Ipv4Addr> {
