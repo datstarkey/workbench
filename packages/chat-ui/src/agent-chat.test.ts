@@ -419,14 +419,137 @@ describe('AgentChat', () => {
 		}
 	});
 
-	it('reconnects after a dropped socket, starting the session again', async () => {
+	it('re-attaches after a dropped socket without starting a new process', async () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const { chat, ws } = await connected(fakeApi(start));
 		ws.onclose?.();
 		expect(chat.status).toBe('reconnecting');
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(start).toHaveBeenCalledTimes(2);
+		expect(start).toHaveBeenLastCalledWith({ ...body, attachOnly: true });
 		expect(FakeSocket.last).not.toBe(ws);
+		chat.dispose();
+	});
+
+	it('backs off between failed reconnects, then gives up until Restart starts it', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		start.mockRejectedValue(new Error('Failed to fetch'));
+		ws.onclose?.();
+		const delays = [1500, 3000, 6000, 12000, 24000, 30000, 30000, 30000];
+		for (const [i, delay] of delays.entries()) {
+			expect(chat.status).toBe('reconnecting');
+			await vi.advanceTimersByTimeAsync(delay - 1);
+			expect(start).toHaveBeenCalledTimes(i + 1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(start).toHaveBeenCalledTimes(i + 2);
+			expect(start).toHaveBeenLastCalledWith({ ...body, attachOnly: true });
+		}
+		expect(chat.status).toBe('exited');
+		expect(chat.error).toContain('Lost the connection');
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(start).toHaveBeenCalledTimes(delays.length + 1);
+
+		start.mockResolvedValue('sid');
+		await chat.open();
+		expect(start).toHaveBeenLastCalledWith(body);
+		expect(FakeSocket.last).not.toBe(ws);
+		chat.dispose();
+	});
+
+	it('resets the backoff once a reconnect gets its snapshot', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		ws.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		const second = FakeSocket.last!;
+		second.onclose?.(); // closed before a snapshot: the next wait doubles
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(FakeSocket.last).toBe(second);
+		await vi.advanceTimersByTimeAsync(1500);
+		const third = FakeSocket.last!;
+		expect(third).not.toBe(second);
+		third.emit({
+			t: 'snapshot',
+			sessionId: 'sid',
+			start: 0,
+			items: [],
+			meta: meta(),
+			commands: [],
+			exited: false
+		});
+		third.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(FakeSocket.last).not.toBe(third);
+		chat.dispose();
+	});
+
+	it('shows an own chat whose session stopped while away as stopped, not retrying', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		start.mockRejectedValue(
+			Object.assign(new Error('This chat ended on the other device.'), { status: 404 })
+		);
+		ws.onclose?.();
+		// A relaunch unlists the session for up to 30s, so it's looked for a while first.
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(chat.status).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(45_000);
+		expect(chat.status).toBe('exited');
+		expect(chat.error).toBeNull();
+		const tries = start.mock.calls.length;
+		expect(tries).toBe(6); // the start, then five looks
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(start).toHaveBeenCalledTimes(tries);
+		chat.dispose();
+	});
+
+	it('rejoins a relaunched session whose replaced frame never arrived', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		start.mockRejectedValueOnce(Object.assign(new Error('gone'), { status: 404 }));
+		ws.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(chat.status).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(FakeSocket.last).not.toBe(ws);
+		expect(start).toHaveBeenLastCalledWith({ ...body, attachOnly: true });
+		chat.dispose();
+	});
+
+	it('a joined chat refused on reconnect rejoins on Restart, never takes over', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const attach = { ...body, attachOnly: true };
+		const { chat, ws } = await connected(fakeApi(start), attach);
+		const onTakeOver = vi.fn();
+		chat.onTakeOver = onTakeOver;
+		start.mockRejectedValueOnce(Object.assign(new Error('unauthorized'), { status: 401 }));
+		ws.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(chat.status).toBe('exited');
+		await chat.open();
+		expect(onTakeOver).not.toHaveBeenCalled();
+		expect(start).toHaveBeenLastCalledWith(attach);
+		chat.dispose();
+	});
+
+	it('gives up at once on a refusal that will not change, like a revoked token', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		start.mockRejectedValue(Object.assign(new Error('unauthorized'), { status: 401 }));
+		ws.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(chat.status).toBe('exited');
+		expect(chat.error).toBe('unauthorized');
+		chat.dispose();
+	});
+
+	it('starts again on replaced, since the relaunched session is not listed yet', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		ws.emit({ t: 'replaced' });
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
+		expect(start).toHaveBeenLastCalledWith(body);
 		chat.dispose();
 	});
 
@@ -444,8 +567,10 @@ describe('AgentChat', () => {
 		await vi.advanceTimersByTimeAsync(1500);
 		const retry = FakeSocket.last!;
 		expect(retry).not.toBe(ws);
-		retry.onclose?.(); // the socket couldn't open either
+		retry.onclose?.(); // the socket couldn't open either: the next try waits twice as long
 		expect(chat.status).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(start).toHaveBeenCalledTimes(3);
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(start).toHaveBeenCalledTimes(4);
 		expect(FakeSocket.last).not.toBe(retry);
@@ -596,7 +721,7 @@ describe('AgentChat', () => {
 		const ws = FakeSocket.last!;
 		ws.onclose?.();
 		await vi.advanceTimersByTimeAsync(1500);
-		expect(start).toHaveBeenLastCalledWith({ ...codex, sessionId: 'thread-1' });
+		expect(start).toHaveBeenLastCalledWith({ ...codex, sessionId: 'thread-1', attachOnly: true });
 		chat.dispose();
 	});
 
@@ -818,6 +943,43 @@ describe('AgentChat host lifecycle', () => {
 		const remove = vi.spyOn(doc, 'removeEventListener');
 		chat.dispose();
 		expect(remove).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+	});
+
+	it('retries on wake after running out of retries; a joined chat then rejoins, not takes over', async () => {
+		const doc = Object.assign(new EventTarget(), { hidden: false });
+		vi.stubGlobal('document', doc);
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const attach = { ...body, attachOnly: true };
+		const chat = new AgentChat(attach, fakeApi(start), { reconnectOnWake: true });
+		const onTakeOver = vi.fn();
+		chat.onTakeOver = onTakeOver;
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		const giveUp = async () => {
+			start.mockRejectedValue(new Error('Failed to fetch'));
+			await vi.advanceTimersByTimeAsync(200_000);
+			expect(chat.status).toBe('exited');
+			start.mockResolvedValue('sid');
+		};
+		doc.hidden = true;
+		doc.dispatchEvent(new Event('visibilitychange'));
+		FakeSocket.last!.onclose?.();
+		await giveUp();
+
+		const calls = start.mock.calls.length;
+		const before = FakeSocket.last;
+		doc.hidden = false;
+		doc.dispatchEvent(new Event('visibilitychange'));
+		expect(chat.status).toBe('reconnecting');
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(before));
+		expect(start).toHaveBeenCalledTimes(calls + 1);
+		expect(start).toHaveBeenLastCalledWith(attach);
+
+		FakeSocket.last!.onclose?.();
+		await giveUp();
+		await chat.open();
+		expect(onTakeOver).not.toHaveBeenCalled();
+		expect(start).toHaveBeenLastCalledWith(attach);
+		chat.dispose();
 	});
 
 	it('ends a joined chat that is gone on reconnect instead of retrying', async () => {
