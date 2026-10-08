@@ -105,28 +105,22 @@ fn registered(app: &AppHandle) -> Option<(String, bool)> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
-pub async fn autostart_enabled(app: AppHandle) -> Result<bool, String> {
-    crate::blocking(move || {
-        launcher(&app, &current_exe()?)?
-            .is_enabled()
-            .map_err(|e| e.to_string())
-    })
-    .await
+pub fn autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    launcher(&app, &current_exe()?)?
+        .is_enabled()
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[tauri::command]
-pub async fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
-    crate::blocking(move || {
-        let launcher = launcher(&app, &current_exe()?)?;
-        let result = if enabled {
-            launcher.enable()
-        } else {
-            launcher.disable()
-        };
-        result.map_err(|e| e.to_string())
-    })
-    .await
+pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let launcher = launcher(&app, &current_exe()?)?;
+    let result = if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+    result.map_err(|e| e.to_string())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

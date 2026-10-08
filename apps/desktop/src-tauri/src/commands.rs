@@ -239,6 +239,7 @@ pub async fn sandbox_runtime_settings_path(
 ) -> Result<String, String> {
     let hook_bridge = hook_bridge.inner().clone();
     crate::blocking(move || {
+        let _writing = lock(&SANDBOX_FILE);
         let settings = config::load_workbench_settings().map_err(|e| e.to_string())?;
         let projects = config::load_projects().map_err(|e| e.to_string())?;
         let path = sandbox_runtime::write_settings(&settings, &projects, hook_bridge.socket_path())
@@ -246,6 +247,15 @@ pub async fn sandbox_runtime_settings_path(
         Ok(path.to_string_lossy().to_string())
     })
     .await
+}
+
+/// One writer of the sandbox file at a time, each reading the settings and
+/// projects inside it: one on the blocking pool must not finish after a newer
+/// one from a save and put an old allowlist back.
+static SANDBOX_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock(m: &'static std::sync::Mutex<()>) -> std::sync::MutexGuard<'static, ()> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Regenerate `~/.workbench/sandbox-runtime.json` from the current settings,
@@ -259,6 +269,7 @@ pub fn refresh_sandbox_runtime_settings(
     settings: Option<&WorkbenchSettings>,
     hook_bridge: &HookBridgeState,
 ) {
+    let _writing = lock(&SANDBOX_FILE);
     let loaded;
     let settings = match settings {
         Some(s) => s,
