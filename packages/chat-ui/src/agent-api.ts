@@ -1,4 +1,4 @@
-import { agentWsUrl, DEFAULT_TIMEOUT_MS, withTimeout } from '@workbench/transport';
+import { agentWsUrl, DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from '@workbench/transport';
 import type {
 	AgentClientMsg,
 	AgentSummary,
@@ -36,8 +36,6 @@ export interface AgentApi {
  * Codex thread's id (up to 30s).
  */
 const START_TIMEOUT_MS = 90_000;
-/** Stopping waits for the process to exit; a message may carry a 2 MB image. */
-const SLOW_TIMEOUT_MS = 30_000;
 /** A plan-usage check can wait on a `claude -p /usage` run. */
 const USAGE_TIMEOUT_MS = 60_000;
 /** Listing a big repo's files for the `@` menu. */

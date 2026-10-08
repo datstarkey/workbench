@@ -5,7 +5,7 @@ import type {
 	ControlPlaneTransport,
 	Unsubscribe
 } from './transport.ts';
-import { DEFAULT_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
+import { DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
 
 export interface HttpTransportOptions {
 	/** Base URL of the workbench-server, e.g. `http://my-box:4317`. */
@@ -25,8 +25,6 @@ type Req = {
 
 /** Adding or removing a worktree checks out or deletes a whole tree and runs hooks. */
 const WORKTREE_TIMEOUT_MS = 120_000;
-/** Review diffs and session discovery read many files; the update check goes to the network. */
-const SLOW_READ_TIMEOUT_MS = 30_000;
 
 /**
  * Maps each control-plane command to a concrete `workbench-server` request.
@@ -72,7 +70,7 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 					...(a.path !== projectPath ? { worktreePath: String(a.path) } : {}),
 					...(name === 'git_file_diff' ? { file: String(a.file), staged: String(a.staged) } : {})
 				},
-				timeoutMs: SLOW_READ_TIMEOUT_MS
+				timeoutMs: SLOW_TIMEOUT_MS
 			};
 		}
 		case 'github_get_remote':
@@ -82,14 +80,14 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 				method: 'GET',
 				path: '/sessions/claude',
 				query: { projectPath: String(a.projectPath) },
-				timeoutMs: SLOW_READ_TIMEOUT_MS
+				timeoutMs: SLOW_TIMEOUT_MS
 			};
 		case 'discover_codex_sessions':
 			return {
 				method: 'GET',
 				path: '/sessions/codex',
 				query: { projectPath: String(a.projectPath) },
-				timeoutMs: SLOW_READ_TIMEOUT_MS
+				timeoutMs: SLOW_TIMEOUT_MS
 			};
 		case 'load_claude_settings': {
 			const query: Record<string, string> = { scope: String(a.scope) };
@@ -103,7 +101,7 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 			return {
 				method: name === 'host_update_status' ? 'GET' : 'POST',
 				path: '/host/update',
-				timeoutMs: SLOW_READ_TIMEOUT_MS
+				timeoutMs: SLOW_TIMEOUT_MS
 			};
 		default:
 			throw new Error(`HttpTransport: command "${String(name)}" is not supported by the server`);

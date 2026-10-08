@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHttpTransport } from './http.ts';
 import { createMockTransport } from './mock.ts';
 
@@ -219,24 +219,41 @@ describe('HttpTransport event socket reconnect backoff', () => {
 });
 
 describe('HttpTransport request timeouts', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		// A server that never answers: the fetch rejects only when its signal fires.
+		mockFetch(
+			(_url, init) =>
+				new Promise((_, reject) =>
+					init.signal?.addEventListener('abort', () =>
+						reject(new DOMException('aborted', 'AbortError'))
+					)
+				)
+		);
+	});
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.unstubAllGlobals();
-		vi.restoreAllMocks();
 	});
 
+	/** Milliseconds until `invoke` gives up, and the error it gives up with. */
+	async function budget(run: () => Promise<unknown>) {
+		let error: Error | null = null;
+		void run().catch((e: Error) => (error = e));
+		let waited = 0;
+		while (!error && waited < 300_000) {
+			await vi.advanceTimersByTimeAsync(1000);
+			waited += 1000;
+		}
+		return { waited, message: (error as Error | null)?.message };
+	}
+
 	it('rejects a stalled request with a clear timeout error', async () => {
-		vi.spyOn(AbortSignal, 'timeout').mockImplementation(() =>
-			AbortSignal.abort(new DOMException('timed out', 'TimeoutError'))
-		);
-		// Like a browser: a fetch whose signal fired rejects with its reason.
-		mockFetch(async (_url, init) => {
-			init.signal?.throwIfAborted();
-			return json([]);
-		});
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
-		await expect(t.invoke('list_projects', undefined)).rejects.toThrow(
-			'workbench-server: GET /projects timed out after 10s: the server is not responding'
-		);
+		await expect(budget(() => t.invoke('list_projects', undefined))).resolves.toEqual({
+			waited: 10_000,
+			message: 'workbench-server: GET /projects timed out after 10s: the server is not responding'
+		});
 	});
 
 	it('keeps other failures as they are', async () => {
@@ -246,12 +263,10 @@ describe('HttpTransport request timeouts', () => {
 	});
 
 	it('gives routes that do slow work server-side a longer budget', async () => {
-		const timeout = vi.spyOn(AbortSignal, 'timeout');
-		mockFetch(() => json(null));
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
-		await t.invoke('list_projects', undefined);
-		await t.invoke('create_worktree', { request: {} } as never);
-		await t.invoke('git_status', { path: '/repo' });
-		expect(timeout.mock.calls.map(([ms]) => ms)).toEqual([10_000, 120_000, 30_000]);
+		const create = await budget(() => t.invoke('create_worktree', { request: {} } as never));
+		expect(create.waited).toBe(120_000);
+		const status = await budget(() => t.invoke('git_status', { path: '/repo' }));
+		expect(status.waited).toBe(30_000);
 	});
 });

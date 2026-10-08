@@ -63,6 +63,8 @@ const RECONNECT_MS = 1500;
 const MAX_RECONNECT_MS = 30_000;
 /** Retries before giving up (about 2.5 min), leaving Restart to the person. */
 const MAX_RECONNECT_ATTEMPTS = 8;
+/** Retries (about 45s) a session missing on reconnect gets: a relaunch attaches within 30s. */
+const RELAUNCH_ATTEMPTS = 5;
 /** Hidden this long (a sleeping phone or laptop), the socket may be dead while it still reads open. */
 const WAKE_RECONNECT_MS = 10_000;
 /** How long the `@` menu's file list is reused before it's fetched again. */
@@ -297,9 +299,16 @@ export class AgentChat {
 			// someone ended it) or a refusal that won't change (a revoked token).
 			const { status, ended } = e as { status?: number; ended?: boolean };
 			const gone = attach && status === 404;
-			if (this.status === 'reconnecting' && !gone && retryable(status))
+			// A relaunch (rewind, mode) unlists the session until its new process attaches;
+			// a socket that dropped before its `replaced` lands here, so an own chat waits it out.
+			const relaunching =
+				gone && !ended && !this.body.attachOnly && this.reconnectAttempts < RELAUNCH_ATTEMPTS;
+			const reconnecting = this.status === 'reconnecting';
+			if (reconnecting && ((!gone && retryable(status)) || relaunching))
 				return this.scheduleReconnect();
-			this.status = this.status === 'reconnecting' ? 'exited' : 'failed';
+			// Refused, not gone: a joined chat's Restart must rejoin it, not take it over.
+			this.lostConnection = reconnecting && !gone;
+			this.status = reconnecting ? 'exited' : 'failed';
 			// The server words a 404 for a joined chat; an own one that stopped meanwhile shows the default.
 			this.error =
 				gone && !ended && !this.body.attachOnly ? null : e instanceof Error ? e.message : String(e);

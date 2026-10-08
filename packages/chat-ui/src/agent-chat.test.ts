@@ -491,11 +491,45 @@ describe('AgentChat', () => {
 			Object.assign(new Error('This chat ended on the other device.'), { status: 404 })
 		);
 		ws.onclose?.();
+		// A relaunch unlists the session for up to 30s, so it's looked for a while first.
 		await vi.advanceTimersByTimeAsync(1500);
+		expect(chat.status).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(45_000);
 		expect(chat.status).toBe('exited');
 		expect(chat.error).toBeNull();
-		await vi.advanceTimersByTimeAsync(60_000);
-		expect(start).toHaveBeenCalledTimes(2);
+		const tries = start.mock.calls.length;
+		expect(tries).toBe(6); // the start, then five looks
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(start).toHaveBeenCalledTimes(tries);
+		chat.dispose();
+	});
+
+	it('rejoins a relaunched session whose replaced frame never arrived', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		start.mockRejectedValueOnce(Object.assign(new Error('gone'), { status: 404 }));
+		ws.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(chat.status).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(3000);
+		expect(FakeSocket.last).not.toBe(ws);
+		expect(start).toHaveBeenLastCalledWith({ ...body, attachOnly: true });
+		chat.dispose();
+	});
+
+	it('a joined chat refused on reconnect rejoins on Restart, never takes over', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const attach = { ...body, attachOnly: true };
+		const { chat, ws } = await connected(fakeApi(start), attach);
+		const onTakeOver = vi.fn();
+		chat.onTakeOver = onTakeOver;
+		start.mockRejectedValueOnce(Object.assign(new Error('unauthorized'), { status: 401 }));
+		ws.onclose?.();
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(chat.status).toBe('exited');
+		await chat.open();
+		expect(onTakeOver).not.toHaveBeenCalled();
+		expect(start).toHaveBeenLastCalledWith(attach);
 		chat.dispose();
 	});
 
