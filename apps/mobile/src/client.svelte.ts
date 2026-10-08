@@ -444,6 +444,25 @@ export class MobileClient {
 	}
 
 	/** End a chat session's process and leave its screen; the conversation stays on disk. */
+	/**
+	 * Stop the session's process, a stuck turn with it, and open it again: the
+	 * server resumes it from disk. Not an End, so other devices keep it; this
+	 * one now owns it (no longer attach-only).
+	 */
+	async restartChat(ref: ChatRef, sessionId: string): Promise<void> {
+		const live = this.live();
+		this.notice = null;
+		try {
+			if (sessionId) await this.agents.stop(sessionId);
+		} catch (e) {
+			if (live()) this.notice = `Couldn't restart the session: ${errorText(e)}`;
+			return;
+		}
+		if (!live()) return;
+		const { attachOnly: _attachOnly, ...own } = ref;
+		this.openChat({ ...own, sessionId: sessionId || ref.sessionId });
+	}
+
 	async endChat(sessionId: string): Promise<void> {
 		const live = this.live();
 		// A Codex chat that never got a thread id has nothing running to stop.
