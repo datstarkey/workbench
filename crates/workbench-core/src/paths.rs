@@ -172,7 +172,11 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     let dir = path.parent().context("Cannot determine parent directory")?;
     fs::create_dir_all(dir)?;
 
-    let temp_path = path.with_extension("tmp");
+    // A temp file of its own per write: two writers sharing one could rename a
+    // file the other is halfway through into place.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path = path.with_extension(format!("{}.{seq}.tmp", std::process::id()));
     fs::write(&temp_path, content).context("Failed to write temp file")?;
 
     // On Windows, rename fails if the target exists and may be locked.
@@ -239,6 +243,27 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn concurrent_atomic_writes_leave_one_whole_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let bodies: Vec<String> = (0..8).map(|i| format!("{i}").repeat(64 * 1024)).collect();
+        std::thread::scope(|s| {
+            for body in &bodies {
+                let path = &path;
+                s.spawn(move || {
+                    for _ in 0..20 {
+                        atomic_write(path, body).unwrap();
+                    }
+                });
+            }
+        });
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(bodies.contains(&written), "a torn or mixed file");
+        let left: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temp files left behind");
+    }
 
     // --- encode_project_path ---
 
