@@ -1,21 +1,58 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use serde::Serialize;
 
+use crate::git_read;
 use crate::paths::copy_file;
 use crate::types::{
     BranchInfo, CreateWorktreeRequest, GitCommitFile, GitCommitResult, GitFileStatus, GitInfo,
     GitLogEntry, GitStashEntry, GitStatusResult, WorktreeCopyOptions, WorktreeInfo,
 };
 
+/// Read-only queries (the polled ones): generous for a cold `status` on a huge checkout,
+/// finite so a hung git (network filesystem, stuck lock) can't block its caller forever.
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// Everything else: commits run hooks, checkouts run LFS and hooks, clones and fetches
+/// move data. Killing those midway leaves locks and half-written trees, so the cap is
+/// only there to free a caller from a git that will never finish.
+pub(crate) const LONG_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+pub(crate) fn git_timeout(args: &[&str]) -> Duration {
+    let mut rest = args.iter().copied();
+    while let Some(arg) = rest.next() {
+        match arg {
+            "-c" | "-C" => {
+                rest.next();
+            }
+            a if a.starts_with('-') => {}
+            "status" | "rev-parse" | "rev-list" | "log" | "show" | "diff" | "ls-files"
+            | "remote" | "symbolic-ref" | "for-each-ref" | "branch" | "merge-base" | "cat-file"
+            | "check-ignore" => return READ_TIMEOUT,
+            "worktree" | "stash" if rest.next() == Some("list") => return READ_TIMEOUT,
+            _ => return LONG_TIMEOUT,
+        }
+    }
+    LONG_TIMEOUT
+}
+
 pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {
-    let output = crate::shell::tool("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .context("Failed to run git")?;
+    let output = crate::shell::run_with_timeout(
+        crate::shell::tool("git")
+            .args(args)
+            .current_dir(cwd)
+            // Reads (`status` refreshing the index) must not write .git/index: the git
+            // watcher sees that write as a change and polls again, and the lock it takes
+            // makes an agent's own git fail with "index.lock exists".
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            // No terminal credential prompt: nobody can answer it, so it would hang.
+            .env("GIT_TERMINAL_PROMPT", "0"),
+        git_timeout(args),
+    )
+    .with_context(|| format!("Failed to run git {}", args.first().unwrap_or(&"")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -249,6 +286,14 @@ fn copy_workspace_files_to_worktree(
 }
 
 pub fn git_info(path: &str) -> Result<GitInfo> {
+    git_read::with_fallback(
+        "git_info",
+        || git_read::git_info(path),
+        || git_info_cli(path),
+    )
+}
+
+pub(crate) fn git_info_cli(path: &str) -> Result<GitInfo> {
     let output = git_output(
         &[
             "rev-parse",
@@ -351,6 +396,14 @@ pub fn get_default_branch(repo_path: &str) -> Result<String> {
 }
 
 pub fn list_worktrees(path: &str) -> Result<Vec<WorktreeInfo>> {
+    git_read::with_fallback(
+        "list_worktrees",
+        || git_read::list_worktrees(path),
+        || list_worktrees_cli(path),
+    )
+}
+
+pub(crate) fn list_worktrees_cli(path: &str) -> Result<Vec<WorktreeInfo>> {
     let output = git_output(&["worktree", "list", "--porcelain"], path)?;
     Ok(parse_worktree_porcelain(&output))
 }
@@ -476,6 +529,14 @@ pub fn clone_repo(url: &str, dest_path: &str) -> Result<()> {
 }
 
 pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
+    git_read::with_fallback(
+        "list_branches",
+        || git_read::list_branches(path),
+        || list_branches_cli(path),
+    )
+}
+
+pub(crate) fn list_branches_cli(path: &str) -> Result<Vec<BranchInfo>> {
     let format = "%(refname:short)\t%(objectname:short)\t%(HEAD)\t%(refname:rstrip=0)";
     let output = git_output(&["branch", "-a", &format!("--format={format}")], path)?;
 
@@ -491,7 +552,8 @@ pub fn list_branches(path: &str) -> Result<Vec<BranchInfo>> {
         let full_ref = parts[3];
         let is_remote = full_ref.starts_with("refs/remotes/");
 
-        if name.ends_with("/HEAD") {
+        // `refs/remotes/origin/HEAD` shortens to plain `origin`.
+        if name.ends_with("/HEAD") || full_ref.ends_with("/HEAD") {
             continue;
         }
 
@@ -554,11 +616,34 @@ pub(crate) fn parse_porcelain_status(output: &str) -> Vec<GitFileStatus> {
 }
 
 pub fn git_status(path: &str) -> Result<GitStatusResult> {
-    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"], path)
-        .unwrap_or_else(|_| "HEAD".to_string());
-
     let porcelain = git_output(&["status", "--porcelain=v1", "-z"], path)?;
     let files = parse_porcelain_status(&porcelain);
+    let branch = git_read::with_fallback(
+        "git_status_branch",
+        || git_read::status_branch(path),
+        || Ok(status_branch_cli(path)),
+    )?;
+    Ok(GitStatusResult {
+        branch: branch.branch,
+        files,
+        ahead: branch.ahead,
+        behind: branch.behind,
+        has_upstream: branch.has_upstream,
+    })
+}
+
+/// The branch half of [`git_status`]: HEAD's short name and how it stands to its upstream.
+#[derive(Debug, Serialize)]
+pub(crate) struct StatusBranch {
+    pub branch: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub has_upstream: bool,
+}
+
+pub(crate) fn status_branch_cli(path: &str) -> StatusBranch {
+    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"], path)
+        .unwrap_or_else(|_| "HEAD".to_string());
 
     // ahead/behind — may fail if there's no upstream
     let (ahead, behind, has_upstream) = match git_output(
@@ -578,13 +663,12 @@ pub fn git_status(path: &str) -> Result<GitStatusResult> {
         Err(_) => (0, 0, false),
     };
 
-    Ok(GitStatusResult {
+    StatusBranch {
         branch,
-        files,
         ahead,
         behind,
         has_upstream,
-    })
+    }
 }
 
 /// Read-only preview. Literal pathspecs and disabled diff drivers prevent a filename or
@@ -677,6 +761,14 @@ fn unpushed_shas(path: &str) -> HashSet<String> {
 }
 
 pub fn git_log(path: &str, max_count: u32) -> Result<Vec<GitLogEntry>> {
+    git_read::with_fallback(
+        "git_log",
+        || git_read::git_log(path, max_count),
+        || git_log_cli(path, max_count),
+    )
+}
+
+pub(crate) fn git_log_cli(path: &str, max_count: u32) -> Result<Vec<GitLogEntry>> {
     let format = "%H%x00%h%x00%s%x00%an%x00%aI";
     let count_arg = format!("-{}", max_count);
     let output = git_output(&["log", &format!("--format={format}"), &count_arg], path)?;
@@ -728,6 +820,14 @@ pub fn git_checkout(path: &str, branch: &str) -> Result<()> {
 }
 
 pub fn git_stash_list(path: &str) -> Result<Vec<GitStashEntry>> {
+    git_read::with_fallback(
+        "git_stash_list",
+        || git_read::git_stash_list(path),
+        || git_stash_list_cli(path),
+    )
+}
+
+pub(crate) fn git_stash_list_cli(path: &str) -> Result<Vec<GitStashEntry>> {
     let output = git_output(&["stash", "list", "--format=%gd%x00%gs%x00%aI"], path);
 
     // Empty stash list returns an error from git_output because there's no output
