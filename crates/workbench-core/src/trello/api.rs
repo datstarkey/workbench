@@ -9,8 +9,24 @@ use super::types::{
 
 const BASE_URL: &str = "https://api.trello.com/1";
 
+/// One client for every Trello call. Idle pooling is off: callers each build a
+/// short-lived runtime (`trello_automation`) or run on Tauri's, and a pooled
+/// connection can't be reused once the runtime that opened it is gone.
+fn client() -> Result<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            crate::http::client_builder(crate::http::REQUEST_TIMEOUT)
+                .pool_max_idle_per_host(0)
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .context("Failed to create the HTTP client")
+}
+
 pub async fn validate_auth(creds: &TrelloCredentials) -> Result<bool> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .get(format!("{BASE_URL}/members/me"))
         .query(&[("key", &creds.api_key), ("token", &creds.token)])
@@ -22,7 +38,7 @@ pub async fn validate_auth(creds: &TrelloCredentials) -> Result<bool> {
 }
 
 pub async fn list_boards(creds: &TrelloCredentials) -> Result<Vec<TrelloBoard>> {
-    let client = reqwest::Client::new();
+    let client = client()?;
 
     // Fetch boards where user is a direct member
     let resp = client
@@ -64,7 +80,7 @@ pub async fn list_boards(creds: &TrelloCredentials) -> Result<Vec<TrelloBoard>> 
 }
 
 async fn list_organizations(creds: &TrelloCredentials) -> Result<Vec<TrelloOrganization>> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .get(format!("{BASE_URL}/members/me/organizations"))
         .query(&[
@@ -89,7 +105,7 @@ async fn list_organization_boards(
     creds: &TrelloCredentials,
     org_id: &str,
 ) -> Result<Vec<TrelloBoard>> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .get(format!("{BASE_URL}/organizations/{org_id}/boards"))
         .query(&[
@@ -112,7 +128,7 @@ async fn list_organization_boards(
 }
 
 pub async fn list_columns(creds: &TrelloCredentials, board_id: &str) -> Result<Vec<TrelloList>> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .get(format!("{BASE_URL}/boards/{board_id}/lists"))
         .query(&[
@@ -137,7 +153,7 @@ pub async fn list_columns(creds: &TrelloCredentials, board_id: &str) -> Result<V
 }
 
 pub async fn list_cards(creds: &TrelloCredentials, list_id: &str) -> Result<Vec<TrelloCard>> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .get(format!("{BASE_URL}/lists/{list_id}/cards"))
         .query(&[
@@ -161,7 +177,7 @@ pub async fn list_cards(creds: &TrelloCredentials, list_id: &str) -> Result<Vec<
 }
 
 pub async fn list_labels(creds: &TrelloCredentials, board_id: &str) -> Result<Vec<TrelloLabel>> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .get(format!("{BASE_URL}/boards/{board_id}/labels"))
         .query(&[("key", &creds.api_key), ("token", &creds.token)])
@@ -186,7 +202,7 @@ pub async fn create_card(
     name: &str,
     desc: Option<&str>,
 ) -> Result<TrelloCard> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let mut query = vec![
         ("key", creds.api_key.as_str()),
         ("token", creds.token.as_str()),
@@ -220,7 +236,7 @@ pub async fn move_card(
     card_id: &str,
     target_list_id: &str,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .put(format!("{BASE_URL}/cards/{card_id}"))
         .query(&[
@@ -244,7 +260,7 @@ pub async fn add_label_to_card(
     card_id: &str,
     label_id: &str,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .post(format!("{BASE_URL}/cards/{card_id}/idLabels"))
         .query(&[
@@ -268,7 +284,7 @@ pub async fn remove_label_from_card(
     card_id: &str,
     label_id: &str,
 ) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = client()?;
     let resp = client
         .delete(format!("{BASE_URL}/cards/{card_id}/idLabels/{label_id}"))
         .query(&[
@@ -291,7 +307,7 @@ pub async fn fetch_board_data(
     board_id: &str,
     hidden_columns: &[String],
 ) -> Result<TrelloBoardData> {
-    let client = reqwest::Client::new();
+    let client = client()?;
 
     // Fetch board info
     let resp = client

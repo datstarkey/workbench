@@ -1,24 +1,31 @@
 //! The GitHub poll's read path over the GitHub API instead of `gh` processes: one
 //! GraphQL query for PRs and their checks, and ETag-cached REST pages for workflow
 //! runs (a 304 doesn't count against the rate limit). Auth reuses the `gh` login
-//! (`gh auth token`, read once per host and kept in memory only). Callers fall back
-//! to the `gh` CLI on any error; mutations stay on the CLI.
+//! (`token.rs`). Callers fall back to the `gh` CLI on any error, and a failing
+//! project skips the API for a while; mutations stay on the CLI.
 
 mod mapping;
+mod token;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::github::GitRemote;
 use crate::types::{GitHubRemote, GitHubWorkflowRun};
+use token::{read_gh_token, with_token, TOKENS};
 
 /// `gh run list --limit 200`, fetched the way gh does: pages of 100.
 const RUNS_PER_PAGE: usize = 100;
 const RUNS_PAGES: usize = 2;
+
+/// After a failure a project's part goes straight to the CLI for this long, so a
+/// broken API path (unreachable host, no access) doesn't cost a round trip per poll.
+const BACKOFF: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug)]
 pub(crate) enum ApiError {
@@ -28,6 +35,7 @@ pub(crate) enum ApiError {
     Network(String),
     GraphQl(String),
     Parse(String),
+    BackedOff,
 }
 
 impl ApiError {
@@ -39,6 +47,7 @@ impl ApiError {
             Self::Network(_) => "network",
             Self::GraphQl(_) => "graphql",
             Self::Parse(_) => "parse",
+            Self::BackedOff => "backed off",
         }
     }
 }
@@ -52,6 +61,7 @@ impl fmt::Display for ApiError {
             Self::Network(e) => write!(f, "network error: {e}"),
             Self::GraphQl(e) => write!(f, "GraphQL error: {e}"),
             Self::Parse(e) => write!(f, "unexpected response: {e}"),
+            Self::BackedOff => write!(f, "backing off after a failure"),
         }
     }
 }
@@ -83,61 +93,99 @@ impl Endpoints {
     }
 }
 
+/// The repo `gh pr list` / `gh run list` would read, when that's unambiguous: the
+/// only GitHub repo among the remotes, or the remote `gh repo set-default` picked.
+/// `None` leaves the choice to the CLI (e.g. a fork with `upstream` and no default).
+pub(crate) fn api_remote(path: &str, remotes: &[GitRemote]) -> Option<GitRemote> {
+    let first = remotes.first()?;
+    if remotes.iter().all(|r| {
+        r.remote
+            .html_url
+            .eq_ignore_ascii_case(&first.remote.html_url)
+    }) {
+        return Some(first.clone());
+    }
+    let config = crate::git::git_output(
+        &["config", "--get-regexp", r"^remote\..*\.gh-resolved$"],
+        path,
+    )
+    .ok()?;
+    resolved_remote(&config, remotes)
+}
+
+/// `remote.<name>.gh-resolved` is `base` (that remote is the repo) or, from older
+/// gh releases, `owner/repo` on that remote's host.
+fn resolved_remote(config: &str, remotes: &[GitRemote]) -> Option<GitRemote> {
+    config.lines().find_map(|line| {
+        let (key, value) = line.split_once(' ')?;
+        let name = key.strip_prefix("remote.")?.strip_suffix(".gh-resolved")?;
+        let base = remotes.iter().find(|r| r.name == name)?;
+        match value.trim() {
+            "base" => Some(base.clone()),
+            other => {
+                let (owner, repo) = other.split_once('/')?;
+                Some(GitRemote {
+                    name: base.name.clone(),
+                    remote: GitHubRemote {
+                        owner: owner.to_string(),
+                        repo: repo.to_string(),
+                        html_url: format!("https://{}/{owner}/{repo}", base.host),
+                    },
+                    host: base.host.clone(),
+                })
+            }
+        }
+    })
+}
+
 /// Open PRs and recent closed/merged ones, in `gh pr list --state all --json …`'s shape.
-pub(crate) fn fetch_pr_json(
-    path: &str,
-    host: &str,
-    remote: &GitHubRemote,
-) -> Result<Vec<Value>, ApiError> {
-    let ep = Endpoints::for_host(host);
-    let result = with_token(&TOKENS, &ep.token_host, read_gh_token, |token| {
-        let (url, token) = (ep.graphql.clone(), token.to_string());
-        let (owner, repo) = (remote.owner.clone(), remote.repo.clone());
-        block_on(async move {
-            let body = mapping::pr_query(&owner, &repo);
-            let resp = authorized(client().post(url), &token)
-                .header("Accept", "application/vnd.github.merge-info-preview+json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(network)?;
-            let resp = check_status(resp)?;
-            let body: Value = resp.json().await.map_err(parse)?;
-            mapping::prs_to_gh_shape(&body).map_err(ApiError::GraphQl)
-        })?
-    });
-    report(path, "PR", &result);
-    result
+pub(crate) fn fetch_pr_json(path: &str, target: &GitRemote) -> Result<Vec<Value>, ApiError> {
+    let ep = Endpoints::for_host(&target.host);
+    guarded(path, "PR", || {
+        with_token(&TOKENS, &ep.token_host, read_gh_token, |token| {
+            let (url, token) = (ep.graphql.clone(), token.to_string());
+            let body = mapping::pr_query(&target.remote.owner, &target.remote.repo);
+            block_on(async move {
+                let resp = authorized(client()?.post(url), &token)
+                    .header("Accept", "application/vnd.github.merge-info-preview+json")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(network)?;
+                let body: Value = check_status(resp)?.json().await.map_err(parse)?;
+                mapping::prs_to_gh_shape(&body).map_err(ApiError::GraphQl)
+            })?
+        })
+    })
 }
 
 /// The latest 200 workflow runs, as `gh run list --json …` would return them.
 pub(crate) fn fetch_workflow_runs(
     path: &str,
-    host: &str,
-    remote: &GitHubRemote,
+    target: &GitRemote,
 ) -> Result<Vec<GitHubWorkflowRun>, ApiError> {
-    let ep = Endpoints::for_host(host);
+    let ep = Endpoints::for_host(&target.host);
     let base = format!(
         "{}/repos/{}/{}/actions/runs?per_page={RUNS_PER_PAGE}",
-        ep.rest, remote.owner, remote.repo
+        ep.rest, target.remote.owner, target.remote.repo
     );
-    let result = with_token(&TOKENS, &ep.token_host, read_gh_token, |token| {
-        let (base, token) = (base.clone(), token.to_string());
-        block_on(async move {
-            let mut runs = Vec::new();
-            for page in 1..=RUNS_PAGES {
-                let page_runs = runs_page(&format!("{base}&page={page}"), &token).await?;
-                let full = page_runs.len() == RUNS_PER_PAGE;
-                runs.extend(page_runs);
-                if !full {
-                    break;
+    guarded(path, "workflow runs", || {
+        with_token(&TOKENS, &ep.token_host, read_gh_token, |token| {
+            let (base, token) = (base.clone(), token.to_string());
+            block_on(async move {
+                let mut runs = Vec::new();
+                for page in 1..=RUNS_PAGES {
+                    let page_runs = runs_page(&format!("{base}&page={page}"), &token).await?;
+                    let full = page_runs.len() == RUNS_PER_PAGE;
+                    runs.extend(page_runs);
+                    if !full {
+                        break;
+                    }
                 }
-            }
-            Ok(runs)
-        })?
-    });
-    report(path, "workflow runs", &result);
-    result
+                Ok(runs)
+            })?
+        })
+    })
 }
 
 /// Run pages by URL: their ETag and the runs it validates.
@@ -150,7 +198,7 @@ async fn runs_page(url: &str, token: &str) -> Result<Vec<GitHubWorkflowRun>, Api
     let cached_etag = lock(etags).get(url).map(|(etag, _)| etag.clone());
 
     let mut req =
-        authorized(client().get(url), token).header("Accept", "application/vnd.github+json");
+        authorized(client()?.get(url), token).header("Accept", "application/vnd.github+json");
     if let Some(etag) = &cached_etag {
         req = req.header("If-None-Match", etag);
     }
@@ -195,22 +243,24 @@ fn parse(e: impl fmt::Display) -> ApiError {
     ApiError::Parse(e.to_string())
 }
 
-fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .user_agent(concat!("workbench/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_default()
-    })
+/// Shared, so its connection pool stays warm across polls; every request is bounded
+/// by `http::REQUEST_TIMEOUT`.
+fn client() -> Result<&'static reqwest::Client, ApiError> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            crate::http::client_builder(crate::http::REQUEST_TIMEOUT)
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or_else(|| ApiError::Network("no HTTP client".into()))
 }
 
 /// Runs `fut` on this module's own runtime thread and waits for it. The callers are
-/// sync and may themselves be on a Tokio worker (a Tauri `command(async)`), where a
-/// nested `block_on` would panic; a channel wait has no such rule. One long-lived
-/// runtime also keeps the client's connection pool warm across polls.
+/// sync and may themselves be on a Tokio worker, where a nested `block_on` would
+/// panic; a channel wait has no such rule. One long-lived runtime also keeps the
+/// client's pooled connections usable (they die with the runtime that opened them).
 fn block_on<T: Send + 'static>(
     fut: impl Future<Output = T> + Send + 'static,
 ) -> Result<T, ApiError> {
@@ -238,84 +288,46 @@ fn block_on<T: Send + 'static>(
         .map_err(|_| ApiError::Network("request dropped".into()))
 }
 
-/// `gh` tokens by host. Never logged or written anywhere.
-struct TokenCache(Mutex<HashMap<String, String>>);
-
-static TOKENS: LazyLock<TokenCache> = LazyLock::new(|| TokenCache(Mutex::default()));
-
-impl TokenCache {
-    /// The lock is held across a read so concurrent first polls spawn one `gh`, not one each.
-    fn get(
-        &self,
-        host: &str,
-        read: impl Fn(&str) -> Result<String, ApiError>,
-    ) -> Result<String, ApiError> {
-        let mut tokens = lock(&self.0);
-        if let Some(token) = tokens.get(host) {
-            return Ok(token.clone());
-        }
-        let token = read(host)?;
-        tokens.insert(host.to_string(), token.clone());
-        Ok(token)
-    }
-
-    /// Drops `bad` unless another caller already replaced it.
-    fn invalidate(&self, host: &str, bad: &str) {
-        let mut tokens = lock(&self.0);
-        if tokens.get(host).map(String::as_str) == Some(bad) {
-            tokens.remove(host);
-        }
-    }
+struct Failure {
+    at: Instant,
+    kind: &'static str,
 }
 
-/// Calls `call` with the cached token; on a 401 re-reads the token once and retries.
-fn with_token<T>(
-    cache: &TokenCache,
-    host: &str,
-    read: impl Fn(&str) -> Result<String, ApiError>,
-    mut call: impl FnMut(&str) -> Result<T, ApiError>,
+/// Last failure per (project path, part); cleared by a success.
+static FAILURES: LazyLock<Mutex<HashMap<(String, &'static str), Failure>>> =
+    LazyLock::new(Default::default);
+
+/// Runs `read` unless this project's `part` failed within `BACKOFF`. Logs a
+/// fallback once per project, part and failure kind.
+fn guarded<T>(
+    path: &str,
+    part: &'static str,
+    read: impl FnOnce() -> Result<T, ApiError>,
 ) -> Result<T, ApiError> {
-    let token = cache.get(host, &read)?;
-    match call(&token) {
-        Err(ApiError::Unauthorized) => {
-            cache.invalidate(host, &token);
-            call(&cache.get(host, &read)?)
+    let key = (path.to_string(), part);
+    if lock(&FAILURES)
+        .get(&key)
+        .is_some_and(|f| f.at.elapsed() < BACKOFF)
+    {
+        return Err(ApiError::BackedOff);
+    }
+    let result = read();
+    let mut failures = lock(&FAILURES);
+    match &result {
+        Ok(_) => {
+            failures.remove(&key);
         }
-        result => result,
-    }
-}
-
-fn read_gh_token(host: &str) -> Result<String, ApiError> {
-    let output = crate::shell::tool("gh")
-        .args(["auth", "token", "--hostname", host])
-        .current_dir(dirs::home_dir().unwrap_or_default())
-        .output()
-        .map_err(|e| ApiError::Token(e.to_string()))?;
-    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !output.status.success() || token.is_empty() {
-        return Err(ApiError::Token(format!(
-            "`gh auth token` exited with {}",
-            output.status
-        )));
-    }
-    Ok(token)
-}
-
-/// (project path, part, failure kind) already logged.
-type Warned = (String, &'static str, &'static str);
-
-/// Logs a fallback once per project, part and failure kind; a success re-arms it.
-fn report<T>(path: &str, part: &'static str, result: &Result<T, ApiError>) {
-    static WARNED: OnceLock<Mutex<HashSet<Warned>>> = OnceLock::new();
-    let mut warned = lock(WARNED.get_or_init(Default::default));
-    match result {
-        Ok(_) => warned.retain(|(p, w, _)| !(p == path && *w == part)),
         Err(e) => {
-            if warned.insert((path.to_string(), part, e.kind())) {
+            let failure = Failure {
+                at: Instant::now(),
+                kind: e.kind(),
+            };
+            if failures.insert(key, failure).map(|f| f.kind) != Some(e.kind()) {
                 log::warn!("[github] API {part} read failed for {path} ({e}); using the gh CLI");
             }
         }
     }
+    result
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -325,7 +337,18 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn remote(name: &str, owner: &str, host: &str) -> GitRemote {
+        GitRemote {
+            name: name.into(),
+            remote: GitHubRemote {
+                owner: owner.into(),
+                repo: "proj".into(),
+                html_url: format!("https://{host}/{owner}/proj"),
+            },
+            host: host.into(),
+        }
+    }
 
     #[test]
     fn github_com_uses_the_api_host() {
@@ -348,54 +371,52 @@ mod tests {
     }
 
     #[test]
-    fn a_401_rereads_the_token_once() {
-        let cache = TokenCache(Mutex::new(HashMap::new()));
-        let reads = AtomicUsize::new(0);
-        let read = |_: &str| Ok(format!("t{}", reads.fetch_add(1, Ordering::SeqCst)));
-        let mut seen = vec![];
-
-        let result = with_token(&cache, "github.com", read, |token| {
-            seen.push(token.to_string());
-            if token == "t0" {
-                Err(ApiError::Unauthorized)
-            } else {
-                Ok(token.to_string())
-            }
-        });
-
-        assert_eq!(result.unwrap(), "t1");
-        assert_eq!(seen, ["t0", "t1"]);
-        assert_eq!(reads.load(Ordering::SeqCst), 2);
+    fn a_single_github_repo_is_the_api_target() {
+        let remotes = [remote("origin", "me", "github.com")];
+        assert_eq!(api_remote("/nowhere", &remotes), Some(remotes[0].clone()));
+        assert_eq!(api_remote("/nowhere", &[]), None);
     }
 
     #[test]
-    fn a_second_401_is_returned_not_retried_again() {
-        let cache = TokenCache(Mutex::new(HashMap::new()));
-        let reads = AtomicUsize::new(0);
-        let read = |_: &str| Ok(format!("t{}", reads.fetch_add(1, Ordering::SeqCst)));
+    fn set_default_picks_the_target_among_several_remotes() {
+        let remotes = [
+            remote("origin", "me", "github.com"),
+            remote("upstream", "org", "github.com"),
+        ];
+        let config = "remote.upstream.gh-resolved base\n";
+        assert_eq!(resolved_remote(config, &remotes), Some(remotes[1].clone()));
+        assert_eq!(resolved_remote("", &remotes), None);
+
+        let legacy = resolved_remote("remote.origin.gh-resolved org/proj\n", &remotes).unwrap();
+        assert_eq!(legacy.remote, remotes[1].remote);
+    }
+
+    #[test]
+    fn a_failure_backs_off_until_a_success() {
+        let path = "/test/backoff";
         let mut calls = 0;
-
-        let result: Result<(), _> = with_token(&cache, "github.com", read, |_| {
-            calls += 1;
-            Err(ApiError::Unauthorized)
-        });
-
-        assert!(matches!(result, Err(ApiError::Unauthorized)));
-        assert_eq!((calls, reads.load(Ordering::SeqCst)), (2, 2));
-    }
-
-    #[test]
-    fn the_token_is_read_once_and_cached() {
-        let cache = TokenCache(Mutex::new(HashMap::new()));
-        let reads = AtomicUsize::new(0);
-        let read = |_: &str| {
-            reads.fetch_add(1, Ordering::SeqCst);
-            Ok("tok".to_string())
+        let fail = |calls: &mut i32| -> Result<(), ApiError> {
+            *calls += 1;
+            Err(ApiError::Status(502))
         };
-        for _ in 0..3 {
-            with_token(&cache, "github.com", read, |_| Ok(())).unwrap();
-        }
-        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            guarded(path, "PR", || fail(&mut calls)),
+            Err(ApiError::Status(502))
+        ));
+        assert!(matches!(
+            guarded(path, "PR", || fail(&mut calls)),
+            Err(ApiError::BackedOff)
+        ));
+        assert_eq!(calls, 1);
+        // Other parts and projects are unaffected.
+        assert!(guarded(path, "workflow runs", || Ok(())).is_ok());
+
+        lock(&FAILURES)
+            .get_mut(&(path.to_string(), "PR"))
+            .unwrap()
+            .at -= BACKOFF;
+        assert!(guarded(path, "PR", || Ok(())).is_ok());
+        assert!(!lock(&FAILURES).contains_key(&(path.to_string(), "PR")));
     }
 
     #[test]
@@ -413,9 +434,10 @@ mod tests {
     #[ignore]
     fn live_api_matches_the_gh_cli() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-        let (remote, host) = crate::github::github_remote_and_host(path).unwrap();
+        let remotes = crate::github::github_remotes(path).unwrap();
+        let target = api_remote(path, &remotes).expect("one GitHub repo");
 
-        let api = fetch_pr_json(path, &host, &remote).expect("API PR read");
+        let api = fetch_pr_json(path, &target).expect("API PR read");
         let cli = crate::github::fetch_pr_json(path).unwrap();
         println!("{} PRs via the API", api.len());
         assert_eq!(api.len(), cli.len());
@@ -439,7 +461,7 @@ mod tests {
             }
         }
 
-        let api = fetch_workflow_runs(path, &host, &remote).expect("API runs read");
+        let api = fetch_workflow_runs(path, &target).expect("API runs read");
         let cli = crate::github::list_workflow_runs(path);
         println!("{} workflow runs via the API", api.len());
         assert_eq!(
@@ -447,9 +469,6 @@ mod tests {
             serde_json::to_value(&cli).unwrap()
         );
         // A second read revalidates with the ETag.
-        assert_eq!(
-            fetch_workflow_runs(path, &host, &remote).unwrap().len(),
-            api.len()
-        );
+        assert_eq!(fetch_workflow_runs(path, &target).unwrap().len(), api.len());
     }
 }

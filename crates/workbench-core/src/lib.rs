@@ -18,6 +18,7 @@ pub mod config;
 pub mod git;
 pub mod github;
 mod github_api;
+mod http;
 pub mod net;
 pub mod package_scripts;
 pub mod paths;

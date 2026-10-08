@@ -574,7 +574,7 @@ pub struct GitHubRepo {
     pub ssh_url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubRemote {
     pub owner: String,
