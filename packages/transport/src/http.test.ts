@@ -217,3 +217,41 @@ describe('HttpTransport event socket reconnect backoff', () => {
 		expect(FakeWS.instances).toHaveLength(0);
 	});
 });
+
+describe('HttpTransport request timeouts', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	it('rejects a stalled request with a clear timeout error', async () => {
+		vi.spyOn(AbortSignal, 'timeout').mockImplementation(() =>
+			AbortSignal.abort(new DOMException('timed out', 'TimeoutError'))
+		);
+		// Like a browser: a fetch whose signal fired rejects with its reason.
+		mockFetch(async (_url, init) => {
+			init.signal?.throwIfAborted();
+			return json([]);
+		});
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await expect(t.invoke('list_projects', undefined)).rejects.toThrow(
+			'workbench-server: GET /projects timed out after 10s: the server is not responding'
+		);
+	});
+
+	it('keeps other failures as they are', async () => {
+		mockFetch(() => Promise.reject(new TypeError('Failed to fetch')));
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await expect(t.invoke('list_projects', undefined)).rejects.toThrow('Failed to fetch');
+	});
+
+	it('gives routes that do slow work server-side a longer budget', async () => {
+		const timeout = vi.spyOn(AbortSignal, 'timeout');
+		mockFetch(() => json(null));
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await t.invoke('list_projects', undefined);
+		await t.invoke('create_worktree', { request: {} } as never);
+		await t.invoke('git_status', { path: '/repo' });
+		expect(timeout.mock.calls.map(([ms]) => ms)).toEqual([10_000, 120_000, 30_000]);
+	});
+});

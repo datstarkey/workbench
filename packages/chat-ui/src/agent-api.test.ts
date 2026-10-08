@@ -86,3 +86,36 @@ describe('agentClient', () => {
 		expect(fetch.mock.calls[1][0]).toBe('http://box/agent/claude');
 	});
 });
+
+describe('agentClient timeouts', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+	const api = agentClient(() => ({ baseUrl: 'http://box', token: 't' }));
+
+	it('rejects a stalled request with a clear timeout error', async () => {
+		vi.spyOn(AbortSignal, 'timeout').mockImplementation(() =>
+			AbortSignal.abort(new DOMException('timed out', 'TimeoutError'))
+		);
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (_url: string, init?: RequestInit) => {
+				init?.signal?.throwIfAborted();
+				return new Response('[]');
+			})
+		);
+		await expect(api.files({ projectPath: '/repo' })).rejects.toThrow(
+			'GET /agent/files timed out after 20s: the server is not responding'
+		);
+	});
+
+	it('waits longer for a start, which waits for the session to come up', async () => {
+		const timeout = vi.spyOn(AbortSignal, 'timeout');
+		stubFetch({ sessionId: 'sid' });
+		await api.start({ projectPath: '/repo', sessionId: 'sid' });
+		stubFetch([]);
+		await api.taskTranscript('sid', 't1');
+		expect(timeout.mock.calls.map(([ms]) => ms)).toEqual([90_000, 10_000]);
+	});
+});
