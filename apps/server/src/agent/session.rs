@@ -102,15 +102,18 @@ pub struct AgentSession {
 /// environment without the server's token, the pane's hook wiring, and its
 /// own process group so stopping it also ends the shells it started.
 pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgent) -> Command {
-    let mut cmd = workbench_core::shell::command(program);
+    // `tool` sets the enriched PATH, and only when it found the program: the
+    // inherited PATH must not override it (a bare name with PATH set forks).
+    let mut cmd = workbench_core::shell::tool(program);
     cmd.current_dir(&req.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, val) in workbench_core::shell::inherited_env() {
-        cmd.env(key, val);
+        if key != "PATH" {
+            cmd.env(key, val);
+        }
     }
-    cmd.env("PATH", workbench_core::paths::enriched_path());
     cmd.env_remove("WORKBENCH_TOKEN");
     // The notify bridge keeps driving the desktop's activity tracking, as for terminal panes.
     if let Some(id) = &req.pane_id {

@@ -27,48 +27,37 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
-/// A CLI tool (`git`, `gh`, ...) found on the enriched search path (GUI apps
-/// don't inherit the shell's PATH), which its children get too.
+/// A CLI tool (`git`, `gh`, `claude`, ...) by name or path, found on the
+/// enriched search path (GUI apps don't inherit the shell's PATH), which its
+/// children get too.
 ///
-/// It is spawned by its full path: a bare name with PATH changed makes std
-/// fork and search PATH itself instead of using `posix_spawn`, and a fork in
-/// this large, many-threaded process holds the allocator's locks long enough
-/// to stall every thread. Under the git/gh polls that froze the whole app,
-/// servers included, for minutes.
-pub fn tool(program: &str) -> Command {
-    let mut cmd = command(resolve(program));
-    cmd.env("PATH", crate::paths::enriched_path());
-    cmd
-}
-
-/// `program`'s full path on the enriched search path, looked up once; the bare
-/// name if it isn't there (not cached, so a later install is found).
-fn resolve(program: &str) -> std::path::PathBuf {
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
-    static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
-    let found = FOUND.get_or_init(Default::default);
-    if let Some(path) = found.lock().unwrap_or_else(|e| e.into_inner()).get(program) {
-        return path.clone();
-    }
-    let names = if cfg!(windows) {
-        vec![format!("{program}.exe"), program.to_string()]
+/// Never a bare name with PATH changed: std then forks to search PATH itself
+/// instead of using `posix_spawn`, and a fork in this large, many-threaded
+/// process holds the allocator's locks long enough to stall every thread
+/// (the git/gh polls froze the whole app, servers included, for minutes). A
+/// tool that isn't on the enriched path runs by name on the app's own PATH.
+pub fn tool(program: impl AsRef<OsStr>) -> Command {
+    let program = program.as_ref();
+    let path = std::path::Path::new(program);
+    let found = if path.is_absolute() {
+        Some(path.to_path_buf())
     } else {
-        vec![program.to_string()]
+        program.to_str().and_then(|name| {
+            let exe = if cfg!(windows) && path.extension().is_none() {
+                format!("{name}.exe")
+            } else {
+                name.to_string()
+            };
+            crate::paths::find_on_path(&[&exe])
+        })
     };
-    let path = std::env::split_paths(&crate::paths::enriched_path())
-        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
-        .find(|p| p.is_file());
-    match path {
-        Some(path) => {
-            found
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(program.to_string(), path.clone());
-            path
+    match found {
+        Some(full) => {
+            let mut cmd = command(full);
+            cmd.env("PATH", crate::paths::enriched_path());
+            cmd
         }
-        None => PathBuf::from(program),
+        None => command(program),
     }
 }
 
@@ -234,14 +223,20 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_tool_is_spawned_by_its_full_path() {
-        // A full path is what lets std use posix_spawn rather than fork.
-        assert!(resolve("sh").is_absolute());
-        assert_eq!(resolve("sh"), resolve("sh"), "looked up once");
-        assert_eq!(
-            resolve("workbench-no-such-tool"),
-            std::path::PathBuf::from("workbench-no-such-tool")
+    fn a_tool_never_has_a_bare_name_with_path_set() {
+        // std forks (no posix_spawn) for exactly that pair.
+        let sets_path = |cmd: &Command| cmd.get_envs().any(|(k, _)| k == "PATH");
+        let found = tool("sh");
+        assert!(std::path::Path::new(found.get_program()).is_absolute());
+        assert!(
+            sets_path(&found),
+            "a found tool's children get the enriched PATH"
         );
+
+        let missing = tool("workbench-no-such-tool");
+        assert_eq!(missing.get_program(), "workbench-no-such-tool");
+        assert!(!sets_path(&missing));
+
         let out = tool("sh").args(["-c", "echo ok"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
     }

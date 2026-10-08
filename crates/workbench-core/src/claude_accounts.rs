@@ -98,8 +98,7 @@ pub fn claude_binary() -> PathBuf {
 
 /// `claude` with `account_id`'s config dir exported.
 fn claude_command(account_id: Option<&str>) -> Result<std::process::Command> {
-    let mut cmd = crate::shell::command(claude_binary());
-    cmd.env("PATH", paths::enriched_path());
+    let mut cmd = crate::shell::tool(claude_binary());
     if let Some(dir) = resolve_saved(account_id)? {
         cmd.env(CONFIG_DIR_ENV, dir);
     }
