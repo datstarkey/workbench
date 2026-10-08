@@ -39,6 +39,8 @@ pub fn list_projects() -> Result<Vec<ProjectConfig>, String> {
     config::load_projects().map_err(|e| e.to_string())
 }
 
+// Sync (main thread) on purpose, like the other saves: commands on the pool
+// could finish out of order and an older snapshot overwrite a newer one.
 #[tauri::command]
 pub fn save_projects(
     projects: Vec<ProjectConfig>,
@@ -232,14 +234,18 @@ pub fn save_workbench_settings(
 /// to a file that does not exist would produce a `claude` command srt refuses to
 /// run. On `Err` the frontend launches unwrapped instead.
 #[tauri::command]
-pub fn sandbox_runtime_settings_path(
+pub async fn sandbox_runtime_settings_path(
     hook_bridge: State<'_, HookBridgeState>,
 ) -> Result<String, String> {
-    let settings = config::load_workbench_settings().map_err(|e| e.to_string())?;
-    let projects = config::load_projects().map_err(|e| e.to_string())?;
-    let path = sandbox_runtime::write_settings(&settings, &projects, hook_bridge.socket_path())
-        .map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().to_string())
+    let hook_bridge = hook_bridge.inner().clone();
+    crate::blocking(move || {
+        let settings = config::load_workbench_settings().map_err(|e| e.to_string())?;
+        let projects = config::load_projects().map_err(|e| e.to_string())?;
+        let path = sandbox_runtime::write_settings(&settings, &projects, hook_bridge.socket_path())
+            .map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
 }
 
 /// Regenerate `~/.workbench/sandbox-runtime.json` from the current settings,
