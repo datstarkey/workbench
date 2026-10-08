@@ -258,6 +258,40 @@ fn waiting_on_is_the_oldest_unanswered_approval() {
 }
 
 #[test]
+fn an_orphaned_approval_expires_with_its_calls_result_or_the_turn() {
+    let ask = |id: &str, tool: &str| {
+        json!({"type":"control_request","request_id":id,"request":{
+            "subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":tool}})
+    };
+    let expired = |t: &Transcript, id: &str| {
+        matches!(
+            &t.items()[t.index[id]],
+            TranscriptItem::Approval { expired: true, .. }
+        )
+    };
+    let mut t = Transcript::default();
+    t.apply(&ask("a", "toolu_a"));
+    t.apply(&ask("b", "toolu_b"));
+    let applied = t.apply(&user(
+        "u1",
+        json!([{"type":"tool_result","tool_use_id":"toolu_a","content":"ok"}]),
+    ));
+    assert!(
+        expired(&t, "a"),
+        "its call has a result: nobody waits on it"
+    );
+    assert!(applied.items.contains(&t.index["a"]));
+    assert!(t
+        .resolve_approval("a", ApprovalDecision::Allow, None)
+        .is_none());
+    assert_eq!(t.waiting_on().map(TranscriptItem::id), Some("b"));
+
+    t.apply(&json!({"type":"result","subtype":"success"}));
+    assert!(expired(&t, "b"), "the turn ended");
+    assert!(t.waiting_on().is_none());
+}
+
+#[test]
 fn running_tool_is_the_newest_unfinished_call_of_a_live_turn() {
     let tool_use = |id: &str| {
         assistant(

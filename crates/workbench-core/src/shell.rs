@@ -263,6 +263,41 @@ pub fn login_args() -> &'static [&'static str] {
     }
 }
 
+/// What a Workbench sets for one pane's or chat's processes. A Workbench
+/// started from another one's terminal inherits that one's, which would
+/// report its hooks and chats to the wrong server and pane: never pass them on.
+pub const PARENT_ONLY_ENV: [&str; 5] = [
+    "WORKBENCH_MOD_URL",
+    "WORKBENCH_MOD_TOKEN",
+    "WORKBENCH_HOOK_SOCKET",
+    "WORKBENCH_PANE_ID",
+    "WORKBENCH_PERMISSION_MODE",
+];
+
+/// Keep [`PARENT_ONLY_ENV`] from `cmd`: only what the caller sets after this reaches it.
+pub fn without_parent_env(cmd: &mut Command) -> &mut Command {
+    for key in PARENT_ONLY_ENV {
+        cmd.env_remove(key);
+    }
+    cmd
+}
+
+/// Drop what a parent Workbench left in this process's environment
+/// ([`PARENT_ONLY_ENV`], its plugin copy in `CLAUDE_CODE_PLUGIN_DIRS`). Call
+/// first thing in `main`, before any thread starts.
+pub fn scrub_inherited_env() {
+    for key in PARENT_ONLY_ENV {
+        std::env::remove_var(key);
+    }
+    let key = crate::claude_plugin::PLUGIN_DIRS_ENV;
+    if let Some(dirs) = std::env::var_os(key) {
+        match crate::claude_plugin::without_workbench_dirs(&dirs) {
+            Some(kept) => std::env::set_var(key, kept),
+            None => std::env::remove_var(key),
+        }
+    }
+}
+
 #[cfg(unix)]
 const INHERITED_KEYS: &[&str] = &["PATH", "HOME", "USER", "LANG", "SHELL", "LOGNAME"];
 

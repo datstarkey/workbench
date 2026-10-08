@@ -38,6 +38,10 @@ pub struct ModGrant {
     pub permission_mode: Option<String>,
     /// The terminal the token was issued to, once created.
     pub terminal_id: Option<String>,
+    /// For a terminal opened for a session: that id and each a `/clear` or
+    /// `/resume` moved it to, the only ids it may attach as. Empty for a
+    /// plain shell, which runs whatever `claude` is typed into it.
+    pub session_ids: Vec<String>,
 }
 
 pub struct ModLink {
@@ -207,6 +211,12 @@ impl ModLink {
         }
     }
 
+    /// Drop unanswered asks the chat no longer shows: a hook that died
+    /// waiting would otherwise leave one open for good.
+    pub fn keep_asks(&self, pending: &[String]) {
+        lock(&self.asks).retain(|id, ask| ask.fell_back || pending.contains(id));
+    }
+
     /// Whether `request_id` went to the terminal's dialog.
     pub fn fell_back(&self, request_id: &str) -> bool {
         lock(&self.asks)
@@ -243,6 +253,8 @@ impl ModLink {
             Some(TERMINAL_ELICITATION_ANSWERED) => {
                 asked.retain(|(w, _)| Some(w.id.as_str()) != str_at("/id"));
             }
+            // Unanswered asks the turn's end withdrew go once the transcript
+            // has seen it (`keep_asks`): a background agent's may outlive it.
             Some("result") => {
                 asked.clear();
                 lock(&self.asks).retain(|_, ask| ask.answer.is_none() && !ask.fell_back);
@@ -265,11 +277,9 @@ impl ModLink {
                     .collect();
                 if !results.is_empty() {
                     lock(&self.asks).retain(|_, ask| {
-                        (ask.answer.is_none() && !ask.fell_back)
-                            || !ask
-                                .tool_use_id
-                                .as_deref()
-                                .is_some_and(|t| results.contains(&t))
+                        !ask.tool_use_id
+                            .as_deref()
+                            .is_some_and(|t| results.contains(&t))
                     });
                     asked.retain(|(_, clears)| match clears {
                         Clears::ToolResult(Some(t)) => !results.contains(&t.as_str()),
@@ -396,6 +406,11 @@ impl ModLink {
         }
     }
 
+    /// Whether a request carries this link's token (a constant-time compare).
+    pub fn has_token(&self, token: &str) -> bool {
+        workbench_core::token::constant_time_eq(self.token.as_bytes(), token.as_bytes())
+    }
+
     pub fn touch(&self) {
         *lock(&self.last_seen) = Instant::now();
     }
@@ -484,6 +499,24 @@ mod tests {
             &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]}}),
         );
         assert_eq!(link.wait_answer("r1", wait).await, None);
+    }
+
+    #[test]
+    fn an_unanswered_ask_goes_with_its_calls_result_or_the_turn() {
+        let link = ModLink::new("t".into(), None);
+        link.expect_answer("r1", Some("toolu_1".into()));
+        link.expect_answer("r2", Some("toolu_2".into()));
+        assert!(link.shown("r1", true) && link.shown("r2", true));
+        link.note_line(
+            &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]}}),
+        );
+        assert!(!link.shown("r1", false), "its asking hook is gone");
+        assert!(link.shown("r2", false));
+        link.note_line(&json!({"type": "result", "subtype": "success"}));
+        link.keep_asks(&[]);
+        assert!(!link.shown("r2", false), "the turn ended and withdrew it");
+        let answer = json!({"type": "control_response", "response": {"request_id": "r2"}});
+        assert!(!link.answer(&answer), "nobody waits on it");
     }
 
     #[test]

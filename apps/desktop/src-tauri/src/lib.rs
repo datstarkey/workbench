@@ -176,6 +176,9 @@ fn use_dev_config_dir() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // First, before any thread starts: a Workbench launched from another's
+    // terminal must not report to that one's server, pane or plugin copy.
+    workbench_core::shell::scrub_inherited_env();
     if tauri::is_dev() {
         use_dev_config_dir();
     }

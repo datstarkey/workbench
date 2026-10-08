@@ -99,6 +99,8 @@ pub fn claude_binary() -> PathBuf {
 /// `claude` with `account_id`'s config dir exported.
 fn claude_command(account_id: Option<&str>) -> Result<std::process::Command> {
     let mut cmd = crate::shell::tool(claude_binary());
+    // A probe is no pane's: its `claude` must not attach to a chat or report hooks.
+    crate::shell::without_parent_env(&mut cmd);
     if let Some(dir) = resolve_saved(account_id)? {
         cmd.env(CONFIG_DIR_ENV, dir);
     }
@@ -283,6 +285,19 @@ fn parse_usage(stdout: &str) -> Vec<UsageLimit> {
 mod tests {
     use super::*;
     use crate::types::ClaudeAccount;
+
+    #[test]
+    fn probes_never_inherit_a_panes_wiring() {
+        let cmd = claude_command(None).unwrap();
+        let removed: Vec<_> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for key in crate::shell::PARENT_ONLY_ENV {
+            assert!(removed.iter().any(|k| k == key), "{key} is passed on");
+        }
+    }
 
     fn settings_with(config_dir: &str) -> WorkbenchSettings {
         WorkbenchSettings {

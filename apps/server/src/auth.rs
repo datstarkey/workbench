@@ -14,6 +14,17 @@ pub async fn require_bearer(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    let path = request.uri().path();
+    // The plugin in a terminal's `claude` presents that terminal's own token,
+    // checked by each `/mod/` handler, and only ever reaches the listener its
+    // `WORKBENCH_MOD_URL` names (the desktop's loopback one): no other serves
+    // these routes, so a LAN listener never exempts anything from its token.
+    if path.starts_with("/mod/") {
+        if !serves_mod(&state) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        return Ok(next.run(request).await);
+    }
     let Some(expected) = state.token.as_deref() else {
         return Ok(next.run(request).await);
     };
@@ -22,17 +33,9 @@ pub async fn require_bearer(
     // own API calls still carry the bearer token. WebSocket upgrades are also
     // exempt here because a browser WebSocket can't send an Authorization header —
     // each upgrade handler calls `authorize_ws` on its `?token=` query param.
-    let path = request.uri().path();
-    // The plugin in a terminal's `claude` presents that terminal's own token,
-    // checked by each `/mod/` handler.
     // `/events/home` is an EventSource, which can't send headers either; its
     // handler checks `?token=` (or the header) with `token_ok`.
-    if path == "/"
-        || path == "/health"
-        || path == crate::home_events::PATH
-        || is_ws_path(path)
-        || path.starts_with("/mod/")
-    {
+    if path == "/" || path == "/health" || path == crate::home_events::PATH || is_ws_path(path) {
         return Ok(next.run(request).await);
     }
 
@@ -42,6 +45,11 @@ pub async fn require_bearer(
         }
         _ => Err(StatusCode::UNAUTHORIZED),
     }
+}
+
+/// This listener is the one terminal plugins are pointed at.
+fn serves_mod(state: &AppState) -> bool {
+    state.local_port.is_some() && state.local_port == state.agents.mod_port()
 }
 
 /// `/remote/terminals/{id}/ws` and `/agent/{claude,codex}/{id}/ws` — WebSocket

@@ -71,18 +71,35 @@ fn plugin_dir() -> Option<PathBuf> {
         .map(|()| dir)
 }
 
+/// A Workbench plugin copy (ours, or another build's: a dev build started
+/// from the installed app's terminal inherits its dir).
+fn is_workbench_dir(dir: &Path) -> bool {
+    dir.ends_with(Path::new("claude-plugin").join("workbench"))
+}
+
+/// `dirs` without any Workbench plugin copy; `None` when nothing else is left.
+pub fn without_workbench_dirs(dirs: &std::ffi::OsStr) -> Option<OsString> {
+    let kept: Vec<PathBuf> = std::env::split_paths(dirs)
+        .filter(|d| !d.as_os_str().is_empty() && !is_workbench_dir(d))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    std::env::join_paths(kept).ok()
+}
+
+/// Ours first, so it wins Claude Code's one-plugin-per-name pick, and no other
+/// Workbench copy.
 fn with_dir(existing: Option<OsString>, dir: &Path) -> Option<OsString> {
-    let mut dirs: Vec<PathBuf> = existing
-        .map(|v| std::env::split_paths(&v).collect())
-        .unwrap_or_default();
-    if !dirs.iter().any(|d| d == dir) {
-        dirs.push(dir.to_path_buf());
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Some(rest) = existing.as_deref().and_then(without_workbench_dirs) {
+        dirs.extend(std::env::split_paths(&rest));
     }
     std::env::join_paths(dirs).ok()
 }
 
-/// `CLAUDE_CODE_PLUGIN_DIRS` for a process Workbench starts: this process's
-/// value with the plugin appended. `None` if the plugin couldn't be written.
+/// `CLAUDE_CODE_PLUGIN_DIRS` for a process Workbench starts: the plugin, then
+/// this process's other dirs. `None` if the plugin couldn't be written.
 pub fn plugin_dirs_env() -> Option<OsString> {
     with_dir(std::env::var_os(PLUGIN_DIRS_ENV), &plugin_dir()?)
 }
@@ -138,18 +155,27 @@ mod tests {
     }
 
     #[test]
-    fn appends_to_the_users_plugin_dirs_once() {
-        let dir = Path::new("/wb/plugin");
-        let user = std::env::join_paths([Path::new("/mine")]).unwrap();
+    fn puts_the_plugin_first_and_drops_another_workbench_copy() {
+        let dir = Path::new("/wb/claude-plugin/workbench");
+        let user = std::env::join_paths([
+            Path::new("/installed/.workbench/claude-plugin/workbench"),
+            Path::new("/mine"),
+        ])
+        .unwrap();
         let joined = with_dir(Some(user), dir).unwrap();
         let dirs: Vec<PathBuf> = std::env::split_paths(&joined).collect();
-        assert_eq!(dirs, [PathBuf::from("/mine"), dir.to_path_buf()]);
+        assert_eq!(dirs, [dir.to_path_buf(), PathBuf::from("/mine")]);
 
         let again = with_dir(Some(joined), dir).unwrap();
         assert_eq!(std::env::split_paths(&again).count(), 2);
         assert_eq!(
             with_dir(None, dir).unwrap(),
             OsString::from(dir.as_os_str())
+        );
+        assert_eq!(
+            without_workbench_dirs(dir.as_os_str()),
+            None,
+            "nothing of the user's"
         );
     }
 }

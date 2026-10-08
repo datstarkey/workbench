@@ -54,7 +54,7 @@ fn a_long_streamed_reply_is_sent_in_coalesced_frames_with_meta_only_on_change() 
     const CHUNK: &str = "streamed words, ";
     let session = terminal_session();
     let (_snapshot, mut rx) = session.subscribe();
-    let noop = |_: &str, _: bool| {};
+    let noop = |_: &str, _: bool| true;
 
     session.apply_line(
         &stream_event(
@@ -126,7 +126,7 @@ fn pending_changes_go_out_before_a_later_frame() {
     let (_snapshot, mut rx) = session.subscribe();
     session.apply_line(
         &stream_event(json!({"type":"message_start","message":{"id":"m1"}})),
-        |_, _| {},
+        |_, _| true,
     );
     session.shutdown();
     assert_eq!(kinds(&mut rx), ["update", "exit"]);
@@ -148,7 +148,7 @@ fn a_failure_is_the_last_thing_clients_read_before_the_end() {
     let (_snapshot, mut rx) = session.subscribe();
     session.apply_line(
         &stream_event(json!({"type":"message_start","message":{"id":"m1"}})),
-        |_, _| {},
+        |_, _| true,
     );
     session.fail_io("output", "line exceeds size limit");
     session.shutdown();
