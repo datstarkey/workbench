@@ -760,6 +760,7 @@ impl AgentManager {
             match line.get("type").and_then(serde_json::Value::as_str) {
                 Some("result") => {
                     session.learn_cache_ttl();
+                    session.recheck_goal();
                 }
                 Some("assistant") => session.learn_cache_ttl_early(),
                 Some("workbench_goal_status") => {

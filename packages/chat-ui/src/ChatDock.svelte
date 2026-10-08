@@ -96,7 +96,7 @@
 	{/if}
 	<CodexControls {chat} {onThread} />
 	<ChatCacheHint {chat} />
-	{#if chat.meta?.goal}
+	{#if chat.meta?.goal && chat.live}
 		<ChatGoal goal={chat.meta.goal} />
 	{/if}
 	<ChatSuggestions {suggestions} onPick={(text) => (chat.draft.text = text)} />

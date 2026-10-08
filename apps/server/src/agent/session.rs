@@ -429,31 +429,41 @@ impl AgentSession {
     }
 
     /// A terminal's plugin sees a `goal_status` attachment without its
-    /// fields: the row `uuid` is read from the transcript file and folded.
-    /// The CLI may not have written it yet, so a miss is retried briefly.
+    /// fields: the session's newest such row is read from the transcript file
+    /// and folded once row `uuid` is written there, retried briefly until then.
     pub(super) fn learn_goal_status(self: &Arc<Self>, uuid: &str) {
-        fn fold(session: &AgentSession, uuid: &str) -> bool {
-            let Some(entry) = session
-                .history_path()
-                .and_then(|p| workbench_core::claude_transcript::goal_status_entry(&p, uuid))
-            else {
-                return false;
-            };
-            session.apply_line(&entry.to_string(), |_, _| {});
-            true
-        }
-        if fold(self, uuid) {
+        if self.fold_goal(Some(uuid)) {
             return;
         }
         let (session, uuid) = (Arc::clone(self), uuid.to_string());
         std::thread::spawn(move || {
             for ms in GOAL_RETRY_MS {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
-                if session.has_exited() || fold(&session, &uuid) {
+                if session.has_exited() || session.fold_goal(Some(&uuid)) {
                     return;
                 }
             }
         });
+    }
+
+    /// At a turn's end, a goal still shown is checked against the file: a
+    /// row the retries above gave up on (a met or cleared goal) isn't left out.
+    pub(super) fn recheck_goal(&self) {
+        let shown = matches!(&*lock(&self.driver), Driver::Claude(t) if t.meta().goal.is_some());
+        if shown {
+            self.fold_goal(None);
+        }
+    }
+
+    fn fold_goal(&self, written: Option<&str>) -> bool {
+        let Some(entry) = self
+            .history_path()
+            .and_then(|p| workbench_core::claude_transcript::goal_status_entry(&p, written))
+        else {
+            return false;
+        };
+        self.apply_line(&entry.to_string(), |_, _| {});
+        true
     }
 
     /// An `assistant` line's read, so a first turn doesn't show the 5m

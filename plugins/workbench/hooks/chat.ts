@@ -100,8 +100,8 @@ const LIVE_AGENT = new Set(['pending', 'running', 'waiting']);
 let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
 const echoed = new Set<string>();
-// What the latest command's transcript rows printed, so a `text` saying the
-// same isn't shown twice.
+// What the latest command printed, through its `text` or its transcript row,
+// whichever came first: the other isn't shown again.
 const printed = new Set<string>();
 
 // A question is asked from `tool.call` and its answer is the call's result:
@@ -184,7 +184,14 @@ function commandRan(
 	}
 	// Written to the JSONL only: the chat would see it on its next load.
 	if (command === 'rename') noteTitle(args);
-	if (text !== undefined && !printed.has(text.trim())) commandOutput(text);
+	if (text !== undefined) printOnce(text);
+}
+
+function printOnce(text: string) {
+	const key = text.trim();
+	if (printed.has(key)) return;
+	printed.add(key);
+	commandOutput(text);
 }
 
 function commandOutput(content: string, inTerminal = false) {
@@ -657,17 +664,14 @@ export const register: Register = (on) => {
 			// may not return as `text` (`/goal`, `/rename`).
 			const text = promptText(m.content);
 			const out = commandRowOutput(text);
-			if (text.startsWith('<command-name>'))
+			if (text.includes('<command-name>'))
 				emit({
 					type: 'user',
 					uuid: e.uuid,
 					session_id: sessionId,
 					message: { role: 'user', content: text }
 				});
-			else if (out) {
-				printed.add(out);
-				commandOutput(out);
-			}
+			else if (out) printOnce(out);
 			return next(e);
 		}
 		if (m.type === 'attachment' && m.name === 'queued_command') {

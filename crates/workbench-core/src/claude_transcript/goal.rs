@@ -56,14 +56,20 @@ impl Transcript {
     }
 }
 
-/// The `goal_status` entry `uuid` near the end of a session JSONL; `None`
-/// until the CLI has written it.
-pub fn goal_status_entry(path: &Path, uuid: &str) -> Option<Value> {
+/// The newest `goal_status` entry near the end of a session JSONL, the
+/// session's goal as it stands: so a late read never puts back an older one.
+/// With `written`, `None` until the CLI has written that entry.
+pub fn goal_status_entry(path: &Path, written: Option<&str>) -> Option<Value> {
+    let mut newest = None;
     find_in_tail(path, |obj| {
-        (str_at(&obj, "uuid") == Some(uuid)
-            && obj.pointer("/attachment/type").and_then(Value::as_str) == Some(GOAL_STATUS))
-        .then_some(obj)
-    })
+        if obj.pointer("/attachment/type").and_then(Value::as_str) != Some(GOAL_STATUS) {
+            return None;
+        }
+        let found = written.is_none_or(|uuid| str_at(&obj, "uuid") == Some(uuid));
+        newest.get_or_insert(obj);
+        found.then_some(())
+    })?;
+    newest
 }
 
 #[cfg(test)]
@@ -149,11 +155,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.jsonl");
         let other = status("g0", json!({"type":"queued_command"}));
-        std::fs::write(&path, format!("{other}\n{}\n", set())).unwrap();
-        assert_eq!(goal_status_entry(&path, "g1"), Some(set()));
-        assert_eq!(goal_status_entry(&path, "g0"), None, "not a goal row");
-        assert_eq!(goal_status_entry(&path, "g9"), None, "not written yet");
+        let met = status(
+            "g2",
+            json!({"type":"goal_status","met":true,"condition":COND}),
+        );
+        std::fs::write(&path, format!("{other}\n{}\n{met}\n", set())).unwrap();
+        assert_eq!(goal_status_entry(&path, Some("g2")), Some(met.clone()));
+        assert_eq!(
+            goal_status_entry(&path, Some("g1")),
+            Some(met.clone()),
+            "a late read of an older row gives the goal as it stands"
+        );
+        assert_eq!(goal_status_entry(&path, None), Some(met));
+        assert_eq!(goal_status_entry(&path, Some("g0")), None, "not a goal row");
+        assert_eq!(
+            goal_status_entry(&path, Some("g9")),
+            None,
+            "not written yet"
+        );
         let missing = dir.path().join("missing.jsonl");
-        assert_eq!(goal_status_entry(&missing, "g1"), None);
+        assert_eq!(goal_status_entry(&missing, None), None);
     }
 }
