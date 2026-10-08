@@ -622,7 +622,7 @@ fn handle(
             }
             state.agents.set_model(session, &model)
         }
-        ClientMsg::Effort { effort } => session.set_effort(&effort),
+        ClientMsg::Effort { effort } => state.agents.set_effort(session, &effort),
         ClientMsg::CachePing => session.keep_cache_warm(),
         ClientMsg::Restart => state.agents.restart_session(&state.terminals, session),
         ClientMsg::CachePolicy { policy } => state.agents.set_cache_policy(session, policy),

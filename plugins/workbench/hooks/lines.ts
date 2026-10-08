@@ -88,12 +88,26 @@ export function askLine(
 }
 
 /**
- * A prompt naming files to Read: a plugin's prompt never has its `@` mentions
- * (chat images and files) expanded, submitted or appended.
+ * The files the server saved for a chat prompt (`workbench_attachments`);
+ * `undefined` from a server that only puts them in the text as `@` mentions.
  */
-export function withAttachments(text: string): string {
-	const files = [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|(\S+))/g)].map((m) => m[1] ?? m[2]);
-	return files.length ? `${text}${ATTACHED_FILES}${files.map((f) => `- ${f}`).join('\n')}` : text;
+export function attachedFiles(line: Line): string[] | undefined {
+	const files = line.workbench_attachments;
+	return Array.isArray(files)
+		? files.filter((f): f is string => typeof f === 'string' && f.length > 0)
+		: undefined;
+}
+
+/**
+ * A prompt naming files to Read: a plugin's prompt never has its `@` mentions
+ * (chat images and files) expanded, submitted or appended. Only the files the
+ * server attached are listed; `@scope/pkg` in prose is no file. Without that
+ * list (an older server) every mention counts, as it did.
+ */
+export function withAttachments(text: string, files?: readonly string[]): string {
+	const listed =
+		files ?? [...text.matchAll(/(?:^|\s)@(?:"([^"]+)"|(\S+))/g)].map((m) => m[1] ?? m[2]);
+	return listed.length ? `${text}${ATTACHED_FILES}${listed.map((f) => `- ${f}`).join('\n')}` : text;
 }
 
 /** `/name args` as `$.command.run` takes it; a path like `/Users/x` is no command. */
@@ -103,8 +117,8 @@ export function slashCommand(text: string): { command: string; args: string } | 
 }
 
 /** A chat prompt put into a running turn, framed as the CLI frames a typed one. */
-export function midTurn(text: string): string {
-	return `${QUEUED_PREFIX}${withAttachments(text)}\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.`;
+export function midTurn(text: string, files?: readonly string[]): string {
+	return `${QUEUED_PREFIX}${withAttachments(text, files)}\n\nIMPORTANT: After completing your current task, you MUST address the user's message above. Do not ignore it.`;
 }
 
 /**

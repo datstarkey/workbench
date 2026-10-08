@@ -1,8 +1,10 @@
 import type { PermissionRequestDecision, Register, TurnStepInput } from 'claude-code';
 import * as server from './link';
+import { PendingAsks } from './asks';
 import { notifiedJob, startJob, stoppedJobs } from './jobs';
 import {
 	askLine,
+	attachedFiles,
 	midTurn,
 	modelOption,
 	promptText,
@@ -102,13 +104,11 @@ const echoed = new Set<string>();
 // since 2.1.292 a plugin's `allow` doesn't dismiss the dialog of a tool that
 // requires the person. A plan is approved in the terminal (PermissionRequest).
 const ASKED_IN_CALL = 'AskUserQuestion';
-// Calls core put to the mode's decider, by tool and input: the decider's
-// dialog (`PermissionRequest`) names no call. A rule, the mode or auto mode's
-// classifier settles most without one, so only the newest are kept.
-const pendingAsks = new Map<string, { id: string; reason?: string }>();
-const PENDING_ASKS_KEPT = 50;
-// Approvals the terminal's own dialog asks (no chat was open): tool call id → request id.
-const askedInTerminal = new Map<string, string>();
+const pendingAsks = new PendingAsks();
+// Approvals the terminal's own dialog asks (no chat was open): tool call id →
+// request id, and whether the main thread asked it (a background agent's
+// outlives the turn).
+const askedInTerminal = new Map<string, { requestId: string; main: boolean }>();
 // MCP elicitations the terminal shows, by server and elicitation id, oldest first.
 const terminalElicitations = new Map<string, string[]>();
 // Model switches the person made (`/model`, `/config`, the chat's pick); an
@@ -234,16 +234,6 @@ function unlinkTask(task: string) {
 	}
 }
 
-const askKey = (tool: string, input: unknown) => `${tool}\0${JSON.stringify(input)}`;
-
-/** The pending call a `PermissionRequest` is about. */
-function takeAsk(tool: string, input: unknown) {
-	const key = askKey(tool, input);
-	const ask = pendingAsks.get(key);
-	pendingAsks.delete(key);
-	return ask;
-}
-
 const elicitationKey = (e: { mcp_server_name: string; elicitation_id?: string }) =>
 	`${e.mcp_server_name}\0${e.elicitation_id ?? ''}`;
 
@@ -293,19 +283,19 @@ export const register: Register = (on) => {
 		const sessionId = await $.session.id();
 		model = await $.session.model();
 		server.open({ url, token, sessionId });
-		const hello = await $.http
-			.fetch(`${url}/mod/hello`, server.init('POST', { sessionId }))
-			.catch(() => null);
-		if (!hello?.ok) {
-			server.open(null);
-			return result;
-		}
+		const fetch = (u: string, i: Parameters<typeof $.http.fetch>[1]) => $.http.fetch(u, i);
+		const after: server.After = (ms, fn) => $.clock.after(ms, fn);
+		// Bounded: `claude` waits on this hook before its first prompt. A failed
+		// hello (the server is down, or another terminal still holds the session)
+		// is said again from the timer below, so the session still becomes a chat.
+		await server.attach(fetch, false, after);
 
 		// A chat prompt. A plugin's submit waits for the turn to end, so
 		// mid-turn it joins the running turn the way a typed prompt would.
 		const chatPrompt = async (line: Line) => {
 			const message = line.message as { content?: unknown } | undefined;
 			const text = promptText(message?.content);
+			const files = attachedFiles(line);
 			if (!text) return;
 			// A plugin's submit refuses a leading `/`, so a known command runs as one
 			// (queued until idle); `/tmp is full` stays a prompt. A command that starts
@@ -321,7 +311,8 @@ export const register: Register = (on) => {
 				const idle = (async () => {
 					while (runningTurn) await $.clock.sleep(250);
 				})();
-				void $.command.run({ command: slash.command, args: withAttachments(slash.args) }).then(
+				const args = withAttachments(slash.args, files);
+				void $.command.run({ command: slash.command, args }).then(
 					async (result) => {
 						command.settled = true;
 						if (!server.current()) return;
@@ -352,7 +343,9 @@ export const register: Register = (on) => {
 			}
 			const appended = runningTurn
 				? await $.session
-						.append({ message: { type: 'user', content: [{ type: 'text', text: midTurn(text) }] } })
+						.append({
+							message: { type: 'user', content: [{ type: 'text', text: midTurn(text, files) }] }
+						})
 						.catch((err: unknown) => ({ deny: String(err) }))
 				: undefined;
 			if (appended && !appended.deny && runningTurn) {
@@ -366,7 +359,7 @@ export const register: Register = (on) => {
 			} else {
 				// Not awaited: it resolves when its turn starts, and polling must go
 				// on meanwhile (approval answers, interrupts).
-				void $.prompt.submit({ text: withAttachments(text), asUser: true });
+				void $.prompt.submit({ text: withAttachments(text, files), asUser: true });
 			}
 		};
 
@@ -418,48 +411,48 @@ export const register: Register = (on) => {
 		};
 
 		$.clock.every(50, () => {
-			void $.clock.now().then(server.tick);
-			if (!server.isFlushing()) void server.flush((u, i) => $.http.fetch(u, i));
+			server.tick();
+			if (!server.isFlushing()) void server.flush(fetch);
 		});
 		$.clock.every(300, () => {
-			const link = server.current();
-			if (polling || !link) return;
+			if (polling || !server.current()) return;
 			polling = true;
-			void server.rekey(() => $.session.id());
-			if (server.hello.needed && Date.now() - server.hello.last > 5000) {
-				server.hello.needed = false;
-				server.hello.last = Date.now();
-				lastSettings = '';
-				reportedMode = '';
-				sentWindow = undefined;
-				void $.http
-					.fetch(`${link.url}/mod/hello`, server.init('POST', { sessionId: link.sessionId }))
-					.then(async (res) => {
-						if (!res.ok) {
-							server.hello.needed = true;
-							return;
-						}
-						// A restarted server has no plan usage reading until a window moves.
-						const usage = await $.session.usage().catch(() => undefined);
-						const limits = usage && rateLimitLine(usage.rateLimits);
-						if (limits) emit(limits);
-						sendWindow(contextWindow ?? usage?.context.window);
-					})
-					.catch(() => (server.hello.needed = true));
-			}
-			$.http
-				.fetch(`${link.url}/mod/in?${server.sessionQuery()}`, server.init('GET'))
-				.then(async (res) => {
-					if (res.status === 404) server.hello.needed = true;
-					if (!res.ok) return;
-					for (const line of JSON.parse(res.text || '[]') as Line[]) {
+			void (async () => {
+				await server.rekey(() => $.session.id());
+				if (server.hello.needed) {
+					if (Date.now() - server.hello.last < server.HELLO_EVERY_MS) return;
+					if (await server.attach(fetch, true, after)) await reattached();
+					return;
+				}
+				for (const line of await server.poll(fetch)) {
+					try {
 						if (line.type === 'user') await chatPrompt(line);
 						else if (line.type === 'control_request') await controlRequest(line);
+					} catch {
+						// Not run again: a line that fails would fail every time.
+					} finally {
+						server.handled(line);
 					}
-				})
+				}
+			})()
 				.catch(() => {})
 				.finally(() => (polling = false));
 		});
+
+		// The server lost the session and loaded it again from its file: what it
+		// was told outside the history is told again.
+		const reattached = async () => {
+			lastSettings = '';
+			reportedMode = '';
+			sentWindow = undefined;
+			notePermissionMode(liveMode);
+			if (title) emit({ type: 'custom-title', customTitle: title });
+			// A restarted server has no plan usage reading until a window moves.
+			const usage = await $.session.usage().catch(() => undefined);
+			const limits = usage && rateLimitLine(usage.rateLimits);
+			if (limits) emit(limits);
+			sendWindow(contextWindow ?? usage?.context.window);
+		};
 
 		// No hook has named the live mode yet: the one Workbench started `claude`
 		// in beats the settings default.
@@ -546,9 +539,14 @@ export const register: Register = (on) => {
 		const sessionId = server.current()?.sessionId ?? '';
 		// This request carries every row appended so far.
 		injected = [];
+		// The TUI picked another effort: the chat's is dropped (and the server forgets it).
+		let effortCleared = false;
 		if (effort) {
 			if (!effortBase) effortBase = { value: e.effort };
-			else if (e.effort !== effortBase.value) effort = effortBase = undefined;
+			else if (e.effort !== effortBase.value) {
+				effort = effortBase = undefined;
+				effortCleared = true;
+			}
 		}
 		if (modelPick && modelPick.base === undefined) modelPick.base = e.model;
 		const pick = modelPick && e.model === modelPick.base ? modelPick : undefined;
@@ -571,7 +569,8 @@ export const register: Register = (on) => {
 				subtype: 'init',
 				model,
 				// `null`: this model runs without effort.
-				effort: typeof sent === 'string' ? sent : null
+				effort: typeof sent === 'string' ? sent : null,
+				...(effortCleared ? { effortCleared } : {})
 			});
 		}
 		emit({
@@ -696,6 +695,9 @@ export const register: Register = (on) => {
 				uuid: `wbmod-done-${task}`
 			});
 		}
+		// A call denied in the terminal's dialog never reaches `tool.call`.
+		if (!e.agentId)
+			for (const [id, asked] of askedInTerminal) if (asked.main) askedInTerminal.delete(id);
 		if (linked && !e.agentId) {
 			runningTurn = undefined;
 			if (e.reason === 'refusal')
@@ -768,6 +770,7 @@ export const register: Register = (on) => {
 	// Fires when auto mode's classifier denies a call.
 	on('classic.PermissionDenied', ($, e, next) => {
 		notePermissionMode(e.permission_mode);
+		pendingAsks.drop(e.tool_use_id);
 		if (server.current() && !e.agent_id)
 			emit({
 				type: 'system',
@@ -885,16 +888,19 @@ export const register: Register = (on) => {
 		if (!server.current()) return next(e);
 		const id = e.tool_use_id;
 		// Approved in the terminal's dialog: it no longer waits, however long the call runs.
+		// The call goes ahead: whatever settled it, it no longer waits on a dialog.
+		if (id) pendingAsks.drop(id);
 		const asked = id ? askedInTerminal.get(id) : undefined;
 		if (id && asked) {
 			askedInTerminal.delete(id);
-			emit({ type: 'control_cancel_request', request_id: asked });
+			emit({ type: 'control_cancel_request', request_id: asked.requestId });
 		}
 		if (e.tool === ASKED_IN_CALL && !e.agentId && id) {
 			const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
 			const requestId = `wbmod-ask-${++askSeq}`;
 			const answer = await server.askInChat(
 				(u, i) => $.http.fetch(u, i),
+				(ms, fn) => $.clock.after(ms, fn),
 				requestId,
 				askLine(requestId, e.tool, input, id),
 				next.signal,
@@ -952,7 +958,32 @@ export const register: Register = (on) => {
 		}
 		const main = id && !e.agentId ? id : undefined;
 		if (main) callsRunning.add(main);
-		const result = await next(e);
+		let result: Awaited<ReturnType<typeof next>>;
+		try {
+			result = await next(e);
+		} catch (err) {
+			// No result comes: what the call holds goes, or the one-running-call
+			// guesses above would pin later progress on it.
+			if (id && (isAgent || (isSkill && taskAgents.has(id)))) {
+				unlinkTask(id);
+				emit({
+					type: 'system',
+					subtype: 'task_notification',
+					task_id: id,
+					status: 'failed',
+					uuid: `wbmod-done-${id}`
+				});
+			}
+			if (id) {
+				runningAgents.delete(id);
+				runningSkills.delete(id);
+			}
+			if (main) {
+				callsRunning.delete(main);
+				toolRows.delete(main);
+			}
+			throw err;
+		}
 		const launched = result.result as
 			| { status?: string; agentId?: string; success?: boolean; background?: boolean }
 			| undefined;
@@ -1046,11 +1077,7 @@ export const register: Register = (on) => {
 			e.tool_use_id &&
 			e.tool !== ASKED_IN_CALL
 		) {
-			const key = askKey(e.tool, e.input);
-			pendingAsks.delete(key);
-			pendingAsks.set(key, { id: e.tool_use_id, reason: verdict.reason });
-			if (pendingAsks.size > PENDING_ASKS_KEPT)
-				pendingAsks.delete(pendingAsks.keys().next().value!);
+			pendingAsks.note(e.tool, e.input, { id: e.tool_use_id, reason: verdict.reason });
 		}
 		return verdict;
 	});
@@ -1066,7 +1093,7 @@ export const register: Register = (on) => {
 		// Approving a plan is what leaves plan mode, and since 2.1.292 only the
 		// dialog does that (a hook's allow doesn't dismiss it): it stays the
 		// terminal's, and the chat says where to answer it.
-		const pending = takeAsk(e.tool_name, e.tool_input);
+		const pending = pendingAsks.take(e.tool_name, e.tool_input);
 		if (e.tool_name === 'ExitPlanMode') {
 			const requestId = `wbmod-ask-${++askSeq}`;
 			emit({
@@ -1078,10 +1105,11 @@ export const register: Register = (on) => {
 			});
 			await server.askInTerminal(
 				(u, i) => $.http.fetch(u, i),
+				(ms, fn) => $.clock.after(ms, fn),
 				requestId,
 				askLine(requestId, e.tool_name, e.tool_input, pending?.id)
 			);
-			if (pending) askedInTerminal.set(pending.id, requestId);
+			if (pending) askedInTerminal.set(pending.id, { requestId, main: !e.agent_id });
 			return next(e);
 		}
 		const requestId = `wbmod-ask-${++askSeq}`;
@@ -1095,6 +1123,7 @@ export const register: Register = (on) => {
 		);
 		const answer = await server.askInChat(
 			(u, i) => $.http.fetch(u, i),
+			(ms, fn) => $.clock.after(ms, fn),
 			requestId,
 			line,
 			next.signal,
@@ -1102,7 +1131,8 @@ export const register: Register = (on) => {
 		);
 		if (!answer) {
 			// The terminal asks now; the server shows it waiting until it's answered.
-			if (pending && !next.signal.aborted) askedInTerminal.set(pending.id, requestId);
+			if (pending && !next.signal.aborted)
+				askedInTerminal.set(pending.id, { requestId, main: !e.agent_id });
 			return next(e);
 		}
 		const decision: PermissionRequestDecision =

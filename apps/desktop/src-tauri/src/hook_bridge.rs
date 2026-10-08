@@ -27,8 +27,12 @@ pub struct HookLogEntry {
 
 type LogBuffer = Arc<Mutex<VecDeque<HookLogEntry>>>;
 
+/// The bridge listens on loopback, which any local (or sandboxed) process can
+/// reach: each event must carry this launch's secret, which Workbench hands
+/// only to the processes it starts (`WORKBENCH_HOOK_SOCKET` = `host:port#secret`).
 #[derive(Clone)]
 pub struct HookBridgeState {
+    address: Option<String>,
     socket_path: Option<String>,
     logs: LogBuffer,
 }
@@ -38,8 +42,14 @@ impl HookBridgeState {
         tcp::start(app_handle)
     }
 
+    /// `host:port#secret`, as `WORKBENCH_HOOK_SOCKET` hands it to a process.
     pub fn socket_path(&self) -> Option<&str> {
         self.socket_path.as_deref()
+    }
+
+    /// The bare `host:port`, for a network allowlist.
+    pub fn address(&self) -> Option<&str> {
+        self.address.as_deref()
     }
 
     pub fn get_logs(&self) -> Vec<HookLogEntry> {
@@ -64,8 +74,25 @@ fn push_log(logs: &LogBuffer, entry: HookLogEntry) {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum HookBridgeEnvelope {
-    Claude { pane_id: String, hook: Value },
-    Codex { pane_id: String, codex: Value },
+    Claude {
+        pane_id: String,
+        hook: Value,
+    },
+    Codex {
+        pane_id: String,
+        codex: Value,
+        /// The bridge secret: Codex's notify script writes raw lines, so it
+        /// rides in the line rather than a header.
+        #[serde(default)]
+        secret: Option<String>,
+    },
+}
+
+/// Whether `given` is the bridge's secret.
+fn authorized(expected: &str, given: Option<&str>) -> bool {
+    given.is_some_and(|given| {
+        workbench_core::token::constant_time_eq(expected.as_bytes(), given.as_bytes())
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -158,8 +185,14 @@ fn emit_project_refresh_event(handle: &AppHandle, hook: &Value) {
 }
 
 /// Process lines from a stream, dispatching hook events to the frontend.
-/// Shared between Unix socket and TCP implementations.
-fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBuffer) {
+/// `secret`: each line must carry it (a raw Codex line); `None` when the
+/// request already proved it (the plugin's POST header).
+fn handle_stream<R: Read>(
+    reader: BufReader<R>,
+    handle: &AppHandle,
+    logs: &LogBuffer,
+    secret: Option<&str>,
+) {
     for line in reader.lines() {
         let line = match line {
             Ok(line) => line,
@@ -204,6 +237,15 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
                 continue;
             }
         };
+
+        let given = match &envelope {
+            HookBridgeEnvelope::Codex { secret, .. } => secret.as_deref(),
+            HookBridgeEnvelope::Claude { .. } => None,
+        };
+        if secret.is_some_and(|expected| !authorized(expected, given)) {
+            log::warn!("[HookBridge] refused an event without this launch's secret");
+            continue;
+        }
 
         match envelope {
             HookBridgeEnvelope::Claude { pane_id, hook } => {
@@ -257,7 +299,7 @@ fn handle_stream<R: Read>(reader: BufReader<R>, handle: &AppHandle, logs: &LogBu
                 push_log(logs, log_entry.clone());
                 let _ = handle.emit("hook-bridge:log", log_entry);
             }
-            HookBridgeEnvelope::Codex { pane_id, codex } => {
+            HookBridgeEnvelope::Codex { pane_id, codex, .. } => {
                 let event_name = codex
                     .get("type")
                     .and_then(|v| v.as_str())
@@ -336,6 +378,7 @@ mod tests {
     #[test]
     fn log_state_get_returns_clone() {
         let state = HookBridgeState {
+            address: None,
             socket_path: None,
             logs: Arc::new(Mutex::new(VecDeque::new())),
         };
@@ -348,6 +391,7 @@ mod tests {
     #[test]
     fn log_state_clear() {
         let state = HookBridgeState {
+            address: None,
             socket_path: None,
             logs: Arc::new(Mutex::new(VecDeque::new())),
         };
@@ -506,7 +550,7 @@ mod tests {
         let envelope: HookBridgeEnvelope = serde_json::from_str(json_str).unwrap();
 
         match envelope {
-            HookBridgeEnvelope::Codex { pane_id, codex } => {
+            HookBridgeEnvelope::Codex { pane_id, codex, .. } => {
                 assert_eq!(pane_id, "p2");
                 assert_eq!(codex.get("thread-id").unwrap().as_str().unwrap(), "t1");
             }
@@ -518,6 +562,31 @@ mod tests {
     fn envelope_missing_pane_id_fails() {
         let json_str = r#"{"hook": {"session_id": "s1"}}"#;
         assert!(serde_json::from_str::<HookBridgeEnvelope>(json_str).is_err());
+    }
+
+    #[test]
+    fn only_this_launchs_secret_is_authorized() {
+        assert!(authorized("s3cret", Some("s3cret")));
+        assert!(!authorized("s3cret", Some("guess")));
+        assert!(!authorized("s3cret", Some("")));
+        assert!(!authorized("s3cret", None));
+    }
+
+    #[test]
+    fn a_codex_line_carries_its_secret() {
+        let line =
+            r#"{"pane_id": "p", "secret": "s3cret", "codex": {"type": "agent-turn-complete"}}"#;
+        match serde_json::from_str::<HookBridgeEnvelope>(line).unwrap() {
+            HookBridgeEnvelope::Codex { secret, .. } => {
+                assert_eq!(secret.as_deref(), Some("s3cret"))
+            }
+            HookBridgeEnvelope::Claude { .. } => panic!("parsed as a Claude hook"),
+        }
+        let bare = r#"{"pane_id": "p", "codex": {}}"#;
+        assert!(matches!(
+            serde_json::from_str::<HookBridgeEnvelope>(bare).unwrap(),
+            HookBridgeEnvelope::Codex { secret: None, .. }
+        ));
     }
 
     #[test]
@@ -552,6 +621,7 @@ mod tcp {
             Err(e) => {
                 log::error!("[HookBridge] Failed to bind TCP listener: {e}");
                 return HookBridgeState {
+                    address: None,
                     socket_path: None,
                     logs,
                 };
@@ -563,13 +633,26 @@ mod tcp {
             Err(e) => {
                 log::error!("[HookBridge] Failed to get listener address: {e}");
                 return HookBridgeState {
+                    address: None,
                     socket_path: None,
                     logs,
                 };
             }
         };
 
-        let socket_path = format!("127.0.0.1:{}", addr.port());
+        let secret = match workbench_core::token::generate() {
+            Ok(secret) => Arc::new(secret),
+            Err(e) => {
+                log::error!("[HookBridge] No secret, so no bridge: {e}");
+                return HookBridgeState {
+                    address: None,
+                    socket_path: None,
+                    logs,
+                };
+            }
+        };
+        let address = format!("127.0.0.1:{}", addr.port());
+        let socket_path = format!("{address}#{secret}");
         let handle = app_handle.clone();
         let logs_clone = logs.clone();
 
@@ -588,18 +671,25 @@ mod tcp {
                 // A client that connects and goes quiet would hold this
                 // thread forever; hook events arrive in one burst.
                 let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
+                let secret = secret.clone();
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(&stream);
                     if !http::is_post(&mut reader) {
-                        return handle_stream(reader, &handle, &logs);
+                        return handle_stream(reader, &handle, &logs, Some(&secret));
                     }
                     // Answer only once the event is handled: the plugin awaits
                     // the reply, so events reach the frontend in order.
                     let reply = match http::read_json_body(&mut reader) {
-                        Ok(Some(body)) => {
-                            handle_stream(BufReader::new(body.as_slice()), &handle, &logs);
+                        Ok(Some(post)) if super::authorized(&secret, post.secret.as_deref()) => {
+                            handle_stream(
+                                BufReader::new(post.body.as_slice()),
+                                &handle,
+                                &logs,
+                                None,
+                            );
                             http::ACCEPTED
                         }
+                        Ok(Some(_)) => http::FORBIDDEN,
                         _ => http::REFUSED,
                     };
                     let _ = (&stream).write_all(reply);
@@ -608,6 +698,7 @@ mod tcp {
         });
 
         HookBridgeState {
+            address: Some(address),
             socket_path: Some(socket_path),
             logs,
         }

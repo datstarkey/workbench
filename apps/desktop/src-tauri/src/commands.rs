@@ -242,7 +242,7 @@ pub async fn sandbox_runtime_settings_path(
         let _writing = lock(&SANDBOX_FILE);
         let settings = config::load_workbench_settings().map_err(|e| e.to_string())?;
         let projects = config::load_projects().map_err(|e| e.to_string())?;
-        let path = sandbox_runtime::write_settings(&settings, &projects, hook_bridge.socket_path())
+        let path = sandbox_runtime::write_settings(&settings, &projects, hook_bridge.address())
             .map_err(|e| e.to_string())?;
         Ok(path.to_string_lossy().to_string())
     })
@@ -291,8 +291,7 @@ pub fn refresh_sandbox_runtime_settings(
         Vec::new()
     });
 
-    if let Err(e) = sandbox_runtime::write_settings(settings, &projects, hook_bridge.socket_path())
-    {
+    if let Err(e) = sandbox_runtime::write_settings(settings, &projects, hook_bridge.address()) {
         log::warn!("[sandbox-runtime] Failed to write settings file: {e}");
     }
 }

@@ -82,8 +82,19 @@ pub fn attachments_as_mentions(
     images: &[PromptImage],
     files: &[PromptFile],
 ) -> Result<String> {
+    attachments_saved(session_id, text, images, files).map(|(text, _)| text)
+}
+
+/// `attachments_as_mentions`, and the saved files' paths: the terminal plugin
+/// lists those, not every `@word` the prompt happens to hold.
+pub fn attachments_saved(
+    session_id: &str,
+    text: &str,
+    images: &[PromptImage],
+    files: &[PromptFile],
+) -> Result<(String, Vec<String>)> {
     if images.is_empty() && files.is_empty() {
-        return Ok(text.to_string());
+        return Ok((text.to_string(), Vec::new()));
     }
     let dir = attachment_dir(session_id).join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
@@ -118,10 +129,13 @@ pub fn attachments_as_mentions(
         std::fs::write(&path, bytes)?;
         paths.push(path);
     }
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     let mentions: Vec<String> = paths
         .iter()
         .map(|p| {
-            let p = p.to_string_lossy();
             if p.contains(' ') {
                 format!("@\"{p}\"")
             } else {
@@ -129,9 +143,10 @@ pub fn attachments_as_mentions(
             }
         })
         .collect();
-    Ok(format!("{text}\n\n{}", mentions.join(" "))
+    let text = format!("{text}\n\n{}", mentions.join(" "))
         .trim_start()
-        .to_string())
+        .to_string();
+    Ok((text, paths))
 }
 
 #[cfg(test)]
@@ -167,6 +182,15 @@ mod tests {
             attachments_as_mentions(&id, "plain", &[], &[]).unwrap(),
             "plain"
         );
+        let (_, saved) = attachments_saved(
+            &id,
+            "see @workbench/ui",
+            &[super::tests::image("image/png", "aGk=")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(saved.len(), 1, "only the saved file, not a scope in prose");
+        assert!(saved[0].ends_with("image-1.png"));
         std::fs::remove_dir_all(attachment_dir(&id)).unwrap();
     }
 
