@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHttpTransport } from './http.ts';
 import { createMockTransport } from './mock.ts';
 
@@ -215,5 +215,58 @@ describe('HttpTransport event socket reconnect backoff', () => {
 		createHttpTransport({ baseUrl: 'http://host:4317' });
 		await vi.advanceTimersByTimeAsync(60000);
 		expect(FakeWS.instances).toHaveLength(0);
+	});
+});
+
+describe('HttpTransport request timeouts', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		// A server that never answers: the fetch rejects only when its signal fires.
+		mockFetch(
+			(_url, init) =>
+				new Promise((_, reject) =>
+					init.signal?.addEventListener('abort', () =>
+						reject(new DOMException('aborted', 'AbortError'))
+					)
+				)
+		);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.unstubAllGlobals();
+	});
+
+	/** Milliseconds until `invoke` gives up, and the error it gives up with. */
+	async function budget(run: () => Promise<unknown>) {
+		let error: Error | null = null;
+		void run().catch((e: Error) => (error = e));
+		let waited = 0;
+		while (!error && waited < 300_000) {
+			await vi.advanceTimersByTimeAsync(1000);
+			waited += 1000;
+		}
+		return { waited, message: (error as Error | null)?.message };
+	}
+
+	it('rejects a stalled request with a clear timeout error', async () => {
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await expect(budget(() => t.invoke('list_projects', undefined))).resolves.toEqual({
+			waited: 10_000,
+			message: 'workbench-server: GET /projects timed out after 10s: the server is not responding'
+		});
+	});
+
+	it('keeps other failures as they are', async () => {
+		mockFetch(() => Promise.reject(new TypeError('Failed to fetch')));
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await expect(t.invoke('list_projects', undefined)).rejects.toThrow('Failed to fetch');
+	});
+
+	it('gives routes that do slow work server-side a longer budget', async () => {
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		const create = await budget(() => t.invoke('create_worktree', { request: {} } as never));
+		expect(create.waited).toBe(120_000);
+		const status = await budget(() => t.invoke('git_status', { path: '/repo' }));
+		expect(status.waited).toBe(30_000);
 	});
 });

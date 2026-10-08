@@ -58,7 +58,13 @@ export interface PendingPrompt {
 	at: number;
 }
 
+/** First retry after a drop; each failed one doubles it, up to the cap. */
 const RECONNECT_MS = 1500;
+const MAX_RECONNECT_MS = 30_000;
+/** Retries before giving up (about 2.5 min), leaving Restart to the person. */
+const MAX_RECONNECT_ATTEMPTS = 8;
+/** Retries (about 45s) a session missing on reconnect gets: a relaunch attaches within 30s. */
+const RELAUNCH_ATTEMPTS = 5;
 /** Hidden this long (a sleeping phone or laptop), the socket may be dead while it still reads open. */
 const WAKE_RECONNECT_MS = 10_000;
 /** How long the `@` menu's file list is reused before it's fetched again. */
@@ -158,6 +164,10 @@ export class AgentChat {
 	private readonly api: AgentApi;
 	private ws: WebSocket | null = null;
 	private retryTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Retries since the last snapshot; sets the next backoff delay. */
+	private reconnectAttempts = 0;
+	/** `exited` because retries ran out, not because the session ended. */
+	private lostConnection = false;
 	private disposed = false;
 	private threadStart: Promise<string> | null = null;
 	/** Bumped by every connect; an older one still awaiting the server gives up. */
@@ -213,7 +223,9 @@ export class AgentChat {
 	 * `attachOnly` chat re-attaches while it runs, and once ended it starts here.
 	 */
 	open(): Promise<void> {
-		if (this.body.attachOnly && (this.status === 'exited' || this.status === 'failed')) {
+		// Out of retries, a joined chat may still run on the other device: rejoin, don't take it.
+		const ended = this.status === 'failed' || (this.status === 'exited' && !this.lostConnection);
+		if (this.body.attachOnly && ended) {
 			this.body = { ...this.body, attachOnly: false };
 			this.onTakeOver?.();
 		}
@@ -222,7 +234,9 @@ export class AgentChat {
 		this.ws = null;
 		this.status = 'starting';
 		this.error = null;
-		return this.connect();
+		this.reconnectAttempts = 0;
+		this.lostConnection = false;
+		return this.connect(true);
 	}
 
 	/** The person trusted the folder: start again, answering Claude Code's dialog. */
@@ -249,17 +263,24 @@ export class AgentChat {
 	}
 
 	/**
-	 * Starting is idempotent server-side (it returns the running session), so
-	 * every (re)connect starts first: after an app restart the process is gone
-	 * and this brings it back with the conversation resumed.
+	 * `spawn` (opening the chat, Restart, a server restart's `replaced`): start
+	 * first. That is idempotent server-side (it returns the running session) and
+	 * after an app restart brings the process back with the conversation resumed.
+	 * Otherwise (a dropped socket) only re-attach: a start for a session that
+	 * isn't live opens a new terminal, so retries would spawn one each time.
 	 */
-	private async connect(): Promise<void> {
+	private async connect(spawn: boolean): Promise<void> {
 		const generation = ++this.generation;
 		const stale = () => this.disposed || generation !== this.generation;
+		const attach = !spawn || !!this.body.attachOnly;
 		let url: string;
 		try {
 			const sessionId = this.sessionId
-				? await this.api.start({ ...this.body, sessionId: this.sessionId })
+				? await this.api.start({
+						...this.body,
+						sessionId: this.sessionId,
+						...(attach ? { attachOnly: true } : {})
+					})
 				: await this.startThread();
 			if (stale()) return;
 			this.sessionId = sessionId;
@@ -273,13 +294,24 @@ export class AgentChat {
 				this.trustPath = e.path;
 				return;
 			}
-			// Waking phones lose the network for a moment; keep retrying rather than give up,
-			// unless a joined session is gone (it exited, or someone ended it).
+			// Waking phones lose the network for a moment, and a stalled server times
+			// out: retry those with backoff. Not a session that is gone (it exited, or
+			// someone ended it) or a refusal that won't change (a revoked token).
 			const { status, ended } = e as { status?: number; ended?: boolean };
-			const gone = this.body.attachOnly && status === 404;
-			if (this.status === 'reconnecting' && !gone) return this.scheduleReconnect();
-			this.status = this.status === 'reconnecting' ? 'exited' : 'failed';
-			this.error = e instanceof Error ? e.message : String(e);
+			const gone = attach && status === 404;
+			// A relaunch (rewind, mode) unlists the session until its new process attaches;
+			// a socket that dropped before its `replaced` lands here, so an own chat waits it out.
+			const relaunching =
+				gone && !ended && !this.body.attachOnly && this.reconnectAttempts < RELAUNCH_ATTEMPTS;
+			const reconnecting = this.status === 'reconnecting';
+			if (reconnecting && ((!gone && retryable(status)) || relaunching))
+				return this.scheduleReconnect();
+			// Refused, not gone: a joined chat's Restart must rejoin it, not take it over.
+			this.lostConnection = reconnecting && !gone;
+			this.status = reconnecting ? 'exited' : 'failed';
+			// The server words a 404 for a joined chat; an own one that stopped meanwhile shows the default.
+			this.error =
+				gone && !ended && !this.body.attachOnly ? null : e instanceof Error ? e.message : String(e);
 			if (gone && ended) this.onEnded?.();
 			return;
 		}
@@ -305,9 +337,16 @@ export class AgentChat {
 
 	private scheduleReconnect(): void {
 		if (this.disposed) return;
-		this.status = 'reconnecting';
 		if (this.retryTimer) clearTimeout(this.retryTimer);
-		this.retryTimer = setTimeout(() => void this.connect(), RECONNECT_MS);
+		if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+			this.status = 'exited';
+			this.error = `Lost the connection to ${agentName(this.agent)}. Restart to try again.`;
+			this.lostConnection = true;
+			return;
+		}
+		this.status = 'reconnecting';
+		const delay = Math.min(RECONNECT_MS * 2 ** this.reconnectAttempts++, MAX_RECONNECT_MS);
+		this.retryTimer = setTimeout(() => void this.connect(false), delay);
 	}
 
 	receive(msg: AgentServerMsg): void {
@@ -347,6 +386,7 @@ export class AgentChat {
 				this.cachePolicy = msg.cachePolicy ?? { compactOnExpiry: false };
 				this.setMeta(msg.meta);
 				this.status = msg.exited ? 'exited' : 'live';
+				this.reconnectAttempts = 0;
 				this.settlePending();
 				break;
 			case 'update':
@@ -395,8 +435,10 @@ export class AgentChat {
 				delete this.rewindWaiters[msg.messageId];
 				break;
 			case 'replaced':
-				// A conversation rewind restarted the process under the same id.
-				this.reconnect();
+				// A rewind, mode switch or restart relaunches the process under the same id.
+				// Mid-relaunch the session isn't listed, so attaching would find nothing:
+				// a start waits on the server's start lock for the new one instead.
+				this.reattach(true);
 				break;
 			case 'revoked':
 				this.rejectControls('The connection was revoked');
@@ -805,11 +847,21 @@ export class AgentChat {
 
 	/**
 	 * Re-attach now, e.g. when a phone wakes: after a long sleep the socket can
-	 * still read OPEN while the server has let it go.
+	 * still read OPEN while the server has let it go. Also retries a chat that
+	 * ran out of retries while the phone slept.
 	 */
 	reconnect(): void {
-		if (this.disposed || ['failed', 'exited', 'trust'].includes(this.status)) return;
+		// Mid-start, the first start is still the one to make.
+		this.reattach(this.status === 'starting');
+	}
+
+	private reattach(spawn: boolean): void {
+		const ended = ['failed', 'exited'].includes(this.status) && !this.lostConnection;
+		if (this.disposed || ended || this.status === 'trust') return;
 		if (this.retryTimer) clearTimeout(this.retryTimer);
+		this.reconnectAttempts = 0;
+		this.lostConnection = false;
+		this.error = null;
 		const old = this.ws;
 		this.ws = null;
 		if (old) {
@@ -820,7 +872,7 @@ export class AgentChat {
 			this.settleRewinds();
 		}
 		this.status = 'reconnecting';
-		void this.connect();
+		void this.connect(spawn);
 	}
 
 	dispose(): void {
@@ -831,6 +883,11 @@ export class AgentChat {
 		this.ws?.close();
 		this.ws = null;
 	}
+}
+
+/** No status: the network or a timeout. Server errors and throttling may pass too. */
+function retryable(status: number | undefined): boolean {
+	return status === undefined || status >= 500 || status === 408 || status === 429;
 }
 
 /** Two requests for the same id share one reply; both callers get it. */
