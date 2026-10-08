@@ -33,6 +33,8 @@ const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
 /// `assistant` lines per session id that may read the cache's lifetime
 /// from its transcript until it names one.
 const EARLY_TTL_READS: u8 = 8;
+/// Waits between reads of a `goal_status` row the CLI hadn't written yet.
+const GOAL_RETRY_MS: [u64; 5] = [100, 250, 500, 1000, 2000];
 
 pub(super) type Registry = Arc<Mutex<HashMap<String, Arc<AgentSession>>>>;
 
@@ -423,6 +425,44 @@ impl AgentSession {
                 self.broadcast_update(t, &[]);
             }
         }
+        true
+    }
+
+    /// A terminal's plugin sees a `goal_status` attachment without its
+    /// fields: the session's newest such row is read from the transcript file
+    /// and folded once row `uuid` is written there, retried briefly until then.
+    pub(super) fn learn_goal_status(self: &Arc<Self>, uuid: &str) {
+        if self.fold_goal(Some(uuid)) {
+            return;
+        }
+        let (session, uuid) = (Arc::clone(self), uuid.to_string());
+        std::thread::spawn(move || {
+            for ms in GOAL_RETRY_MS {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                if session.has_exited() || session.fold_goal(Some(&uuid)) {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// At a turn's end, a goal still shown is checked against the file: a
+    /// row the retries above gave up on (a met or cleared goal) isn't left out.
+    pub(super) fn recheck_goal(&self) {
+        let shown = matches!(&*lock(&self.driver), Driver::Claude(t) if t.meta().goal.is_some());
+        if shown {
+            self.fold_goal(None);
+        }
+    }
+
+    fn fold_goal(&self, written: Option<&str>) -> bool {
+        let Some(entry) = self
+            .history_path()
+            .and_then(|p| workbench_core::claude_transcript::goal_status_entry(&p, written))
+        else {
+            return false;
+        };
+        self.apply_line(&entry.to_string(), |_, _| {});
         true
     }
 

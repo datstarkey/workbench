@@ -7,6 +7,7 @@
 	import { promptSuggestions } from './artifacts';
 	import ChatCacheHint from './ChatCacheHint.svelte';
 	import ChatComposer from './ChatComposer.svelte';
+	import ChatGoal from './ChatGoal.svelte';
 	import ChatModelPicker from './ChatModelPicker.svelte';
 	import ChatPlan from './ChatPlan.svelte';
 	import ChatSuggestions from './ChatSuggestions.svelte';
@@ -95,6 +96,9 @@
 	{/if}
 	<CodexControls {chat} {onThread} />
 	<ChatCacheHint {chat} />
+	{#if chat.meta?.goal && chat.live}
+		<ChatGoal goal={chat.meta.goal} />
+	{/if}
 	<ChatSuggestions {suggestions} onPick={(text) => (chat.draft.text = text)} />
 	<ChatComposer
 		{id}

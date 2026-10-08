@@ -260,6 +260,17 @@ pub struct ArtifactInfo {
     pub version: Option<String>,
 }
 
+/// The `/goal` a Claude session works toward: it keeps taking turns until the
+/// condition holds, or the goal is cleared.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalInfo {
+    pub condition: String,
+    /// Why the latest check found it not met yet; `None` before the first check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptMeta {
@@ -305,6 +316,9 @@ pub struct TranscriptMeta {
     /// The CLI's guess at the next prompt; cleared when a turn starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_suggestion: Option<String>,
+    /// The session's active `/goal`, until it's met or cleared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal: Option<GoalInfo>,
 }
 
 fn is_zero(n: &u32) -> bool {
