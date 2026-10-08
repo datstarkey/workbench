@@ -3,8 +3,7 @@
 //! (`modlink`). Lines fold through the [`Driver`], and every change goes to
 //! attached clients (desktop chat pane, phone) as `update` frames.
 
-use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -22,6 +21,7 @@ use workbench_core::claude_transcript::{
 
 use super::cache::{self, CachePolicy, PolicyStore, Upkeep};
 use super::driver::{Driver, Effects, Launch};
+use super::frames::{Frame, Frames};
 use super::modlink::ModLink;
 use super::{lock, now_ms, AgentKind, AgentSummary, PromptFile, PromptImage, StartAgent};
 
@@ -33,58 +33,6 @@ const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
 /// `assistant` lines per session id that may read the cache's lifetime
 /// from its transcript until it names one.
 const EARLY_TTL_READS: u8 = 8;
-/// How long changes gather before an `update` frame carries them: a streamed
-/// reply changes its item on every delta, and each frame resends the item whole.
-pub(super) const FLUSH_EVERY: Duration = Duration::from_millis(50);
-
-/// What attached clients are sent. Shared, not cloned, by every receiver.
-pub enum Frame {
-    Text(String),
-    /// `changes` is the JSON array of `[index, item]`; `meta` the current meta,
-    /// which a client that asked for it only on change gets only then.
-    Update {
-        changes: String,
-        meta: Arc<str>,
-        meta_changed: bool,
-    },
-}
-
-impl Frame {
-    /// The frame as JSON; `every_meta` for clients that predate `meta` being
-    /// optional on `update` frames (they read it from every one).
-    pub fn render(&self, every_meta: bool) -> Cow<'_, str> {
-        match self {
-            Self::Text(text) => Cow::Borrowed(text),
-            Self::Update {
-                changes,
-                meta,
-                meta_changed,
-            } if every_meta || *meta_changed => Cow::Owned(format!(
-                r#"{{"t":"update","changes":{changes},"meta":{meta}}}"#
-            )),
-            Self::Update { changes, .. } => {
-                Cow::Owned(format!(r#"{{"t":"update","changes":{changes}}}"#))
-            }
-        }
-    }
-
-    /// The session is over for its clients (it exited, or was relaunched).
-    pub fn ends(&self) -> bool {
-        matches!(self, Self::Text(t) if t.contains(r#""t":"exit""#) || t.contains(r#""t":"replaced""#))
-    }
-}
-
-/// Changes no `update` frame has carried yet, flushed every [`FLUSH_EVERY`].
-#[derive(Default)]
-struct Outbox {
-    items: BTreeSet<usize>,
-    /// Something changed since the last frame (items, or perhaps meta).
-    dirty: bool,
-    /// The meta JSON clients last got; `None` sends it with the next frame.
-    meta: Option<Arc<str>>,
-}
-
-type SharedOutbox = Arc<(Mutex<Outbox>, Condvar)>;
 
 pub(super) type Registry = Arc<Mutex<HashMap<String, Arc<AgentSession>>>>;
 
@@ -116,9 +64,7 @@ pub struct AgentSession {
     turn_ended_at: Mutex<Option<u64>>,
     /// The running (or next) turn is a cache keep-alive, so its end isn't recorded.
     keepalive_turn: AtomicBool,
-    tx: broadcast::Sender<Arc<Frame>>,
-    /// Taken under the driver lock, after it.
-    outbox: SharedOutbox,
+    frames: Frames,
     /// Held by whatever changes the driver (lines, client messages) across
     /// work done outside the driver lock, so readers (the session list, an
     /// attach) never wait on file IO while changes still apply in order.
@@ -332,7 +278,6 @@ impl AgentSession {
             _ => CachePolicy::default(),
         };
         let (stdin, link) = io;
-        let (tx, _) = broadcast::channel(256);
         let (outgoing, receiver) = if stdin.is_some() {
             let (tx, rx) = mpsc::sync_channel::<String>(128);
             (Some(tx), Some(rx))
@@ -354,8 +299,7 @@ impl AgentSession {
             updated_at: AtomicU64::new(now_ms()),
             turn_ended_at: Mutex::new(None),
             keepalive_turn: AtomicBool::new(false),
-            tx,
-            outbox: SharedOutbox::default(),
+            frames: Frames::new(),
             writer: Mutex::new(()),
             stdin: Mutex::new(stdin),
             outgoing: Mutex::new(outgoing),
@@ -378,7 +322,10 @@ impl AgentSession {
             transcript_path: Mutex::new(None),
             early_ttl_reads: Mutex::new((String::new(), EARLY_TTL_READS)),
         });
-        session.start_flusher();
+        let flusher = Arc::downgrade(&session);
+        session
+            .frames
+            .start_flusher(move || flusher.upgrade().map(|s| s.flush()).is_some());
         if let Some(receiver) = receiver {
             let writer = Arc::downgrade(&session);
             std::thread::spawn(move || {
@@ -422,7 +369,7 @@ impl AgentSession {
 
     /// Whether any client (desktop chat pane, phone) is attached.
     pub fn has_viewers(&self) -> bool {
-        self.tx.receiver_count() > 0
+        self.frames.has_receivers()
     }
 
     pub fn claude_account_id(&self) -> Option<String> {
@@ -647,7 +594,7 @@ impl AgentSession {
     }
 
     fn fail_io(&self, what: &str, error: impl std::fmt::Display) {
-        self.send_text(
+        self.frames.fail(
             json!({"t":"error","message":format!("Invalid {} {what}: {error}", self.program)})
                 .to_string(),
         );
@@ -672,7 +619,7 @@ impl AgentSession {
         let mut d = lock(&self.driver);
         let effects = op(&mut d)?;
         for frame in &effects.frames {
-            self.emit(d.view(), frame.to_string());
+            self.frames.emit(d.view(), frame.to_string());
         }
         if let Some(ready) = effects.ready {
             self.set_ready(ready);
@@ -783,7 +730,8 @@ impl AgentSession {
         }
         *lock(&self.cache_policy) = policy.clone();
         self.cache_policies.set(&self.id(), &policy);
-        self.send_text(json!({"t": "cachePolicy", "policy": policy}).to_string());
+        self.frames
+            .send(json!({"t": "cachePolicy", "policy": policy}).to_string());
         Ok(())
     }
 
@@ -936,10 +884,7 @@ impl AgentSession {
     /// Blocking: builds the snapshot under the driver lock.
     pub fn subscribe(&self) -> (String, broadcast::Receiver<Arc<Frame>>) {
         let d = lock(&self.driver);
-        let rx = self.tx.subscribe();
-        // Meta may change and change back before the next flush: send it
-        // then, so this client can't be left on its snapshot's.
-        lock(&self.outbox.0).meta = None;
+        let rx = self.frames.subscribe();
         (self.snapshot(d.view()), rx)
     }
 
@@ -969,7 +914,7 @@ impl AgentSession {
         let mut d = lock(&self.driver);
         let effects = d.apply_line(line);
         for frame in &effects.frames {
-            self.emit(d.view(), frame.to_string());
+            self.frames.emit(d.view(), frame.to_string());
         }
         for msg in &effects.send {
             if let Err(e) = self.send(msg) {
@@ -981,7 +926,7 @@ impl AgentSession {
         }
         if effects.commands {
             let frame = json!({"t": "commands", "commands": d.view().commands()});
-            self.emit(d.view(), frame.to_string());
+            self.frames.emit(d.view(), frame.to_string());
         }
         if let Some(new_id) = effects.new_id {
             let old_id = self.id();
@@ -1030,96 +975,21 @@ impl AgentSession {
         }
     }
 
-    /// Note changed items (and maybe meta) for the next `update` frame, at
-    /// most one per [`FLUSH_EVERY`]: a streamed reply would otherwise resend
-    /// its growing item, and the whole meta, on every delta. Under the driver lock.
+    /// Note changes for the next coalesced `update` frame (see `frames`).
+    /// Under the driver lock.
     fn broadcast_update(&self, t: &dyn ChatView, changed: &[usize]) {
         self.touch(t);
-        let (outbox, due) = &*self.outbox;
-        let mut o = lock(outbox);
-        o.items.extend(changed);
-        if !o.dirty {
-            o.dirty = true;
-            due.notify_one();
-        }
-    }
-
-    /// Send what changed since the last frame. Frames go out while the driver
-    /// lock is held, so their order matches the order changes were applied in.
-    fn flush_locked(&self, t: &dyn ChatView) {
-        let mut o = lock(&self.outbox.0);
-        if !std::mem::take(&mut o.dirty) {
-            return;
-        }
-        let indices = std::mem::take(&mut o.items);
-        if self.tx.receiver_count() == 0 {
-            return; // nobody to tell; an attach starts from a snapshot
-        }
-        let meta: Arc<str> = serde_json::to_string(t.meta()).unwrap_or_default().into();
-        let meta_changed = o.meta.as_deref() != Some(&*meta);
-        if indices.is_empty() && !meta_changed {
-            return;
-        }
-        o.meta = Some(meta.clone());
-        drop(o);
-        let items = t.items();
-        let changes: Vec<Value> = indices
-            .into_iter()
-            .filter(|&i| i < items.len())
-            .map(|i| json!([i, &items[i]]))
-            .collect();
-        let _ = self.tx.send(Arc::new(Frame::Update {
-            changes: Value::Array(changes).to_string(),
-            meta,
-            meta_changed,
-        }));
+        self.frames.mark(changed);
     }
 
     fn flush(&self) {
         let d = lock(&self.driver);
-        self.flush_locked(d.view());
+        self.frames.flush(d.view());
     }
 
-    /// Any other frame, after the changes made before it. Under the driver lock.
-    fn emit(&self, t: &dyn ChatView, frame: String) {
-        self.flush_locked(t);
-        self.send_text(frame);
-    }
-
-    fn send_text(&self, frame: String) {
-        let _ = self.tx.send(Arc::new(Frame::Text(frame)));
-    }
-
-    /// Every client gets the whole state again: nothing pending is owed.
+    /// Every client gets the whole state again. Under the driver lock.
     fn broadcast_snapshot(&self, t: &dyn ChatView) {
-        *lock(&self.outbox.0) = Outbox::default();
-        self.send_text(self.snapshot(t));
-    }
-
-    /// Sends gathered changes [`FLUSH_EVERY`] after the first of them.
-    fn start_flusher(self: &Arc<Self>) {
-        let session = Arc::downgrade(self);
-        let outbox = self.outbox.clone();
-        std::thread::spawn(move || loop {
-            {
-                let (o, due) = &*outbox;
-                let o = due
-                    .wait_timeout_while(lock(o), Duration::from_secs(1), |o| !o.dirty)
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0;
-                if !o.dirty {
-                    if session.strong_count() == 0 {
-                        break;
-                    }
-                    continue;
-                }
-            }
-            std::thread::sleep(FLUSH_EVERY);
-            match session.upgrade() {
-                Some(session) => session.flush(),
-                None => break,
-            }
-        });
+        self.frames.snapshot(self.snapshot(t));
     }
 
     fn touch(&self, t: &dyn ChatView) {
@@ -1179,7 +1049,7 @@ impl AgentSession {
         };
         // The reply's last changes go out before its end.
         self.flush();
-        self.send_text(frame.to_string());
+        self.frames.end(frame.to_string());
     }
 
     /// Interrupt, close stdin, and kill the process (and its group) if it

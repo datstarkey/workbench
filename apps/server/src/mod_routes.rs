@@ -76,12 +76,17 @@ pub async fn hello(
     tokio::spawn(async move {
         let (account, cwd) = (session.claude_account_id(), session.cwd());
         let agents = state.agents.clone();
+        // Pinning takes each session's driver lock: off the async workers.
         let repin = {
             let (account, cwd) = (account.clone(), cwd.clone());
-            Box::new(move |models: Vec<_>| agents.pin_models_for(&account, &cwd, &models))
+            Box::new(move |models: Vec<_>| {
+                tokio::task::spawn_blocking(move || agents.pin_models_for(&account, &cwd, &models));
+            })
         };
         match state.models.get(account, cwd, repin).await {
-            Ok(models) => session.pin_models(models),
+            Ok(models) => {
+                let _ = tokio::task::spawn_blocking(move || session.pin_models(models)).await;
+            }
             Err(e) => tracing::warn!("could not list Claude models: {e:#}"),
         }
     });

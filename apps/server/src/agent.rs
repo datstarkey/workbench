@@ -21,14 +21,16 @@ mod cache;
 mod claude;
 mod codex;
 mod driver;
+mod frames;
 mod modlink;
 mod session;
 
 pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
 pub use cache::CachePolicy;
 pub(crate) use claude::validate as validate_claude_session_id;
+pub use frames::Frame;
 pub use modlink::{ModGrant, ModLink};
-pub use session::{AgentSession, Frame};
+pub use session::AgentSession;
 
 const DEFAULT_MAX_AGENTS: usize = 16;
 /// How long a start waits for codex to open (or resume) its thread.
@@ -209,8 +211,9 @@ pub struct AgentManager {
 const ENDED_KEPT: usize = 64;
 /// How long a stopped process may take to be reaped after its grace ran out.
 const EXIT_REAP: Duration = Duration::from_secs(2);
-/// How long a start waits for a stop of the same id: its grace, then the reap.
-const EXIT_WAIT: Duration = Duration::from_secs(6);
+/// How long a start waits for a stop of the same id: its grace and reap,
+/// plus a Windows `taskkill` before the grace.
+const EXIT_WAIT: Duration = Duration::from_secs(10);
 
 impl AgentManager {
     /// Switch a session's model, remembered for a Claude terminal's restart.
@@ -426,12 +429,14 @@ impl AgentManager {
             self.revoke_grant(token);
             bail!("unknown terminal token");
         }
-        // A re-attach of the same link needs no history read.
+        // Answer what needs no history first: a re-attach, or a refusal.
+        self.wait_exited(session_id);
         if let Some(existing) = self.get(session_id) {
             if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
                 link.touch();
                 return Ok(existing);
             }
+            self.takes_over(&existing, token, session_id)?;
         }
         let config_dir =
             workbench_core::claude_accounts::resolve_saved(grant.claude_account_id.as_deref())?;
@@ -440,65 +445,84 @@ impl AgentManager {
         let peeked = grant.resume_at.clone();
         let mut transcript =
             claude::history_transcript(config_dir.as_deref(), session_id, peeked.as_deref());
-        self.wait_exited(session_id);
-        let _lifecycle = lock(&self.lifecycle);
-        self.ensure_exited(session_id)?;
-        if let Some(existing) = self.get(session_id) {
-            match existing.mod_link() {
-                Some(link) if link.token == token => {
-                    link.touch();
-                    return Ok(existing);
-                }
-                // The old terminal's `claude` went without saying so.
-                Some(link) if link.is_stale() => {
+        let (attached, stale) = {
+            let _lifecycle = lock(&self.lifecycle);
+            self.ensure_exited(session_id)?;
+            let stale = match self.get(session_id) {
+                Some(existing) => {
+                    if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
+                        link.touch();
+                        return Ok(existing);
+                    }
+                    self.takes_over(&existing, token, session_id)?;
                     self.forget(&existing);
-                    existing.replace();
+                    Some(existing)
                 }
-                Some(_) => bail!("another terminal runs {session_id}"),
-                None => bail!("a chat process already runs {session_id}"),
+                None => None,
+            };
+            // Only the first attach after a rewind cuts history there: what is
+            // typed since continues that branch, which a re-attach must show.
+            let resume_at = lock(&self.mod_grants)
+                .get_mut(token)
+                .and_then(|g| g.resume_at.take());
+            if resume_at != peeked {
+                // Another attach with this token took the cut meanwhile.
+                transcript = claude::history_transcript(
+                    config_dir.as_deref(),
+                    session_id,
+                    resume_at.as_deref(),
+                );
             }
-        }
-        // Only the first attach after a rewind cuts history there: what is
-        // typed since continues that branch, which a re-attach must show.
-        let resume_at = lock(&self.mod_grants)
-            .get_mut(token)
-            .and_then(|g| g.resume_at.take());
-        if resume_at != peeked {
-            // Another attach with this token took the cut meanwhile.
-            transcript =
-                claude::history_transcript(config_dir.as_deref(), session_id, resume_at.as_deref());
-        }
-        let req = StartAgent {
-            cwd: grant.cwd,
-            project_path: grant.project_path,
-            worktree_path: grant.worktree_path,
-            pane_id: grant.pane_id,
-            hook_socket: grant.hook_socket,
-            claude_account_id: grant.claude_account_id,
-            launch: Launch::Claude {
-                session_id: session_id.to_string(),
-                permission_mode: grant.permission_mode,
-                config_dir,
-            },
+            let req = StartAgent {
+                cwd: grant.cwd,
+                project_path: grant.project_path,
+                worktree_path: grant.worktree_path,
+                pane_id: grant.pane_id,
+                hook_socket: grant.hook_socket,
+                claude_account_id: grant.claude_account_id,
+                launch: Launch::Claude {
+                    session_id: session_id.to_string(),
+                    permission_mode: grant.permission_mode,
+                    config_dir,
+                },
+            };
+            let link = Arc::new(ModLink::new(token.to_string(), grant.terminal_id));
+            let session = AgentSession::attach_mod(
+                req,
+                driver::Driver::Claude(transcript),
+                link,
+                &self.cache_policies,
+                self.attention.clone(),
+            );
+            let attached = session.send(&claude::hello()).and_then(|()| {
+                if let Some(mut pick) = lock(&self.restart_picks).remove(session_id) {
+                    pick["request_id"] = uuid::Uuid::new_v4().to_string().into();
+                    session.send(&pick)?;
+                }
+                lock(&self.inner).insert(session_id.to_string(), session.clone());
+                self.unmark_ended(session_id);
+                Ok(session)
+            });
+            (attached, stale)
         };
-        let link = Arc::new(ModLink::new(token.to_string(), grant.terminal_id));
-        let session = AgentSession::attach_mod(
-            req,
-            driver::Driver::Claude(transcript),
-            link,
-            &self.cache_policies,
-            self.attention.clone(),
-        );
-        session.send(&claude::hello())?;
-        if let Some(mut pick) = lock(&self.restart_picks).remove(session_id) {
-            pick["request_id"] = uuid::Uuid::new_v4().to_string().into();
-            session.send(&pick)?;
+        // The stale session ends outside the lock: its end waits on its driver lock.
+        if let Some(stale) = stale {
+            stale.replace();
         }
-        lock(&self.inner).insert(session_id.to_string(), session.clone());
+        let session = attached?;
         self.attention.sessions_changed();
-        self.unmark_ended(session_id);
         self.start_upkeep();
         Ok(session)
+    }
+
+    /// Whether the attach of `token` may take `session_id` over from `existing`:
+    /// only once the old terminal's `claude` went without saying so (stale).
+    fn takes_over(&self, existing: &AgentSession, token: &str, session_id: &str) -> Result<()> {
+        match existing.mod_link() {
+            Some(link) if link.is_stale() && link.token != token => Ok(()),
+            Some(_) => bail!("another terminal runs {session_id}"),
+            None => bail!("a chat process already runs {session_id}"),
+        }
     }
 
     /// Rewind a terminal session's conversation: its terminal restarts as
@@ -613,8 +637,10 @@ impl AgentManager {
         {
             let _lifecycle = lock(&self.lifecycle);
             self.forget(session);
-            session.replace();
         }
+        // Outside the lock: its end waits on its driver lock. The start lock
+        // keeps a re-attach from slipping in meanwhile.
+        session.replace();
         self.revoke_grant(&link.token);
         // One `claude` per session file: the old one goes before the new one starts.
         if let Some(old) = &link.terminal_id {
@@ -988,7 +1014,8 @@ impl AgentManager {
     }
 
     fn live_count(&self) -> usize {
-        self.sessions(|_| true).len()
+        // A stopped process still exiting is still running.
+        self.sessions(|_| true).len() + lock(&self.exiting).len()
     }
 }
 

@@ -109,7 +109,8 @@ impl ServerHandle {
     }
 }
 
-/// How long [`ServerHandle::stop`] waits for open requests before dropping them.
+/// How long [`ServerHandle::stop`] waits for open requests before it stops
+/// waiting (the listener is closed; a stuck connection finishes on its own).
 pub const STOP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Spawn the server on the current Tokio runtime and return a handle. Binds

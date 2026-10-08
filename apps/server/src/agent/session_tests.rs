@@ -82,7 +82,7 @@ fn a_long_streamed_reply_is_sent_in_coalesced_frames_with_meta_only_on_change() 
         drop(d);
         std::thread::sleep(Duration::from_millis(1));
     }
-    std::thread::sleep(FLUSH_EVERY * 4);
+    std::thread::sleep(crate::agent::frames::FLUSH_EVERY * 4);
 
     let frames = drain(&mut rx);
     let bytes = |every_meta| -> usize { frames.iter().map(|f| f.render(every_meta).len()).sum() };
@@ -129,19 +129,42 @@ fn pending_changes_go_out_before_a_later_frame() {
         |_, _| {},
     );
     session.shutdown();
-    let kinds: Vec<String> = drain(&mut rx)
+    assert_eq!(kinds(&mut rx), ["update", "exit"]);
+}
+
+fn kinds(rx: &mut broadcast::Receiver<Arc<Frame>>) -> Vec<String> {
+    drain(rx)
         .iter()
         .map(|f| {
-            serde_json::from_str::<Value>(&f.render(false)).unwrap()["t"]
-                .as_str()
-                .unwrap()
-                .to_string()
+            let v: Value = serde_json::from_str(&f.render(false)).unwrap();
+            v["t"].as_str().unwrap().to_string()
         })
-        .collect();
-    assert_eq!(
-        kinds.first().map(String::as_str),
-        Some("update"),
-        "{kinds:?}"
+        .collect()
+}
+
+#[test]
+fn a_failure_is_the_last_thing_clients_read_before_the_end() {
+    let session = terminal_session();
+    let (_snapshot, mut rx) = session.subscribe();
+    session.apply_line(
+        &stream_event(json!({"type":"message_start","message":{"id":"m1"}})),
+        |_, _| {},
     );
-    assert_eq!(kinds.last().map(String::as_str), Some("exit"), "{kinds:?}");
+    session.fail_io("output", "line exceeds size limit");
+    session.shutdown();
+    // An update after the error would clear the chat's notice of it.
+    assert_eq!(kinds(&mut rx), ["error", "exit"]);
+}
+
+#[test]
+fn only_the_end_frame_ends_the_stream() {
+    let session = terminal_session();
+    let (_snapshot, mut rx) = session.subscribe();
+    // A frame quoting `"t":"exit"` (a tool's input, say) is no end.
+    session
+        .frames
+        .send(json!({"t": "commands", "commands": [{"t": "exit"}]}).to_string());
+    session.shutdown();
+    let ends: Vec<bool> = drain(&mut rx).iter().map(|f| f.ends()).collect();
+    assert_eq!(ends, [false, true]);
 }
