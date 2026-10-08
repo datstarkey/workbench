@@ -685,7 +685,8 @@ describe('TerminalConnection', () => {
 			const { listServerTerminals } = await import('./terminal-connection');
 			await expect(listServerTerminals()).resolves.toEqual(list);
 			expect(fetchMock).toHaveBeenCalledWith(`http://${SERVER_ADDRESS}/remote/terminals`, {
-				headers: { authorization: 'Bearer loop-token' }
+				headers: { authorization: 'Bearer loop-token' },
+				signal: expect.any(AbortSignal)
 			});
 		});
 

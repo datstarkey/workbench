@@ -1,4 +1,4 @@
-import { createHttpTransport } from '@workbench/transport';
+import { createHttpTransport, DEFAULT_TIMEOUT_MS, withTimeout } from '@workbench/transport';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
 import { uid } from '$lib/utils/uid';
 
@@ -13,6 +13,14 @@ export interface RemoteInstanceConfig {
 
 /** A connected remote Workbench server: its config, live status, and a
  *  transport-driven control-plane store for its projects. */
+/** A server's `/health`, with its token if it has one, giving up after 10s. */
+export function probeHealth(base: string, token?: string): Promise<Response> {
+	const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
+	return withTimeout('GET /health', DEFAULT_TIMEOUT_MS, (signal) =>
+		fetch(`${base}/health`, { headers, signal })
+	);
+}
+
 export class RemoteInstance {
 	readonly config: RemoteInstanceConfig;
 	status = $state<InstanceStatus>('connecting');
@@ -35,9 +43,7 @@ export class RemoteInstance {
 	async checkHealth(): Promise<void> {
 		const prev = this.status;
 		try {
-			const headers: Record<string, string> = {};
-			if (this.config.token) headers.authorization = `Bearer ${this.config.token}`;
-			const res = await fetch(`${this.base}/health`, { headers });
+			const res = await probeHealth(this.base, this.config.token);
 			this.status = res.ok ? 'online' : 'offline';
 		} catch {
 			this.status = 'offline';
