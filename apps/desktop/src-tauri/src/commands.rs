@@ -27,12 +27,11 @@ use crate::types::{
 pub async fn read_chat_attachment(
     path: String,
 ) -> Result<workbench_core::chat_attachment::ChatAttachment, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::blocking(move || {
         workbench_core::chat_attachment::read(std::path::Path::new(&path))
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -53,29 +52,32 @@ pub fn save_projects(
 }
 
 #[tauri::command]
-pub fn open_in_vscode(path: String) -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    {
-        // Use `open -a` which works regardless of PATH (Tauri .app doesn't inherit shell PATH)
-        crate::shell::spawn_detached(crate::shell::command("open").args([
-            "-a",
-            "Visual Studio Code",
-            &path,
-        ]))
-        .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // VS Code installs `code.cmd` — launching via cmd /c finds it on PATH
-        crate::shell::spawn_detached(crate::shell::command("cmd").args(["/c", "code", &path]))
+pub async fn open_in_vscode(path: String) -> Result<bool, String> {
+    crate::blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            // Use `open -a` which works regardless of PATH (Tauri .app doesn't inherit shell PATH)
+            crate::shell::spawn_detached(crate::shell::command("open").args([
+                "-a",
+                "Visual Studio Code",
+                &path,
+            ]))
             .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        crate::shell::spawn_detached(crate::shell::command("code").arg(&path))
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(true)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // VS Code installs `code.cmd` — launching via cmd /c finds it on PATH
+            crate::shell::spawn_detached(crate::shell::command("cmd").args(["/c", "code", &path]))
+                .map_err(|e| e.to_string())?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            crate::shell::spawn_detached(crate::shell::command("code").arg(&path))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -96,88 +98,107 @@ pub fn save_workspaces(
 }
 
 // Async: it reads every session file of every account, off the main thread.
-#[tauri::command(async)]
-pub fn discover_claude_sessions(
+#[tauri::command]
+pub async fn discover_claude_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
-    claude_sessions::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
-}
-
-#[tauri::command(async)]
-pub fn claude_auth_status(
-    account_id: Option<String>,
-) -> Result<claude_accounts::ClaudeAuthStatus, String> {
-    claude_accounts::auth_status(account_id.as_deref()).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        claude_sessions::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn load_claude_settings(
+pub async fn claude_auth_status(
+    account_id: Option<String>,
+) -> Result<claude_accounts::ClaudeAuthStatus, String> {
+    crate::blocking(move || {
+        claude_accounts::auth_status(account_id.as_deref()).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn load_claude_settings(
     scope: String,
     project_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    settings::load_settings(&scope, project_path.as_deref()).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        settings::load_settings(&scope, project_path.as_deref()).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_claude_settings(
+pub async fn save_claude_settings(
     scope: String,
     project_path: Option<String>,
     value: serde_json::Value,
 ) -> Result<bool, String> {
-    settings::save_settings(&scope, project_path.as_deref(), &value).map_err(|e| e.to_string())?;
-    Ok(true)
+    crate::blocking(move || {
+        settings::save_settings(&scope, project_path.as_deref(), &value)
+            .map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn list_claude_plugins() -> Result<Vec<PluginInfo>, String> {
-    settings::list_plugins().map_err(|e| e.to_string())
+pub async fn list_claude_plugins() -> Result<Vec<PluginInfo>, String> {
+    crate::blocking(move || settings::list_plugins().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn list_claude_skills() -> Result<Vec<SkillInfo>, String> {
-    settings::list_skills().map_err(|e| e.to_string())
+pub async fn list_claude_skills() -> Result<Vec<SkillInfo>, String> {
+    crate::blocking(move || settings::list_skills().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
-    settings::list_hooks_scripts().map_err(|e| e.to_string())
+pub async fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
+    crate::blocking(move || settings::list_hooks_scripts().map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn git_info(path: String) -> Result<GitInfo, String> {
-    git::git_info(&path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn git_info(path: String) -> Result<GitInfo, String> {
+    crate::blocking(move || git::git_info(&path).map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
-    git::list_worktrees(&path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
+    crate::blocking(move || git::list_worktrees(&path).map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
-    git::create_worktree(&request).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
+    crate::blocking(move || git::create_worktree(&request).map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn remove_worktree(
+#[tauri::command]
+pub async fn remove_worktree(
     repo_path: String,
     worktree_path: String,
     force: bool,
 ) -> Result<bool, String> {
-    git::remove_worktree(&repo_path, &worktree_path, force).map_err(|e| e.to_string())?;
-    Ok(true)
-}
-
-#[tauri::command(async)]
-pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
-    git::list_branches(&path).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        git::remove_worktree(&repo_path, &worktree_path, force).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn discover_codex_sessions(
+pub async fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
+    crate::blocking(move || git::list_branches(&path).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+pub async fn discover_codex_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
-    codex_sessions::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        codex_sessions::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // Workbench settings commands
@@ -261,17 +282,17 @@ pub fn refresh_sandbox_runtime_settings(
 
 // GitHub integration commands
 
-#[tauri::command(async)]
-pub fn github_is_available() -> bool {
-    github::is_gh_available()
+#[tauri::command]
+pub async fn github_is_available() -> bool {
+    crate::blocking(github::is_gh_available).await
 }
 
-#[tauri::command(async)]
-pub fn github_get_remote(path: String) -> Option<GitHubRemote> {
-    github::get_github_remote(&path).ok()
+#[tauri::command]
+pub async fn github_get_remote(path: String) -> Option<GitHubRemote> {
+    crate::blocking(move || github::get_github_remote(&path).ok()).await
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub fn github_set_tracked_projects(
     project_paths: Vec<String>,
     poller: State<'_, GitHubPoller>,
@@ -291,109 +312,134 @@ fn emit_github_status(app_handle: &AppHandle, project_path: &str) {
     );
 }
 
-#[tauri::command(async)]
-pub fn github_refresh_project(
+#[tauri::command]
+pub async fn github_refresh_project(
     project_path: String,
     app_handle: AppHandle,
     poller: State<'_, GitHubPoller>,
 ) -> Result<bool, String> {
-    emit_github_status(&app_handle, &project_path);
     poller.defer_project(&project_path);
+    crate::blocking(move || emit_github_status(&app_handle, &project_path)).await;
     Ok(true)
 }
 
-#[tauri::command(async)]
-pub fn github_update_pr_branch(
+#[tauri::command]
+pub async fn github_update_pr_branch(
     project_path: String,
     pr_number: u64,
     app_handle: AppHandle,
 ) -> Result<bool, String> {
-    github::update_pr_branch(&project_path, pr_number).map_err(|e| e.to_string())?;
-    emit_github_status(&app_handle, &project_path);
-    Ok(true)
+    crate::blocking(move || {
+        github::update_pr_branch(&project_path, pr_number).map_err(|e| e.to_string())?;
+        emit_github_status(&app_handle, &project_path);
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_rerun_workflow(project_path: String, run_id: u64) -> Result<bool, String> {
-    github::rerun_workflow(&project_path, run_id).map_err(|e| e.to_string())?;
-    Ok(true)
+#[tauri::command]
+pub async fn github_rerun_workflow(project_path: String, run_id: u64) -> Result<bool, String> {
+    crate::blocking(move || {
+        github::rerun_workflow(&project_path, run_id).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_mark_pr_ready(
+#[tauri::command]
+pub async fn github_mark_pr_ready(
     project_path: String,
     pr_number: u64,
     app_handle: AppHandle,
 ) -> Result<bool, String> {
-    github::mark_pr_ready(&project_path, pr_number).map_err(|e| e.to_string())?;
-    emit_github_status(&app_handle, &project_path);
-    Ok(true)
+    crate::blocking(move || {
+        github::mark_pr_ready(&project_path, pr_number).map_err(|e| e.to_string())?;
+        emit_github_status(&app_handle, &project_path);
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_merge_pr(
+#[tauri::command]
+pub async fn github_merge_pr(
     project_path: String,
     pr_number: u64,
     options: crate::types::MergePrOptions,
     app_handle: AppHandle,
 ) -> Result<bool, String> {
-    github::merge_pr(&project_path, pr_number, &options).map_err(|e| e.to_string())?;
-    emit_github_status(&app_handle, &project_path);
-    Ok(true)
-}
-
-#[tauri::command(async)]
-pub fn delete_branch(repo_path: String, branch: String, force: bool) -> Result<bool, String> {
-    git::delete_branch(&repo_path, &branch, force).map_err(|e| e.to_string())?;
-    Ok(true)
+    crate::blocking(move || {
+        github::merge_pr(&project_path, pr_number, &options).map_err(|e| e.to_string())?;
+        emit_github_status(&app_handle, &project_path);
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn open_url(url: String) -> Result<bool, String> {
-    crate::shell::open_url(&url).map_err(|e| e.to_string())?;
-    Ok(true)
+pub async fn delete_branch(repo_path: String, branch: String, force: bool) -> Result<bool, String> {
+    crate::blocking(move || {
+        git::delete_branch(&repo_path, &branch, force).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<bool, String> {
+    crate::blocking(move || {
+        crate::shell::open_url(&url).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 // GitHub clone + PR actions
 
-#[tauri::command(async)]
-pub fn github_list_repos() -> Result<Vec<GitHubRepo>, String> {
-    github::list_repos().map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn github_list_repos() -> Result<Vec<GitHubRepo>, String> {
+    crate::blocking(move || github::list_repos().map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn github_checkout_pr(project_path: String, pr_number: u64) -> Result<(), String> {
-    github::checkout_pr(&project_path, pr_number).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn github_checkout_pr(project_path: String, pr_number: u64) -> Result<(), String> {
+    crate::blocking(move || {
+        github::checkout_pr(&project_path, pr_number).map_err(|e| e.to_string())
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_fetch_pr_branch(project_path: String, branch: String) -> Result<(), String> {
-    github::fetch_pr_branch(&project_path, &branch).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn github_fetch_pr_branch(project_path: String, branch: String) -> Result<(), String> {
+    crate::blocking(move || {
+        github::fetch_pr_branch(&project_path, &branch).map_err(|e| e.to_string())
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
-    git::clone_repo(&url, &dest_path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
+    crate::blocking(move || git::clone_repo(&url, &dest_path).map_err(|e| e.to_string())).await
 }
 
 // Integration check/apply commands
 
 #[tauri::command]
 pub async fn codex_supports_no_daemon() -> bool {
-    tauri::async_runtime::spawn_blocking(codex_config::supports_no_daemon)
-        .await
-        .unwrap_or(false)
+    crate::blocking(codex_config::supports_no_daemon).await
 }
 
 #[tauri::command]
-pub fn check_codex_integration() -> IntegrationStatus {
-    codex_config::check_codex_config_status()
+pub async fn check_codex_integration() -> IntegrationStatus {
+    crate::blocking(codex_config::check_codex_config_status).await
 }
 
 #[tauri::command]
-pub fn apply_codex_integration() -> Result<bool, String> {
-    codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
-    Ok(true)
+pub async fn apply_codex_integration() -> Result<bool, String> {
+    crate::blocking(move || {
+        codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 // Hook bridge log commands
@@ -419,14 +465,17 @@ pub fn clear_hook_logs(hook_bridge: State<'_, HookBridgeState>) -> Result<(), St
 
 // Native terminal availability check
 
-#[tauri::command(async)]
+#[tauri::command]
 pub fn is_native_terminal_available() -> bool {
     cfg!(target_os = "macos")
 }
 
-#[tauri::command(async)]
-pub fn get_package_info(path: String) -> Result<Option<PackageInfo>, String> {
-    package_scripts::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn get_package_info(path: String) -> Result<Option<PackageInfo>, String> {
+    crate::blocking(move || {
+        package_scripts::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {

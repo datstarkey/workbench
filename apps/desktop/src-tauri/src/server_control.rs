@@ -178,6 +178,34 @@ impl ServerControl {
     }
 }
 
+/// The listeners' own runtime. Tauri runs `command(async)` commands on its
+/// runtime's workers, and many of them block (git, gh, file reads): sharing
+/// those workers let a burst of them starve every connection, phone and panes
+/// alike, until it drained. Everything a listener spawns stays here.
+fn server_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .thread_name("workbench-server")
+            .enable_all()
+            .build()
+            .expect("the server runtime should start")
+    })
+}
+
+/// `spawn_embedded` on the server runtime.
+async fn spawn_listener(
+    bind: &str,
+    port: u16,
+    managers: Managers,
+    token: String,
+) -> anyhow::Result<ServerHandle> {
+    let bind = bind.to_string();
+    server_runtime()
+        .spawn(async move { workbench_server::spawn_embedded(&bind, port, managers, token).await })
+        .await?
+}
+
 impl ServerControl {
     pub fn new() -> Self {
         Self::default()
@@ -199,13 +227,8 @@ impl ServerControl {
     /// `lib.rs` setup before the webview is shown.
     pub async fn start_loopback(&self) -> anyhow::Result<()> {
         let token = workbench_core::token::generate()?;
-        let handle = workbench_server::spawn_embedded(
-            "127.0.0.1",
-            0,
-            self.listener_managers(),
-            token.clone(),
-        )
-        .await?;
+        let handle =
+            spawn_listener("127.0.0.1", 0, self.listener_managers(), token.clone()).await?;
         let mut guard = self.loopback.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(Loopback { handle, token });
         Ok(())
@@ -222,10 +245,9 @@ impl ServerControl {
         if let Some(old) = slot.take() {
             old.handle.stop().await;
         }
-        let handle =
-            workbench_server::spawn_embedded(bind, port, self.listener_managers(), token.clone())
-                .await
-                .map_err(|e| e.to_string())?;
+        let handle = spawn_listener(bind, port, self.listener_managers(), token.clone())
+            .await
+            .map_err(|e| e.to_string())?;
         let address = handle.addr().to_string();
         *slot = Some(Lan {
             handle,
@@ -312,9 +334,9 @@ pub async fn rotate_server_token(
 
 /// This machine's IPv4 addresses for the pairing QR code, Tailscale first. Off
 /// the main thread: confirming a Tailscale address can shell out to its CLI.
-#[tauri::command(async)]
-pub fn pairing_addresses() -> Result<Vec<crate::net::PairingAddress>, String> {
-    crate::net::pairing_addresses().map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn pairing_addresses() -> Result<Vec<crate::net::PairingAddress>, String> {
+    crate::blocking(move || crate::net::pairing_addresses().map_err(|e| e.to_string())).await
 }
 
 /// Start the LAN server (opt-in server mode). Has no effect on the loopback
@@ -382,9 +404,8 @@ pub fn terminal_server_status(state: tauri::State<'_, ServerControl>) -> ServerS
 #[tauri::command]
 pub async fn kill_all_sessions(state: tauri::State<'_, ServerControl>) -> Result<(), String> {
     let managers = state.managers.clone();
-    tauri::async_runtime::spawn_blocking(move || managers.kill_all())
-        .await
-        .map_err(|e| e.to_string())
+    crate::blocking(move || managers.kill_all()).await;
+    Ok(())
 }
 
 #[cfg(test)]
