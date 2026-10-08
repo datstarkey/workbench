@@ -582,6 +582,11 @@ export class AgentChat {
 		this.send({ t: 'interrupt' });
 	}
 
+	/** Restart the session's `claude`, a stuck turn included; the server's `replaced` re-attaches. */
+	restart(): void {
+		this.send({ t: 'restart' });
+	}
+
 	setMode(mode: PermissionMode | CodexMode): void {
 		if (this.send({ t: 'mode', mode })) this.mode = mode;
 	}
