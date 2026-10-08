@@ -134,6 +134,8 @@ pub(super) fn rekey(registry: &Registry, session: &Arc<AgentSession>, new_id: &s
         registry.retain(|_, s| !Arc::ptr_eq(s, session));
     }
     registry.insert(new_id.to_string(), session.clone());
+    drop(registry);
+    session.attention.sessions_changed();
 }
 
 impl AgentSession {
@@ -175,8 +177,10 @@ impl AgentSession {
         );
         let key = known_id.unwrap_or_else(|| format!("{PENDING}{}", uuid::Uuid::new_v4()));
         lock(&registry).insert(key, session.clone());
+        session.attention.sessions_changed();
         if let Err(e) = hello.iter().try_for_each(|line| session.send(line)) {
             lock(&registry).retain(|_, s| !Arc::ptr_eq(s, &session));
+            session.attention.sessions_changed();
             // No reader thread yet to reap it.
             if let Some(child) = lock(&session.child).as_mut() {
                 let _ = child.kill();
@@ -221,6 +225,7 @@ impl AgentSession {
             }
             reader.finish();
             lock(&registry).retain(|_, s| !Arc::ptr_eq(s, &reader));
+            reader.attention.sessions_changed();
         });
         Ok(session)
     }

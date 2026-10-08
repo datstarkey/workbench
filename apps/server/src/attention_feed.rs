@@ -16,6 +16,9 @@ const RETAINED_EVENTS: usize = 512;
 pub struct AttentionFeed {
     state: Arc<Mutex<FeedState>>,
     changed: broadcast::Sender<()>,
+    /// Bumped on every session summary change and registry change, so a
+    /// session list (`/events/home`) can follow without polling.
+    listed: crate::changes::Changes,
 }
 
 struct FeedState {
@@ -47,6 +50,7 @@ impl Default for AttentionFeed {
                 sessions: std::collections::HashMap::new(),
             })),
             changed: broadcast::channel(64).0,
+            listed: Default::default(),
         }
     }
 }
@@ -62,6 +66,16 @@ impl AttentionFeed {
 
     pub fn subscribe(&self) -> broadcast::Receiver<()> {
         self.changed.subscribe()
+    }
+
+    /// Wakes whenever the session list may have changed.
+    pub fn subscribe_sessions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.listed.subscribe()
+    }
+
+    /// A session was registered, re-keyed or dropped.
+    pub(crate) fn sessions_changed(&self) {
+        self.listed.notify();
     }
 
     pub fn since(&self, cursor: Option<&str>) -> AttentionBatch {
@@ -85,6 +99,7 @@ impl AttentionFeed {
         {
             return;
         }
+        self.listed.notify();
         for alias in &session.previous_ids {
             if state
                 .sessions
@@ -113,6 +128,7 @@ impl AttentionFeed {
         {
             return;
         }
+        self.listed.notify();
         state.sessions.remove(id);
         let before = state.sequence;
         state.record_sessions();
