@@ -109,10 +109,9 @@ export function midTurn(text: string): string {
 
 /**
  * One `/mod/ask` reply: the answer, `null` to fall back to the terminal (no
- * chat open, or the server is unreachable), or `undefined` to keep waiting.
+ * chat open), or `undefined` to keep waiting.
  */
-export function askAnswer(text: string | undefined): Answer | null | undefined {
-	if (text === undefined) return null;
+export function askAnswer(text: string): Answer | null | undefined {
 	const reply = JSON.parse(text) as {
 		answer?: { response?: { subtype?: string; response?: Answer; error?: string } };
 		fallback?: boolean;

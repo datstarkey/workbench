@@ -98,15 +98,15 @@ let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
 const echoed = new Set<string>();
 
-// Questions and plans are asked from `tool.call` (an answer edits the input);
-// `tool.check` then lets the answered call through.
-const ASKED_IN_CALL = new Set(['AskUserQuestion', 'ExitPlanMode']);
+// A question is asked from `tool.call` and its answer is the call's result:
+// since 2.1.292 a plugin's `allow` doesn't dismiss the dialog of a tool that
+// requires the person. A plan is approved in the terminal (PermissionRequest).
+const ASKED_IN_CALL = 'AskUserQuestion';
 // Calls core put to the mode's decider, by tool and input: the decider's
 // dialog (`PermissionRequest`) names no call. A rule, the mode or auto mode's
 // classifier settles most without one, so only the newest are kept.
 const pendingAsks = new Map<string, { id: string; reason?: string }>();
 const PENDING_ASKS_KEPT = 50;
-const answeredInChat = new Set<string>();
 // Approvals the terminal's own dialog asks (no chat was open): tool call id → request id.
 const askedInTerminal = new Map<string, string>();
 // MCP elicitations the terminal shows, by server and elicitation id, oldest first.
@@ -418,6 +418,7 @@ export const register: Register = (on) => {
 		};
 
 		$.clock.every(50, () => {
+			void $.clock.now().then(server.tick);
 			if (!server.isFlushing()) void server.flush((u, i) => $.http.fetch(u, i));
 		});
 		$.clock.every(300, () => {
@@ -886,7 +887,7 @@ export const register: Register = (on) => {
 			askedInTerminal.delete(id);
 			emit({ type: 'control_cancel_request', request_id: asked });
 		}
-		if (ASKED_IN_CALL.has(e.tool) && !e.agentId && id) {
+		if (e.tool === ASKED_IN_CALL && !e.agentId && id) {
 			const { tool: _tool, tool_use_id: _id, agentId: _agent, ...input } = e;
 			const requestId = `wbmod-ask-${++askSeq}`;
 			const answer = await server.askInChat(
@@ -899,8 +900,14 @@ export const register: Register = (on) => {
 			if (answer) {
 				if (answer.behavior !== 'allow')
 					return { deny: answer.message || 'Declined in Workbench chat' };
-				answeredInChat.add(id);
-				return next({ ...e, ...(answer.updatedInput ?? {}) } as typeof e);
+				const answered = { ...e, ...(answer.updatedInput ?? {}) } as typeof e;
+				return {
+					result: {
+						questions: answered.questions,
+						answers: answered.answers ?? {},
+						...(answered.annotations ? { annotations: answered.annotations } : {})
+					}
+				};
 			}
 		}
 		const input = e as unknown as { description?: string; subagent_type?: string };
@@ -1030,12 +1037,11 @@ export const register: Register = (on) => {
 
 	on('tool.check', async ($, e, next) => {
 		const verdict = await next(e);
-		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
 		if (
 			verdict.decision === 'ask' &&
 			server.current() &&
 			e.tool_use_id &&
-			!ASKED_IN_CALL.has(e.tool)
+			e.tool !== ASKED_IN_CALL
 		) {
 			const key = askKey(e.tool, e.input);
 			pendingAsks.delete(key);
@@ -1053,8 +1059,28 @@ export const register: Register = (on) => {
 	// hook's time budget, however long the person takes.
 	on('classic.PermissionRequest', async ($, e, next) => {
 		notePermissionMode(e.permission_mode);
-		if (!server.current() || ASKED_IN_CALL.has(e.tool_name)) return next(e);
+		if (!server.current() || e.tool_name === ASKED_IN_CALL) return next(e);
+		// Approving a plan is what leaves plan mode, and since 2.1.292 only the
+		// dialog does that (a hook's allow doesn't dismiss it): it stays the
+		// terminal's, and the chat says where to answer it.
 		const pending = takeAsk(e.tool_name, e.tool_input);
+		if (e.tool_name === 'ExitPlanMode') {
+			const requestId = `wbmod-ask-${++askSeq}`;
+			emit({
+				type: 'system',
+				subtype: 'local_command_output',
+				content: 'Claude has a plan for you to review. Approve it in the terminal.',
+				workbench_in_terminal: true,
+				uuid: `wbmod-plan-${requestId}`
+			});
+			await server.askInTerminal(
+				(u, i) => $.http.fetch(u, i),
+				requestId,
+				askLine(requestId, e.tool_name, e.tool_input, pending?.id)
+			);
+			if (pending) askedInTerminal.set(pending.id, requestId);
+			return next(e);
+		}
 		const requestId = `wbmod-ask-${++askSeq}`;
 		const line = askLine(
 			requestId,
