@@ -140,7 +140,7 @@ const DEFAULT_OPTS = {
 };
 
 /** Flush all pending microtasks so that async code awaiting resolved Promises proceeds. */
-async function flushMicrotasks(times = 5): Promise<void> {
+async function flushMicrotasks(times = 12): Promise<void> {
 	for (let i = 0; i < times; i++) {
 		await Promise.resolve();
 	}
@@ -574,7 +574,7 @@ describe('TerminalConnection', () => {
 			const p = conn.connect(DEFAULT_OPTS, 'stale-id');
 			// Two fetches (GET list miss → POST create), each with a .json() await,
 			// so flush more microtasks before the WebSocket is constructed.
-			await flushMicrotasks(12);
+			await flushMicrotasks(24);
 			FakeWebSocket._last!.openWs();
 			await p;
 
@@ -685,7 +685,8 @@ describe('TerminalConnection', () => {
 			const { listServerTerminals } = await import('./terminal-connection');
 			await expect(listServerTerminals()).resolves.toEqual(list);
 			expect(fetchMock).toHaveBeenCalledWith(`http://${SERVER_ADDRESS}/remote/terminals`, {
-				headers: { authorization: 'Bearer loop-token' }
+				headers: { authorization: 'Bearer loop-token' },
+				signal: expect.any(AbortSignal)
 			});
 		});
 

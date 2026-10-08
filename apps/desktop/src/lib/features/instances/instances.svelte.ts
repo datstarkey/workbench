@@ -1,4 +1,4 @@
-import { createHttpTransport } from '@workbench/transport';
+import { createHttpTransport, DEFAULT_TIMEOUT_MS, withTimeout } from '@workbench/transport';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
 import { uid } from '$lib/utils/uid';
 
@@ -37,7 +37,9 @@ export class RemoteInstance {
 		try {
 			const headers: Record<string, string> = {};
 			if (this.config.token) headers.authorization = `Bearer ${this.config.token}`;
-			const res = await fetch(`${this.base}/health`, { headers });
+			const res = await withTimeout('GET /health', DEFAULT_TIMEOUT_MS, (signal) =>
+				fetch(`${this.base}/health`, { headers, signal })
+			);
 			this.status = res.ok ? 'online' : 'offline';
 		} catch {
 			this.status = 'offline';

@@ -34,7 +34,13 @@
  */
 
 import { terminalServerStatus } from '$lib/server-mode';
-import { parseTerminalControlFrame, terminalWsUrl } from '@workbench/transport';
+import {
+	DEFAULT_TIMEOUT_MS,
+	SLOW_TIMEOUT_MS,
+	parseTerminalControlFrame,
+	terminalWsUrl,
+	withTimeout
+} from '@workbench/transport';
 import type {
 	CreateServerTerminalBody,
 	ServerTerminalMeta as TerminalMeta
@@ -123,9 +129,18 @@ export function __resetServerInfoCache(): void {
 export async function listServerTerminals(): Promise<TerminalMeta[] | null> {
 	try {
 		const { baseUrl, token } = await resolveServer();
-		const resp = await fetch(`${baseUrl}/remote/terminals`, { headers: authHeaders(token) });
-		if (!resp.ok) return null;
-		const list: unknown = await resp.json();
+		const list: unknown = await withTimeout(
+			'GET /remote/terminals',
+			DEFAULT_TIMEOUT_MS,
+			async (signal) => {
+				const resp = await fetch(`${baseUrl}/remote/terminals`, {
+					headers: authHeaders(token),
+					signal
+				});
+				return resp.ok ? resp.json() : null;
+			}
+		);
+		if (list === null) return null;
 		if (pendingCreates > 0 || !Array.isArray(list)) return null;
 		return list as TerminalMeta[];
 	} catch {
@@ -249,9 +264,18 @@ export class TerminalConnection {
 	/** Whether a server terminal with `id` still exists and is alive. */
 	private async isAlive(baseUrl: string, token: string | undefined, id: string): Promise<boolean> {
 		try {
-			const resp = await fetch(`${baseUrl}/remote/terminals`, { headers: authHeaders(token) });
-			if (!resp.ok) return false;
-			const list = (await resp.json()) as TerminalMeta[];
+			const list = (await withTimeout(
+				'GET /remote/terminals',
+				DEFAULT_TIMEOUT_MS,
+				async (signal) => {
+					const resp = await fetch(`${baseUrl}/remote/terminals`, {
+						headers: authHeaders(token),
+						signal
+					});
+					return resp.ok ? resp.json() : null;
+				}
+			)) as TerminalMeta[] | null;
+			if (!list) return false;
 			return Array.isArray(list) && list.some((t) => t.id === id && t.alive);
 		} catch {
 			return false;
@@ -277,15 +301,22 @@ export class TerminalConnection {
 		token: string | undefined,
 		opts: ConnectOptions
 	): Promise<string> {
-		const resp = await fetch(`${baseUrl}/remote/terminals`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json', ...authHeaders(token) },
-			body: JSON.stringify({ ...opts, shell: opts.shell || undefined })
-		});
-		if (!resp.ok) {
-			throw new Error(`POST /remote/terminals failed: ${resp.status}`);
-		}
-		const meta: TerminalMeta = await resp.json();
+		const meta: TerminalMeta = await withTimeout(
+			'POST /remote/terminals',
+			SLOW_TIMEOUT_MS,
+			async (signal) => {
+				const resp = await fetch(`${baseUrl}/remote/terminals`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', ...authHeaders(token) },
+					body: JSON.stringify({ ...opts, shell: opts.shell || undefined }),
+					signal
+				});
+				if (!resp.ok) {
+					throw new Error(`POST /remote/terminals failed: ${resp.status}`);
+				}
+				return resp.json();
+			}
+		);
 		claimedIds.add(meta.id);
 		this.notice = meta.notice ?? null;
 		return meta.id;
@@ -388,10 +419,13 @@ export async function deleteServerTerminal(id: string): Promise<void> {
 	claimedIds.add(id);
 	try {
 		const { baseUrl, token } = await resolveServer();
-		await fetch(`${baseUrl}/remote/terminals/${id}`, {
-			method: 'DELETE',
-			headers: authHeaders(token)
-		});
+		await withTimeout(`DELETE /remote/terminals/${id}`, SLOW_TIMEOUT_MS, (signal) =>
+			fetch(`${baseUrl}/remote/terminals/${id}`, {
+				method: 'DELETE',
+				headers: authHeaders(token),
+				signal
+			})
+		);
 	} catch {
 		// Server may be gone / already killed — nothing to do.
 	}
