@@ -45,8 +45,12 @@ pub struct ModLink {
     pub token: String,
     /// The server terminal whose `claude` this is, when known.
     pub terminal_id: Option<String>,
-    queue: Mutex<Queue>,
+    queue: Mutex<Inbox>,
     notify: Notify,
+    /// The plugin worker's numbering (`epoch`, from its hello) and the newest
+    /// line it posted that was folded (`/mod/out`, `/mod/ask`), held while a
+    /// batch folds: a repeat is skipped.
+    folded: Mutex<Folded>,
     last_seen: Mutex<Instant>,
     /// Approvals the plugin waits on (`/mod/ask`), by request id.
     asks: Mutex<HashMap<String, Ask>>,
@@ -56,11 +60,33 @@ pub struct ModLink {
     in_terminal: Mutex<Vec<(WaitingSummary, Clears)>>,
 }
 
-/// Lines waiting for the plugin's poll, with their size.
+/// Lines for the plugin (`/mod/in`), numbered, with their size. A poll
+/// acknowledging none (an older plugin) takes them; otherwise each stays until
+/// a later poll acknowledges it, so a reply the plugin's fetch lost is
+/// delivered again.
 #[derive(Default)]
-struct Queue {
-    lines: VecDeque<(Value, usize)>,
+struct Inbox {
+    lines: VecDeque<(u64, Value, usize)>,
     bytes: usize,
+    last: u64,
+    /// The newest number a poll was answered with.
+    delivered: u64,
+    /// The newest number a poll acknowledged.
+    acked: u64,
+}
+
+impl Inbox {
+    fn pop_front(&mut self) {
+        if let Some((_, _, bytes)) = self.lines.pop_front() {
+            self.bytes -= bytes;
+        }
+    }
+}
+
+#[derive(Default)]
+struct Folded {
+    epoch: Option<String>,
+    last: u64,
 }
 
 struct Ask {
@@ -90,6 +116,7 @@ impl ModLink {
             terminal_id,
             queue: Mutex::default(),
             notify: Notify::new(),
+            folded: Mutex::new(Folded::default()),
             last_seen: Mutex::new(Instant::now()),
             asks: Mutex::new(HashMap::new()),
             answered: Notify::new(),
@@ -270,23 +297,103 @@ impl ModLink {
             );
         }
         queue.bytes += bytes;
-        queue.lines.push_back((line, bytes));
+        queue.last += 1;
+        let seq = queue.last;
+        queue.lines.push_back((seq, line, bytes));
         drop(queue);
         self.notify.notify_one();
         Ok(())
     }
 
-    /// The queued lines, waiting up to `wait` for the first.
-    pub async fn take(&self, wait: Duration) -> Vec<Value> {
+    /// The lines not yet acknowledged, waiting up to `wait` for the first.
+    /// `ack`: the newest the plugin handled (each line then carries its number
+    /// as `wbSeq`); `None` takes them, as an older plugin expects.
+    pub async fn take(&self, wait: Duration, ack: Option<u64>) -> Vec<Value> {
         self.touch();
         let notified = self.notify.notified();
-        if lock(&self.queue).lines.is_empty() {
+        let empty = {
+            let mut inbox = lock(&self.queue);
+            if let Some(ack) = ack {
+                // Never past what was delivered: a stale number can't drop a new line.
+                let ack = ack.min(inbox.delivered);
+                inbox.acked = inbox.acked.max(ack);
+                while inbox.lines.front().is_some_and(|(seq, _, _)| *seq <= ack) {
+                    inbox.pop_front();
+                }
+            }
+            inbox.lines.is_empty()
+        };
+        if empty {
             let _ = tokio::time::timeout(wait, notified).await;
         }
         self.touch();
-        let mut queue = lock(&self.queue);
-        queue.bytes = 0;
-        queue.lines.drain(..).map(|(line, _)| line).collect()
+        let mut inbox = lock(&self.queue);
+        if ack.is_none() {
+            inbox.bytes = 0;
+            return inbox.lines.drain(..).map(|(_, line, _)| line).collect();
+        }
+        inbox.delivered = inbox
+            .lines
+            .back()
+            .map_or(inbox.delivered, |(seq, _, _)| *seq);
+        inbox
+            .lines
+            .iter()
+            .map(|(seq, line, _)| {
+                let mut line = line.clone();
+                if let Some(fields) = line.as_object_mut() {
+                    fields.insert("wbSeq".into(), (*seq).into());
+                }
+                line
+            })
+            .collect()
+    }
+
+    /// The newest `/mod/in` line a poll acknowledged: a plugin attaching again
+    /// counts from there. A line delivered to a worker that went before it
+    /// acknowledged it comes again: one it never ran is worse than a repeat.
+    pub fn acked(&self) -> u64 {
+        lock(&self.queue).acked
+    }
+
+    /// A plugin worker said hello: one with another `epoch` (it restarted)
+    /// numbers its lines from 1 again.
+    pub fn hello_from(&self, epoch: Option<&str>) {
+        let mut folded = lock(&self.folded);
+        if epoch.is_some() && folded.epoch.as_deref() != epoch {
+            *folded = Folded {
+                epoch: epoch.map(String::from),
+                last: 0,
+            };
+        }
+    }
+
+    /// Fold the plugin's numbered `lines` (the first is `seq`) with `fold`,
+    /// skipping any already folded; one batch at a time. A worker's that has
+    /// been replaced (its slow post landing late) are dropped. Unnumbered (an
+    /// older plugin, or a line sent past the queue) all fold.
+    pub fn fold_new(
+        &self,
+        epoch: Option<&str>,
+        seq: Option<u64>,
+        lines: &[Value],
+        mut fold: impl FnMut(&Value),
+    ) {
+        let Some(first) = seq.filter(|&s| s > 0) else {
+            lines.iter().for_each(fold);
+            return;
+        };
+        let mut folded = lock(&self.folded);
+        if epoch.is_some() && folded.epoch.is_some() && folded.epoch.as_deref() != epoch {
+            return;
+        }
+        for (i, line) in lines.iter().enumerate() {
+            let n = first + i as u64;
+            if n > folded.last {
+                fold(line);
+                folded.last = n;
+            }
+        }
     }
 
     pub fn touch(&self) {
@@ -306,10 +413,11 @@ mod tests {
     #[tokio::test]
     async fn take_returns_queued_lines_or_times_out_empty() {
         let link = ModLink::new("t".into(), None);
-        assert!(link.take(Duration::from_millis(20)).await.is_empty());
+        assert!(link.take(Duration::from_millis(20), None).await.is_empty());
         link.push(json!({"a": 1})).unwrap();
         link.push(json!({"b": 2})).unwrap();
-        assert_eq!(link.take(Duration::from_secs(5)).await.len(), 2);
+        assert_eq!(link.take(Duration::from_secs(5), None).await.len(), 2);
+        assert!(link.take(Duration::from_millis(20), None).await.is_empty());
     }
 
     #[tokio::test]
@@ -320,14 +428,14 @@ mod tests {
             .expect("one line of any size gets through");
         let err = link.push(json!({"a": 1})).unwrap_err().to_string();
         assert!(err.contains("isn't reading chat input"), "{err}");
-        assert_eq!(link.take(Duration::from_millis(20)).await, vec![big]);
+        assert_eq!(link.take(Duration::from_millis(20), None).await, vec![big]);
 
         for i in 0..QUEUE_LINES {
             link.push(json!({ "i": i })).unwrap();
         }
         assert!(link.push(json!({"over": true})).is_err(), "too many lines");
         assert_eq!(
-            link.take(Duration::from_millis(20)).await.len(),
+            link.take(Duration::from_millis(20), None).await.len(),
             QUEUE_LINES
         );
         link.push(json!({"after": true}))
@@ -461,9 +569,68 @@ mod tests {
     async fn a_waiting_take_wakes_on_push() {
         let link = std::sync::Arc::new(ModLink::new("t".into(), None));
         let waiter = link.clone();
-        let task = tokio::spawn(async move { waiter.take(Duration::from_secs(5)).await });
+        let task = tokio::spawn(async move { waiter.take(Duration::from_secs(5), None).await });
         tokio::time::sleep(Duration::from_millis(20)).await;
         link.push(json!({"type": "user"})).unwrap();
         assert_eq!(task.await.unwrap(), vec![json!({"type": "user"})]);
+    }
+
+    #[tokio::test]
+    async fn polled_lines_stay_until_acknowledged() {
+        let link = ModLink::new("t".into(), None);
+        let wait = Duration::from_millis(20);
+        link.push(json!({"type": "user", "n": 1})).unwrap();
+        link.push(json!({"type": "user", "n": 2})).unwrap();
+        let first = link.take(wait, Some(0)).await;
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            (first[0]["wbSeq"].as_u64(), first[1]["wbSeq"].as_u64()),
+            (Some(1), Some(2))
+        );
+        // The reply was lost: the next poll still acknowledges nothing.
+        assert_eq!(link.take(wait, Some(0)).await, first);
+        link.push(json!({"type": "user", "n": 3})).unwrap();
+        let next = link.take(wait, Some(2)).await;
+        assert_eq!(next, vec![json!({"type": "user", "n": 3, "wbSeq": 3})]);
+        assert_eq!(link.acked(), 2, "3 is delivered, not yet acknowledged");
+        assert!(link.take(wait, Some(3)).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ack_past_what_was_delivered_drops_nothing_new() {
+        let link = ModLink::new("t".into(), None);
+        link.push(json!({"type": "user"})).unwrap();
+        let got = link.take(Duration::from_millis(20), Some(99)).await;
+        assert_eq!(got, vec![json!({"type": "user", "wbSeq": 1})]);
+    }
+
+    #[test]
+    fn posted_lines_fold_once_however_often_they_come() {
+        let link = ModLink::new("t".into(), None);
+        let mut folded = Vec::new();
+        let n = |i: i64| json!({"n": i});
+        let a = Some("a");
+        link.hello_from(a);
+        link.fold_new(a, Some(1), &[n(1), n(2)], |l| folded.push(l["n"].clone()));
+        // A retry after a lost reply carries them again, with the next one.
+        link.fold_new(a, Some(1), &[n(1), n(2), n(3)], |l| {
+            folded.push(l["n"].clone())
+        });
+        // A hung post that finally lands after a newer one.
+        link.fold_new(a, Some(2), &[n(2)], |l| folded.push(l["n"].clone()));
+        // Unnumbered (an older plugin, a withdraw past the queue) always folds.
+        link.fold_new(None, None, &[n(9)], |l| folded.push(l["n"].clone()));
+        assert_eq!(folded, vec![json!(1), json!(2), json!(3), json!(9)]);
+
+        // The worker restarted: its numbers start again, and the old one's
+        // late post is dropped.
+        folded.clear();
+        link.hello_from(Some("b"));
+        link.hello_from(Some("b"));
+        link.fold_new(Some("b"), Some(1), &[n(10)], |l| {
+            folded.push(l["n"].clone())
+        });
+        link.fold_new(a, Some(4), &[n(4)], |l| folded.push(l["n"].clone()));
+        assert_eq!(folded, vec![json!(10)]);
     }
 }

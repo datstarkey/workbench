@@ -19,6 +19,19 @@ pub fn is_strong(token: &str) -> bool {
     token.len() >= MIN_TOKEN_LEN && !token.chars().any(char::is_whitespace)
 }
 
+/// Length-independent constant-time comparison, so a secret isn't leaked
+/// through timing.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -459,8 +459,8 @@ pub struct CreateTerminalBody {
     /// Forwarded as `WORKBENCH_PANE_ID` env var into the shell so hook scripts
     /// can identify which terminal pane they belong to.
     pub pane_id: Option<String>,
-    /// Forwarded as `WORKBENCH_HOOK_SOCKET` env var — path/address of the hook
-    /// socket the desktop sets up for `claude --hook` callbacks.
+    /// Forwarded as `WORKBENCH_HOOK_SOCKET` env var: the desktop hook bridge's
+    /// `host:port#secret` (the secret authenticates the posts; never log it).
     pub hook_socket: Option<String>,
     /// Shell to launch (desktop forwards the project's configured shell). Empty /
     /// absent falls back to the platform default (`workbench_core::shell`).

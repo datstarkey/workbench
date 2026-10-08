@@ -23,8 +23,10 @@ const POLL_WAIT: Duration = Duration::from_secs(20);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionRef {
+pub struct HelloBody {
     session_id: String,
+    /// The plugin worker's numbering (absent: an older plugin).
+    epoch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +35,19 @@ pub struct OutBody {
     session_id: String,
     #[serde(default)]
     lines: Vec<Value>,
+    /// The first line's number, the rest following, in the worker's `epoch`
+    /// (absent: an older plugin).
+    seq: Option<u64>,
+    epoch: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PollQuery {
+    session_id: String,
+    /// The newest line the plugin handled; absent from an older plugin, whose
+    /// lines are taken as they're answered.
+    ack: Option<u64>,
 }
 
 fn err(status: StatusCode, message: &str) -> ApiError {
@@ -63,12 +78,21 @@ fn session(
 pub async fn hello(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<SessionRef>,
-) -> ApiResult<StatusCode> {
+    Json(body): Json<HelloBody>,
+) -> ApiResult<Json<Value>> {
     let token = token(&headers)?.to_string();
+    // Still attached (the plugin's worker restarted, or an earlier hello's
+    // reply was lost): nothing is loaded again.
+    let loaded = state.agents.mod_session(&token, &body.session_id).is_none();
     let agents = state.agents.clone();
-    let session =
-        crate::routes::blocking(move || agents.attach_mod(&token, &body.session_id)).await?;
+    let session_id = body.session_id.clone();
+    let session = crate::routes::blocking(move || agents.attach_mod(&token, &session_id)).await?;
+    let link = session.mod_link();
+    if let Some(link) = link {
+        link.hello_from(body.epoch.as_deref());
+    }
+    // Where its `/mod/in` lines stand: 0 for a new link.
+    let in_seq = link.map_or(0, |l| l.acked());
     // The plugin can only guess the model list; the CLI's own replaces it
     // when the (cached) probe answers.
     // A stale list is pinned at once; a newer one fetched behind it goes to
@@ -90,7 +114,7 @@ pub async fn hello(
             Err(e) => tracing::warn!("could not list Claude models: {e:#}"),
         }
     });
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(json!({ "inSeq": in_seq, "loaded": loaded })))
 }
 
 pub async fn out(
@@ -102,7 +126,7 @@ pub async fn out(
     note_usage(&state, &session, &body.lines);
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
-        agents.feed_mod(&session, &body.lines);
+        agents.feed_mod(&session, &body.lines, body.epoch.as_deref(), body.seq);
         Ok(())
     })
     .await?;
@@ -125,14 +149,14 @@ fn note_usage(state: &AppState, session: &AgentSession, lines: &[Value]) {
 pub async fn poll(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<SessionRef>,
+    Query(q): Query<PollQuery>,
 ) -> ApiResult<Json<Vec<Value>>> {
     let session = session(&state, &headers, &q.session_id)?;
     let link = session
         .mod_link()
         .cloned()
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such terminal session"))?;
-    Ok(Json(link.take(POLL_WAIT).await))
+    Ok(Json(link.take(POLL_WAIT, q.ack).await))
 }
 
 #[derive(Deserialize)]
@@ -146,6 +170,9 @@ pub struct AskBody {
     /// plugin's queue would spend the asking hook's budget.
     #[serde(default)]
     lines: Vec<Value>,
+    /// The first of `lines`' numbers, as for `/mod/out`.
+    seq: Option<u64>,
+    epoch: Option<String>,
     /// A chat's to answer even before one has it open: its turn came from chat.
     #[serde(default)]
     hold: bool,
@@ -175,14 +202,23 @@ pub async fn ask(
         .mod_link()
         .cloned()
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such terminal session"))?;
-    let feed = |lines: Vec<Value>| {
+    let epoch = body.epoch.clone();
+    let feed = |lines: Vec<Value>, seq: Option<u64>| {
         let agents = state.agents.clone();
         let session = session.clone();
+        let epoch = epoch.clone();
         crate::routes::blocking(move || {
-            agents.feed_mod(&session, &lines);
+            agents.feed_mod(&session, &lines, epoch.as_deref(), seq);
             Ok(())
         })
     };
+    // Numbered lines fold once however often a retry brings them; an older
+    // plugin's only come with the request's first call.
+    let numbered = body.seq.is_some();
+    if numbered {
+        note_usage(&state, &session, &body.lines);
+        feed(body.lines.clone(), body.seq).await?;
+    }
     if let Some(line) = body.line {
         let tool_use_id = line
             .pointer("/request/tool_use_id")
@@ -190,8 +226,10 @@ pub async fn ask(
             .map(String::from);
         let new = link.expect_answer(&body.request_id, tool_use_id);
         if new && body.terminal {
-            note_usage(&state, &session, &body.lines);
-            feed(body.lines).await?;
+            if !numbered {
+                note_usage(&state, &session, &body.lines);
+                feed(body.lines, None).await?;
+            }
             let tool = line.pointer("/request/tool_name").and_then(Value::as_str);
             link.fall_back(
                 &body.request_id,
@@ -207,10 +245,12 @@ pub async fn ask(
             if body.hold {
                 link.shown(&body.request_id, true);
             }
-            note_usage(&state, &session, &body.lines);
-            let mut lines = body.lines;
+            let mut lines = if numbered { Vec::new() } else { body.lines };
+            if !numbered {
+                note_usage(&state, &session, &lines);
+            }
             lines.push(line);
-            feed(lines).await?;
+            feed(lines, None).await?;
         }
     }
     // The terminal asks it (and a retry after a lost reply hears so again).
@@ -232,9 +272,10 @@ pub async fn ask(
                 crate::routes::blocking(move || Ok(asking.waiting_for(&request_id))).await?;
             link.fall_back(&body.request_id, waiting);
             refresh_attention(&session).await?;
-            feed(vec![
-                json!({"type": "control_cancel_request", "request_id": body.request_id}),
-            ])
+            feed(
+                vec![json!({"type": "control_cancel_request", "request_id": body.request_id})],
+                None,
+            )
             .await?;
             return Ok(Json(json!({ "fallback": true })));
         }
@@ -263,7 +304,7 @@ pub async fn bye(
     note_usage(&state, &session, &body.lines);
     let agents = state.agents.clone();
     crate::routes::blocking(move || {
-        agents.feed_mod(&session, &body.lines);
+        agents.feed_mod(&session, &body.lines, body.epoch.as_deref(), body.seq);
         agents.detach(&session);
         Ok(())
     })

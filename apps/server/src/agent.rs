@@ -200,11 +200,13 @@ pub struct AgentManager {
     /// Ids of sessions the person ended lately, newest last: an attach-only
     /// start on one is told it was ended, not that it's merely gone (a crash).
     ended: Arc<Mutex<VecDeque<String>>>,
-    /// The `set_model` a chat last sent each Claude session, by id, and the
-    /// ones a restart (rewind, mode) owes its new `claude`, which starts on
-    /// the default model: the pick is session-only, so the plugin forgets it.
+    /// The `set_model` and effort a chat last sent each Claude session, by id,
+    /// and the ones a restart (rewind, mode) owes its new `claude`, which starts
+    /// on the defaults: the picks are session-only, so the plugin forgets them
+    /// (its worker restarting too, which attaches again with the same token).
     model_picks: Arc<Mutex<HashMap<String, serde_json::Value>>>,
-    restart_picks: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    effort_picks: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    restart_picks: Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>,
 }
 
 /// How many ended ids are remembered.
@@ -220,6 +222,30 @@ impl AgentManager {
     pub fn set_model(&self, session: &AgentSession, model: &str) -> Result<()> {
         if let Some(sent) = session.set_model(model)? {
             lock(&self.model_picks).insert(session.id(), sent);
+        }
+        Ok(())
+    }
+
+    /// Switch a session's effort, remembered as a model pick is.
+    pub fn set_effort(&self, session: &AgentSession, level: &str) -> Result<()> {
+        if let Some(sent) = session.set_effort(level)? {
+            lock(&self.effort_picks).insert(session.id(), sent);
+        }
+        Ok(())
+    }
+
+    /// The picks a session's `claude` is owed, model first, each with a fresh request id.
+    fn picks(&self, session_id: &str) -> Vec<serde_json::Value> {
+        [&self.model_picks, &self.effort_picks]
+            .into_iter()
+            .filter_map(|picks| lock(picks).get(session_id).cloned())
+            .collect()
+    }
+
+    fn send_picks(&self, session: &AgentSession, picks: Vec<serde_json::Value>) -> Result<()> {
+        for mut pick in picks {
+            pick["request_id"] = uuid::Uuid::new_v4().to_string().into();
+            session.send(&pick)?;
         }
         Ok(())
     }
@@ -432,8 +458,11 @@ impl AgentManager {
         // Answer what needs no history first: a re-attach, or a refusal.
         self.wait_exited(session_id);
         if let Some(existing) = self.get(session_id) {
+            // The plugin's worker restarted (a hot reload, a respawn): its
+            // session-only picks went with it.
             if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
                 link.touch();
+                self.send_picks(&existing, self.picks(session_id))?;
                 return Ok(existing);
             }
             self.takes_over(&existing, token, session_id)?;
@@ -452,6 +481,7 @@ impl AgentManager {
                 Some(existing) => {
                     if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
                         link.touch();
+                        self.send_picks(&existing, self.picks(session_id))?;
                         return Ok(existing);
                     }
                     self.takes_over(&existing, token, session_id)?;
@@ -495,10 +525,8 @@ impl AgentManager {
                 self.attention.clone(),
             );
             let attached = session.send(&claude::hello()).and_then(|()| {
-                if let Some(mut pick) = lock(&self.restart_picks).remove(session_id) {
-                    pick["request_id"] = uuid::Uuid::new_v4().to_string().into();
-                    session.send(&pick)?;
-                }
+                let owed = lock(&self.restart_picks).remove(session_id);
+                self.send_picks(&session, owed.unwrap_or_default())?;
                 lock(&self.inner).insert(session_id.to_string(), session.clone());
                 self.unmark_ended(session_id);
                 Ok(session)
@@ -629,8 +657,9 @@ impl AgentManager {
         if session.is_replaced() {
             bail!("The chat just restarted; try again once it has reconnected.");
         }
-        if let Some(pick) = lock(&self.model_picks).get(&session_id).cloned() {
-            lock(&self.restart_picks).insert(session_id.clone(), pick);
+        let owed = self.picks(&session_id);
+        if !owed.is_empty() {
+            lock(&self.restart_picks).insert(session_id.clone(), owed);
         }
         // Hand over before the old `claude` goes: clients re-attach (`replaced`)
         // rather than see it end, and its exit (`bye`) finds nothing to stop.
@@ -711,14 +740,17 @@ impl AgentManager {
             .or_else(|| lock(&self.inner).values().find(|s| owned(s)).cloned())
     }
 
-    /// Fold lines a terminal's plugin posted into its session.
-    pub fn feed_mod(&self, session: &Arc<AgentSession>, lines: &[serde_json::Value]) {
-        let link = session.mod_link();
-        if let Some(link) = link {
-            link.touch();
-        }
-        for line in lines {
-            if let Some(link) = link {
+    /// Fold lines a terminal's plugin posted into its session; numbered from
+    /// `seq`, a line already folded (a retry, or a slow post's copy) is skipped.
+    pub fn feed_mod(
+        &self,
+        session: &Arc<AgentSession>,
+        lines: &[serde_json::Value],
+        epoch: Option<&str>,
+        seq: Option<u64>,
+    ) {
+        let fold = |line: &serde_json::Value| {
+            if let Some(link) = session.mod_link() {
                 link.note_line(line);
             }
             self.forget_replaced_pick(session, line);
@@ -732,26 +764,35 @@ impl AgentManager {
                 Some("assistant") => session.learn_cache_ttl_early(),
                 _ => {}
             }
+        };
+        match session.mod_link() {
+            Some(link) => {
+                link.touch();
+                link.fold_new(epoch, seq, lines, fold);
+            }
+            None => lines.iter().for_each(fold),
         }
     }
 
     /// A model picked in the TUI (a `system:init` naming another pick) replaces
-    /// the chat's, so a restart doesn't bring the chat's back.
+    /// the chat's, so a restart doesn't bring the chat's back; so does an effort
+    /// picked there (the plugin says it dropped the chat's: `effortCleared`).
     fn forget_replaced_pick(&self, session: &AgentSession, line: &serde_json::Value) {
-        let Some(choice) = line
-            .get("modelChoice")
-            .and_then(serde_json::Value::as_str)
-            .filter(|_| line["type"] == "system" && line["subtype"] == "init")
-        else {
+        if line["type"] != "system" || line["subtype"] != "init" {
             return;
-        };
-        let mut picks = lock(&self.model_picks);
+        }
         let id = session.id();
-        if picks
-            .get(&id)
-            .is_some_and(|p| p["request"]["model"] != choice)
-        {
-            picks.remove(&id);
+        if let Some(choice) = line.get("modelChoice").and_then(serde_json::Value::as_str) {
+            let mut picks = lock(&self.model_picks);
+            if picks
+                .get(&id)
+                .is_some_and(|p| p["request"]["model"] != choice)
+            {
+                picks.remove(&id);
+            }
+        }
+        if line["effortCleared"] == true {
+            lock(&self.effort_picks).remove(&id);
         }
     }
 
@@ -1053,5 +1094,67 @@ mod tests {
         assert!(lock(&agents.mod_grants).contains_key(&token));
         let (other, _) = agents.mod_env(grant()).unwrap().unwrap();
         assert_ne!(token, other, "each terminal gets its own");
+    }
+
+    #[tokio::test]
+    async fn a_plugin_attaching_again_with_its_token_is_sent_its_picks_again() {
+        let agents = AgentManager::default();
+        let token = agents
+            .grant_mod(ModGrant {
+                pane_id: None,
+                project_path: "/p".into(),
+                worktree_path: None,
+                claude_account_id: None,
+                cwd: "/p".into(),
+                hook_socket: None,
+                resume_at: None,
+                permission_mode: None,
+                terminal_id: None,
+            })
+            .unwrap();
+        let sid = "5e5e5e5e-0000-4000-8000-0000000000ad";
+        let session = agents.attach_mod(&token, sid).unwrap();
+        let link = session.mod_link().unwrap().clone();
+        let wait = Duration::from_millis(20);
+        let _initialize = link.take(wait, None).await;
+
+        let pick = |subtype: &str, request: serde_json::Value| {
+            let mut request = request;
+            request["subtype"] = subtype.into();
+            serde_json::json!({"type": "control_request", "request_id": "old", "request": request})
+        };
+        lock(&agents.model_picks).insert(
+            sid.into(),
+            pick("set_model", serde_json::json!({"model": "sonnet"})),
+        );
+        lock(&agents.effort_picks).insert(
+            sid.into(),
+            pick(
+                "apply_flag_settings",
+                serde_json::json!({"settings": {"effortLevel": "high"}}),
+            ),
+        );
+
+        // Its worker restarted: the same token says hello again.
+        let again = agents.attach_mod(&token, sid).unwrap();
+        assert!(Arc::ptr_eq(&again, &session));
+        let sent = link.take(wait, None).await;
+        let subtypes: Vec<_> = sent
+            .iter()
+            .map(|l| l["request"]["subtype"].clone())
+            .collect();
+        assert_eq!(subtypes, ["set_model", "apply_flag_settings"]);
+        assert!(sent.iter().all(|l| l["request_id"] != "old"));
+
+        // Only an effort picked in the TUI replaces the chat's, not a request
+        // that ran with another (one queued before the pick, a model without effort).
+        let init = |effort: serde_json::Value| serde_json::json!({"type": "system", "subtype": "init", "effort": effort});
+        agents.feed_mod(&session, &[init(serde_json::Value::Null)], None, None);
+        agents.feed_mod(&session, &[init("low".into())], None, None);
+        assert!(lock(&agents.effort_picks).contains_key(sid));
+        let mut cleared = init("low".into());
+        cleared["effortCleared"] = true.into();
+        agents.feed_mod(&session, &[cleared], None, None);
+        assert!(!lock(&agents.effort_picks).contains_key(sid));
     }
 }

@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use crate::claude_accounts::UsageLimit;
 use crate::claude_transcript::{
     clip, str_at, ChatView, RetryInfo, SlashCommand, ToolStatus, TranscriptItem, TranscriptMeta,
-    MAX_FULL_OUTPUT_BYTES, MAX_TEXT_BYTES,
+    MAX_FULL_OUTPUTS_TOTAL, MAX_FULL_OUTPUT_BYTES, MAX_TEXT_BYTES,
 };
 
 mod approvals;
@@ -578,7 +578,7 @@ impl CodexTranscript {
             let kept = crate::text::truncate_bytes(text, MAX_FULL_OUTPUT_BYTES).to_string();
             self.full_outputs.remove(id);
             let total: usize = self.full_outputs.values().map(String::len).sum();
-            if total + kept.len() <= 32 * 1024 * 1024 {
+            if total + kept.len() <= MAX_FULL_OUTPUTS_TOTAL {
                 *full_output_bytes = Some(text.len());
                 self.full_outputs.insert(id.clone(), kept);
             }

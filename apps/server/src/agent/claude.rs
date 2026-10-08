@@ -73,10 +73,14 @@ pub(super) fn apply_line(t: &mut Transcript, line: &str) -> Effects {
 }
 
 /// Attachments are already `@path` mentions in `text` (see `attachment`).
-pub(super) fn prompt(t: &mut Transcript, text: &str) -> Effects {
+pub(super) fn prompt(t: &mut Transcript, text: &str, attachments: &[String]) -> Effects {
     t.set_busy();
+    let mut line = json!({"type": "user", "message": {"role": "user", "content": text}});
+    if !attachments.is_empty() {
+        line["workbench_attachments"] = json!(attachments);
+    }
     Effects {
-        send: vec![json!({"type": "user", "message": {"role": "user", "content": text}})],
+        send: vec![line],
         meta: true,
         ..Effects::default()
     }

@@ -656,8 +656,8 @@ impl AgentSession {
         self.keepalive_turn
             .store(text == KEEPALIVE_PROMPT, Ordering::SeqCst);
         let sent = if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
-            super::attachment::attachments_as_mentions(&self.id(), text, images, files)
-                .and_then(|text| self.run(|d| d.prompt(&text, &[], &[])))
+            super::attachment::attachments_saved(&self.id(), text, images, files)
+                .and_then(|(text, paths)| self.run(|d| d.prompt_attached(&text, &paths)))
         } else {
             self.run(|d| d.prompt(text, images, files))
         };
@@ -715,8 +715,17 @@ impl AgentSession {
         }
     }
 
-    pub fn set_effort(&self, level: &str) -> Result<()> {
-        self.run(|d| d.set_effort(level))
+    /// The effort request a Claude session was sent, for a restart to repeat.
+    pub fn set_effort(&self, level: &str) -> Result<Option<Value>> {
+        let mut sent = None;
+        self.run(|d| {
+            let effects = d.set_effort(level)?;
+            if matches!(d, Driver::Claude(_)) {
+                sent = effects.send.first().cloned();
+            }
+            Ok(effects)
+        })?;
+        Ok(sent)
     }
 
     pub fn cache_policy(&self) -> CachePolicy {

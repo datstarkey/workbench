@@ -90,9 +90,11 @@ SOCKET=\"${WORKBENCH_HOOK_SOCKET}\"\n\
 PANE_ID=\"${WORKBENCH_PANE_ID}\"\n\
 [[ -z \"$SOCKET\" || -z \"$PANE_ID\" || -z \"$1\" ]] && exit 0\n\
 PAYLOAD=$(printf '%s' \"$1\" | tr -d '\\n\\r')\n\
-IFS=: read -r HOST PORT <<< \"$SOCKET\"\n\
+SECRET=\"\"\n\
+[[ \"$SOCKET\" == *#* ]] && SECRET=\"${SOCKET#*#}\"\n\
+IFS=: read -r HOST PORT <<< \"${SOCKET%%#*}\"\n\
 exec 3<>/dev/tcp/\"$HOST\"/\"$PORT\" 2>/dev/null || exit 0\n\
-printf '{\"pane_id\":\"%s\",\"codex\":%s}\\n' \"$PANE_ID\" \"$PAYLOAD\" >&3\n"
+printf '{\"pane_id\":\"%s\",\"secret\":\"%s\",\"codex\":%s}\\n' \"$PANE_ID\" \"$SECRET\" \"$PAYLOAD\" >&3\n"
 }
 
 #[cfg(windows)]
@@ -101,9 +103,10 @@ fn workbench_codex_notify_script_body() -> &'static str {
 $paneId = $env:WORKBENCH_PANE_ID\n\
 if (-not $socket -or -not $paneId -or $args.Count -eq 0) { exit 0 }\n\
 $payload = ($args[0] -replace '\\s+', ' ').Trim()\n\
-$msg = [Text.Encoding]::UTF8.GetBytes(\"{`\"pane_id`\":`\"$paneId`\",`\"codex`\":$payload}`n\")\n\
+$address, $secret = $socket -split '#', 2\n\
+$msg = [Text.Encoding]::UTF8.GetBytes(\"{`\"pane_id`\":`\"$paneId`\",`\"secret`\":`\"$secret`\",`\"codex`\":$payload}`n\")\n\
 try {\n\
-    $parts = $socket -split ':'\n\
+    $parts = $address -split ':'\n\
     $tcp = [Net.Sockets.TcpClient]::new($parts[0], [int]$parts[1])\n\
     $tcp.GetStream().Write($msg, 0, $msg.Length)\n\
     $tcp.Close()\n\
@@ -360,5 +363,31 @@ mod tests {
         assert!(status.success());
         assert_eq!(fs::read_to_string(output).unwrap(), payload);
         assert!(!dir.path().join("BAD").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_notify_script_sends_the_bridge_secret() {
+        use std::io::{BufRead, BufReader};
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("bridge.sh");
+        fs::write(&script, chained_script(&[])).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let status = crate::shell::command("bash")
+            .arg(script)
+            .arg("{\"type\":\"agent-turn-complete\"}")
+            .env("WORKBENCH_HOOK_SOCKET", format!("127.0.0.1:{port}#s3cret"))
+            .env("WORKBENCH_PANE_ID", "pane-1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(sent["secret"], "s3cret");
+        assert_eq!(sent["pane_id"], "pane-1");
+        assert_eq!(sent["codex"]["type"], "agent-turn-complete");
     }
 }

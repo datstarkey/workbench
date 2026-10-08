@@ -140,18 +140,7 @@ pub(crate) fn ws_origin_allowed(origin: Option<&str>, host: Option<&str>, allow_
     }
 }
 
-/// Length-independent constant-time comparison to avoid leaking the token via
-/// timing.
-pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
+pub(crate) use workbench_core::token::constant_time_eq;
 
 #[cfg(test)]
 mod tests {

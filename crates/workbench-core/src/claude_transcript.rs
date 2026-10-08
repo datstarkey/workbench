@@ -153,6 +153,8 @@ pub struct Transcript {
     unknown_seen: std::collections::HashSet<String>,
     /// Whole outputs of tools whose item only carries a preview.
     full_outputs: HashMap<String, String>,
+    /// The bytes `full_outputs` holds, kept so a new one needn't re-sum them.
+    full_outputs_bytes: usize,
     commands: Vec<SlashCommand>,
     /// Skill calls that launched and still await their body, oldest first.
     skill_bodies_due: VecDeque<String>,
@@ -167,6 +169,8 @@ pub struct Transcript {
 
 /// Largest tool output kept whole for "show full output".
 pub(crate) const MAX_FULL_OUTPUT_BYTES: usize = 1024 * 1024;
+/// Every full output a transcript keeps, together: past it a long output keeps only its clip.
+pub(crate) const MAX_FULL_OUTPUTS_TOTAL: usize = 32 * 1024 * 1024;
 
 impl Transcript {
     /// History from a session JSONL. A missing or unreadable file is an empty
@@ -1031,7 +1035,9 @@ impl Transcript {
     }
 
     fn set_tool_output(&mut self, i: usize, tool_id: &str, text: Option<String>) {
-        self.full_outputs.remove(tool_id);
+        if let Some(old) = self.full_outputs.remove(tool_id) {
+            self.full_outputs_bytes -= old.len();
+        }
         let TranscriptItem::Tool {
             output,
             full_output_bytes,
@@ -1043,9 +1049,12 @@ impl Transcript {
         *output = text.as_deref().map(clip);
         *full_output_bytes = None;
         if let Some(text) = text.filter(|t| t.len() > parse::MAX_TEXT_BYTES) {
-            *full_output_bytes = Some(text.len());
             let kept = crate::text::truncate_bytes(&text, MAX_FULL_OUTPUT_BYTES).to_string();
-            self.full_outputs.insert(tool_id.to_string(), kept);
+            if self.full_outputs_bytes + kept.len() <= MAX_FULL_OUTPUTS_TOTAL {
+                *full_output_bytes = Some(text.len());
+                self.full_outputs_bytes += kept.len();
+                self.full_outputs.insert(tool_id.to_string(), kept);
+            }
         }
     }
 
