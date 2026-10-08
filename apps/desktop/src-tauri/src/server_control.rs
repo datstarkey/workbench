@@ -185,10 +185,7 @@ impl ServerControl {
 fn server_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
-        // A few workers serve a handful of connections; blocking work goes to
-        // the runtime's own blocking pool (`routes::blocking`).
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
             .thread_name("workbench-server")
             .enable_all()
             .build()
