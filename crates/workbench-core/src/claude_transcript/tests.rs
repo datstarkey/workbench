@@ -1237,3 +1237,15 @@ fn an_init_without_effort_clears_it_only_when_it_says_so() {
     t.apply(&json!({"type":"system","subtype":"init","model":"claude-haiku-4-5","effort":null}));
     assert_eq!(t.meta().effort, None);
 }
+
+#[test]
+fn a_command_echo_shows_as_typed_without_starting_a_turn() {
+    // The plugin forwards a command's own transcript row (`/goal`, `/rename`).
+    let mut t = Transcript::default();
+    t.apply(&user(
+        "c1",
+        json!("<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>tests pass</command-args>"),
+    ));
+    assert_eq!(user_texts(&t), vec!["/goal tests pass"]);
+    assert!(!t.meta().busy);
+}

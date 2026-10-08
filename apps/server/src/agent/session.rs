@@ -33,6 +33,8 @@ const TASK_OUTPUT_TAIL: u64 = 64 * 1024;
 /// `assistant` lines per session id that may read the cache's lifetime
 /// from its transcript until it names one.
 const EARLY_TTL_READS: u8 = 8;
+/// Waits between reads of a `goal_status` row the CLI hadn't written yet.
+const GOAL_RETRY_MS: [u64; 5] = [100, 250, 500, 1000, 2000];
 
 pub(super) type Registry = Arc<Mutex<HashMap<String, Arc<AgentSession>>>>;
 
@@ -424,6 +426,34 @@ impl AgentSession {
             }
         }
         true
+    }
+
+    /// A terminal's plugin sees a `goal_status` attachment without its
+    /// fields: the row `uuid` is read from the transcript file and folded.
+    /// The CLI may not have written it yet, so a miss is retried briefly.
+    pub(super) fn learn_goal_status(self: &Arc<Self>, uuid: &str) {
+        fn fold(session: &AgentSession, uuid: &str) -> bool {
+            let Some(entry) = session
+                .history_path()
+                .and_then(|p| workbench_core::claude_transcript::goal_status_entry(&p, uuid))
+            else {
+                return false;
+            };
+            session.apply_line(&entry.to_string(), |_, _| {});
+            true
+        }
+        if fold(self, uuid) {
+            return;
+        }
+        let (session, uuid) = (Arc::clone(self), uuid.to_string());
+        std::thread::spawn(move || {
+            for ms in GOAL_RETRY_MS {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                if session.has_exited() || fold(&session, &uuid) {
+                    return;
+                }
+            }
+        });
     }
 
     /// An `assistant` line's read, so a first turn doesn't show the 5m

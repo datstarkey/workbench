@@ -754,6 +754,15 @@ export interface TranscriptMeta {
 	artifacts?: ArtifactInfo[];
 	/** Claude only: a likely next prompt, until the next turn starts. */
 	promptSuggestion?: string;
+	/** Claude only: the active `/goal`, until it's met or cleared. */
+	goal?: GoalInfo;
+}
+
+/** A Claude session's `/goal`: it keeps taking turns until the condition holds. */
+export interface GoalInfo {
+	condition: string;
+	/** Why the latest check found it not met yet; absent before the first check. */
+	reason?: string;
 }
 
 /** A chat's prompt cache upkeep, run by the server (Claude only). */

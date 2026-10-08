@@ -62,6 +62,8 @@ const IGNORED: &[&str] = &[
     "system:files_persisted",
     "system:mirror_error",
     "system:informational",
+    // The plugin's: names a `goal_status` row the server reads from the JSONL.
+    "workbench_goal_status",
     // JSONL only
     "queue-operation",
     "file-history-snapshot",

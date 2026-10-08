@@ -65,6 +65,25 @@ fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
     Some(s[start..start + len].trim())
 }
 
+/// How much of a session JSONL's end [`find_in_tail`] reads.
+const TAIL_BYTES: u64 = 512 * 1024;
+
+/// The first of the entries near the end of a session JSONL, newest first,
+/// that `f` picks. Only the tail is read: transcripts run to many megabytes.
+pub(super) fn find_in_tail<T>(path: &Path, mut f: impl FnMut(Value) -> Option<T>) -> Option<T> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    // A cut first line is never whole JSON, so parsing skips it.
+    text.lines()
+        .rev()
+        .find_map(|line| f(serde_json::from_str(line).ok()?))
+}
+
 pub(crate) fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }

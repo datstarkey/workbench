@@ -5,6 +5,7 @@ import { notifiedJob, startJob, stoppedJobs } from './jobs';
 import {
 	askLine,
 	attachedFiles,
+	commandRowOutput,
 	midTurn,
 	modelOption,
 	promptText,
@@ -99,6 +100,9 @@ const LIVE_AGENT = new Set(['pending', 'running', 'waiting']);
 let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
 const echoed = new Set<string>();
+// What the latest command's transcript rows printed, so a `text` saying the
+// same isn't shown twice.
+const printed = new Set<string>();
 
 // A question is asked from `tool.call` and its answer is the call's result:
 // since 2.1.292 a plugin's `allow` doesn't dismiss the dialog of a tool that
@@ -180,7 +184,7 @@ function commandRan(
 	}
 	// Written to the JSONL only: the chat would see it on its next load.
 	if (command === 'rename') noteTitle(args);
-	if (text !== undefined) commandOutput(text);
+	if (text !== undefined && !printed.has(text.trim())) commandOutput(text);
 }
 
 function commandOutput(content: string, inTerminal = false) {
@@ -306,6 +310,7 @@ export const register: Register = (on) => {
 				const before = new Set((await $.agent.list()).map((a) => a.id));
 				const command: ChatCommand = { answered: false, settled: false };
 				chatCommand = command;
+				printed.clear();
 				// Queued behind a turn typed at the terminal, it isn't that turn's to ask for.
 				if (!runningTurn) chatTurn = true;
 				const idle = (async () => {
@@ -318,6 +323,12 @@ export const register: Register = (on) => {
 						if (!server.current()) return;
 						await server.rekey(() => $.session.id());
 						commandRan(slash.command, slash.args, result.text, await $.agent.list(), before);
+						// Notes for the model may start a turn a moment later (`/goal`),
+						// whose `result` ends the command; a `/rename`'s start none.
+						for (let i = 0; result.context?.length && i < 4; i++) {
+							if (command.answered || runningTurn) break;
+							await $.clock.sleep(250);
+						}
 						if (!command.answered && !runningTurn) answerCommand(command);
 					},
 					(err: unknown) => {
@@ -633,6 +644,32 @@ export const register: Register = (on) => {
 		await server.rekey(() => $.session.id());
 		const sessionId = server.current()?.sessionId;
 		if (!sessionId) return next(e);
+		if (m.type === 'attachment' && m.name === 'goal_status') {
+			// The hook's view has none of its fields: the server reads the row
+			// from the session file, written once `next` returns.
+			const result = await next(e);
+			emit({ type: 'workbench_goal_status', uuid: e.uuid });
+			return result;
+		}
+		if (e.door === 'command') {
+			// A command's own rows: its name, the chat's echo of a command it sent,
+			// and what it printed, which `$.command.run` and the `command.run` hook
+			// may not return as `text` (`/goal`, `/rename`).
+			const text = promptText(m.content);
+			const out = commandRowOutput(text);
+			if (text.startsWith('<command-name>'))
+				emit({
+					type: 'user',
+					uuid: e.uuid,
+					session_id: sessionId,
+					message: { role: 'user', content: text }
+				});
+			else if (out) {
+				printed.add(out);
+				commandOutput(out);
+			}
+			return next(e);
+		}
 		if (m.type === 'attachment' && m.name === 'queued_command') {
 			// A prompt typed in the terminal while a turn ran, folded into that
 			// turn. Only a prompt is framed so (history shows only those too).
@@ -819,6 +856,7 @@ export const register: Register = (on) => {
 		if (e.origin.kind === 'composer') chatTurn = false;
 		if (!server.current()) return next(e);
 		await server.rekey(() => $.session.id());
+		printed.clear();
 		const before = new Set((await $.agent.list()).map((a) => a.id));
 		const result = await next(e);
 		if (!server.current()) return result;

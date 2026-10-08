@@ -47,6 +47,12 @@ export function promptText(content: unknown): string {
 		.join('\n');
 }
 
+/** What a command's transcript row printed (`Goal set: …`), if it's an output row. */
+export function commandRowOutput(text: string): string | undefined {
+	const out = /^<local-command-(stdout|stderr)>([\s\S]*)<\/local-command-\1>$/.exec(text.trim());
+	return out?.[2]?.trim() || undefined;
+}
+
 // What the transcript reads of a tool's structured result: an edit's patch,
 // an Artifact's link. The rest (whole files, outputs) stays off the wire.
 const RESULT_KEYS = [

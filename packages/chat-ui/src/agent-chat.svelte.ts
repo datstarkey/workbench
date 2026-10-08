@@ -370,8 +370,8 @@ export class AgentChat {
 				this.artifactWaiters.delete(msg.id);
 				break;
 			case 'snapshot':
-				// `/clear` re-keys to a new, empty transcript. The CLI never echoes
-				// the `/clear` itself; prompts queued after it echo in the new one.
+				// `/clear` re-keys to a new, empty transcript. The `/clear` and prompts
+				// queued after it echo only in the new one.
 				if (msg.sessionId !== this.sessionId) {
 					this.historyItems = [];
 					this.historyCursor = undefined;

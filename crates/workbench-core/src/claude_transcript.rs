@@ -22,6 +22,7 @@ mod branch;
 mod cache;
 mod elicitation;
 mod events;
+mod goal;
 mod items;
 mod parse;
 mod protocol;
@@ -32,12 +33,13 @@ pub use branch::fork_point;
 pub use cache::{written_cache_ttl, KEEPALIVE_PROMPT};
 pub use elicitation::{ElicitationAction, TERMINAL_ELICITATION, TERMINAL_ELICITATION_ANSWERED};
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
+pub use goal::goal_status_entry;
 pub use summary::{RunningSummary, WaitingSummary};
 pub(crate) use title::SavedTitle;
 
 pub use items::{
-    ApprovalDecision, ArtifactInfo, EventKind, ModelOption, RateLimitInfo, RetryInfo, SlashCommand,
-    TaskInfo, ToolStatus, TranscriptItem, TranscriptMeta,
+    ApprovalDecision, ArtifactInfo, EventKind, GoalInfo, ModelOption, RateLimitInfo, RetryInfo,
+    SlashCommand, TaskInfo, ToolStatus, TranscriptItem, TranscriptMeta,
 };
 
 pub(crate) use parse::{clip, clip_patch, clip_value, str_at, MAX_TEXT_BYTES};
@@ -256,11 +258,11 @@ impl Transcript {
             }
             Some("attachment") => {
                 self.apply_queued_prompt(obj, &mut changed);
-                if let Some(item) = obj
-                    .get("attachment")
-                    .and_then(|att| events::attachment_event(att, self.event_id(obj)))
-                {
-                    self.upsert(item, &mut changed);
+                let att = obj.get("attachment").unwrap_or(&Value::Null);
+                if !self.apply_goal(obj, att, &mut changed) {
+                    if let Some(item) = events::attachment_event(att, self.event_id(obj)) {
+                        self.upsert(item, &mut changed);
+                    }
                 }
             }
             Some("prompt_suggestion") => {
@@ -485,6 +487,7 @@ impl Transcript {
             tasks: Vec::new(),
             artifacts: Vec::new(),
             prompt_suggestion: None,
+            goal: None,
             ..self.meta.clone()
         };
         *self = Self {
@@ -512,6 +515,7 @@ impl Transcript {
             cache_ttl_secs: loaded.meta.cache_ttl_secs.or(self.meta.cache_ttl_secs),
             tasks: loaded.meta.tasks.clone(),
             artifacts: loaded.meta.artifacts.clone(),
+            goal: loaded.meta.goal.clone(),
             ..std::mem::take(&mut self.meta)
         };
         *self = Self {

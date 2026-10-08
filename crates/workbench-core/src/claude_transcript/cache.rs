@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use super::parse::find_in_tail;
 use super::{str_at, Transcript, TranscriptItem};
 
 /// What a keep-alive turn sends. Any call that reads the cached prefix starts
@@ -84,22 +85,10 @@ fn written_ttl_secs(usage: &Value) -> Option<u64> {
     }
 }
 
-/// How much of a session JSONL's end is searched for the newest cache write.
-const TAIL_BYTES: u64 = 512 * 1024;
-
 /// The lifetime the newest call near the end of a session JSONL wrote its
-/// cache with. Only the tail is read: transcripts run to many megabytes.
+/// cache with.
 pub fn written_cache_ttl(path: &Path) -> Option<u64> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(path).ok()?;
-    let start = file.metadata().ok()?.len().saturating_sub(TAIL_BYTES);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-    // A cut first line is never whole JSON, so parsing skips it.
-    text.lines().rev().find_map(|line| {
-        let obj: Value = serde_json::from_str(line).ok()?;
+    find_in_tail(path, |obj| {
         if str_at(&obj, "type") != Some("assistant") {
             return None;
         }
