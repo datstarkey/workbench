@@ -27,12 +27,11 @@ use crate::types::{
 pub async fn read_chat_attachment(
     path: String,
 ) -> Result<workbench_core::chat_attachment::ChatAttachment, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::blocking(move || {
         workbench_core::chat_attachment::read(std::path::Path::new(&path))
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -53,29 +52,32 @@ pub fn save_projects(
 }
 
 #[tauri::command]
-pub fn open_in_vscode(path: String) -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    {
-        // Use `open -a` which works regardless of PATH (Tauri .app doesn't inherit shell PATH)
-        crate::shell::spawn_detached(crate::shell::command("open").args([
-            "-a",
-            "Visual Studio Code",
-            &path,
-        ]))
-        .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // VS Code installs `code.cmd` — launching via cmd /c finds it on PATH
-        crate::shell::spawn_detached(crate::shell::command("cmd").args(["/c", "code", &path]))
+pub async fn open_in_vscode(path: String) -> Result<bool, String> {
+    crate::blocking(move || {
+        #[cfg(target_os = "macos")]
+        {
+            // Use `open -a` which works regardless of PATH (Tauri .app doesn't inherit shell PATH)
+            crate::shell::spawn_detached(crate::shell::command("open").args([
+                "-a",
+                "Visual Studio Code",
+                &path,
+            ]))
             .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        crate::shell::spawn_detached(crate::shell::command("code").arg(&path))
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(true)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // VS Code installs `code.cmd` — launching via cmd /c finds it on PATH
+            crate::shell::spawn_detached(crate::shell::command("cmd").args(["/c", "code", &path]))
+                .map_err(|e| e.to_string())?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            crate::shell::spawn_detached(crate::shell::command("code").arg(&path))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -117,36 +119,43 @@ pub async fn claude_auth_status(
 }
 
 #[tauri::command]
-pub fn load_claude_settings(
+pub async fn load_claude_settings(
     scope: String,
     project_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    settings::load_settings(&scope, project_path.as_deref()).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        settings::load_settings(&scope, project_path.as_deref()).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_claude_settings(
+pub async fn save_claude_settings(
     scope: String,
     project_path: Option<String>,
     value: serde_json::Value,
 ) -> Result<bool, String> {
-    settings::save_settings(&scope, project_path.as_deref(), &value).map_err(|e| e.to_string())?;
-    Ok(true)
+    crate::blocking(move || {
+        settings::save_settings(&scope, project_path.as_deref(), &value)
+            .map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn list_claude_plugins() -> Result<Vec<PluginInfo>, String> {
-    settings::list_plugins().map_err(|e| e.to_string())
+pub async fn list_claude_plugins() -> Result<Vec<PluginInfo>, String> {
+    crate::blocking(move || settings::list_plugins().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn list_claude_skills() -> Result<Vec<SkillInfo>, String> {
-    settings::list_skills().map_err(|e| e.to_string())
+pub async fn list_claude_skills() -> Result<Vec<SkillInfo>, String> {
+    crate::blocking(move || settings::list_skills().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-pub fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
-    settings::list_hooks_scripts().map_err(|e| e.to_string())
+pub async fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
+    crate::blocking(move || settings::list_hooks_scripts().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -183,10 +192,13 @@ pub async fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
 }
 
 #[tauri::command]
-pub fn discover_codex_sessions(
+pub async fn discover_codex_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
-    codex_sessions::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        codex_sessions::discover_codex_sessions(&project_path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // Workbench settings commands
@@ -272,7 +284,7 @@ pub fn refresh_sandbox_runtime_settings(
 
 #[tauri::command]
 pub async fn github_is_available() -> bool {
-    crate::blocking(move || github::is_gh_available()).await
+    crate::blocking(github::is_gh_available).await
 }
 
 #[tauri::command]
@@ -280,7 +292,7 @@ pub async fn github_get_remote(path: String) -> Option<GitHubRemote> {
     crate::blocking(move || github::get_github_remote(&path).ok()).await
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub fn github_set_tracked_projects(
     project_paths: Vec<String>,
     poller: State<'_, GitHubPoller>,
@@ -373,9 +385,12 @@ pub async fn delete_branch(repo_path: String, branch: String, force: bool) -> Re
 }
 
 #[tauri::command]
-pub fn open_url(url: String) -> Result<bool, String> {
-    crate::shell::open_url(&url).map_err(|e| e.to_string())?;
-    Ok(true)
+pub async fn open_url(url: String) -> Result<bool, String> {
+    crate::blocking(move || {
+        crate::shell::open_url(&url).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 // GitHub clone + PR actions
@@ -410,20 +425,21 @@ pub async fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn codex_supports_no_daemon() -> bool {
-    tauri::async_runtime::spawn_blocking(codex_config::supports_no_daemon)
-        .await
-        .unwrap_or(false)
+    crate::blocking(codex_config::supports_no_daemon).await
 }
 
 #[tauri::command]
-pub fn check_codex_integration() -> IntegrationStatus {
-    codex_config::check_codex_config_status()
+pub async fn check_codex_integration() -> IntegrationStatus {
+    crate::blocking(codex_config::check_codex_config_status).await
 }
 
 #[tauri::command]
-pub fn apply_codex_integration() -> Result<bool, String> {
-    codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
-    Ok(true)
+pub async fn apply_codex_integration() -> Result<bool, String> {
+    crate::blocking(move || {
+        codex_config::ensure_codex_config().map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 // Hook bridge log commands
@@ -450,8 +466,8 @@ pub fn clear_hook_logs(hook_bridge: State<'_, HookBridgeState>) -> Result<(), St
 // Native terminal availability check
 
 #[tauri::command]
-pub async fn is_native_terminal_available() -> bool {
-    crate::blocking(move || cfg!(target_os = "macos")).await
+pub fn is_native_terminal_available() -> bool {
+    cfg!(target_os = "macos")
 }
 
 #[tauri::command]

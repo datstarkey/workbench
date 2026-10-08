@@ -185,7 +185,10 @@ impl ServerControl {
 fn server_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
+        // A few workers serve a handful of connections; blocking work goes to
+        // the runtime's own blocking pool (`routes::blocking`).
         tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
             .thread_name("workbench-server")
             .enable_all()
             .build()
@@ -404,9 +407,8 @@ pub fn terminal_server_status(state: tauri::State<'_, ServerControl>) -> ServerS
 #[tauri::command]
 pub async fn kill_all_sessions(state: tauri::State<'_, ServerControl>) -> Result<(), String> {
     let managers = state.managers.clone();
-    tauri::async_runtime::spawn_blocking(move || managers.kill_all())
-        .await
-        .map_err(|e| e.to_string())
+    crate::blocking(move || managers.kill_all()).await;
+    Ok(())
 }
 
 #[cfg(test)]

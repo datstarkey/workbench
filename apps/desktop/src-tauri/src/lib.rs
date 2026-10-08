@@ -46,9 +46,15 @@ use tauri::Manager;
 /// pool. A `command(async)` sync fn runs on the runtime's workers instead, so a
 /// burst of them held up every other command and event until they finished.
 pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .unwrap_or_else(|e| panic!("a blocking command failed: {e}"))
+    // tokio's handle (commands run on Tauri's tokio runtime) keeps the panic:
+    // it is re-raised as itself, not reported twice under a vaguer message.
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(e) => match e.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(e) => panic!("a blocking command was cancelled: {e}"),
+        },
+    }
 }
 
 /// Build the invoke handler with all shared commands, plus native terminal

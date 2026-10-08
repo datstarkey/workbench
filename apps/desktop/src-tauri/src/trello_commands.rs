@@ -8,13 +8,13 @@ fn load_creds() -> Result<TrelloCredentials, String> {
 
 // Auth commands (take explicit credentials)
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_validate_auth(api_key: String, token: String) -> Result<bool, String> {
     let creds = TrelloCredentials { api_key, token };
     api::validate_auth(&creds).await.map_err(|e| e.to_string())
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_list_boards(
     api_key: String,
     token: String,
@@ -25,66 +25,66 @@ pub async fn trello_list_boards(
 
 // API commands (load stored credentials)
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_fetch_board_data(
     board_id: String,
     hidden_columns: Vec<String>,
 ) -> Result<TrelloBoardData, String> {
-    let creds = load_creds()?;
+    let creds = crate::blocking(load_creds).await?;
     api::fetch_board_data(&creds, &board_id, &hidden_columns)
         .await
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_list_columns(board_id: String) -> Result<Vec<TrelloList>, String> {
-    let creds = load_creds()?;
+    let creds = crate::blocking(load_creds).await?;
     api::list_columns(&creds, &board_id)
         .await
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_list_labels(board_id: String) -> Result<Vec<TrelloLabel>, String> {
-    let creds = load_creds()?;
+    let creds = crate::blocking(load_creds).await?;
     api::list_labels(&creds, &board_id)
         .await
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_create_card(
     list_id: String,
     name: String,
     description: Option<String>,
 ) -> Result<TrelloCard, String> {
-    let creds = load_creds()?;
+    let creds = crate::blocking(load_creds).await?;
     api::create_card(&creds, &list_id, &name, description.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_move_card(card_id: String, target_list_id: String) -> Result<bool, String> {
-    let creds = load_creds()?;
+    let creds = crate::blocking(load_creds).await?;
     api::move_card(&creds, &card_id, &target_list_id)
         .await
         .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_add_label(card_id: String, label_id: String) -> Result<bool, String> {
-    let creds = load_creds()?;
+    let creds = crate::blocking(load_creds).await?;
     api::add_label_to_card(&creds, &card_id, &label_id)
         .await
         .map_err(|e| e.to_string())?;
     Ok(true)
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 pub async fn trello_remove_label(card_id: String, label_id: String) -> Result<bool, String> {
-    let creds = load_creds()?;
+    let creds = crate::blocking(load_creds).await?;
     api::remove_label_from_card(&creds, &card_id, &label_id)
         .await
         .map_err(|e| e.to_string())?;
