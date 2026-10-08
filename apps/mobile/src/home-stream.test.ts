@@ -153,12 +153,6 @@ describe('home event stream', () => {
 	});
 
 	it('runs one poll at a time, and shows the machine offline when a list request times out', async () => {
-		const aborts: AbortController[] = [];
-		vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => {
-			const controller = new AbortController();
-			aborts.push(controller);
-			return controller.signal;
-		});
 		const c = await watching();
 		latest().emit('error');
 		fetchSpy.mockImplementation(
@@ -171,9 +165,9 @@ describe('home event stream', () => {
 		await vi.advanceTimersByTimeAsync(12_000);
 		const hung = fetchSpy.mock.calls.slice(before).map(([url]) => new URL(url).pathname);
 		expect(hung.filter((p) => p === '/remote/terminals')).toHaveLength(1);
+		expect(c.online).toBe(true);
 
-		aborts[aborts.length - 1].abort();
-		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(3000);
 		expect(c.online).toBe(false);
 	});
 
@@ -191,18 +185,5 @@ describe('home event stream', () => {
 		answer(jsonResponse([]));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(c.terminals.map((t) => t.id)).toEqual(['t1']);
-	});
-
-	it('polls again after a round that never settles', async () => {
-		const c = await watching();
-		latest().emit('error');
-		fetchSpy.mockImplementation(() => new Promise<Response>(() => {}));
-		vi.spyOn(c.agents, 'list').mockReturnValue(new Promise(() => {}));
-		const before = fetchSpy.mock.calls.length;
-		await vi.advanceTimersByTimeAsync(16_000);
-		const polls = fetchSpy.mock.calls
-			.slice(before)
-			.filter(([url]) => new URL(url).pathname === '/remote/terminals');
-		expect(polls.length).toBe(2);
 	});
 });

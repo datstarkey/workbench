@@ -1,6 +1,6 @@
 import { agentClient, agentName } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
-import { createHttpTransport } from '@workbench/transport';
+import { createHttpTransport, DEFAULT_TIMEOUT_MS, withTimeout } from '@workbench/transport';
 import type {
 	AgentSummary,
 	ApprovalDecision,
@@ -30,8 +30,6 @@ type ClaudeLaunch = Pick<CreateServerTerminalBody, 'claudeSession' | 'claudeAcco
 const LS_VIEW = 'wb.claudeView';
 /** Home-screen refresh while the app is in front and the event stream is down. */
 const POLL_MS = 4000;
-/** A list request that takes longer is given up, and the machine shown offline. */
-const REQUEST_TIMEOUT_MS = 10_000;
 
 function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
@@ -387,15 +385,12 @@ export class MobileClient {
 		const timer = setInterval(() => {
 			// The host is restarting into its update: its first answer ends "Updating host…".
 			if (!document.hidden && this.hostUpdate?.updating) void this.hostUpdate.check();
-			// One round at a time: a stalled host must not pile requests up.
+			// One round at a time (each request times out): a stalled host must not pile requests up.
 			if (!this.homeServer || this.homeStream.live || polling) return;
 			polling = true;
-			// Bounded too: a request without its own timeout must not stop polling for good.
-			const timeout = new Promise((done) => setTimeout(done, REQUEST_TIMEOUT_MS));
-			void Promise.race([
-				Promise.allSettled([this.refreshTerminals(), this.refreshChats()]),
-				timeout
-			]).then(() => (polling = false));
+			void Promise.allSettled([this.refreshTerminals(), this.refreshChats()]).then(
+				() => (polling = false)
+			);
 		}, POLL_MS);
 		const wake = () => {
 			this.visible = !document.hidden;
@@ -598,13 +593,19 @@ export class MobileClient {
 		const current = this.live();
 		const fresh = this.freshList();
 		try {
-			const res = await fetch(`${this.base}/remote/terminals`, {
-				headers: this.authHeaders(),
-				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-			});
-			if (current()) this.online = res.ok;
-			if (res.ok) {
-				const data = await res.json();
+			const { ok, data } = await withTimeout(
+				'GET /remote/terminals',
+				DEFAULT_TIMEOUT_MS,
+				async (signal) => {
+					const res = await fetch(`${this.base}/remote/terminals`, {
+						headers: this.authHeaders(),
+						signal
+					});
+					return { ok: res.ok, data: res.ok ? await res.json() : null };
+				}
+			);
+			if (current()) this.online = ok;
+			if (ok) {
 				if (!fresh()) return;
 				// Guard the {#each terminals} render: a non-array body would throw.
 				this.terminals = Array.isArray(data) ? data : [];
