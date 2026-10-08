@@ -229,7 +229,7 @@ impl TerminalManager {
             }
         }
 
-        let child = pair.slave.spawn_command(cmd)?;
+        let child = workbench_core::pty::spawn(&pair, cmd)?;
         drop(pair.slave);
 
         let master = pair.master;

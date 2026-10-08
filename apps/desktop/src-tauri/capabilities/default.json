@@ -13,8 +13,6 @@
 		"store:allow-set",
 		"store:allow-save",
 		"store:allow-load",
-		"shell:default",
-		"shell:allow-open",
 		"updater:default",
 		"process:default",
 		"core:window:allow-set-badge-count",

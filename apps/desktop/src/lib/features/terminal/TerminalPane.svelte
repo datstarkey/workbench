@@ -7,7 +7,7 @@
 	import { WebglAddon } from '@xterm/addon-webgl';
 	import { LigaturesAddon } from '@xterm/addon-ligatures';
 	import { SearchAddon } from '@xterm/addon-search';
-	import { open } from '@tauri-apps/plugin-shell';
+	import { openUrl } from '$lib/utils/open-url';
 	import '@xterm/xterm/css/xterm.css';
 	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
@@ -205,14 +205,11 @@
 	 * `plugin:dialog|confirm`, a command it never registers, so the click died in
 	 * an ACL rejection (an unhandled promise rejection, not even a visible error).
 	 *
-	 * Catch rather than fire-and-forget: `shell.open` rejects when the URL has no
-	 * OS handler or falls outside the shell scope, and an uncaught rejection here
-	 * would reproduce the invisible failure this replaced.
+	 * `openUrl` toasts a refused URL (anything but http(s)/mailto) instead of
+	 * reproducing the invisible failure this replaced.
 	 */
 	function openLink(_event: MouseEvent, uri: string): void {
-		open(uri).catch((error) => {
-			console.error('[TerminalPane] Failed to open link:', uri, error);
-		});
+		void openUrl(uri);
 	}
 
 	function ensureWebLinksAddon() {

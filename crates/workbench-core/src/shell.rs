@@ -157,12 +157,15 @@ pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Only plain http(s) URLs reach the OS opener: it would just as happily run a
-/// local file path, and a raw space, quote or control char never appears in a
-/// valid URL.
+/// Only plain http(s) and mailto URLs reach the OS opener: it would just as
+/// happily run a local file path, and a raw space, quote or control char never
+/// appears in a valid URL.
 fn validate_open_url(url: &str) -> anyhow::Result<()> {
     let lower = url.to_ascii_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+    if !["https://", "http://", "mailto:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+    {
         anyhow::bail!("Refusing to open non-http(s) URL: {url:?}");
     }
     if url
@@ -174,17 +177,40 @@ fn validate_open_url(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Open an http(s) URL in the default browser.
+/// Open an http(s) or mailto URL in its default handler.
 ///
-/// Uses the `open` crate rather than spawning an opener ourselves. On Windows
-/// that is `ShellExecuteExW` (feature `shellexecute-on-windows`): Unicode-safe,
-/// no `cmd` parsing (`cmd /c start "" <url>` opened `\\` because Rust escapes
-/// the `""` title as `"\"\""`, and cmd splits URLs on `&`), and failures come
-/// back as errors instead of vanishing in a detached child.
+/// Windows uses the `open` crate's `ShellExecuteExW` (feature
+/// `shellexecute-on-windows`): Unicode-safe, no `cmd` parsing (`cmd /c start ""
+/// <url>` opened `\\` because Rust escapes the `""` title as `"\"\""`, and cmd
+/// splits URLs on `&`), and failures come back as errors. Elsewhere it runs
+/// `open`/`xdg-open` itself: the crate's `that_detached` setsids in a
+/// `pre_exec`, so it forks (see [`tool`]). The URL starts with its scheme, so
+/// it can't pose as an option.
 pub fn open_url(url: &str) -> anyhow::Result<()> {
     use anyhow::Context;
     validate_open_url(url)?;
-    open::that_detached(url).context("Failed to open URL")
+    #[cfg(windows)]
+    {
+        open::that_detached(url).context("Failed to open URL")
+    }
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "macos")]
+        let mut cmd = command("/usr/bin/open");
+        #[cfg(not(target_os = "macos"))]
+        let mut cmd = {
+            use std::os::unix::process::CommandExt;
+            let mut cmd = tool("xdg-open");
+            // Its own group (posix_spawn does that too): a browser it starts isn't ours.
+            cmd.process_group(0);
+            cmd
+        };
+        cmd.arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        spawn_detached(&mut cmd).context("Failed to open URL")
+    }
 }
 
 /// The shell to spawn for a terminal when the project configures none.
@@ -385,6 +411,8 @@ mod tests {
         assert!(validate_open_url("\\\\").is_err());
         assert!(validate_open_url("C:\\Windows\\System32\\calc.exe").is_err());
         assert!(validate_open_url("file:///etc/passwd").is_err());
+        assert!(validate_open_url("mailto:someone@example.com").is_ok());
+        assert!(validate_open_url("-a Calculator").is_err());
         assert!(validate_open_url("https://github.com/a b").is_err());
         assert!(validate_open_url("https://github.com/a\"b").is_err());
         assert!(validate_open_url("https://github.com/\u{1b}[31m").is_err());

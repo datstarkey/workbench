@@ -2,7 +2,7 @@
 	import FolderIcon from '@lucide/svelte/icons/folder';
 	import GithubIcon from '@lucide/svelte/icons/git-pull-request';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
-	import { open } from '@tauri-apps/plugin-shell';
+	import { openUrl } from '$lib/utils/open-url';
 	import { getProjectManager } from '$stores/context';
 	import CloneRepoDialog from '$features/projects/CloneRepoDialog.svelte';
 
@@ -76,7 +76,7 @@
 				'Shortcuts, startup commands, integrations',
 				'',
 				false,
-				() => void open(DOCS_URL),
+				() => void openUrl(DOCS_URL),
 				BookOpenIcon
 			)}
 		</div>
