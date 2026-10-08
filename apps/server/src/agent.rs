@@ -472,7 +472,7 @@ impl AgentManager {
         session: &Arc<AgentSession>,
         message_id: &str,
     ) -> Result<()> {
-        self.restart_terminal(terminals, session, "Rewind", |launch| {
+        self.restart_terminal(terminals, session, "Rewind", true, |launch| {
             let Launch::Claude {
                 session_id,
                 config_dir,
@@ -488,6 +488,25 @@ impl AgentManager {
         })
     }
 
+    /// Restart a terminal session's `claude` under the same id and mode, a
+    /// running turn included (a stuck one is what a restart is for): not an End,
+    /// so every client re-attaches (`replaced`).
+    pub fn restart_session(
+        &self,
+        terminals: &crate::terminal::TerminalManager,
+        session: &Arc<AgentSession>,
+    ) -> Result<()> {
+        self.restart_terminal(terminals, session, "Restart it", false, |launch| {
+            let Launch::Claude {
+                permission_mode, ..
+            } = launch
+            else {
+                bail!("only Claude terminal sessions restart");
+            };
+            Ok((None, permission_mode.clone()))
+        })
+    }
+
     /// Switch a terminal session's permission mode: a plugin can't change the
     /// live mode (`$.config.set` writes the settings default), so its terminal
     /// restarts as `claude --resume <id> --permission-mode <mode>`, as a rewind does.
@@ -500,7 +519,7 @@ impl AgentManager {
         if !workbench_core::claude_launch::PERMISSION_MODES.contains(&mode) {
             bail!("unknown permission mode: {mode}");
         }
-        self.restart_terminal(terminals, session, "Change the mode", |_| {
+        self.restart_terminal(terminals, session, "Change the mode", true, |_| {
             Ok((None, Some(mode.to_string())))
         })
     }
@@ -512,6 +531,7 @@ impl AgentManager {
         terminals: &crate::terminal::TerminalManager,
         session: &Arc<AgentSession>,
         what: &str,
+        idle_only: bool,
         plan: impl FnOnce(&Launch) -> Result<(Option<String>, Option<String>)>,
     ) -> Result<()> {
         let link = session
@@ -523,7 +543,9 @@ impl AgentManager {
         if link.terminal_id.is_none() {
             bail!("{what} in this session's own terminal.");
         }
-        session.idle_meta()?;
+        if idle_only {
+            session.idle_meta()?;
+        }
         let req = session.relaunch();
         let (resume_at, permission_mode) = plan(&req.launch)?;
         let Launch::Claude {

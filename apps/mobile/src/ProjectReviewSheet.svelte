@@ -41,8 +41,10 @@
 		void (tab === 'history' ? review.history(agent, account || undefined) : review.changes());
 	}
 	function pick(session: DiscoveredClaudeSession) {
-		onClose();
+		// Before closing: `folder` is a live prop, and a parent that closes the
+		// sheet by clearing it (Home) hands back null at once.
 		const ref = { ...folder, sessionId: session.sessionId, name: session.label };
+		onClose();
 		if (agent === 'codex') client.openChat({ ...ref, agent });
 		else
 			void client.openClaude({
@@ -165,11 +167,11 @@
 				</p>
 				{#if review.diff !== null}
 					<pre
-						class="max-h-[50vh] overflow-auto rounded-lg bg-wb-bg p-3 font-mono text-[11px] leading-relaxed">{#each review.diff.split('\n') as line}<span
+						class="max-h-[50vh] overflow-auto rounded-lg bg-wb-bg p-3 font-mono text-[11px] leading-relaxed">{#each review.diff.split('\n') as line, i (i)}<span
 								class={cn(
 									line.startsWith('+') && 'text-wb-ok',
 									line.startsWith('-') && 'text-wb-err'
-								)}>{line}{'\n'}</span
+								)}>{line}&#10;</span
 							>{/each}</pre>
 				{/if}
 			{:else}

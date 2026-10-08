@@ -913,6 +913,7 @@ export type AgentClientMsg =
 			content?: Record<string, string | number | boolean | string[]>;
 	  }
 	| { t: 'interrupt' }
+	| { t: 'restart' }
 	| { t: 'mode'; mode: PermissionMode | CodexMode }
 	| { t: 'model'; model: string }
 	| { t: 'effort'; effort: EffortLevel }

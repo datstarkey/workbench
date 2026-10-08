@@ -452,6 +452,8 @@ enum ClientMsg {
     },
     /// Refresh the prompt cache now (a hidden keep-alive turn).
     CachePing,
+    /// Restart a Claude terminal session's `claude`, a stuck turn included.
+    Restart,
     /// Keep the cache warm until a time and/or compact before it expires.
     CachePolicy {
         policy: CachePolicy,
@@ -600,6 +602,7 @@ fn handle(
         }
         ClientMsg::Effort { effort } => session.set_effort(&effort),
         ClientMsg::CachePing => session.keep_cache_warm(),
+        ClientMsg::Restart => state.agents.restart_session(&state.terminals, session),
         ClientMsg::CachePolicy { policy } => state.agents.set_cache_policy(session, policy),
     };
     reply.map(|()| None)
