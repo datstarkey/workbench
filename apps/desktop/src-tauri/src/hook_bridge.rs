@@ -536,10 +536,13 @@ mod tcp {
     use std::io::{BufReader, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use tauri::AppHandle;
 
     use super::{handle_stream, http, HookBridgeState};
+
+    const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
     pub fn start(app_handle: AppHandle) -> HookBridgeState {
         let logs = Arc::new(Mutex::new(VecDeque::new()));
@@ -582,6 +585,9 @@ mod tcp {
 
                 let handle = handle.clone();
                 let logs = logs_clone.clone();
+                // A client that connects and goes quiet would hold this
+                // thread forever; hook events arrive in one burst.
+                let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
                 std::thread::spawn(move || {
                     let mut reader = BufReader::new(&stream);
                     if !http::is_post(&mut reader) {
