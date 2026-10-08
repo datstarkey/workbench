@@ -292,6 +292,7 @@ impl AgentManager {
                         inner.insert(id, session.clone());
                         inner.retain(|k, s| !(session::is_pending(k) && Arc::ptr_eq(s, &session)));
                     }
+                    self.attention.sessions_changed();
                     // The reader drops an exited session from the map; one
                     // that exited before this insert is dropped here instead.
                     if session.has_exited() {
@@ -458,6 +459,7 @@ impl AgentManager {
             session.send(&pick)?;
         }
         lock(&self.inner).insert(session_id.to_string(), session.clone());
+        self.attention.sessions_changed();
         self.unmark_ended(session_id);
         self.start_upkeep();
         Ok(session)
@@ -708,6 +710,7 @@ impl AgentManager {
             let weak = Arc::downgrade(&self.inner);
             let grants = Arc::downgrade(&self.mod_grants);
             let terminals = self.terminals.clone();
+            let attention = self.attention.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(cache::TICK);
                 let Some(registry) = weak.upgrade() else {
@@ -727,6 +730,7 @@ impl AgentManager {
                         if let Some(registry) = weak.upgrade() {
                             lock(&registry).retain(|_, s| !Arc::ptr_eq(s, &session));
                         }
+                        attention.sessions_changed();
                         session.shutdown();
                         continue;
                     }
@@ -809,6 +813,7 @@ impl AgentManager {
         let _lifecycle = lock(&self.lifecycle);
         let all = self.sessions(|_| true);
         lock(&self.inner).clear();
+        self.attention.sessions_changed();
         let handles: Vec<_> = all
             .into_iter()
             .map(|s| std::thread::spawn(move || s.shutdown()))
@@ -891,6 +896,7 @@ impl AgentManager {
     /// Drop every id (aliases included) that points at this session.
     fn forget(&self, session: &Arc<AgentSession>) {
         lock(&self.inner).retain(|_, s| !Arc::ptr_eq(s, session));
+        self.attention.sessions_changed();
     }
 
     fn live_count(&self) -> usize {

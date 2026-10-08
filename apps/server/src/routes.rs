@@ -47,6 +47,10 @@ pub fn router(state: AppState) -> Router {
             "/remote/terminals/:id",
             delete(crate::terminal::terminal_kill),
         )
+        .route(
+            crate::home_events::PATH,
+            get(crate::home_events::home_events),
+        )
         .route("/mod/hello", post(crate::mod_routes::hello))
         .route("/mod/out", post(crate::mod_routes::out))
         .route("/mod/in", get(crate::mod_routes::poll))
