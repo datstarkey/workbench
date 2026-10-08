@@ -205,7 +205,7 @@
 	 * `plugin:dialog|confirm`, a command it never registers, so the click died in
 	 * an ACL rejection (an unhandled promise rejection, not even a visible error).
 	 *
-	 * `openUrl` toasts a refused URL (anything but http(s)/mailto) instead of
+	 * `openUrl` toasts a refused URL (anything but http(s)/mailto/tel) instead of
 	 * reproducing the invisible failure this replaced.
 	 */
 	function openLink(_event: MouseEvent, uri: string): void {

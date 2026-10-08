@@ -157,16 +157,16 @@ pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Only plain http(s) and mailto URLs reach the OS opener: it would just as
-/// happily run a local file path, and a raw space, quote or control char never
-/// appears in a valid URL.
+/// Only plain http(s), mailto and tel URLs reach the OS opener: it would just
+/// as happily run a local file path, and a raw space, quote or control char
+/// never appears in a valid URL.
 fn validate_open_url(url: &str) -> anyhow::Result<()> {
     let lower = url.to_ascii_lowercase();
-    if !["https://", "http://", "mailto:"]
+    if !["https://", "http://", "mailto:", "tel:"]
         .iter()
         .any(|scheme| lower.starts_with(scheme))
     {
-        anyhow::bail!("Refusing to open non-http(s) URL: {url:?}");
+        anyhow::bail!("Refusing to open a URL that isn't http(s), mailto or tel: {url:?}");
     }
     if url
         .chars()
@@ -177,7 +177,7 @@ fn validate_open_url(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Open an http(s) or mailto URL in its default handler.
+/// Open an http(s), mailto or tel URL in its default handler.
 ///
 /// Windows uses the `open` crate's `ShellExecuteExW` (feature
 /// `shellexecute-on-windows`): Unicode-safe, no `cmd` parsing (`cmd /c start ""
@@ -200,7 +200,20 @@ pub fn open_url(url: &str) -> anyhow::Result<()> {
         #[cfg(not(target_os = "macos"))]
         let mut cmd = {
             use std::os::unix::process::CommandExt;
-            let mut cmd = tool("xdg-open");
+            // The `open` crate's openers, in its order.
+            const OPENERS: [&[&str]; 5] = [
+                &["xdg-open"],
+                &["gio", "open"],
+                &["gnome-open"],
+                &["kde-open"],
+                &["wslview"],
+            ];
+            let opener = OPENERS
+                .into_iter()
+                .find(|o| crate::paths::find_on_path(&[o[0]]).is_some())
+                .unwrap_or(OPENERS[0]);
+            let mut cmd = tool(opener[0]);
+            cmd.args(&opener[1..]);
             // Its own group (posix_spawn does that too): a browser it starts isn't ours.
             cmd.process_group(0);
             cmd
@@ -412,6 +425,7 @@ mod tests {
         assert!(validate_open_url("C:\\Windows\\System32\\calc.exe").is_err());
         assert!(validate_open_url("file:///etc/passwd").is_err());
         assert!(validate_open_url("mailto:someone@example.com").is_ok());
+        assert!(validate_open_url("tel:+441234567890").is_ok());
         assert!(validate_open_url("-a Calculator").is_err());
         assert!(validate_open_url("https://github.com/a b").is_err());
         assert!(validate_open_url("https://github.com/a\"b").is_err());
