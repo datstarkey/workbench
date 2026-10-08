@@ -100,7 +100,7 @@ const echoed = new Set<string>();
 
 // A question is asked from `tool.call` and its answer is the call's result:
 // since 2.1.292 a plugin's `allow` doesn't dismiss the dialog of a tool that
-// requires the person. A plan is approved like any call (PermissionRequest).
+// requires the person. A plan is approved in the terminal (PermissionRequest).
 const ASKED_IN_CALL = new Set(['AskUserQuestion']);
 // Calls core put to the mode's decider, by tool and input: the decider's
 // dialog (`PermissionRequest`) names no call. A rule, the mode or auto mode's
@@ -1061,6 +1061,19 @@ export const register: Register = (on) => {
 	on('classic.PermissionRequest', async ($, e, next) => {
 		notePermissionMode(e.permission_mode);
 		if (!server.current() || ASKED_IN_CALL.has(e.tool_name)) return next(e);
+		// Approving a plan is what leaves plan mode, and since 2.1.292 only the
+		// dialog does that (a hook's allow doesn't dismiss it): it stays the
+		// terminal's, and the chat says where to answer it.
+		if (e.tool_name === 'ExitPlanMode') {
+			emit({
+				type: 'system',
+				subtype: 'local_command_output',
+				content: 'Claude has a plan for you to review. Approve it in the terminal.',
+				workbench_in_terminal: true,
+				uuid: `wbmod-plan-${++askSeq}`
+			});
+			return next(e);
+		}
 		const pending = takeAsk(e.tool_name, e.tool_input);
 		const requestId = `wbmod-ask-${++askSeq}`;
 		const line = askLine(
@@ -1083,15 +1096,9 @@ export const register: Register = (on) => {
 			if (pending && !next.signal.aborted) askedInTerminal.set(pending.id, requestId);
 			return next(e);
 		}
-		// A plan approved without the accept-edits suggestion leaves plan mode as
-		// the dialog's manual-approval choice does.
-		const leavePlan =
-			e.tool_name === 'ExitPlanMode' && !answer.updatedPermissions?.length
-				? [{ type: 'setMode' as const, mode: 'default' as const, destination: 'session' as const }]
-				: undefined;
 		const decision: PermissionRequestDecision =
 			answer.behavior === 'allow'
-				? { behavior: 'allow', updatedPermissions: leavePlan ?? answer.updatedPermissions }
+				? { behavior: 'allow', updatedPermissions: answer.updatedPermissions }
 				: { behavior: 'deny', message: answer.message || 'Denied in Workbench chat' };
 		return { decision };
 	});
