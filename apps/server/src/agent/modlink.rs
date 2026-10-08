@@ -84,9 +84,14 @@ impl ModLink {
     }
 
     /// The plugin asked for approval `request_id` (for tool call `tool_use_id`):
-    /// answers go to `/mod/ask`, not `/mod/in`.
-    pub fn expect_answer(&self, request_id: &str, tool_use_id: Option<String>) {
-        lock(&self.asks).insert(
+    /// answers go to `/mod/ask`, not `/mod/in`. `false` when it already waits:
+    /// the plugin resends the request until a reply shows the server has it.
+    pub fn expect_answer(&self, request_id: &str, tool_use_id: Option<String>) -> bool {
+        let mut asks = lock(&self.asks);
+        if asks.contains_key(request_id) {
+            return false;
+        }
+        asks.insert(
             request_id.to_string(),
             Ask {
                 tool_use_id,
@@ -94,6 +99,7 @@ impl ModLink {
                 shown: false,
             },
         );
+        true
     }
 
     /// Whether a chat has shown `request_id`, counting now when `viewing`.
@@ -133,10 +139,10 @@ impl ModLink {
         self.take_answer(request_id)
     }
 
+    /// Kept until its tool call's result or the turn's end: the plugin's fetch
+    /// can lose a reply, and its retry must find the answer again.
     fn take_answer(&self, request_id: &str) -> Option<Value> {
-        let mut asks = lock(&self.asks);
-        asks.get(request_id)?.answer.as_ref()?;
-        asks.remove(request_id)?.answer
+        lock(&self.asks).get(request_id)?.answer.clone()
     }
 
     /// Stop waiting on `request_id`: the terminal asks it instead, and
@@ -184,7 +190,10 @@ impl ModLink {
             Some(TERMINAL_ELICITATION_ANSWERED) => {
                 asked.retain(|(w, _)| Some(w.id.as_str()) != str_at("/id"));
             }
-            Some("result") => asked.clear(),
+            Some("result") => {
+                asked.clear();
+                lock(&self.asks).retain(|_, ask| ask.answer.is_none());
+            }
             Some("control_cancel_request") => {
                 let id = str_at("/request_id");
                 asked.retain(|(w, _)| Some(w.id.as_str()) != id);
@@ -202,6 +211,13 @@ impl ModLink {
                     .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
                     .collect();
                 if !results.is_empty() {
+                    lock(&self.asks).retain(|_, ask| {
+                        ask.answer.is_none()
+                            || !ask
+                                .tool_use_id
+                                .as_deref()
+                                .is_some_and(|t| results.contains(&t))
+                    });
                     asked.retain(|(_, clears)| match clears {
                         Clears::ToolResult(Some(t)) => !results.contains(&t.as_str()),
                         Clears::ToolResult(None) => false,
@@ -275,6 +291,25 @@ mod tests {
 
         link.note_line(&json!({"type": "control_cancel_request", "request_id": "r1"}));
         assert!(!link.shown("r1", false), "withdrawn: no longer held");
+    }
+
+    #[tokio::test]
+    async fn an_answer_survives_a_lost_reply_until_its_call_has_a_result() {
+        let link = ModLink::new("t".into(), None);
+        let wait = Duration::from_millis(20);
+        link.expect_answer("r1", Some("toolu_1".into()));
+        let answer = json!({"type": "control_response", "response": {"request_id": "r1"}});
+        assert!(link.answer(&answer));
+        assert_eq!(link.wait_answer("r1", wait).await, Some(answer.clone()));
+        assert_eq!(
+            link.wait_answer("r1", wait).await,
+            Some(answer),
+            "the plugin retries a reply its fetch lost"
+        );
+        link.note_line(
+            &json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1"}]}}),
+        );
+        assert_eq!(link.wait_answer("r1", wait).await, None);
     }
 
     #[test]

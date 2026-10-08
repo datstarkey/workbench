@@ -98,15 +98,15 @@ let injected: string[] = [];
 // Prompts the plugin submitted itself, kept out of the chat (each echoes once).
 const echoed = new Set<string>();
 
-// Questions and plans are asked from `tool.call` (an answer edits the input);
-// `tool.check` then lets the answered call through.
-const ASKED_IN_CALL = new Set(['AskUserQuestion', 'ExitPlanMode']);
+// A question is asked from `tool.call` and its answer is the call's result:
+// since 2.1.292 a plugin's `allow` doesn't dismiss the dialog of a tool that
+// requires the person. A plan is approved like any call (PermissionRequest).
+const ASKED_IN_CALL = new Set(['AskUserQuestion']);
 // Calls core put to the mode's decider, by tool and input: the decider's
 // dialog (`PermissionRequest`) names no call. A rule, the mode or auto mode's
 // classifier settles most without one, so only the newest are kept.
 const pendingAsks = new Map<string, { id: string; reason?: string }>();
 const PENDING_ASKS_KEPT = 50;
-const answeredInChat = new Set<string>();
 // Approvals the terminal's own dialog asks (no chat was open): tool call id → request id.
 const askedInTerminal = new Map<string, string>();
 // MCP elicitations the terminal shows, by server and elicitation id, oldest first.
@@ -418,6 +418,7 @@ export const register: Register = (on) => {
 		};
 
 		$.clock.every(50, () => {
+			void $.clock.now().then(server.tick);
 			if (!server.isFlushing()) void server.flush((u, i) => $.http.fetch(u, i));
 		});
 		$.clock.every(300, () => {
@@ -899,8 +900,15 @@ export const register: Register = (on) => {
 			if (answer) {
 				if (answer.behavior !== 'allow')
 					return { deny: answer.message || 'Declined in Workbench chat' };
-				answeredInChat.add(id);
-				return next({ ...e, ...(answer.updatedInput ?? {}) } as typeof e);
+				const answered = { ...e, ...(answer.updatedInput ?? {}) } as typeof e;
+				if (answered.tool === 'AskUserQuestion')
+					return {
+						result: {
+							questions: answered.questions,
+							answers: answered.answers ?? {},
+							...(answered.annotations ? { annotations: answered.annotations } : {})
+						}
+					};
 			}
 		}
 		const input = e as unknown as { description?: string; subagent_type?: string };
@@ -1030,7 +1038,6 @@ export const register: Register = (on) => {
 
 	on('tool.check', async ($, e, next) => {
 		const verdict = await next(e);
-		if (e.tool_use_id && answeredInChat.delete(e.tool_use_id)) return { decision: 'allow' };
 		if (
 			verdict.decision === 'ask' &&
 			server.current() &&
@@ -1076,9 +1083,15 @@ export const register: Register = (on) => {
 			if (pending && !next.signal.aborted) askedInTerminal.set(pending.id, requestId);
 			return next(e);
 		}
+		// A plan approved without the accept-edits suggestion leaves plan mode as
+		// the dialog's manual-approval choice does.
+		const leavePlan =
+			e.tool_name === 'ExitPlanMode' && !answer.updatedPermissions?.length
+				? [{ type: 'setMode' as const, mode: 'default' as const, destination: 'session' as const }]
+				: undefined;
 		const decision: PermissionRequestDecision =
 			answer.behavior === 'allow'
-				? { behavior: 'allow', updatedPermissions: answer.updatedPermissions }
+				? { behavior: 'allow', updatedPermissions: leavePlan ?? answer.updatedPermissions }
 				: { behavior: 'deny', message: answer.message || 'Denied in Workbench chat' };
 		return { decision };
 	});

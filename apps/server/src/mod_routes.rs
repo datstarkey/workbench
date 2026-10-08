@@ -136,6 +136,10 @@ pub struct AskBody {
     request_id: String,
     /// The `can_use_tool` request, on the first call; later calls keep waiting.
     line: Option<Value>,
+    /// Lines queued before it (the tool's card), fed first: waiting on the
+    /// plugin's queue would spend the asking hook's budget.
+    #[serde(default)]
+    lines: Vec<Value>,
     /// A chat's to answer even before one has it open: its turn came from chat.
     #[serde(default)]
     hold: bool,
@@ -161,11 +165,11 @@ pub async fn ask(
         .mod_link()
         .cloned()
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such terminal session"))?;
-    let feed = |line: Value| {
+    let feed = |lines: Vec<Value>| {
         let agents = state.agents.clone();
         let session = session.clone();
         crate::routes::blocking(move || {
-            agents.feed_mod(&session, &[line]);
+            agents.feed_mod(&session, &lines);
             Ok(())
         })
     };
@@ -174,11 +178,15 @@ pub async fn ask(
             .pointer("/request/tool_use_id")
             .and_then(Value::as_str)
             .map(String::from);
-        link.expect_answer(&body.request_id, tool_use_id);
-        if body.hold {
-            link.shown(&body.request_id, true);
+        if link.expect_answer(&body.request_id, tool_use_id) {
+            if body.hold {
+                link.shown(&body.request_id, true);
+            }
+            note_usage(&state, &session, &body.lines);
+            let mut lines = body.lines;
+            lines.push(line);
+            feed(lines).await?;
         }
-        feed(line).await?;
     }
     let deadline = tokio::time::Instant::now() + ASK_WAIT;
     loop {
@@ -191,7 +199,10 @@ pub async fn ask(
         if !link.shown(&body.request_id, session.has_viewers()) {
             link.fall_back(&body.request_id, session.waiting_for(&body.request_id));
             session.refresh_attention();
-            feed(json!({"type": "control_cancel_request", "request_id": body.request_id})).await?;
+            feed(vec![
+                json!({"type": "control_cancel_request", "request_id": body.request_id}),
+            ])
+            .await?;
             return Ok(Json(json!({ "fallback": true })));
         }
         if tokio::time::Instant::now() >= deadline {
