@@ -349,9 +349,12 @@ public func swift_term_destroy(
         session.view.removeFromSuperview()
     }
 
+    // Synchronous: once this returns no callback can still be running or come
+    // later (they only fire on the main thread, from a view in the hierarchy),
+    // so the caller may free the callback context.
     if Thread.isMainThread {
         work()
     } else {
-        DispatchQueue.main.async { work() }
+        DispatchQueue.main.sync { work() }
     }
 }

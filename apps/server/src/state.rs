@@ -89,15 +89,28 @@ pub(crate) async fn wait_revoked(revoked: &mut watch::Receiver<bool>) {
 /// How long a WebSocket send may wait on a client that stopped reading (a
 /// backgrounded phone keeps its TCP connection open) before the socket is dropped.
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Plus a second per this many bytes, so a big frame (a long chat's snapshot, a
+/// scrollback replay) on a slow but live link isn't cut off.
+const WS_SLOW_LINK_BYTES_PER_SEC: usize = 16 * 1024;
 
-/// Send one frame, giving up after [`WS_SEND_TIMEOUT`]. `false` means the socket
+/// Send one frame, giving up after [`ws_send_timeout`]. `false` means the socket
 /// is dead or stalled: the caller drops it rather than retry, so a pending send
 /// can't pin its task and keep a revoke or takeover from being delivered.
 pub(crate) async fn ws_send(socket: &mut WebSocket, msg: Message) -> bool {
+    let limit = ws_send_timeout(&msg);
     matches!(
-        tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(msg)).await,
+        tokio::time::timeout(limit, socket.send(msg)).await,
         Ok(Ok(()))
     )
+}
+
+fn ws_send_timeout(msg: &Message) -> Duration {
+    let len = match msg {
+        Message::Text(text) => text.len(),
+        Message::Binary(bytes) => bytes.len(),
+        _ => 0,
+    };
+    WS_SEND_TIMEOUT + Duration::from_secs((len / WS_SLOW_LINK_BYTES_PER_SEC) as u64)
 }
 
 /// Send a last frame (if any), then a close frame, both under the send timeout.
@@ -108,4 +121,19 @@ pub(crate) async fn ws_close(mut socket: WebSocket, last: Option<Message>) {
         }
     }
     let _ = tokio::time::timeout(WS_SEND_TIMEOUT, socket.close()).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_big_frame_gets_longer_to_send() {
+        assert_eq!(ws_send_timeout(&Message::Close(None)), WS_SEND_TIMEOUT);
+        let snapshot = Message::Text("x".repeat(4 * 1024 * 1024));
+        assert_eq!(
+            ws_send_timeout(&snapshot),
+            WS_SEND_TIMEOUT + Duration::from_secs(256)
+        );
+    }
 }

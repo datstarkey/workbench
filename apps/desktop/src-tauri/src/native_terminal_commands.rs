@@ -129,10 +129,14 @@ pub async fn resize_native_terminal(
     height: f64,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    app_handle
+        .state::<NativeTerminalManager>()
+        .request_resize(&session_id, (x, y, width, height))
+        .map_err(|e| e.to_string())?;
     crate::blocking(move || {
         app_handle
             .state::<NativeTerminalManager>()
-            .resize(&session_id, x, y, width, height)
+            .resize(&session_id)
             .map_err(|e| e.to_string())
     })
     .await

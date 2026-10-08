@@ -119,6 +119,7 @@ fn pump_output(
     handle: &AppHandle,
 ) {
     let mut last_flush = Instant::now() - OUTPUT_FRAME;
+    let mut text_carry = Vec::new();
     while let Ok(mut frame) = output.recv() {
         let deadline = last_flush + OUTPUT_FRAME;
         let mut open = true;
@@ -146,7 +147,7 @@ fn pump_output(
             "terminal:data",
             TerminalDataEvent {
                 session_id: session_id.to_string(),
-                data: String::from_utf8_lossy(&frame).into_owned(),
+                data: frame_text(&mut text_carry, &frame),
             },
         );
         last_flush = Instant::now();
@@ -154,6 +155,19 @@ fn pump_output(
             break;
         }
     }
+}
+
+/// A frame's text, with a character cut off at its end held back in `carry` for
+/// the next frame: a split character must not read as U+FFFD output.
+fn frame_text(carry: &mut Vec<u8>, frame: &[u8]) -> String {
+    let mut bytes = std::mem::take(carry);
+    bytes.extend_from_slice(frame);
+    if let Err(e) = std::str::from_utf8(&bytes) {
+        if e.error_len().is_none() {
+            *carry = bytes.split_off(e.valid_up_to());
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Called by SwiftTerm when terminal activity state changes.
@@ -182,13 +196,34 @@ struct NativeSession {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     /// Raw pointer to the heap-allocated CallbackContext.
-    /// Freed in `kill()` via `Box::from_raw()`.
+    /// Freed by `destroy_view()` via `Box::from_raw()`.
     callback_context_ptr: *mut c_void,
     session_id_cstr: CString,
+    /// The latest frame asked for (`request_resize`), applied by `resize`.
+    frame: Option<Frame>,
 }
 
-// SAFETY: The raw pointer is only dereferenced on the main thread (FFI calls)
-// and in the callbacks, which only touch `Send + Sync` fields.
+/// A view frame: x, y, width, height.
+pub type Frame = (f64, f64, f64, f64);
+
+impl NativeSession {
+    /// Remove the SwiftTerm view, then free the callback context. Called under
+    /// the session lock by `kill` and by the reader when the shell exits; the
+    /// second call finds nothing to do. `swift_term_destroy` waits for the main
+    /// thread, where the callbacks run, so none can use the context once freed.
+    fn destroy_view(&mut self) {
+        unsafe {
+            swift_term_destroy(self.session_id_cstr.as_ptr());
+        }
+        if !self.callback_context_ptr.is_null() {
+            let _ = unsafe { Box::from_raw(self.callback_context_ptr as *mut CallbackContext) };
+            self.callback_context_ptr = std::ptr::null_mut();
+        }
+    }
+}
+
+// SAFETY: The raw pointer is only dereferenced in the callbacks, on the main
+// thread, and freed only once the view is gone (`destroy_view`).
 unsafe impl Send for NativeSession {}
 unsafe impl Sync for NativeSession {}
 
@@ -200,12 +235,15 @@ type SessionMap = Arc<Mutex<HashMap<String, Arc<Mutex<NativeSession>>>>>;
 
 pub struct NativeTerminalManager {
     sessions: SessionMap,
+    /// Held while a resize applies, so resizes run one at a time.
+    resizing: Mutex<()>,
 }
 
 impl NativeTerminalManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            resizing: Mutex::new(()),
         }
     }
 
@@ -385,6 +423,7 @@ impl NativeTerminalManager {
             child,
             callback_context_ptr: ctx_ptr,
             session_id_cstr: session_cstr.clone(),
+            frame: None,
         }));
 
         // Insert into map before spawning threads
@@ -486,18 +525,18 @@ impl NativeTerminalManager {
                     .revoke_native_token(&sid, token);
             }
 
-            let exit_code = session_for_cleanup
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .child
-                .wait()
-                .map(|s| if s.success() { 0 } else { 1 })
-                .unwrap_or(1);
-
-            // Destroy the SwiftTerm view
-            unsafe {
-                swift_term_destroy(reader_session_cstr.as_ptr());
-            }
+            let exit_code = {
+                let mut sess = session_for_cleanup
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let code = sess
+                    .child
+                    .wait()
+                    .map(|s| if s.success() { 0 } else { 1 })
+                    .unwrap_or(1);
+                sess.destroy_view();
+                code
+            };
 
             let _ = handle.emit(
                 "terminal:exit",
@@ -522,12 +561,32 @@ impl NativeTerminalManager {
         Ok(())
     }
 
-    pub fn resize(&self, session_id: &str, x: f64, y: f64, width: f64, height: f64) -> Result<()> {
+    /// Record the frame a resize asks for, in the order requests arrive; `resize`
+    /// then applies whichever is latest.
+    pub fn request_resize(&self, session_id: &str, frame: Frame) -> Result<()> {
+        let session = self
+            .get_session(session_id)
+            .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
+        session.lock().unwrap_or_else(|e| e.into_inner()).frame = Some(frame);
+        Ok(())
+    }
+
+    /// Apply the latest requested frame. Blocking (waits on the main thread).
+    /// Resizes run on a thread pool in no set order, so each applies the latest
+    /// frame rather than its own: whichever runs last leaves the newest size.
+    pub fn resize(&self, session_id: &str) -> Result<()> {
         let session = self
             .get_session(session_id)
             .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
 
-        let session_cstr = Self::session_cstr(&session);
+        let _resizing = self.resizing.lock().unwrap_or_else(|e| e.into_inner());
+        let (session_cstr, frame) = {
+            let sess = session.lock().unwrap_or_else(|e| e.into_inner());
+            (sess.session_id_cstr.clone(), sess.frame)
+        };
+        let Some((x, y, width, height)) = frame else {
+            return Ok(());
+        };
 
         // Not under the session lock: this waits on the main thread
         // (`DispatchQueue.main.sync`), which must never wait on us.
@@ -601,22 +660,27 @@ impl NativeTerminalManager {
         };
 
         let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Destroy the SwiftTerm view
-        unsafe {
-            swift_term_destroy(sess.session_id_cstr.as_ptr());
-        }
-
-        // Free the callback context
-        if !sess.callback_context_ptr.is_null() {
-            let _ = unsafe { Box::from_raw(sess.callback_context_ptr as *mut CallbackContext) };
-            sess.callback_context_ptr = std::ptr::null_mut();
-        }
+        sess.destroy_view();
 
         // Kill the child process
         let _ = sess.child.kill();
         let _ = sess.child.wait();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_text;
+
+    #[test]
+    fn a_character_split_across_frames_is_held_for_the_next() {
+        let bytes = "a─b".as_bytes();
+        let mut carry = Vec::new();
+        assert_eq!(frame_text(&mut carry, &bytes[..2]), "a");
+        assert_eq!(frame_text(&mut carry, &bytes[2..]), "─b");
+        assert!(carry.is_empty());
+        assert_eq!(frame_text(&mut carry, b"\xff!"), "\u{fffd}!");
     }
 }

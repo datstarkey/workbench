@@ -892,7 +892,9 @@ async fn attach(
             }
             permit = session.input.reserve(), if pending.is_some() => {
                 // An error means the writer is gone (the shell exited): drop it.
-                if let (Ok(permit), Some(bytes)) = (permit, pending.take()) {
+                // So is input held past a takeover: it's no longer ours to type.
+                let current = session.attacher_epoch.load(Ordering::SeqCst) == my_epoch;
+                if let (Ok(permit), Some(bytes), true) = (permit, pending.take(), current) {
                     permit.send(bytes);
                 }
             }
