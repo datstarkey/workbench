@@ -47,7 +47,7 @@ use crate::agent::{
 };
 use crate::cwd::resolve_cwd;
 use crate::error::{ApiError, ApiResult};
-use crate::state::{wait_revoked, AppState};
+use crate::state::{wait_revoked, ws_close, ws_send, AppState};
 use crate::terminal::WsAuthQuery;
 
 #[derive(Debug, Deserialize)]
@@ -651,10 +651,13 @@ async fn stream(
 ) {
     let (snapshot, mut rx) = session.subscribe();
     let already_exited = session.has_exited();
-    if socket.send(Message::Text(snapshot)).await.is_err() || already_exited {
+    if !ws_send(&mut socket, Message::Text(snapshot)).await {
+        return;
+    }
+    if already_exited {
         // A finished session has nothing more to say; holding the socket open
         // would pin it (and its transcript) in memory.
-        let _ = socket.close().await;
+        ws_close(socket, None).await;
         return;
     }
     loop {
@@ -671,11 +674,11 @@ async fn stream(
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
                 let ended = frame.contains(r#""t":"exit""#) || frame.contains(r#""t":"replaced""#);
-                if socket.send(Message::Text(frame)).await.is_err() {
+                if ended {
+                    ws_close(socket, Some(Message::Text(frame))).await;
                     return;
                 }
-                if ended {
-                    let _ = socket.close().await;
+                if !ws_send(&mut socket, Message::Text(frame)).await {
                     return;
                 }
             }
@@ -693,7 +696,7 @@ async fn stream(
                         Err(e) => Some(json!({"t": "error", "message": e.to_string()})),
                     };
                     if let Some(frame) = frame {
-                        if socket.send(Message::Text(frame.to_string())).await.is_err() {
+                        if !ws_send(&mut socket, Message::Text(frame.to_string())).await {
                             return;
                         }
                     }
@@ -702,8 +705,7 @@ async fn stream(
                 Some(Ok(_)) => {}
             },
             _ = wait_revoked(&mut revoked) => {
-                let _ = socket.send(Message::Text(r#"{"t":"revoked"}"#.to_string())).await;
-                let _ = socket.close().await;
+                ws_close(socket, Some(Message::Text(r#"{"t":"revoked"}"#.to_string()))).await;
                 return;
             }
         }

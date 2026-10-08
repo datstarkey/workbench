@@ -49,13 +49,16 @@ use axum::{
 };
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::error::{ApiError, ApiResult};
-use crate::state::AppState;
+use crate::state::{ws_close, ws_send, AppState};
 
 /// Scrollback kept per session for replay on reattach.
 const BUFFER_CAP: usize = 256 * 1024;
+
+/// Input chunks (one per WS message) queued for a session's writer thread.
+const INPUT_QUEUE: usize = 64;
 
 /// Shell-readiness window for the startup command (see `wait_for_shell_prompt`).
 const STARTUP_FLOOR: Duration = Duration::from_millis(300);
@@ -101,7 +104,9 @@ pub struct TerminalMeta {
 struct TerminalSession {
     pane_id: Option<String>,
     meta: Mutex<TerminalMeta>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Input for the PTY, written in order by the session's writer thread
+    /// (`spawn_writer`). Never write the PTY directly: see there.
+    input: mpsc::Sender<Vec<u8>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     /// Ring buffer of recent output, replayed when a client (re)attaches.
@@ -234,7 +239,8 @@ impl TerminalManager {
 
         let master = pair.master;
         let reader = master.try_clone_reader()?;
-        let writer = master.take_writer()?;
+        let (input, input_rx) = mpsc::channel(INPUT_QUEUE);
+        spawn_writer(master.take_writer()?, input_rx);
 
         let id = uuid::Uuid::new_v4().to_string();
         let created_at = SystemTime::now()
@@ -257,7 +263,7 @@ impl TerminalManager {
         let session = Arc::new(TerminalSession {
             pane_id,
             meta: Mutex::new(meta.clone()),
-            writer: Mutex::new(writer),
+            input,
             master: Mutex::new(master),
             child: Mutex::new(child),
             buffer: Mutex::new(VecDeque::new()),
@@ -310,8 +316,9 @@ impl TerminalManager {
             let session = session.clone();
             std::thread::spawn(move || {
                 wait_for_shell_prompt(&session);
-                let mut w = lock(&session.writer);
-                let _ = workbench_core::shell::submit_line(&mut **w, &cmd);
+                let mut line = Vec::new();
+                let _ = workbench_core::shell::submit_line(&mut line, &cmd);
+                let _ = session.input.blocking_send(line);
             });
         }
 
@@ -342,13 +349,11 @@ impl TerminalManager {
         Some(String::from_utf8_lossy(&[head, tail].concat()).into_owned())
     }
 
-    /// Type into the terminal as an attached client would.
+    /// Type into the terminal as an attached client would. `false` when it's
+    /// gone or its input queue is full.
     pub fn type_keys(&self, id: &str, keys: &[u8]) -> bool {
-        let Some(session) = self.get(id) else {
-            return false;
-        };
-        let mut w = lock(&session.writer);
-        w.write_all(keys).and_then(|()| w.flush()).is_ok()
+        self.get(id)
+            .is_some_and(|session| session.input.try_send(keys.to_vec()).is_ok())
     }
 
     fn get(&self, id: &str) -> Option<Arc<TerminalSession>> {
@@ -781,8 +786,7 @@ async fn attach(
 ) {
     // An upgrade that raced the listener stopping must not kick the live attacher.
     if *revoked.borrow_and_update() {
-        let _ = socket.send(revoked_frame()).await;
-        let _ = socket.close().await;
+        ws_close(socket, Some(revoked_frame())).await;
         return;
     }
 
@@ -815,7 +819,7 @@ async fn attach(
     };
 
     // Replay scrollback so a resumed terminal shows its history.
-    if !replay.is_empty() && socket.send(Message::Binary(replay)).await.is_err() {
+    if !replay.is_empty() && !ws_send(&mut socket, Message::Binary(replay)).await {
         return;
     }
 
@@ -824,11 +828,14 @@ async fn attach(
     let mut done_rx = session.done_tx.subscribe();
     if *done_rx.borrow_and_update() {
         // Already dead: history is replayed; send exit frame then close.
-        let _ = socket.send(exit_frame(&session)).await;
-        let _ = socket.close().await;
+        ws_close(socket, Some(exit_frame(&session))).await;
         return;
     }
 
+    // Input the writer's queue had no room for. While it's held the socket isn't
+    // read, so a big paste into a shell that isn't reading pushes back on the
+    // client instead of blocking this task (output, takeover and revoke still flow).
+    let mut pending: Option<Vec<u8>> = None;
     loop {
         tokio::select! {
             // Epoch changed → our own send fires this once; a LATER attacher's send
@@ -841,34 +848,29 @@ async fn attach(
                 // A newer client has attached; we are the old one. Send the takeover
                 // control frame so the client knows it was displaced, then close the
                 // socket. Do NOT kill the PTY — it keeps running for the new attacher.
-                let _ = socket
-                    .send(Message::Text(r#"{"t":"takeover"}"#.to_string()))
-                    .await;
-                // Send a WS Close frame so the client can distinguish a clean kick from
-                // a dropped connection.
-                let _ = socket.close().await;
+                // Then a WS Close frame so the client can distinguish a clean kick
+                // from a dropped connection.
+                ws_close(socket, Some(Message::Text(r#"{"t":"takeover"}"#.to_string()))).await;
                 return;
             }
             _ = crate::state::wait_revoked(&mut revoked) => {
                 // The listener stopped (server mode off / token rotated): cut this
                 // client off. The PTY keeps running for other listeners' clients.
-                let _ = socket.send(revoked_frame()).await;
-                let _ = socket.close().await;
+                ws_close(socket, Some(revoked_frame())).await;
                 return;
             }
             _ = done_rx.changed() => {
                 // Shell exited or the session was killed → send exit frame (with the
                 // child's real exit code when available) then close so the client
                 // surfaces the end of the session instead of freezing.
-                let _ = socket.send(exit_frame(&session)).await;
                 // Explicit close so the client sees a proper WS close frame.
-                let _ = socket.close().await;
+                ws_close(socket, Some(exit_frame(&session))).await;
                 return;
             }
             out = rx.recv() => {
                 match out {
                     Ok(bytes) => {
-                        if socket.send(Message::Binary(bytes)).await.is_err() {
+                        if !ws_send(&mut socket, Message::Binary(bytes)).await {
                             break;
                         }
                     }
@@ -880,7 +882,7 @@ async fn attach(
                         let mut resync = Vec::with_capacity(snap.len() + 7);
                         resync.extend_from_slice(b"\x1b[2J\x1b[H");
                         resync.extend_from_slice(&snap);
-                        if socket.send(Message::Binary(resync)).await.is_err() {
+                        if !ws_send(&mut socket, Message::Binary(resync)).await {
                             break;
                         }
                         continue;
@@ -888,7 +890,13 @@ async fn attach(
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-            inbound = socket.recv() => {
+            permit = session.input.reserve(), if pending.is_some() => {
+                // An error means the writer is gone (the shell exited): drop it.
+                if let (Ok(permit), Some(bytes)) = (permit, pending.take()) {
+                    permit.send(bytes);
+                }
+            }
+            inbound = socket.recv(), if pending.is_none() => {
                 match inbound {
                     Some(Ok(Message::Text(t))) => {
                         // Only accept input from the current attacher (epoch guard).
@@ -897,11 +905,7 @@ async fn attach(
                             // fire shortly and clean up; ignore this input.
                         } else if let Ok(msg) = serde_json::from_str::<ClientMsg>(&t) {
                             match msg {
-                                ClientMsg::Input { d } => {
-                                    let mut w = lock(&session.writer);
-                                    let _ = w.write_all(d.as_bytes());
-                                    let _ = w.flush();
-                                }
+                                ClientMsg::Input { d } => pending = enqueue(&session, d.into_bytes()),
                                 ClientMsg::Resize { c, r } => {
                                     let _ = lock(&session.master).resize(PtySize {
                                         rows: r,
@@ -916,9 +920,7 @@ async fn attach(
                     Some(Ok(Message::Binary(b))) => {
                         // Only accept raw binary input from the current attacher.
                         if session.attacher_epoch.load(Ordering::SeqCst) == my_epoch {
-                            let mut w = lock(&session.writer);
-                            let _ = w.write_all(&b);
-                            let _ = w.flush();
+                            pending = enqueue(&session, b);
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -928,4 +930,31 @@ async fn attach(
         }
     }
     // Detach only — the shell keeps running so the session can be resumed.
+}
+
+/// Queue input for the writer thread; hands it back when the queue is full.
+fn enqueue(session: &TerminalSession, bytes: Vec<u8>) -> Option<Vec<u8>> {
+    match session.input.try_send(bytes) {
+        Err(mpsc::error::TrySendError::Full(bytes)) => Some(bytes),
+        // Closed: the shell is gone and the socket is about to hear so.
+        Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => None,
+    }
+}
+
+/// Write a session's input on its own thread. The PTY master blocks once the
+/// shell's input queue is full (a paste while a foreground job isn't reading),
+/// and that must never hold a tokio worker, or several such panes stall the server.
+/// Ends when the session (the only sender) is dropped or the PTY closes.
+fn spawn_writer(mut writer: Box<dyn Write + Send>, mut rx: mpsc::Receiver<Vec<u8>>) {
+    std::thread::spawn(move || {
+        while let Some(bytes) = rx.blocking_recv() {
+            if writer
+                .write_all(&bytes)
+                .and_then(|()| writer.flush())
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
 }

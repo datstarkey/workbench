@@ -1,5 +1,7 @@
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::extract::ws::{Message, WebSocket};
 use tokio::sync::watch;
 
 use crate::agent::AgentManager;
@@ -82,4 +84,28 @@ pub(crate) async fn wait_revoked(revoked: &mut watch::Receiver<bool>) {
             std::future::pending::<()>().await;
         }
     }
+}
+
+/// How long a WebSocket send may wait on a client that stopped reading (a
+/// backgrounded phone keeps its TCP connection open) before the socket is dropped.
+const WS_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Send one frame, giving up after [`WS_SEND_TIMEOUT`]. `false` means the socket
+/// is dead or stalled: the caller drops it rather than retry, so a pending send
+/// can't pin its task and keep a revoke or takeover from being delivered.
+pub(crate) async fn ws_send(socket: &mut WebSocket, msg: Message) -> bool {
+    matches!(
+        tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(msg)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Send a last frame (if any), then a close frame, both under the send timeout.
+pub(crate) async fn ws_close(mut socket: WebSocket, last: Option<Message>) {
+    if let Some(msg) = last {
+        if !ws_send(&mut socket, msg).await {
+            return;
+        }
+    }
+    let _ = tokio::time::timeout(WS_SEND_TIMEOUT, socket.close()).await;
 }
