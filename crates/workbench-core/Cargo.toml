@@ -17,12 +17,18 @@ getrandom = "0.4"
 if-addrs = "0.15"
 base64 = "0.22"
 chrono = { workspace = true }
-open = { version = "5.3", features = ["shellexecute-on-windows"] }
+portable-pty = { workspace = true }
 toml_edit = "0.20"
 gix = { version = "0.89", default-features = false, features = ["sha1"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+open = { version = "5.3", features = ["shellexecute-on-windows"] }
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

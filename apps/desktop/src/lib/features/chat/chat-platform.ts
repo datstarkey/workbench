@@ -1,12 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { open } from '@tauri-apps/plugin-shell';
+import { openUrl } from '$lib/utils/open-url';
 import type { ChatPlatform } from '@workbench/chat-ui';
 import type { ChatAttachment } from '$types/workbench';
 
 export const desktopChatPlatform: ChatPlatform = {
 	openLink(href) {
-		open(href).catch((error) => console.warn('[chat] could not open link', error));
+		void openUrl(href);
 	},
 
 	/** Tauri takes OS file drops before the page sees them; keep the ones over `node`. */

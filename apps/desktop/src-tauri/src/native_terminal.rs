@@ -347,10 +347,7 @@ impl NativeTerminalManager {
             }
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .context("Failed to spawn shell")?;
+        let child = workbench_core::pty::spawn(&pair, cmd).context("Failed to spawn shell")?;
 
         drop(pair.slave);
 
