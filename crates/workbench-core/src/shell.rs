@@ -89,6 +89,60 @@ pub fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<Strin
     Some(out)
 }
 
+/// Run `cmd` to completion with stdout and stderr captured, killing it at `timeout`
+/// (`ErrorKind::TimedOut`). Both pipes are drained on threads while it runs, so big
+/// output can't stall it; a grandchild holding a pipe open can't hang it past the deadline.
+pub fn run_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    fn drain<R: std::io::Read + Send + 'static>(
+        pipe: Option<R>,
+    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = pipe.read_to_end(&mut buf);
+                let _ = tx.send(buf);
+            });
+        }
+        rx
+    }
+
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now() + timeout;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("timed out after {}s", timeout.as_secs_f32()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_default()
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: collect(stdout),
+        stderr: collect(stderr),
+    })
+}
+
 /// Spawn a fire-and-forget child (`open`, `xdg-open`, …) and reap it on a
 /// background thread. Dropping a `Child` never waits on it, so without this each
 /// launch leaves a zombie in the process table for the lifetime of the app.
@@ -220,6 +274,29 @@ pub fn submit_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_kills_a_hung_child() {
+        let started = Instant::now();
+        let err =
+            run_with_timeout(command("sleep").arg("10"), Duration::from_millis(200)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_drains_output_bigger_than_a_pipe() {
+        let out = run_with_timeout(
+            command("sh").args(["-c", "head -c 300000 /dev/zero; echo err >&2"]),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 300_000);
+        assert_eq!(out.stderr, b"err\n");
+    }
 
     #[cfg(unix)]
     #[test]

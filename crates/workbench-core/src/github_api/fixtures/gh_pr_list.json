@@ -1,0 +1,167 @@
+[
+	{
+		"number": 14,
+		"title": "Behind main",
+		"state": "OPEN",
+		"url": "https://github.com/o/r/pull/14",
+		"isDraft": false,
+		"headRefName": "behind",
+		"reviewDecision": "APPROVED",
+		"mergeStateStatus": "BEHIND",
+		"statusCheckRollup": [
+			{
+				"__typename": "CheckRun",
+				"name": "build",
+				"workflowName": "CI",
+				"status": "COMPLETED",
+				"conclusion": "SUCCESS",
+				"startedAt": "2026-10-01T10:00:00Z",
+				"completedAt": "2026-10-01T10:05:00Z",
+				"detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"
+			}
+		]
+	},
+	{
+		"number": 13,
+		"title": "Draft work",
+		"state": "OPEN",
+		"url": "https://github.com/o/r/pull/13",
+		"isDraft": true,
+		"headRefName": "draft",
+		"reviewDecision": "",
+		"mergeStateStatus": "DRAFT",
+		"statusCheckRollup": []
+	},
+	{
+		"number": 12,
+		"title": "Pending checks",
+		"state": "OPEN",
+		"url": "https://github.com/o/r/pull/12",
+		"isDraft": false,
+		"headRefName": "pending",
+		"reviewDecision": "REVIEW_REQUIRED",
+		"mergeStateStatus": "BLOCKED",
+		"statusCheckRollup": [
+			{
+				"__typename": "CheckRun",
+				"name": "build",
+				"workflowName": "CI",
+				"status": "QUEUED",
+				"conclusion": "",
+				"startedAt": "0001-01-01T00:00:00Z",
+				"completedAt": "0001-01-01T00:00:00Z",
+				"detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"
+			},
+			{
+				"__typename": "StatusContext",
+				"context": "ci/legacy",
+				"state": "PENDING",
+				"targetUrl": "https://ci.example.com/1",
+				"startedAt": "2026-10-01T10:00:00Z"
+			}
+		]
+	},
+	{
+		"number": 11,
+		"title": "Failing checks",
+		"state": "OPEN",
+		"url": "https://github.com/o/r/pull/11",
+		"isDraft": false,
+		"headRefName": "failing",
+		"reviewDecision": "",
+		"mergeStateStatus": "UNSTABLE",
+		"statusCheckRollup": [
+			{
+				"__typename": "CheckRun",
+				"name": "build",
+				"workflowName": "CI",
+				"status": "COMPLETED",
+				"conclusion": "SUCCESS",
+				"startedAt": "2026-10-01T10:00:00Z",
+				"completedAt": "2026-10-01T10:05:00Z",
+				"detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"
+			},
+			{
+				"__typename": "CheckRun",
+				"name": "test",
+				"workflowName": "CI",
+				"status": "COMPLETED",
+				"conclusion": "FAILURE",
+				"startedAt": "2026-10-01T10:00:00Z",
+				"completedAt": "2026-10-01T10:05:00Z",
+				"detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"
+			}
+		]
+	},
+	{
+		"number": 10,
+		"title": "Passing checks",
+		"state": "OPEN",
+		"url": "https://github.com/o/r/pull/10",
+		"isDraft": false,
+		"headRefName": "passing",
+		"reviewDecision": "APPROVED",
+		"mergeStateStatus": "CLEAN",
+		"statusCheckRollup": [
+			{
+				"__typename": "CheckRun",
+				"name": "build",
+				"workflowName": "CI",
+				"status": "COMPLETED",
+				"conclusion": "FAILURE",
+				"startedAt": "2026-10-01T10:00:00Z",
+				"completedAt": "2026-10-01T10:05:00Z",
+				"detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"
+			},
+			{
+				"__typename": "CheckRun",
+				"name": "build",
+				"workflowName": "CI",
+				"status": "COMPLETED",
+				"conclusion": "SUCCESS",
+				"startedAt": "2026-10-01T11:00:00Z",
+				"completedAt": "2026-10-01T11:04:00Z",
+				"detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"
+			},
+			{
+				"__typename": "CheckRun",
+				"name": "kodiak",
+				"workflowName": "",
+				"status": "COMPLETED",
+				"conclusion": "NEUTRAL",
+				"startedAt": "2026-10-01T11:00:00Z",
+				"completedAt": "2026-10-01T11:04:00Z",
+				"detailsUrl": "https://kodiakhq.com/"
+			},
+			{
+				"__typename": "StatusContext",
+				"context": "vercel",
+				"state": "SUCCESS",
+				"targetUrl": "",
+				"startedAt": "2026-10-01T11:00:00Z"
+			}
+		]
+	},
+	{
+		"number": 9,
+		"title": "Merged",
+		"state": "MERGED",
+		"url": "https://github.com/o/r/pull/9",
+		"isDraft": false,
+		"headRefName": "old",
+		"reviewDecision": "",
+		"mergeStateStatus": "UNKNOWN",
+		"statusCheckRollup": [
+			{
+				"__typename": "CheckRun",
+				"name": "build",
+				"workflowName": "CI",
+				"status": "COMPLETED",
+				"conclusion": "SUCCESS",
+				"startedAt": "2026-10-01T10:00:00Z",
+				"completedAt": "2026-10-01T10:05:00Z",
+				"detailsUrl": "https://github.com/o/r/actions/runs/1/job/1"
+			}
+		]
+	}
+]

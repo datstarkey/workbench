@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -7,12 +8,17 @@ use crate::types::{
     GitHubProjectStatus, GitHubRemote, GitHubRepo, GitHubWorkflowRun, MergePrOptions,
 };
 
-fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
-    let output = crate::shell::tool("gh")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .context("Failed to run gh CLI")?;
+/// Reads run on the poll loop, and the poller waits for every project, so one hung
+/// `gh` would stall GitHub status everywhere. Mutations (merge, checkout) get longer.
+pub(crate) const GH_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const GH_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn gh_output(args: &[&str], cwd: &str, timeout: Duration) -> Result<String> {
+    let output = crate::shell::run_with_timeout(
+        crate::shell::tool("gh").args(args).current_dir(cwd),
+        timeout,
+    )
+    .context("Failed to run gh CLI")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -24,27 +30,70 @@ fn gh_output(args: &[&str], cwd: &str) -> Result<String> {
 
 pub fn is_gh_available() -> bool {
     let home = dirs::home_dir().unwrap_or_default();
-    crate::shell::tool("gh")
-        .args(["auth", "status"])
-        .current_dir(home)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    crate::shell::run_with_timeout(
+        crate::shell::tool("gh")
+            .args(["auth", "status"])
+            .current_dir(home),
+        GH_READ_TIMEOUT,
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false)
 }
 
 pub fn get_github_remote(path: &str) -> Result<GitHubRemote> {
     let url = crate::git::git_output(&["remote", "get-url", "origin"], path)?;
-    parse_github_remote(&url)
+    Ok(parse_github_remote_with_host(&url)?.0)
 }
 
+#[cfg(test)]
 fn parse_github_remote(url: &str) -> Result<GitHubRemote> {
+    Ok(parse_github_remote_with_host(url)?.0)
+}
+
+/// A git remote that points at GitHub, with its web host (`github.com`, or an
+/// Enterprise host, maybe with a port).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GitRemote {
+    pub name: String,
+    pub remote: GitHubRemote,
+    pub host: String,
+}
+
+/// Every GitHub remote of the checkout at `path`, from one `git remote -v`.
+pub(crate) fn github_remotes(path: &str) -> Result<Vec<GitRemote>> {
+    Ok(parse_remotes(&crate::git::git_output(
+        &["remote", "-v"],
+        path,
+    )?))
+}
+
+fn parse_remotes(remote_v: &str) -> Vec<GitRemote> {
+    remote_v
+        .lines()
+        .filter_map(|line| {
+            let (name, rest) = line.split_once(char::is_whitespace)?;
+            let url = rest.trim().strip_suffix("(fetch)")?.trim();
+            let (remote, host) = parse_github_remote_with_host(url).ok()?;
+            Some(GitRemote {
+                name: name.to_string(),
+                remote,
+                host,
+            })
+        })
+        .collect()
+}
+
+fn parse_github_remote_with_host(url: &str) -> Result<(GitHubRemote, String)> {
     let (host, owner, repo) = parse_github_remote_parts(url)?;
     let html_url = format!("https://{host}/{owner}/{repo}");
-    Ok(GitHubRemote {
-        owner,
-        repo,
-        html_url,
-    })
+    Ok((
+        GitHubRemote {
+            owner,
+            repo,
+            html_url,
+        },
+        host,
+    ))
 }
 
 fn parse_github_remote_parts(url: &str) -> Result<(String, String, String)> {
@@ -122,13 +171,16 @@ fn is_supported_github_host(host: &str) -> bool {
 /// PRs paired with per-PR check detail, keyed by PR number.
 type PrsWithChecks = (Vec<GitHubPR>, HashMap<u64, Vec<GitHubCheckDetail>>);
 
-fn fetch_pr_json(path: &str) -> Result<Vec<serde_json::Value>> {
+/// `gh pr list --json` for the fields every PR parser here reads; the API path
+/// (`github_api::fetch_pr_json`) produces this exact shape.
+pub(crate) fn fetch_pr_json(path: &str) -> Result<Vec<serde_json::Value>> {
     let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup,mergeStateStatus";
     let result = gh_output(
         &[
             "pr", "list", "--state", "all", "--limit", "100", "--json", fields,
         ],
         path,
+        GH_READ_TIMEOUT,
     );
 
     match result {
@@ -144,17 +196,12 @@ fn fetch_pr_json(path: &str) -> Result<Vec<serde_json::Value>> {
     }
 }
 
-pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
-    fetch_pr_json(path)?.iter().map(parse_pr_json).collect()
-}
-
 /// PRs **and** their per-check detail, both read out of a single `gh pr list` response.
 ///
 /// The rollup already carries every field `gh pr checks` returns, so fanning out one
 /// extra GraphQL call per open PR on every poll was pure duplication — measured at
 /// 1 point per open PR per poll, against a 5000/hr budget.
-pub fn list_project_prs_with_checks(path: &str) -> Result<PrsWithChecks> {
-    let raw = fetch_pr_json(path)?;
+pub(crate) fn prs_with_checks(raw: &[serde_json::Value]) -> Result<PrsWithChecks> {
     let prs = raw.iter().map(parse_pr_json).collect::<Result<Vec<_>>>()?;
 
     let pr_checks = raw
@@ -287,7 +334,11 @@ fn status_context_bucket(state: &str) -> &'static str {
 pub fn list_workflow_runs(path: &str) -> Vec<GitHubWorkflowRun> {
     let fields =
         "databaseId,name,displayTitle,headBranch,status,conclusion,url,event,createdAt,updatedAt";
-    let result = gh_output(&["run", "list", "--limit", "200", "--json", fields], path);
+    let result = gh_output(
+        &["run", "list", "--limit", "200", "--json", fields],
+        path,
+        GH_READ_TIMEOUT,
+    );
 
     match result {
         Ok(json_str) => {
@@ -376,37 +427,50 @@ fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
     derive_overall_status(passing, failing, pending)
 }
 
+/// One poll of a project's GitHub state. Reads go straight to the GitHub API (one
+/// GraphQL query for PRs and their checks, ETag-cached REST for workflow runs); each
+/// half falls back to the `gh` CLI on its own when the API path fails.
 pub fn get_project_status(path: &str) -> GitHubProjectStatus {
-    let remote = get_github_remote(path).ok();
+    let remotes = github_remotes(path).unwrap_or_default();
+    let Some(origin) = remotes.iter().find(|r| r.name == "origin") else {
+        return GitHubProjectStatus {
+            remote: None,
+            prs: vec![],
+            branch_runs: HashMap::new(),
+            pr_checks: HashMap::new(),
+        };
+    };
+    // The repo `gh` itself would read; with no clear answer, the CLI decides.
+    let api = crate::github_api::api_remote(path, &remotes);
 
-    // Fetch PRs and workflow runs in parallel — they're independent `gh` CLI calls.
-    // PR check detail comes back in the same response as the PRs themselves, so no
-    // per-PR follow-up call is needed.
-    let ((prs, pr_checks), workflow_runs) = if remote.is_some() {
-        std::thread::scope(|s| {
-            let prs_handle = s.spawn(|| {
-                list_project_prs_with_checks(path).unwrap_or_else(|e| {
+    let ((prs, pr_checks), workflow_runs) = std::thread::scope(|s| {
+        let prs_handle = s.spawn(|| {
+            api.as_ref()
+                .and_then(|r| crate::github_api::fetch_pr_json(path, r).ok())
+                .map_or_else(|| fetch_pr_json(path), Ok)
+                .and_then(|raw| prs_with_checks(&raw))
+                .unwrap_or_else(|e| {
                     log::warn!("[github] Failed to list PRs for {path}: {e}");
                     (vec![], HashMap::new())
                 })
-            });
-            let runs_handle = s.spawn(|| list_workflow_runs(path));
-            (
-                prs_handle
-                    .join()
-                    .unwrap_or_else(|_| (vec![], HashMap::new())),
-                runs_handle.join().unwrap_or_default(),
-            )
-        })
-    } else {
-        ((vec![], HashMap::new()), vec![])
-    };
-    let branch_runs = group_runs_by_branch(workflow_runs);
+        });
+        let runs_handle = s.spawn(|| {
+            api.as_ref()
+                .and_then(|r| crate::github_api::fetch_workflow_runs(path, r).ok())
+                .unwrap_or_else(|| list_workflow_runs(path))
+        });
+        (
+            prs_handle
+                .join()
+                .unwrap_or_else(|_| (vec![], HashMap::new())),
+            runs_handle.join().unwrap_or_default(),
+        )
+    });
 
     GitHubProjectStatus {
-        remote,
+        remote: Some(origin.remote.clone()),
         prs,
-        branch_runs,
+        branch_runs: group_runs_by_branch(workflow_runs),
         pr_checks,
     }
 }
@@ -488,6 +552,7 @@ pub fn list_pr_checks(path: &str, pr_number: u64) -> Result<Vec<GitHubCheckDetai
     let result = gh_output(
         &["pr", "checks", &pr_number.to_string(), "--json", fields],
         path,
+        GH_READ_TIMEOUT,
     );
 
     match result {
@@ -522,17 +587,26 @@ pub fn update_pr_branch(path: &str, pr_number: u64) -> Result<()> {
             "PUT",
         ],
         path,
+        GH_WRITE_TIMEOUT,
     )?;
     Ok(())
 }
 
 pub fn rerun_workflow(path: &str, run_id: u64) -> Result<()> {
-    gh_output(&["run", "rerun", &run_id.to_string(), "--failed"], path)?;
+    gh_output(
+        &["run", "rerun", &run_id.to_string(), "--failed"],
+        path,
+        GH_WRITE_TIMEOUT,
+    )?;
     Ok(())
 }
 
 pub fn mark_pr_ready(path: &str, pr_number: u64) -> Result<()> {
-    gh_output(&["pr", "ready", &pr_number.to_string()], path)?;
+    gh_output(
+        &["pr", "ready", &pr_number.to_string()],
+        path,
+        GH_WRITE_TIMEOUT,
+    )?;
     Ok(())
 }
 
@@ -556,7 +630,7 @@ pub fn merge_pr(path: &str, pr_number: u64, options: &MergePrOptions) -> Result<
         args.push("--auto");
     }
 
-    gh_output(&args, path)?;
+    gh_output(&args, path, GH_WRITE_TIMEOUT)?;
     Ok(())
 }
 
@@ -573,6 +647,7 @@ pub fn list_repos() -> Result<Vec<GitHubRepo>> {
             "--no-archived",
         ],
         &home.to_string_lossy(),
+        GH_READ_TIMEOUT,
     )?;
     serde_json::from_str(&json).map_err(|e| {
         anyhow::anyhow!(
@@ -583,7 +658,11 @@ pub fn list_repos() -> Result<Vec<GitHubRepo>> {
 }
 
 pub fn checkout_pr(path: &str, pr_number: u64) -> Result<()> {
-    gh_output(&["pr", "checkout", &pr_number.to_string()], path)?;
+    gh_output(
+        &["pr", "checkout", &pr_number.to_string()],
+        path,
+        GH_WRITE_TIMEOUT,
+    )?;
     Ok(())
 }
 
@@ -670,6 +749,28 @@ mod tests {
         assert_eq!(remote.html_url, "https://github.corp:8443/user/repo");
         let remote = parse_github_remote("https://github.com:443/user/repo.git").unwrap();
         assert_eq!(remote.html_url, "https://github.com/user/repo");
+    }
+
+    #[test]
+    fn parse_remotes_keeps_github_fetch_urls() {
+        let remotes = parse_remotes(
+            "origin\tgit@github.com:me/proj.git (fetch)\n\
+             origin\tgit@github.com:me/proj.git (push)\n\
+             upstream\thttps://github.com/org/proj.git (fetch)\n\
+             upstream\thttps://github.com/org/proj.git (push)\n\
+             mirror\thttps://gitlab.com/org/proj.git (fetch)\n",
+        );
+        let names: Vec<_> = remotes
+            .iter()
+            .map(|r| (r.name.as_str(), r.remote.owner.as_str(), r.host.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("origin", "me", "github.com"),
+                ("upstream", "org", "github.com")
+            ]
+        );
     }
 
     #[test]
