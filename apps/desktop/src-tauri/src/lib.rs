@@ -42,6 +42,15 @@ use hook_bridge::HookBridgeState;
 use refresh_dispatcher::RefreshDispatcher;
 use tauri::Manager;
 
+/// Run a command's blocking work (git, gh, file reads) on Tauri's blocking
+/// pool. A `command(async)` sync fn runs on the runtime's workers instead, so a
+/// burst of them held up every other command and event until they finished.
+pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|e| panic!("a blocking command failed: {e}"))
+}
+
 /// Build the invoke handler with all shared commands, plus native terminal
 /// commands on macOS. Uses a declarative macro to avoid duplicating the
 /// shared command list across cfg branches.

@@ -96,18 +96,24 @@ pub fn save_workspaces(
 }
 
 // Async: it reads every session file of every account, off the main thread.
-#[tauri::command(async)]
-pub fn discover_claude_sessions(
+#[tauri::command]
+pub async fn discover_claude_sessions(
     project_path: String,
 ) -> Result<Vec<DiscoveredClaudeSession>, String> {
-    claude_sessions::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        claude_sessions::discover_claude_sessions(&project_path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn claude_auth_status(
+#[tauri::command]
+pub async fn claude_auth_status(
     account_id: Option<String>,
 ) -> Result<claude_accounts::ClaudeAuthStatus, String> {
-    claude_accounts::auth_status(account_id.as_deref()).map_err(|e| e.to_string())
+    crate::blocking(move || {
+        claude_accounts::auth_status(account_id.as_deref()).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -143,34 +149,37 @@ pub fn list_claude_hooks_scripts() -> Result<Vec<HookScriptInfo>, String> {
     settings::list_hooks_scripts().map_err(|e| e.to_string())
 }
 
-#[tauri::command(async)]
-pub fn git_info(path: String) -> Result<GitInfo, String> {
-    git::git_info(&path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn git_info(path: String) -> Result<GitInfo, String> {
+    crate::blocking(move || git::git_info(&path).map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
-    git::list_worktrees(&path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
+    crate::blocking(move || git::list_worktrees(&path).map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
-    git::create_worktree(&request).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
+    crate::blocking(move || git::create_worktree(&request).map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn remove_worktree(
+#[tauri::command]
+pub async fn remove_worktree(
     repo_path: String,
     worktree_path: String,
     force: bool,
 ) -> Result<bool, String> {
-    git::remove_worktree(&repo_path, &worktree_path, force).map_err(|e| e.to_string())?;
-    Ok(true)
+    crate::blocking(move || {
+        git::remove_worktree(&repo_path, &worktree_path, force).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
-    git::list_branches(&path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn list_branches(path: String) -> Result<Vec<BranchInfo>, String> {
+    crate::blocking(move || git::list_branches(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -261,14 +270,14 @@ pub fn refresh_sandbox_runtime_settings(
 
 // GitHub integration commands
 
-#[tauri::command(async)]
-pub fn github_is_available() -> bool {
-    github::is_gh_available()
+#[tauri::command]
+pub async fn github_is_available() -> bool {
+    crate::blocking(move || github::is_gh_available()).await
 }
 
-#[tauri::command(async)]
-pub fn github_get_remote(path: String) -> Option<GitHubRemote> {
-    github::get_github_remote(&path).ok()
+#[tauri::command]
+pub async fn github_get_remote(path: String) -> Option<GitHubRemote> {
+    crate::blocking(move || github::get_github_remote(&path).ok()).await
 }
 
 #[tauri::command(async)]
@@ -291,61 +300,76 @@ fn emit_github_status(app_handle: &AppHandle, project_path: &str) {
     );
 }
 
-#[tauri::command(async)]
-pub fn github_refresh_project(
+#[tauri::command]
+pub async fn github_refresh_project(
     project_path: String,
     app_handle: AppHandle,
     poller: State<'_, GitHubPoller>,
 ) -> Result<bool, String> {
-    emit_github_status(&app_handle, &project_path);
     poller.defer_project(&project_path);
+    crate::blocking(move || emit_github_status(&app_handle, &project_path)).await;
     Ok(true)
 }
 
-#[tauri::command(async)]
-pub fn github_update_pr_branch(
+#[tauri::command]
+pub async fn github_update_pr_branch(
     project_path: String,
     pr_number: u64,
     app_handle: AppHandle,
 ) -> Result<bool, String> {
-    github::update_pr_branch(&project_path, pr_number).map_err(|e| e.to_string())?;
-    emit_github_status(&app_handle, &project_path);
-    Ok(true)
+    crate::blocking(move || {
+        github::update_pr_branch(&project_path, pr_number).map_err(|e| e.to_string())?;
+        emit_github_status(&app_handle, &project_path);
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_rerun_workflow(project_path: String, run_id: u64) -> Result<bool, String> {
-    github::rerun_workflow(&project_path, run_id).map_err(|e| e.to_string())?;
-    Ok(true)
+#[tauri::command]
+pub async fn github_rerun_workflow(project_path: String, run_id: u64) -> Result<bool, String> {
+    crate::blocking(move || {
+        github::rerun_workflow(&project_path, run_id).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_mark_pr_ready(
+#[tauri::command]
+pub async fn github_mark_pr_ready(
     project_path: String,
     pr_number: u64,
     app_handle: AppHandle,
 ) -> Result<bool, String> {
-    github::mark_pr_ready(&project_path, pr_number).map_err(|e| e.to_string())?;
-    emit_github_status(&app_handle, &project_path);
-    Ok(true)
+    crate::blocking(move || {
+        github::mark_pr_ready(&project_path, pr_number).map_err(|e| e.to_string())?;
+        emit_github_status(&app_handle, &project_path);
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_merge_pr(
+#[tauri::command]
+pub async fn github_merge_pr(
     project_path: String,
     pr_number: u64,
     options: crate::types::MergePrOptions,
     app_handle: AppHandle,
 ) -> Result<bool, String> {
-    github::merge_pr(&project_path, pr_number, &options).map_err(|e| e.to_string())?;
-    emit_github_status(&app_handle, &project_path);
-    Ok(true)
+    crate::blocking(move || {
+        github::merge_pr(&project_path, pr_number, &options).map_err(|e| e.to_string())?;
+        emit_github_status(&app_handle, &project_path);
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn delete_branch(repo_path: String, branch: String, force: bool) -> Result<bool, String> {
-    git::delete_branch(&repo_path, &branch, force).map_err(|e| e.to_string())?;
-    Ok(true)
+#[tauri::command]
+pub async fn delete_branch(repo_path: String, branch: String, force: bool) -> Result<bool, String> {
+    crate::blocking(move || {
+        git::delete_branch(&repo_path, &branch, force).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -356,24 +380,30 @@ pub fn open_url(url: String) -> Result<bool, String> {
 
 // GitHub clone + PR actions
 
-#[tauri::command(async)]
-pub fn github_list_repos() -> Result<Vec<GitHubRepo>, String> {
-    github::list_repos().map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn github_list_repos() -> Result<Vec<GitHubRepo>, String> {
+    crate::blocking(move || github::list_repos().map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn github_checkout_pr(project_path: String, pr_number: u64) -> Result<(), String> {
-    github::checkout_pr(&project_path, pr_number).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn github_checkout_pr(project_path: String, pr_number: u64) -> Result<(), String> {
+    crate::blocking(move || {
+        github::checkout_pr(&project_path, pr_number).map_err(|e| e.to_string())
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn github_fetch_pr_branch(project_path: String, branch: String) -> Result<(), String> {
-    github::fetch_pr_branch(&project_path, &branch).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn github_fetch_pr_branch(project_path: String, branch: String) -> Result<(), String> {
+    crate::blocking(move || {
+        github::fetch_pr_branch(&project_path, &branch).map_err(|e| e.to_string())
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
-    git::clone_repo(&url, &dest_path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn clone_repo(url: String, dest_path: String) -> Result<(), String> {
+    crate::blocking(move || git::clone_repo(&url, &dest_path).map_err(|e| e.to_string())).await
 }
 
 // Integration check/apply commands
@@ -419,14 +449,17 @@ pub fn clear_hook_logs(hook_bridge: State<'_, HookBridgeState>) -> Result<(), St
 
 // Native terminal availability check
 
-#[tauri::command(async)]
-pub fn is_native_terminal_available() -> bool {
-    cfg!(target_os = "macos")
+#[tauri::command]
+pub async fn is_native_terminal_available() -> bool {
+    crate::blocking(move || cfg!(target_os = "macos")).await
 }
 
-#[tauri::command(async)]
-pub fn get_package_info(path: String) -> Result<Option<PackageInfo>, String> {
-    package_scripts::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn get_package_info(path: String) -> Result<Option<PackageInfo>, String> {
+    crate::blocking(move || {
+        package_scripts::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {

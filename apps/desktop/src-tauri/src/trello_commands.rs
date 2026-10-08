@@ -93,34 +93,46 @@ pub async fn trello_remove_label(card_id: String, label_id: String) -> Result<bo
 
 // Config commands
 
-#[tauri::command(async)]
-pub fn trello_load_credentials() -> Result<Option<TrelloCredentials>, String> {
-    config::load_credentials().map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn trello_load_credentials() -> Result<Option<TrelloCredentials>, String> {
+    crate::blocking(move || config::load_credentials().map_err(|e| e.to_string())).await
 }
 
-#[tauri::command(async)]
-pub fn trello_save_credentials(api_key: String, token: String) -> Result<bool, String> {
-    let creds = TrelloCredentials { api_key, token };
-    config::save_credentials(&creds).map_err(|e| e.to_string())?;
-    Ok(true)
+#[tauri::command]
+pub async fn trello_save_credentials(api_key: String, token: String) -> Result<bool, String> {
+    crate::blocking(move || {
+        let creds = TrelloCredentials { api_key, token };
+        config::save_credentials(&creds).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn trello_disconnect() -> Result<bool, String> {
-    config::delete_credentials().map_err(|e| e.to_string())?;
-    Ok(true)
+#[tauri::command]
+pub async fn trello_disconnect() -> Result<bool, String> {
+    crate::blocking(move || {
+        config::delete_credentials().map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn trello_load_project_config(project_path: String) -> Result<TrelloProjectConfig, String> {
-    config::load_project_config(&project_path).map_err(|e| e.to_string())
+#[tauri::command]
+pub async fn trello_load_project_config(
+    project_path: String,
+) -> Result<TrelloProjectConfig, String> {
+    crate::blocking(move || config::load_project_config(&project_path).map_err(|e| e.to_string()))
+        .await
 }
 
-#[tauri::command(async)]
-pub fn trello_save_project_config(
+#[tauri::command]
+pub async fn trello_save_project_config(
     project_path: String,
     config: TrelloProjectConfig,
 ) -> Result<bool, String> {
-    config::save_project_config(&project_path, &config).map_err(|e| e.to_string())?;
-    Ok(true)
+    crate::blocking(move || {
+        config::save_project_config(&project_path, &config).map_err(|e| e.to_string())?;
+        Ok(true)
+    })
+    .await
 }
