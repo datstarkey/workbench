@@ -140,7 +140,7 @@ const DEFAULT_OPTS = {
 };
 
 /** Flush all pending microtasks so that async code awaiting resolved Promises proceeds. */
-async function flushMicrotasks(times = 12): Promise<void> {
+async function flushMicrotasks(times = 5): Promise<void> {
 	for (let i = 0; i < times; i++) {
 		await Promise.resolve();
 	}
@@ -574,7 +574,7 @@ describe('TerminalConnection', () => {
 			const p = conn.connect(DEFAULT_OPTS, 'stale-id');
 			// Two fetches (GET list miss → POST create), each with a .json() await,
 			// so flush more microtasks before the WebSocket is constructed.
-			await flushMicrotasks(24);
+			await flushMicrotasks(12);
 			FakeWebSocket._last!.openWs();
 			await p;
 
