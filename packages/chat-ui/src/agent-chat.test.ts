@@ -99,6 +99,16 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('keeps the last meta through updates that carry none', async () => {
+		const { chat, ws } = await connected();
+		ws.emit({ t: 'update', changes: [], meta: meta(true) });
+		ws.emit({ t: 'update', changes: [[0, { kind: 'text', id: 'm1:0', text: 'Hi' }]] });
+		expect(chat.items).toEqual([{ kind: 'text', id: 'm1:0', text: 'Hi' }]);
+		expect(chat.meta?.busy).toBe(true);
+		expect(chat.busySince).not.toBeNull();
+		chat.dispose();
+	});
+
 	it('matches a slash command echoed with its spaces collapsed', async () => {
 		const { chat, ws } = await connected();
 		chat.prompt('/code-review  check it');

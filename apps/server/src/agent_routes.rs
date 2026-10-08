@@ -159,7 +159,8 @@ fn claude_start(
 }
 
 fn start_reply(session: &AgentSession) -> Value {
-    json!({"sessionId": session.id(), "terminalId": session.summary().terminal_id})
+    let terminal = session.mod_link().and_then(|l| l.terminal_id.clone());
+    json!({"sessionId": session.id(), "terminalId": terminal})
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,8 +243,20 @@ fn attach_only(state: &AppState, id: &str) -> Response {
     }
 }
 
-pub async fn agent_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
-    Json(state.agents.summaries(None))
+/// Off the async workers: a summary takes each session's driver lock, which a
+/// busy session may hold for a while (a snapshot, a long line).
+async fn summaries(
+    state: &AppState,
+    kind: Option<AgentKind>,
+) -> ApiResult<Json<Vec<AgentSummary>>> {
+    let agents = state.agents.clone();
+    crate::routes::blocking(move || Ok(agents.summaries(kind)))
+        .await
+        .map(Json)
+}
+
+pub async fn agent_list(State(state): State<AppState>) -> ApiResult<Json<Vec<AgentSummary>>> {
+    summaries(&state, None).await
 }
 
 #[derive(Deserialize)]
@@ -279,12 +292,12 @@ pub async fn agent_attention(
     }
 }
 
-pub async fn claude_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
-    Json(state.agents.summaries(Some(AgentKind::Claude)))
+pub async fn claude_list(State(state): State<AppState>) -> ApiResult<Json<Vec<AgentSummary>>> {
+    summaries(&state, Some(AgentKind::Claude)).await
 }
 
-pub async fn codex_list(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
-    Json(state.agents.summaries(Some(AgentKind::Codex)))
+pub async fn codex_list(State(state): State<AppState>) -> ApiResult<Json<Vec<AgentSummary>>> {
+    summaries(&state, Some(AgentKind::Codex)).await
 }
 
 pub async fn agent_message(
@@ -382,23 +395,32 @@ pub async fn agent_usage(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AttachQuery {
+    /// `changed`: `update` frames carry `meta` only when it changed. Clients
+    /// that don't say so get it on every one, as they always have.
+    meta: Option<String>,
+}
+
 pub async fn agent_attach(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
     Query(auth): Query<WsAuthQuery>,
+    Query(opts): Query<AttachQuery>,
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
     crate::auth::authorize_ws(&headers, auth.token.as_deref(), &state)?;
     let session = find(&state, &id)?;
     let revoked = state.revoked.clone();
+    let every_meta = opts.meta.as_deref() != Some("changed");
     // A prompt can carry 10 images of up to ~6.7 MB base64 each and 5 PDFs of
     // ~13.4 MB; the default 16 MiB frame limit would drop the socket instead
     // of the prompt.
     Ok(ws
         .max_frame_size(MAX_PROMPT_BYTES)
         .max_message_size(MAX_PROMPT_BYTES)
-        .on_upgrade(move |socket| stream(socket, state, session, revoked)))
+        .on_upgrade(move |socket| stream(socket, state, session, revoked, every_meta)))
 }
 
 const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
@@ -648,8 +670,11 @@ async fn stream(
     state: AppState,
     session: Arc<AgentSession>,
     mut revoked: watch::Receiver<bool>,
+    every_meta: bool,
 ) {
-    let (snapshot, mut rx) = session.subscribe();
+    let Some((snapshot, mut rx)) = subscribe(&session).await else {
+        return;
+    };
     let already_exited = session.has_exited();
     if !ws_send(&mut socket, Message::Text(snapshot)).await {
         return;
@@ -663,17 +688,18 @@ async fn stream(
     loop {
         tokio::select! {
             frame = rx.recv() => {
-                let frame = match frame {
-                    Ok(frame) => frame,
+                let (frame, ended) = match frame {
+                    Ok(frame) => (frame.render(every_meta).into_owned(), frame.ends()),
                     // Fell behind: start over from a fresh snapshot.
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        let (snapshot, fresh) = session.subscribe();
+                        let Some((snapshot, fresh)) = subscribe(&session).await else {
+                            return;
+                        };
                         rx = fresh;
-                        snapshot
+                        (snapshot, false)
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
-                let ended = frame.contains(r#""t":"exit""#) || frame.contains(r#""t":"replaced""#);
                 if ended {
                     ws_close(socket, Some(Message::Text(frame))).await;
                     return;
@@ -712,6 +738,16 @@ async fn stream(
     }
 }
 
+/// The snapshot is built under the session's driver lock: off the async workers.
+async fn subscribe(
+    session: &Arc<AgentSession>,
+) -> Option<(String, broadcast::Receiver<Arc<crate::agent::Frame>>)> {
+    let session = session.clone();
+    tokio::task::spawn_blocking(move || session.subscribe())
+        .await
+        .ok()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FilesQuery {
@@ -727,4 +763,61 @@ pub async fn agent_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<Vec<Stri
     })
     .await
     .map(Json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::ModGrant;
+
+    /// A session's driver lock is held for as long as its holder needs (a
+    /// snapshot of a long chat): the list must not wait for it on an async
+    /// worker, which would stall every other request on that worker.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn the_session_list_doesnt_block_a_worker_on_a_busy_session() {
+        let state = AppState::new(
+            crate::Managers::default(),
+            None,
+            tokio::sync::watch::channel(false).1,
+        );
+        let token = state
+            .agents
+            .grant_mod(ModGrant {
+                pane_id: None,
+                project_path: "/tmp".into(),
+                worktree_path: None,
+                claude_account_id: None,
+                cwd: "/tmp".into(),
+                hook_socket: None,
+                resume_at: None,
+                permission_mode: None,
+                terminal_id: None,
+            })
+            .unwrap();
+        let session = state
+            .agents
+            .attach_mod(&token, "0d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5")
+            .unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _driver = session.hold_driver();
+            held_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(600));
+        });
+        held_rx.recv().unwrap();
+
+        let list = tokio::spawn(agent_list(State(state.clone())));
+        let started = Instant::now();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "the worker was blocked for {:?}",
+            started.elapsed()
+        );
+        let Ok(Json(listed)) = list.await.unwrap() else {
+            panic!("the list failed");
+        };
+        assert_eq!(listed.len(), 1, "answers once the lock is free");
+        holder.join().unwrap();
+    }
 }

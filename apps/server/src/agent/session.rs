@@ -21,6 +21,7 @@ use workbench_core::claude_transcript::{
 
 use super::cache::{self, CachePolicy, PolicyStore, Upkeep};
 use super::driver::{Driver, Effects, Launch};
+use super::frames::{Frame, Frames};
 use super::modlink::ModLink;
 use super::{lock, now_ms, AgentKind, AgentSummary, PromptFile, PromptImage, StartAgent};
 
@@ -63,7 +64,11 @@ pub struct AgentSession {
     turn_ended_at: Mutex<Option<u64>>,
     /// The running (or next) turn is a cache keep-alive, so its end isn't recorded.
     keepalive_turn: AtomicBool,
-    tx: broadcast::Sender<String>,
+    frames: Frames,
+    /// Held by whatever changes the driver (lines, client messages) across
+    /// work done outside the driver lock, so readers (the session list, an
+    /// attach) never wait on file IO while changes still apply in order.
+    writer: Mutex<()>,
     stdin: Mutex<Option<ChildStdin>>,
     outgoing: Mutex<Option<mpsc::SyncSender<String>>>,
     outgoing_bytes: AtomicUsize,
@@ -273,7 +278,6 @@ impl AgentSession {
             _ => CachePolicy::default(),
         };
         let (stdin, link) = io;
-        let (tx, _) = broadcast::channel(256);
         let (outgoing, receiver) = if stdin.is_some() {
             let (tx, rx) = mpsc::sync_channel::<String>(128);
             (Some(tx), Some(rx))
@@ -295,7 +299,8 @@ impl AgentSession {
             updated_at: AtomicU64::new(now_ms()),
             turn_ended_at: Mutex::new(None),
             keepalive_turn: AtomicBool::new(false),
-            tx,
+            frames: Frames::new(),
+            writer: Mutex::new(()),
             stdin: Mutex::new(stdin),
             outgoing: Mutex::new(outgoing),
             outgoing_bytes: AtomicUsize::new(0),
@@ -317,6 +322,10 @@ impl AgentSession {
             transcript_path: Mutex::new(None),
             early_ttl_reads: Mutex::new((String::new(), EARLY_TTL_READS)),
         });
+        let flusher = Arc::downgrade(&session);
+        session
+            .frames
+            .start_flusher(move || flusher.upgrade().map(|s| s.flush()).is_some());
         if let Some(receiver) = receiver {
             let writer = Arc::downgrade(&session);
             std::thread::spawn(move || {
@@ -360,7 +369,7 @@ impl AgentSession {
 
     /// Whether any client (desktop chat pane, phone) is attached.
     pub fn has_viewers(&self) -> bool {
-        self.tx.receiver_count() > 0
+        self.frames.has_receivers()
     }
 
     pub fn claude_account_id(&self) -> Option<String> {
@@ -439,6 +448,14 @@ impl AgentSession {
 
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    /// Block until the session has exited, or `timeout` passed.
+    pub(super) fn wait_exited(&self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while !self.has_exited() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     pub fn id(&self) -> String {
@@ -542,7 +559,7 @@ impl AgentSession {
                 bail!("the session has stopped");
             }
             if !link.answer(msg) {
-                link.push(msg.clone());
+                link.push(msg.clone())?;
             }
             return Ok(());
         }
@@ -577,7 +594,7 @@ impl AgentSession {
     }
 
     fn fail_io(&self, what: &str, error: impl std::fmt::Display) {
-        let _ = self.tx.send(
+        self.frames.fail(
             json!({"t":"error","message":format!("Invalid {} {what}: {error}", self.program)})
                 .to_string(),
         );
@@ -598,17 +615,18 @@ impl AgentSession {
     /// Publish changes and enqueue effects in protocol order under the driver
     /// lock. Only the separate pipe writer performs blocking process IO.
     fn run(&self, op: impl FnOnce(&mut Driver) -> Result<Effects>) -> Result<()> {
+        let _writer = lock(&self.writer);
         let mut d = lock(&self.driver);
         let effects = op(&mut d)?;
         for frame in &effects.frames {
-            let _ = self.tx.send(frame.to_string());
+            self.frames.emit(d.view(), frame.to_string());
         }
         if let Some(ready) = effects.ready {
             self.set_ready(ready);
         }
         if effects.snapshot {
             self.touch(d.view());
-            let _ = self.tx.send(self.snapshot(d.view()));
+            self.broadcast_snapshot(d.view());
         } else if effects.meta || !effects.items.is_empty() {
             self.broadcast_update(d.view(), &effects.items);
         }
@@ -712,8 +730,7 @@ impl AgentSession {
         }
         *lock(&self.cache_policy) = policy.clone();
         self.cache_policies.set(&self.id(), &policy);
-        let _ = self
-            .tx
+        self.frames
             .send(json!({"t": "cachePolicy", "policy": policy}).to_string());
         Ok(())
     }
@@ -864,9 +881,10 @@ impl AgentSession {
 
     /// The attach snapshot and a receiver for every later frame, taken under
     /// the driver lock so no update falls between them.
-    pub fn subscribe(&self) -> (String, broadcast::Receiver<String>) {
+    /// Blocking: builds the snapshot under the driver lock.
+    pub fn subscribe(&self) -> (String, broadcast::Receiver<Arc<Frame>>) {
         let d = lock(&self.driver);
-        let rx = self.tx.subscribe();
+        let rx = self.frames.subscribe();
         (self.snapshot(d.view()), rx)
     }
 
@@ -892,10 +910,11 @@ impl AgentSession {
     /// conversation — before any client hears of it, so a start or attach
     /// with the new id can never open a second process.
     pub(super) fn apply_line(&self, line: &str, alias: impl FnOnce(&str, bool)) {
+        let _writer = lock(&self.writer);
         let mut d = lock(&self.driver);
         let effects = d.apply_line(line);
         for frame in &effects.frames {
-            let _ = self.tx.send(frame.to_string());
+            self.frames.emit(d.view(), frame.to_string());
         }
         for msg in &effects.send {
             if let Err(e) = self.send(msg) {
@@ -907,7 +926,7 @@ impl AgentSession {
         }
         if effects.commands {
             let frame = json!({"t": "commands", "commands": d.view().commands()});
-            let _ = self.tx.send(frame.to_string());
+            self.frames.emit(d.view(), frame.to_string());
         }
         if let Some(new_id) = effects.new_id {
             let old_id = self.id();
@@ -928,12 +947,20 @@ impl AgentSession {
                 }
             }
             alias(&new_id, effects.resumed);
-            // `/resume` continues a conversation that has history; `/clear`'s has none yet.
-            if let (Driver::Claude(t), Some(path)) = (&mut *d, self.history_path()) {
-                t.resume_history(&path);
+            // `/resume` continues a conversation that has history; `/clear`'s has
+            // none yet. Read outside the driver lock (`writer` keeps the order).
+            if matches!(&*d, Driver::Claude(_)) {
+                drop(d);
+                let loaded = self
+                    .history_path()
+                    .map(|path| workbench_core::claude_transcript::Transcript::load(&path));
+                d = lock(&self.driver);
+                if let (Driver::Claude(t), Some(loaded)) = (&mut *d, loaded) {
+                    t.resume_loaded(loaded);
+                }
             }
             self.touch(d.view());
-            let _ = self.tx.send(self.snapshot(d.view()));
+            self.broadcast_snapshot(d.view());
             return;
         }
         let view = d.view();
@@ -942,22 +969,27 @@ impl AgentSession {
         }
         if effects.snapshot {
             self.touch(view);
-            let _ = self.tx.send(self.snapshot(view));
+            self.broadcast_snapshot(view);
         } else if !effects.items.is_empty() || effects.meta {
             self.broadcast_update(view, &effects.items);
         }
     }
 
-    /// Frames go out while the driver lock is held, so their order matches
-    /// the order changes were applied in.
+    /// Note changes for the next coalesced `update` frame (see `frames`).
+    /// Under the driver lock.
     fn broadcast_update(&self, t: &dyn ChatView, changed: &[usize]) {
         self.touch(t);
-        let mut indices = changed.to_vec();
-        indices.sort_unstable();
-        indices.dedup();
-        let changes: Vec<Value> = indices.iter().map(|&i| json!([i, &t.items()[i]])).collect();
-        let frame = json!({"t": "update", "changes": changes, "meta": t.meta()});
-        let _ = self.tx.send(frame.to_string());
+        self.frames.mark(changed);
+    }
+
+    fn flush(&self) {
+        let d = lock(&self.driver);
+        self.frames.flush(d.view());
+    }
+
+    /// Every client gets the whole state again. Under the driver lock.
+    fn broadcast_snapshot(&self, t: &dyn ChatView) {
+        self.frames.snapshot(self.snapshot(t));
     }
 
     fn touch(&self, t: &dyn ChatView) {
@@ -1015,7 +1047,9 @@ impl AgentSession {
             let ended = self.ended.load(Ordering::SeqCst);
             json!({"t": "exit", "code": code, "message": message, "ended": ended})
         };
-        let _ = self.tx.send(frame.to_string());
+        // The reply's last changes go out before its end.
+        self.flush();
+        self.frames.end(frame.to_string());
     }
 
     /// Interrupt, close stdin, and kill the process (and its group) if it
@@ -1093,6 +1127,18 @@ fn bounded_line(reader: &mut impl BufRead, limit: usize) -> std::io::Result<Opti
         .map(Some)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
+
+#[cfg(test)]
+impl AgentSession {
+    /// Hold the driver lock as a busy session would.
+    pub(crate) fn hold_driver(&self) -> impl Sized + '_ {
+        lock(&self.driver)
+    }
+}
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod frame_tests;
 
 #[cfg(test)]
 mod line_tests {

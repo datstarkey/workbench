@@ -17,6 +17,10 @@ use super::lock;
 
 /// No poll for this long: the terminal's `claude` has gone.
 const STALE: Duration = Duration::from_secs(45);
+/// What may wait for a plugin that isn't polling. Attachments are files, so a
+/// prompt is its text: these only bound a stuck link, not a normal turn.
+const QUEUE_LINES: usize = 256;
+const QUEUE_BYTES: usize = 16 * 1024 * 1024;
 
 /// What a terminal's token lets its plugin attach as.
 #[derive(Clone, Debug)]
@@ -41,7 +45,7 @@ pub struct ModLink {
     pub token: String,
     /// The server terminal whose `claude` this is, when known.
     pub terminal_id: Option<String>,
-    queue: Mutex<VecDeque<Value>>,
+    queue: Mutex<Queue>,
     notify: Notify,
     last_seen: Mutex<Instant>,
     /// Approvals the plugin waits on (`/mod/ask`), by request id.
@@ -50,6 +54,13 @@ pub struct ModLink {
     /// What the terminal's own dialogs ask, oldest first: what the session
     /// waits on until the plugin says it was answered or the turn ends.
     in_terminal: Mutex<Vec<(WaitingSummary, Clears)>>,
+}
+
+/// Lines waiting for the plugin's poll, with their size.
+#[derive(Default)]
+struct Queue {
+    lines: VecDeque<(Value, usize)>,
+    bytes: usize,
 }
 
 struct Ask {
@@ -77,7 +88,7 @@ impl ModLink {
         Self {
             token,
             terminal_id,
-            queue: Mutex::new(VecDeque::new()),
+            queue: Mutex::default(),
             notify: Notify::new(),
             last_seen: Mutex::new(Instant::now()),
             asks: Mutex::new(HashMap::new()),
@@ -244,20 +255,38 @@ impl ModLink {
         }
     }
 
-    pub fn push(&self, line: Value) {
-        lock(&self.queue).push_back(line);
+    /// Queue a line for the plugin's next poll; refused while the queue is
+    /// full, which only happens while the plugin isn't polling (a stuck or
+    /// gone `claude`, until its link goes stale).
+    pub fn push(&self, line: Value) -> anyhow::Result<()> {
+        let bytes = line.to_string().len();
+        let mut queue = lock(&self.queue);
+        // One line of any size gets through: a long paste isn't a stuck link.
+        let full = queue.lines.len() >= QUEUE_LINES || queue.bytes + bytes > QUEUE_BYTES;
+        if full && !queue.lines.is_empty() {
+            anyhow::bail!(
+                "Claude isn't reading chat input ({} messages wait in its terminal). Check the terminal, or restart the chat.",
+                queue.lines.len()
+            );
+        }
+        queue.bytes += bytes;
+        queue.lines.push_back((line, bytes));
+        drop(queue);
         self.notify.notify_one();
+        Ok(())
     }
 
     /// The queued lines, waiting up to `wait` for the first.
     pub async fn take(&self, wait: Duration) -> Vec<Value> {
         self.touch();
         let notified = self.notify.notified();
-        if lock(&self.queue).is_empty() {
+        if lock(&self.queue).lines.is_empty() {
             let _ = tokio::time::timeout(wait, notified).await;
         }
         self.touch();
-        lock(&self.queue).drain(..).collect()
+        let mut queue = lock(&self.queue);
+        queue.bytes = 0;
+        queue.lines.drain(..).map(|(line, _)| line).collect()
     }
 
     pub fn touch(&self) {
@@ -278,9 +307,31 @@ mod tests {
     async fn take_returns_queued_lines_or_times_out_empty() {
         let link = ModLink::new("t".into(), None);
         assert!(link.take(Duration::from_millis(20)).await.is_empty());
-        link.push(json!({"a": 1}));
-        link.push(json!({"b": 2}));
+        link.push(json!({"a": 1})).unwrap();
+        link.push(json!({"b": 2})).unwrap();
         assert_eq!(link.take(Duration::from_secs(5)).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_link_nobody_polls_refuses_lines_once_full_until_a_poll_drains_it() {
+        let link = ModLink::new("t".into(), None);
+        let big = json!({"text": "x".repeat(QUEUE_BYTES + 1)});
+        link.push(big.clone())
+            .expect("one line of any size gets through");
+        let err = link.push(json!({"a": 1})).unwrap_err().to_string();
+        assert!(err.contains("isn't reading chat input"), "{err}");
+        assert_eq!(link.take(Duration::from_millis(20)).await, vec![big]);
+
+        for i in 0..QUEUE_LINES {
+            link.push(json!({ "i": i })).unwrap();
+        }
+        assert!(link.push(json!({"over": true})).is_err(), "too many lines");
+        assert_eq!(
+            link.take(Duration::from_millis(20)).await.len(),
+            QUEUE_LINES
+        );
+        link.push(json!({"after": true}))
+            .expect("drained: room again");
     }
 
     fn waiting(id: &str) -> WaitingSummary {
@@ -412,7 +463,7 @@ mod tests {
         let waiter = link.clone();
         let task = tokio::spawn(async move { waiter.take(Duration::from_secs(5)).await });
         tokio::time::sleep(Duration::from_millis(20)).await;
-        link.push(json!({"type": "user"}));
+        link.push(json!({"type": "user"})).unwrap();
         assert_eq!(task.await.unwrap(), vec![json!({"type": "user"})]);
     }
 }

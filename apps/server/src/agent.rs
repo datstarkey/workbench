@@ -21,12 +21,14 @@ mod cache;
 mod claude;
 mod codex;
 mod driver;
+mod frames;
 mod modlink;
 mod session;
 
 pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
 pub use cache::CachePolicy;
 pub(crate) use claude::validate as validate_claude_session_id;
+pub use frames::Frame;
 pub use modlink::{ModGrant, ModLink};
 pub use session::AgentSession;
 
@@ -168,14 +170,21 @@ fn prune_grants(grants: &Mutex<HashMap<String, ModGrant>>, terminals: &Terminals
 /// Env vars that hand a terminal's plugin its `/mod` link.
 pub type ModEnv = Vec<(&'static str, String)>;
 
+/// A stopped session still exiting, and the ids it had.
+type Exiting = (Vec<String>, Arc<AgentSession>);
+
 #[derive(Clone, Default)]
 pub struct AgentManager {
     pub attention: crate::attention_feed::AttentionFeed,
     inner: session::Registry,
-    /// Held across a start's check-spawn-insert and a stop's whole shutdown, so
-    /// two starts for one id can't both spawn, and a start can't slip in while
-    /// a stopped process is still exiting (two writers on one session file).
+    /// Held across a start's check-spawn-insert and a stop's unregistering, so
+    /// two starts for one id can't both spawn. Never across slow work (a
+    /// process's exit, reading history): every start and stop would queue.
     lifecycle: Arc<Mutex<()>>,
+    /// Sessions unregistered by a stop whose process may still be exiting, by
+    /// the ids they had: a start of one of those ids waits for it to go, so
+    /// two processes never write one session file.
+    exiting: Arc<Mutex<Vec<Exiting>>>,
     cache_policies: Arc<cache::PolicyStore>,
     /// The cache upkeep thread, started with the first session.
     upkeep: Arc<OnceLock<()>>,
@@ -200,6 +209,11 @@ pub struct AgentManager {
 
 /// How many ended ids are remembered.
 const ENDED_KEPT: usize = 64;
+/// How long a stopped process may take to be reaped after its grace ran out.
+const EXIT_REAP: Duration = Duration::from_secs(2);
+/// How long a start waits for a stop of the same id: its grace and reap,
+/// plus a Windows `taskkill` before the grace.
+const EXIT_WAIT: Duration = Duration::from_secs(10);
 
 impl AgentManager {
     /// Switch a session's model, remembered for a Claude terminal's restart.
@@ -256,8 +270,14 @@ impl AgentManager {
         codex::validate(thread_id.as_deref(), mode.as_deref())?;
         options.validate()?;
         let known_id = req.launch.known_id().map(String::from);
+        if let Some(id) = &known_id {
+            self.wait_exited(id);
+        }
         let session = {
             let _lifecycle = lock(&self.lifecycle);
+            if let Some(id) = &known_id {
+                self.ensure_exited(id)?;
+            }
             match known_id.as_deref().and_then(|id| self.get(id)) {
                 Some(existing) if existing.kind != kind => {
                     bail!("{} is another kind of chat", existing.id())
@@ -303,9 +323,11 @@ impl AgentManager {
                 Ok(session)
             }
             Err(e) => {
-                let _lifecycle = lock(&self.lifecycle);
-                self.forget(&session);
-                session.shutdown();
+                {
+                    let _lifecycle = lock(&self.lifecycle);
+                    self.halt(&session, false);
+                }
+                self.stop_halted(&[session], false);
                 Err(e)
             }
         }
@@ -407,62 +429,100 @@ impl AgentManager {
             self.revoke_grant(token);
             bail!("unknown terminal token");
         }
-        let _lifecycle = lock(&self.lifecycle);
+        // Answer what needs no history first: a re-attach, or a refusal.
+        self.wait_exited(session_id);
         if let Some(existing) = self.get(session_id) {
-            match existing.mod_link() {
-                Some(link) if link.token == token => {
-                    link.touch();
-                    return Ok(existing);
-                }
-                // The old terminal's `claude` went without saying so.
-                Some(link) if link.is_stale() => {
-                    self.forget(&existing);
-                    existing.replace();
-                }
-                Some(_) => bail!("another terminal runs {session_id}"),
-                None => bail!("a chat process already runs {session_id}"),
+            if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
+                link.touch();
+                return Ok(existing);
             }
+            self.takes_over(&existing, token, session_id)?;
         }
         let config_dir =
             workbench_core::claude_accounts::resolve_saved(grant.claude_account_id.as_deref())?;
-        // Only the first attach after a rewind cuts history there: what is
-        // typed since continues that branch, which a re-attach must show.
-        let resume_at = lock(&self.mod_grants)
-            .get_mut(token)
-            .and_then(|g| g.resume_at.take());
-        let transcript =
-            claude::history_transcript(config_dir.as_deref(), session_id, resume_at.as_deref());
-        let req = StartAgent {
-            cwd: grant.cwd,
-            project_path: grant.project_path,
-            worktree_path: grant.worktree_path,
-            pane_id: grant.pane_id,
-            hook_socket: grant.hook_socket,
-            claude_account_id: grant.claude_account_id,
-            launch: Launch::Claude {
-                session_id: session_id.to_string(),
-                permission_mode: grant.permission_mode,
-                config_dir,
-            },
+        // Read before taking the lifecycle lock: a long history would hold up
+        // every other start and stop.
+        let peeked = grant.resume_at.clone();
+        let mut transcript =
+            claude::history_transcript(config_dir.as_deref(), session_id, peeked.as_deref());
+        let (attached, stale) = {
+            let _lifecycle = lock(&self.lifecycle);
+            self.ensure_exited(session_id)?;
+            let stale = match self.get(session_id) {
+                Some(existing) => {
+                    if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
+                        link.touch();
+                        return Ok(existing);
+                    }
+                    self.takes_over(&existing, token, session_id)?;
+                    self.forget(&existing);
+                    Some(existing)
+                }
+                None => None,
+            };
+            // Only the first attach after a rewind cuts history there: what is
+            // typed since continues that branch, which a re-attach must show.
+            let resume_at = lock(&self.mod_grants)
+                .get_mut(token)
+                .and_then(|g| g.resume_at.take());
+            if resume_at != peeked {
+                // Another attach with this token took the cut meanwhile.
+                transcript = claude::history_transcript(
+                    config_dir.as_deref(),
+                    session_id,
+                    resume_at.as_deref(),
+                );
+            }
+            let req = StartAgent {
+                cwd: grant.cwd,
+                project_path: grant.project_path,
+                worktree_path: grant.worktree_path,
+                pane_id: grant.pane_id,
+                hook_socket: grant.hook_socket,
+                claude_account_id: grant.claude_account_id,
+                launch: Launch::Claude {
+                    session_id: session_id.to_string(),
+                    permission_mode: grant.permission_mode,
+                    config_dir,
+                },
+            };
+            let link = Arc::new(ModLink::new(token.to_string(), grant.terminal_id));
+            let session = AgentSession::attach_mod(
+                req,
+                driver::Driver::Claude(transcript),
+                link,
+                &self.cache_policies,
+                self.attention.clone(),
+            );
+            let attached = session.send(&claude::hello()).and_then(|()| {
+                if let Some(mut pick) = lock(&self.restart_picks).remove(session_id) {
+                    pick["request_id"] = uuid::Uuid::new_v4().to_string().into();
+                    session.send(&pick)?;
+                }
+                lock(&self.inner).insert(session_id.to_string(), session.clone());
+                self.unmark_ended(session_id);
+                Ok(session)
+            });
+            (attached, stale)
         };
-        let link = Arc::new(ModLink::new(token.to_string(), grant.terminal_id));
-        let session = AgentSession::attach_mod(
-            req,
-            driver::Driver::Claude(transcript),
-            link,
-            &self.cache_policies,
-            self.attention.clone(),
-        );
-        session.send(&claude::hello())?;
-        if let Some(mut pick) = lock(&self.restart_picks).remove(session_id) {
-            pick["request_id"] = uuid::Uuid::new_v4().to_string().into();
-            session.send(&pick)?;
+        // The stale session ends outside the lock: its end waits on its driver lock.
+        if let Some(stale) = stale {
+            stale.replace();
         }
-        lock(&self.inner).insert(session_id.to_string(), session.clone());
+        let session = attached?;
         self.attention.sessions_changed();
-        self.unmark_ended(session_id);
         self.start_upkeep();
         Ok(session)
+    }
+
+    /// Whether the attach of `token` may take `session_id` over from `existing`:
+    /// only once the old terminal's `claude` went without saying so (stale).
+    fn takes_over(&self, existing: &AgentSession, token: &str, session_id: &str) -> Result<()> {
+        match existing.mod_link() {
+            Some(link) if link.is_stale() && link.token != token => Ok(()),
+            Some(_) => bail!("another terminal runs {session_id}"),
+            None => bail!("a chat process already runs {session_id}"),
+        }
     }
 
     /// Rewind a terminal session's conversation: its terminal restarts as
@@ -577,8 +637,10 @@ impl AgentManager {
         {
             let _lifecycle = lock(&self.lifecycle);
             self.forget(session);
-            session.replace();
         }
+        // Outside the lock: its end waits on its driver lock. The start lock
+        // keeps a re-attach from slipping in meanwhile.
+        session.replace();
         self.revoke_grant(&link.token);
         // One `claude` per session file: the old one goes before the new one starts.
         if let Some(old) = &link.terminal_id {
@@ -753,6 +815,7 @@ impl AgentManager {
             self.halt(&session, end);
             session
         };
+        self.stop_halted(std::slice::from_ref(&session), end);
         self.kill_terminal(&session);
         true
     }
@@ -760,28 +823,25 @@ impl AgentManager {
     /// The terminal's `claude` left (it exited, or `/exit`): drop its chat and
     /// keep the terminal, which is the person's shell again.
     pub fn detach(&self, session: &Arc<AgentSession>) {
-        let _lifecycle = lock(&self.lifecycle);
-        if self
-            .sessions(|_| true)
-            .iter()
-            .any(|s| Arc::ptr_eq(s, session))
         {
-            self.forget(session);
-            session.shutdown();
+            let _lifecycle = lock(&self.lifecycle);
+            if !self
+                .sessions(|_| true)
+                .iter()
+                .any(|s| Arc::ptr_eq(s, session))
+            {
+                return;
+            }
+            self.halt(session, false);
         }
+        self.stop_halted(std::slice::from_ref(session), false);
     }
 
     /// Stop whatever chat sessions (either kind) a closed pane owned; `end` as
     /// for [`Self::stop`]. Blocking.
     pub fn stop_pane(&self, pane_id: &str, end: bool) -> usize {
-        let owned = {
-            let _lifecycle = lock(&self.lifecycle);
-            let owned = self.sessions(|s| s.pane_id.as_deref() == Some(pane_id));
-            for session in &owned {
-                self.halt(session, end);
-            }
-            owned
-        };
+        let owned = self.halt_matching(|s| s.pane_id.as_deref() == Some(pane_id), end);
+        self.stop_halted(&owned, end);
         for session in &owned {
             self.kill_terminal(session);
         }
@@ -791,14 +851,28 @@ impl AgentManager {
     /// A terminal is being closed on purpose: End the chats it hosts first, so
     /// every device sees an End, not an exit. Blocking.
     pub fn end_terminal(&self, terminal_id: &str) {
+        let hosted = self.halt_matching(
+            |s| {
+                s.mod_link()
+                    .is_some_and(|l| l.terminal_id.as_deref() == Some(terminal_id))
+            },
+            true,
+        );
+        self.stop_halted(&hosted, true);
+    }
+
+    /// [`Self::halt`] every session matching `keep`, under the lifecycle lock.
+    fn halt_matching(
+        &self,
+        keep: impl Fn(&AgentSession) -> bool,
+        end: bool,
+    ) -> Vec<Arc<AgentSession>> {
         let _lifecycle = lock(&self.lifecycle);
-        let hosted = self.sessions(|s| {
-            s.mod_link()
-                .is_some_and(|l| l.terminal_id.as_deref() == Some(terminal_id))
-        });
-        for session in &hosted {
-            self.halt(session, true);
+        let found = self.sessions(keep);
+        for session in &found {
+            self.halt(session, end);
         }
+        found
     }
 
     fn kill_terminal(&self, session: &AgentSession) {
@@ -810,17 +884,10 @@ impl AgentManager {
 
     /// Stop every session (the app is quitting or installing an update). Blocking.
     pub fn kill_all(&self) {
-        let _lifecycle = lock(&self.lifecycle);
-        let all = self.sessions(|_| true);
+        let all = self.halt_matching(|_| true, false);
         lock(&self.inner).clear();
         self.attention.sessions_changed();
-        let handles: Vec<_> = all
-            .into_iter()
-            .map(|s| std::thread::spawn(move || s.shutdown()))
-            .collect();
-        for handle in handles {
-            let _ = handle.join();
-        }
+        self.stop_halted(&all, false);
     }
 
     /// Every live session of `kind` (or of both), most recently changed first.
@@ -862,26 +929,73 @@ impl AgentManager {
         found
     }
 
-    /// Unregister and stop a session; an `end` is remembered by its ids.
+    /// Unregister a session, held as exiting under its ids until
+    /// [`Self::stop_halted`] has stopped it; an `end` is remembered by its ids.
     /// Under the lifecycle lock.
     fn halt(&self, session: &Arc<AgentSession>, end: bool) {
+        let mut ids: Vec<String> = lock(&self.inner)
+            .iter()
+            .filter(|(_, s)| Arc::ptr_eq(s, session))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let id = session.id();
+        if !id.is_empty() && !ids.contains(&id) {
+            ids.push(id);
+        }
         if end {
-            let ids: Vec<String> = lock(&self.inner)
-                .iter()
-                .filter(|(_, s)| Arc::ptr_eq(s, session))
-                .map(|(id, _)| id.clone())
-                .collect();
             let mut ended = lock(&self.ended);
-            ended.extend(ids);
+            ended.extend(ids.iter().filter(|id| !session::is_pending(id)).cloned());
             let excess = ended.len().saturating_sub(ENDED_KEPT);
             ended.drain(..excess);
         }
         self.forget(session);
-        if end {
-            session.end();
-        } else {
-            session.shutdown();
+        lock(&self.exiting).push((ids, session.clone()));
+    }
+
+    /// Stop sessions [`Self::halt`] unregistered, all at once and outside the
+    /// lifecycle lock: each process gets a grace period to exit.
+    fn stop_halted(&self, sessions: &[Arc<AgentSession>], end: bool) {
+        let stop = |session: &Arc<AgentSession>| {
+            if end {
+                session.end();
+            } else {
+                session.shutdown();
+            }
+            // A process killed at the end of its grace is reaped just after.
+            session.wait_exited(EXIT_REAP);
+            lock(&self.exiting).retain(|(_, s)| !Arc::ptr_eq(s, session));
+        };
+        match sessions {
+            [] => {}
+            [one] => stop(one),
+            many => std::thread::scope(|scope| {
+                for session in many {
+                    scope.spawn(move || stop(session));
+                }
+            }),
         }
+    }
+
+    fn exiting(&self, session_id: &str) -> bool {
+        lock(&self.exiting)
+            .iter()
+            .any(|(ids, _)| ids.iter().any(|id| id == session_id))
+    }
+
+    /// Wait (not under the lifecycle lock) while a stop of `session_id` is under way.
+    fn wait_exited(&self, session_id: &str) {
+        let deadline = Instant::now() + EXIT_WAIT;
+        while self.exiting(session_id) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Under the lifecycle lock, after [`Self::wait_exited`].
+    fn ensure_exited(&self, session_id: &str) -> Result<()> {
+        if self.exiting(session_id) {
+            bail!("{session_id} is still stopping; try again in a moment");
+        }
+        Ok(())
     }
 
     /// The session under this id was ended by the person and not started since.
@@ -900,7 +1014,8 @@ impl AgentManager {
     }
 
     fn live_count(&self) -> usize {
-        self.sessions(|_| true).len()
+        // A stopped process still exiting is still running.
+        self.sessions(|_| true).len() + lock(&self.exiting).len()
     }
 }
 
