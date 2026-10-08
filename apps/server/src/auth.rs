@@ -25,17 +25,18 @@ pub async fn require_bearer(
     let path = request.uri().path();
     // The plugin in a terminal's `claude` presents that terminal's own token,
     // checked by each `/mod/` handler.
-    if path == "/" || path == "/health" || is_ws_path(path) || path.starts_with("/mod/") {
+    // `/events/home` is an EventSource, which can't send headers either; its
+    // handler checks `?token=` (or the header) with `token_ok`.
+    if path == "/"
+        || path == "/health"
+        || path == crate::home_events::PATH
+        || is_ws_path(path)
+        || path.starts_with("/mod/")
+    {
         return Ok(next.run(request).await);
     }
 
-    let presented = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    match presented {
+    match bearer(request.headers()) {
         Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
             Ok(next.run(request).await)
         }
@@ -72,16 +73,28 @@ pub(crate) fn authorize_ws(
             message: "origin not allowed".to_string(),
         });
     }
-    if let Some(expected) = state.token.as_deref() {
-        let ok = token.is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()));
-        if !ok {
-            return Err(ApiError {
-                status: StatusCode::UNAUTHORIZED,
-                message: "unauthorized".to_string(),
-            });
-        }
+    if !token_ok(state, token) {
+        return Err(ApiError {
+            status: StatusCode::UNAUTHORIZED,
+            message: "unauthorized".to_string(),
+        });
     }
     Ok(())
+}
+
+/// Whether `presented` is this listener's token (always, for a tokenless one).
+pub(crate) fn token_ok(state: &AppState, presented: Option<&str>) -> bool {
+    state.token.as_deref().is_none_or(|expected| {
+        presented.is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
+    })
+}
+
+/// The `Authorization: Bearer` token, if the request carries one.
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
 }
 
 /// Origins that may open a terminal WebSocket: the Tauri app webviews (macOS

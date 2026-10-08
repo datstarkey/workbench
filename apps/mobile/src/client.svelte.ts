@@ -10,6 +10,8 @@ import type {
 	WorkbenchSettings
 } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { untrack } from 'svelte';
+import { HomeStream, type OpenEventSource } from './home-stream.ts';
 import { HostUpdate } from './host-update.svelte.ts';
 import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
@@ -26,8 +28,10 @@ import type { ChatRef, ClaudeView } from './types.ts';
 type ClaudeLaunch = Pick<CreateServerTerminalBody, 'claudeSession' | 'claudeAccountId'>;
 
 const LS_VIEW = 'wb.claudeView';
-/** Home-screen refresh while the app is in front. */
+/** Home-screen refresh while the app is in front and the event stream is down. */
 const POLL_MS = 4000;
+/** A list request that takes longer is given up, and the machine shown offline. */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
@@ -151,8 +155,26 @@ export class MobileClient {
 	/** Bumped on every connect attempt; a newer attempt, a disconnect or forgetting its machine supersedes it. */
 	private attempt = 0;
 
-	constructor(scanner?: QrScanner) {
+	/** Whether the app is in front; follows `visibilitychange` while watching. */
+	private visible = $state(!document.hidden);
+	/** The server whose home lists to stream: only on Home, in front. */
+	private homeServer = $derived(
+		this.visible && this.store && !this.activeChat && !this.activeTerminal ? this.connection : null
+	);
+	private readonly homeStream: HomeStream;
+
+	constructor(scanner?: QrScanner, openEventSource?: OpenEventSource) {
 		this.pairing = new PairingScan(scanner);
+		this.homeStream = new HomeStream(
+			{
+				agents: (list) => (this.chats = list),
+				terminals: (list) => (this.terminals = list),
+				status: (live) => {
+					if (live) this.online = true;
+				}
+			},
+			openEventSource
+		);
 		this.exactUrl = this.url || null;
 	}
 
@@ -334,25 +356,40 @@ export class MobileClient {
 	}
 
 	/**
-	 * Keep the home screen current while the app is in front, and catch up as
-	 * soon as it comes back from the lock screen. Returns a stop function.
+	 * Keep the home screen current while the app is in front: streamed from
+	 * `/events/home`, polled while the stream is down (or the host predates it),
+	 * and caught up as soon as it comes back from the lock screen. Returns a
+	 * stop function.
 	 */
 	watch(): () => void {
-		const onHome = () => !document.hidden && this.store && !this.activeChat && !this.activeTerminal;
+		// Opening a connection is an external side effect: an effect is the right tool.
+		const stopStream = $effect.root(() => {
+			$effect(() => {
+				const server = this.homeServer;
+				untrack(() => this.homeStream.follow(server));
+			});
+		});
+		let polling = false;
 		const timer = setInterval(() => {
 			// The host is restarting into its update: its first answer ends "Updating host…".
 			if (!document.hidden && this.hostUpdate?.updating) void this.hostUpdate.check();
-			if (!onHome()) return;
-			void this.refreshTerminals();
-			void this.refreshChats();
+			// One round at a time: a stalled host must not pile requests up.
+			if (!this.homeServer || this.homeStream.live || polling) return;
+			polling = true;
+			void Promise.allSettled([this.refreshTerminals(), this.refreshChats()]).then(
+				() => (polling = false)
+			);
 		}, POLL_MS);
 		const wake = () => {
-			if (!document.hidden && this.store) this.refreshAll();
+			this.visible = !document.hidden;
+			if (this.visible && this.store) this.refreshAll();
 		};
 		document.addEventListener('visibilitychange', wake);
 		return () => {
 			clearInterval(timer);
 			document.removeEventListener('visibilitychange', wake);
+			stopStream();
+			this.homeStream.follow(null);
 		};
 	}
 
@@ -543,7 +580,10 @@ export class MobileClient {
 		if (!this.store) return;
 		const current = this.live();
 		try {
-			const res = await fetch(`${this.base}/remote/terminals`, { headers: this.authHeaders() });
+			const res = await fetch(`${this.base}/remote/terminals`, {
+				headers: this.authHeaders(),
+				signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+			});
 			if (current()) this.online = res.ok;
 			if (res.ok) {
 				const data = await res.json();
