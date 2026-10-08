@@ -146,60 +146,6 @@ pub fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<Strin
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Run `cmd` to completion with stdout and stderr captured, killing it at `timeout`
-/// (`ErrorKind::TimedOut`). Both pipes are drained on threads while it runs, so big
-/// output can't stall it; a grandchild holding a pipe open can't hang it past the deadline.
-pub fn run_with_timeout(
-    cmd: &mut Command,
-    timeout: Duration,
-) -> std::io::Result<std::process::Output> {
-    fn drain<R: std::io::Read + Send + 'static>(
-        pipe: Option<R>,
-    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        if let Some(mut pipe) = pipe {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = pipe.read_to_end(&mut buf);
-                let _ = tx.send(buf);
-            });
-        }
-        rx
-    }
-
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let deadline = Instant::now() + timeout;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("timed out after {}s", timeout.as_secs_f32()),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
-        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_default()
-    };
-    Ok(std::process::Output {
-        status,
-        stdout: collect(stdout),
-        stderr: collect(stderr),
-    })
-}
-
 /// Spawn a fire-and-forget child (`open`, `xdg-open`, …) and reap it on a
 /// background thread. Dropping a `Child` never waits on it, so without this each
 /// launch leaves a zombie in the process table for the lifetime of the app.
