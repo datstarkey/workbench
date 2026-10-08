@@ -461,6 +461,9 @@ export const register: Register = (on) => {
 				.finally(() => (polling = false));
 		});
 
+		// No hook has named the live mode yet: the one Workbench started `claude`
+		// in beats the settings default.
+		liveMode ??= (await $.env.get('WORKBENCH_PERMISSION_MODE')) || undefined;
 		const rows = await $.config.list().catch(() => []);
 		const configMode = rows.find((r) => r.key === 'permissionMode')?.value;
 		const permissionMode = liveMode ?? (typeof configMode === 'string' ? configMode : undefined);

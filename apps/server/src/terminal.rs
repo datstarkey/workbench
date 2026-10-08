@@ -528,7 +528,18 @@ pub fn create_from_body(
             terminal_id: None,
         })?
         .unzip();
-    let mod_env = mod_env.unwrap_or_default();
+    let mut mod_env = mod_env.unwrap_or_default();
+    // The plugin reads no live mode until a hook reports one, so it's told the
+    // one `claude` starts in rather than guessing the settings default.
+    if let (Some(session), Some(_)) = (body.claude_session.as_ref(), token.as_ref()) {
+        let settings = workbench_core::config::load_workbench_settings()?;
+        if let Some(mode) = workbench_core::claude_launch::launch_mode(
+            session.permission_mode.as_deref(),
+            &settings,
+        ) {
+            mod_env.push(("WORKBENCH_PERMISSION_MODE", mode.to_string()));
+        }
+    }
     let created = terminals.create(
         cwd,
         body.name,

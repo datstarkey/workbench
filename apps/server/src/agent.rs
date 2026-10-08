@@ -543,6 +543,11 @@ impl AgentManager {
         // for this restart rather than open a second `claude` beside it.
         let starting = self.start_lock(&session_id);
         let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
+        // A second pick sent while the first restarted waits on its socket, then
+        // finds this old session: restarting it again would start a second `claude`.
+        if session.is_replaced() {
+            bail!("The chat just restarted; try again once it has reconnected.");
+        }
         // Hand over before the old `claude` goes: clients re-attach (`replaced`)
         // rather than see it end, and its exit (`bye`) finds nothing to stop.
         {

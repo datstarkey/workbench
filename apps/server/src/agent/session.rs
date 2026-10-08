@@ -760,7 +760,7 @@ impl AgentSession {
         let d = lock(&self.driver);
         let meta = d.view().meta().clone();
         if meta.busy || d.view().waiting_on().is_some() {
-            bail!("Wait for the current turn to finish, or stop it, before rewinding.");
+            bail!("Wait for the current turn to finish, or stop it, first.");
         }
         Ok(meta)
     }
@@ -772,6 +772,11 @@ impl AgentSession {
             *session_id = self.id();
         }
         req
+    }
+
+    /// Relaunched under the same id: a newer session now runs the conversation.
+    pub(super) fn is_replaced(&self) -> bool {
+        self.replaced.load(Ordering::SeqCst)
     }
 
     /// Stop the process for a relaunch under the same id.

@@ -102,7 +102,7 @@
 		bind:draft={chat.draft.text}
 		bind:images={chat.draft.images}
 		bind:files={chat.draft.files}
-		mode={chat.meta?.permissionMode ?? null}
+		mode={chat.mode}
 		busy={Boolean(chat.meta?.busy) && chat.live}
 		stoppable={chat.stoppable}
 		{disabledReason}

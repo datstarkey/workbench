@@ -63,6 +63,16 @@ pub fn startup_command(
     }
 }
 
+/// The `--permission-mode` a Claude terminal starts with: a `picked` one, else
+/// the configured one unless that's `default` (Claude's settings decide).
+pub fn launch_mode<'a>(
+    picked: Option<&'a str>,
+    settings: &'a WorkbenchSettings,
+) -> Option<&'a str> {
+    let mode = picked.unwrap_or(settings.claude_permission_mode.as_str());
+    ((picked.is_some() || mode != "default") && PERMISSION_MODES.contains(&mode)).then_some(mode)
+}
+
 /// `claude --resume <id>` (or `--session-id <id>` for a new session), carrying
 /// the configured permission mode and, when the sandbox is on, srt's wrapper
 /// pointing at `sandbox_settings`. A picked `permission_mode` is passed even
@@ -98,11 +108,7 @@ pub fn terminal_command(
         Ok(bin) if !bin.is_empty() => cmd.push_str(&shell_quote(&bin)),
         _ => cmd.push_str("claude"),
     }
-    let (mode, picked) = match session.permission_mode.as_deref() {
-        Some(mode) => (mode, true),
-        None => (settings.claude_permission_mode.as_str(), false),
-    };
-    if (picked || mode != "default") && PERMISSION_MODES.contains(&mode) {
+    if let Some(mode) = launch_mode(session.permission_mode.as_deref(), settings) {
         cmd.push_str(&format!(" --permission-mode {mode}"));
     }
     let flag = if session.resume {
