@@ -507,6 +507,17 @@ pub fn create_from_body(
         .and_then(workbench_core::claude_launch::prompt_notice);
     let command =
         workbench_core::claude_launch::startup_command(body.command, body.claude_session.as_ref())?;
+    // The plugin reads no live mode until a hook reports one, so it's told the
+    // one `claude` starts in rather than guessing the settings default. Read
+    // before a token is granted: an error returns past the revoke below.
+    let launch_mode = match body.claude_session.as_ref() {
+        Some(session) => workbench_core::claude_launch::launch_mode(
+            session.permission_mode.as_deref(),
+            &workbench_core::config::load_workbench_settings()?,
+        )
+        .map(String::from),
+        None => None,
+    };
     // The Workbench plugin in this pane's `claude` runs the session as a
     // chat through `mod_routes`, with a token good for this terminal only.
     let (token, mod_env) = agents
@@ -528,7 +539,10 @@ pub fn create_from_body(
             terminal_id: None,
         })?
         .unzip();
-    let mod_env = mod_env.unwrap_or_default();
+    let mut mod_env = mod_env.unwrap_or_default();
+    if let (Some(mode), Some(_)) = (launch_mode, token.as_ref()) {
+        mod_env.push(("WORKBENCH_PERMISSION_MODE", mode));
+    }
     let created = terminals.create(
         cwd,
         body.name,

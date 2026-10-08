@@ -88,6 +88,11 @@ export class AgentChat {
 	readonly agent: AgentKind;
 	items = $state.raw<TranscriptItem[]>([]);
 	meta = $state.raw<TranscriptMeta | null>(null);
+	// A primitive step between: every meta update replaces the object, which
+	// would re-derive `mode` and drop a pick the server hasn't confirmed yet.
+	private serverMode = $derived(this.meta?.permissionMode ?? null);
+	/** The picker's mode: a pick at once (a restart takes seconds), until the server's moves or refuses it. */
+	mode = $derived(this.serverMode);
 	/** First item index held; above zero, older history was left out. */
 	start = $state(0);
 	status = $state<ChatStatus>('starting');
@@ -366,6 +371,8 @@ export class AgentChat {
 				break;
 			case 'error':
 				this.notice = msg.message;
+				// A refused switch puts the server's mode back.
+				this.mode = this.serverMode;
 				break;
 			case 'commands':
 				this.commands = msg.commands;
@@ -581,7 +588,7 @@ export class AgentChat {
 	}
 
 	setMode(mode: PermissionMode | CodexMode): void {
-		this.send({ t: 'mode', mode });
+		if (this.send({ t: 'mode', mode })) this.mode = mode;
 	}
 
 	setModel(model: string): void {
