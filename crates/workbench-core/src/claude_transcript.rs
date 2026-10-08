@@ -495,7 +495,12 @@ impl Transcript {
     /// After a reset onto a conversation that already has history (`/resume`
     /// in the terminal), show that history; the session's settings stay.
     pub fn resume_history(&mut self, path: &Path) {
-        let loaded = Self::load(path);
+        self.resume_loaded(Self::load(path));
+    }
+
+    /// [`Self::resume_history`] with the file already read, so a caller can
+    /// read it without holding the lock its transcript lives under.
+    pub fn resume_loaded(&mut self, loaded: Self) {
         let meta = TranscriptMeta {
             title: loaded.meta.title.clone(),
             context_tokens: loaded.meta.context_tokens,

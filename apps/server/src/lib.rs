@@ -87,16 +87,30 @@ impl ServerHandle {
     }
 
     /// Disconnect this listener's attached terminal WebSockets, then shut it
-    /// down gracefully and wait for the server task. Terminals themselves live
-    /// in the shared managers and stay attachable through other listeners.
+    /// down gracefully and wait for the server task, for at most
+    /// [`STOP_DEADLINE`]: a request that never finishes (a client that stopped
+    /// reading, a long poll) would otherwise hold up whoever stops it (the
+    /// desktop's Settings page waits on it). Terminals themselves live in the
+    /// shared managers and stay attachable through other listeners.
     pub async fn stop(mut self) {
         let _ = self.revoke.send(true);
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        let _ = self.task.await;
+        let abort = self.task.abort_handle();
+        if tokio::time::timeout(STOP_DEADLINE, &mut self.task)
+            .await
+            .is_err()
+        {
+            tracing::warn!("listener {} didn't stop gracefully in time", self.addr);
+            abort.abort();
+            let _ = self.task.await;
+        }
     }
 }
+
+/// How long [`ServerHandle::stop`] waits for open requests before dropping them.
+pub const STOP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Spawn the server on the current Tokio runtime and return a handle. Binds
 /// before returning so the caller knows the server is listening (and on which

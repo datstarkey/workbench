@@ -197,7 +197,7 @@ pub async fn ask(
                     in_terminal: true,
                 }),
             );
-            session.refresh_attention();
+            refresh_attention(&session).await?;
         } else if new {
             if body.hold {
                 link.shown(&body.request_id, true);
@@ -221,8 +221,12 @@ pub async fn ask(
             return Ok(Json(json!({ "answer": answer })));
         }
         if !link.shown(&body.request_id, session.has_viewers()) {
-            link.fall_back(&body.request_id, session.waiting_for(&body.request_id));
-            session.refresh_attention();
+            // Both read the session under its driver lock: off the async workers.
+            let (asking, request_id) = (session.clone(), body.request_id.clone());
+            let waiting =
+                crate::routes::blocking(move || Ok(asking.waiting_for(&request_id))).await?;
+            link.fall_back(&body.request_id, waiting);
+            refresh_attention(&session).await?;
             feed(vec![
                 json!({"type": "control_cancel_request", "request_id": body.request_id}),
             ])
@@ -233,6 +237,15 @@ pub async fn ask(
             return Ok(Json(json!({ "pending": true })));
         }
     }
+}
+
+async fn refresh_attention(session: &std::sync::Arc<AgentSession>) -> ApiResult<()> {
+    let session = session.clone();
+    crate::routes::blocking(move || {
+        session.refresh_attention();
+        Ok(())
+    })
+    .await
 }
 
 /// The terminal's `claude` is leaving: its last lines, then the chat detaches.

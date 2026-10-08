@@ -22,9 +22,13 @@ export function terminalWsUrl(serverUrl: string, id: string, token?: string): st
 	return wsUrl(serverUrl, `/remote/terminals/${id}/ws`, token);
 }
 
-/** WebSocket URL of a Claude chat session (`/agent/claude/:id/ws`). */
+/**
+ * WebSocket URL of a Claude chat session (`/agent/claude/:id/ws`). `meta=changed`:
+ * `update` frames carry `meta` only when it changed (the chat keeps the last one).
+ */
 export function agentWsUrl(serverUrl: string, sessionId: string, token?: string): string {
-	return wsUrl(serverUrl, `/agent/claude/${encodeURIComponent(sessionId)}/ws`, token);
+	const url = wsUrl(serverUrl, `/agent/claude/${encodeURIComponent(sessionId)}/ws`, token);
+	return `${url}${url.includes('?') ? '&' : '?'}meta=changed`;
 }
 
 function wsUrl(serverUrl: string, path: string, token?: string): string {

@@ -396,7 +396,8 @@ export class AgentChat {
 						i.kind === 'tool' && i.status === 'running' ? [i.id] : []
 					)
 				);
-				this.setMeta(msg.meta);
+				// Sent only when it changed (the socket asks for `meta=changed`).
+				if (msg.meta) this.setMeta(msg.meta);
 				this.notice = null;
 				this.settlePending();
 				break;
