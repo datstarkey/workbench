@@ -179,9 +179,9 @@
 					>Review changes</DropdownMenu.Item
 				>
 				<DropdownMenu.Item onSelect={() => chat.open()}>Reconnect</DropdownMenu.Item>
-				<DropdownMenu.Item onSelect={() => void client.restartChat(ref, chat.sessionId)}>
-					Restart session
-				</DropdownMenu.Item>
+				{#if isClaude}
+					<DropdownMenu.Item onSelect={() => chat.restart()}>Restart session</DropdownMenu.Item>
+				{/if}
 				<DropdownMenu.Item class="text-wb-err" onSelect={() => client.endChat(chat.sessionId)}>
 					End session
 				</DropdownMenu.Item>

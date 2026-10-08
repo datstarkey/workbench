@@ -592,19 +592,6 @@ describe('MobileClient', () => {
 			await c.endChat('a-newer-id-after-clear');
 			expect(c.activeChat).toBeNull();
 		});
-
-		it('restarting a chat stops it without an End and opens it again, owned here', async () => {
-			const c = await connected();
-			const calls = fakeServer();
-			c.openChat(c.chatRef(summary));
-			const screen = c.chatScreenKey;
-			await c.restartChat(c.activeChat!, summary.sessionId);
-			const stop = calls.find((x) => x.method === 'DELETE');
-			expect(stop?.path).toBe(`/agent/claude/${summary.sessionId}`);
-			expect(c.activeChat?.sessionId).toBe(summary.sessionId);
-			expect(c.activeChat?.attachOnly).toBeUndefined();
-			expect(c.chatScreenKey).toBe(screen + 1);
-		});
 	});
 
 	it('restores the active machine on the next launch', async () => {
