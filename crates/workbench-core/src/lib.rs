@@ -17,6 +17,7 @@ pub mod codex_transcript;
 pub mod config;
 pub mod git;
 pub mod github;
+mod github_api;
 pub mod net;
 pub mod package_scripts;
 pub mod paths;

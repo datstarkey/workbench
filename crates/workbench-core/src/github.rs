@@ -33,18 +33,31 @@ pub fn is_gh_available() -> bool {
 }
 
 pub fn get_github_remote(path: &str) -> Result<GitHubRemote> {
-    let url = crate::git::git_output(&["remote", "get-url", "origin"], path)?;
-    parse_github_remote(&url)
+    Ok(github_remote_and_host(path)?.0)
 }
 
+/// The `origin` remote plus its web host (`github.com`, or an Enterprise host, maybe with a port).
+pub(crate) fn github_remote_and_host(path: &str) -> Result<(GitHubRemote, String)> {
+    let url = crate::git::git_output(&["remote", "get-url", "origin"], path)?;
+    parse_github_remote_with_host(&url)
+}
+
+#[cfg(test)]
 fn parse_github_remote(url: &str) -> Result<GitHubRemote> {
+    Ok(parse_github_remote_with_host(url)?.0)
+}
+
+fn parse_github_remote_with_host(url: &str) -> Result<(GitHubRemote, String)> {
     let (host, owner, repo) = parse_github_remote_parts(url)?;
     let html_url = format!("https://{host}/{owner}/{repo}");
-    Ok(GitHubRemote {
-        owner,
-        repo,
-        html_url,
-    })
+    Ok((
+        GitHubRemote {
+            owner,
+            repo,
+            html_url,
+        },
+        host,
+    ))
 }
 
 fn parse_github_remote_parts(url: &str) -> Result<(String, String, String)> {
@@ -122,7 +135,9 @@ fn is_supported_github_host(host: &str) -> bool {
 /// PRs paired with per-PR check detail, keyed by PR number.
 type PrsWithChecks = (Vec<GitHubPR>, HashMap<u64, Vec<GitHubCheckDetail>>);
 
-fn fetch_pr_json(path: &str) -> Result<Vec<serde_json::Value>> {
+/// `gh pr list --json` for the fields every PR parser here reads; the API path
+/// (`github_api::fetch_pr_json`) produces this exact shape.
+pub(crate) fn fetch_pr_json(path: &str) -> Result<Vec<serde_json::Value>> {
     let fields = "number,title,state,url,isDraft,headRefName,reviewDecision,statusCheckRollup,mergeStateStatus";
     let result = gh_output(
         &[
@@ -154,7 +169,10 @@ pub fn list_project_prs(path: &str) -> Result<Vec<GitHubPR>> {
 /// extra GraphQL call per open PR on every poll was pure duplication — measured at
 /// 1 point per open PR per poll, against a 5000/hr budget.
 pub fn list_project_prs_with_checks(path: &str) -> Result<PrsWithChecks> {
-    let raw = fetch_pr_json(path)?;
+    prs_with_checks(&fetch_pr_json(path)?)
+}
+
+pub(crate) fn prs_with_checks(raw: &[serde_json::Value]) -> Result<PrsWithChecks> {
     let prs = raw.iter().map(parse_pr_json).collect::<Result<Vec<_>>>()?;
 
     let pr_checks = raw
@@ -376,37 +394,45 @@ fn derive_branch_status(runs: &[GitHubWorkflowRun]) -> GitHubChecksStatus {
     derive_overall_status(passing, failing, pending)
 }
 
+/// One poll of a project's GitHub state. Reads go straight to the GitHub API (one
+/// GraphQL query for PRs and their checks, ETag-cached REST for workflow runs); each
+/// half falls back to the `gh` CLI on its own when the API path fails.
 pub fn get_project_status(path: &str) -> GitHubProjectStatus {
-    let remote = get_github_remote(path).ok();
+    let Ok((remote, host)) = github_remote_and_host(path) else {
+        return GitHubProjectStatus {
+            remote: None,
+            prs: vec![],
+            branch_runs: HashMap::new(),
+            pr_checks: HashMap::new(),
+        };
+    };
 
-    // Fetch PRs and workflow runs in parallel — they're independent `gh` CLI calls.
-    // PR check detail comes back in the same response as the PRs themselves, so no
-    // per-PR follow-up call is needed.
-    let ((prs, pr_checks), workflow_runs) = if remote.is_some() {
-        std::thread::scope(|s| {
-            let prs_handle = s.spawn(|| {
-                list_project_prs_with_checks(path).unwrap_or_else(|e| {
+    let ((prs, pr_checks), workflow_runs) = std::thread::scope(|s| {
+        let prs_handle = s.spawn(|| {
+            crate::github_api::fetch_pr_json(path, &host, &remote)
+                .or_else(|_| fetch_pr_json(path))
+                .and_then(|raw| prs_with_checks(&raw))
+                .unwrap_or_else(|e| {
                     log::warn!("[github] Failed to list PRs for {path}: {e}");
                     (vec![], HashMap::new())
                 })
-            });
-            let runs_handle = s.spawn(|| list_workflow_runs(path));
-            (
-                prs_handle
-                    .join()
-                    .unwrap_or_else(|_| (vec![], HashMap::new())),
-                runs_handle.join().unwrap_or_default(),
-            )
-        })
-    } else {
-        ((vec![], HashMap::new()), vec![])
-    };
-    let branch_runs = group_runs_by_branch(workflow_runs);
+        });
+        let runs_handle = s.spawn(|| {
+            crate::github_api::fetch_workflow_runs(path, &host, &remote)
+                .unwrap_or_else(|_| list_workflow_runs(path))
+        });
+        (
+            prs_handle
+                .join()
+                .unwrap_or_else(|_| (vec![], HashMap::new())),
+            runs_handle.join().unwrap_or_default(),
+        )
+    });
 
     GitHubProjectStatus {
-        remote,
+        remote: Some(remote),
         prs,
-        branch_runs,
+        branch_runs: group_runs_by_branch(workflow_runs),
         pr_checks,
     }
 }
