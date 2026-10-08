@@ -3,6 +3,7 @@
 	import { Button } from '@workbench/ui/button';
 	import { Input } from '@workbench/ui/input';
 	import { getInstancesStore } from '$stores/context';
+	import { probeHealth } from './instances.svelte';
 
 	let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -28,9 +29,7 @@
 		testState = 'testing';
 		testMessage = '';
 		try {
-			const headers: Record<string, string> = {};
-			if (token.trim()) headers.authorization = `Bearer ${token.trim()}`;
-			const res = await fetch(`${base}/health`, { headers });
+			const res = await probeHealth(base, token.trim() || undefined);
 			testState = res.ok ? 'ok' : 'fail';
 			if (!res.ok) testMessage = `${res.status} ${res.statusText}`;
 		} catch (e) {

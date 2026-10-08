@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'svelte-sonner';
 
-/** Open an http(s) URL in the default browser, surfacing failures as a toast. */
+/** Open an http(s), mailto or tel URL in its default handler, surfacing failures as a toast. */
 export async function openUrl(url: string): Promise<void> {
 	try {
 		await invoke('open_url', { url });

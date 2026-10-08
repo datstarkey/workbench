@@ -24,6 +24,7 @@ pub mod net;
 pub mod package_scripts;
 pub mod paths;
 pub mod project_files;
+pub mod pty;
 pub mod sandbox_runtime;
 pub mod session_utils;
 pub mod settings;

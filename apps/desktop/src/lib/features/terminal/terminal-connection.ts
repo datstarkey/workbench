@@ -34,7 +34,12 @@
  */
 
 import { terminalServerStatus } from '$lib/server-mode';
-import { parseTerminalControlFrame, terminalWsUrl } from '@workbench/transport';
+import {
+	DEFAULT_TIMEOUT_MS,
+	parseTerminalControlFrame,
+	terminalWsUrl,
+	withTimeout
+} from '@workbench/transport';
 import type {
 	CreateServerTerminalBody,
 	ServerTerminalMeta as TerminalMeta
@@ -123,9 +128,19 @@ export function __resetServerInfoCache(): void {
 export async function listServerTerminals(): Promise<TerminalMeta[] | null> {
 	try {
 		const { baseUrl, token } = await resolveServer();
-		const resp = await fetch(`${baseUrl}/remote/terminals`, { headers: authHeaders(token) });
-		if (!resp.ok) return null;
-		const list: unknown = await resp.json();
+		// Only this poll has a deadline: a timeout just skips an adoption round. The
+		// create, delete and liveness requests act on what the server did, so they wait.
+		const list: unknown = await withTimeout(
+			'GET /remote/terminals',
+			DEFAULT_TIMEOUT_MS,
+			async (signal) => {
+				const resp = await fetch(`${baseUrl}/remote/terminals`, {
+					headers: authHeaders(token),
+					signal
+				});
+				return resp.ok ? resp.json() : null;
+			}
+		);
 		if (pendingCreates > 0 || !Array.isArray(list)) return null;
 		return list as TerminalMeta[];
 	} catch {
