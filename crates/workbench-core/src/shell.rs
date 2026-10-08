@@ -3,8 +3,9 @@
 //! and every `git`/`gh` invocation.
 
 use std::ffi::OsStr;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::io::{Read, Write};
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// A `std::process::Command` that never flashes a console window.
@@ -61,68 +62,38 @@ pub fn tool(program: impl AsRef<OsStr>) -> Command {
     }
 }
 
-/// Run `cmd` and return its stdout if it exits successfully within `timeout`;
-/// `None` if it can't start, fails, or is killed at the deadline. Stdout is read
-/// after exit, so only for commands with small output.
-pub fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-        }
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
-    Some(out)
-}
+/// How long to keep reading a child's pipes after it exits, for a process it started
+/// that still holds them (an ssh ControlPersist master, an MCP server).
+const PIPE_GRACE: Duration = Duration::from_millis(250);
 
-/// Run `cmd` to completion with stdout and stderr captured, killing it at `timeout`
-/// (`ErrorKind::TimedOut`). Both pipes are drained on threads while it runs, so big
-/// output can't stall it; a grandchild holding a pipe open can't hang it past the deadline.
-pub fn run_with_timeout(
-    cmd: &mut Command,
-    timeout: Duration,
-) -> std::io::Result<std::process::Output> {
-    fn drain<R: std::io::Read + Send + 'static>(
-        pipe: Option<R>,
-    ) -> std::sync::mpsc::Receiver<Vec<u8>> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        if let Some(mut pipe) = pipe {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = pipe.read_to_end(&mut buf);
-                let _ = tx.send(buf);
-            });
-        }
-        rx
-    }
-
-    let mut child = cmd
-        .stdin(Stdio::null())
+/// Run `cmd` to completion, killing it at `timeout` (an `ErrorKind::TimedOut` error).
+/// Stdout and stderr are drained on threads while it runs, so a chatty child can't
+/// stall on a full pipe; stdin is null, so it can't wait on input either. On Unix the
+/// child gets its own process group and the whole group is killed at the deadline, so
+/// hooks, ssh and helpers it started don't outlive it.
+pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let deadline = Instant::now() + timeout;
+        .stderr(Stdio::piped());
+    // std keeps using posix_spawn with a process group (POSIX_SPAWN_SETPGROUP).
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    let mut child = cmd.spawn()?;
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
+
+    let deadline = Instant::now() + timeout;
+    let mut pause = Duration::from_millis(1);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
         if Instant::now() >= deadline {
+            #[cfg(unix)]
+            if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+                // SAFETY: plain syscall on the group this child leads.
+                unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::Error::new(
@@ -130,17 +101,49 @@ pub fn run_with_timeout(
                 format!("timed out after {}s", timeout.as_secs_f32()),
             ));
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(pause.min(deadline.saturating_duration_since(Instant::now())));
+        pause = (pause * 2).min(Duration::from_millis(20));
     };
-    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
-        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_default()
-    };
-    Ok(std::process::Output {
+    let until = (Instant::now() + PIPE_GRACE).min(deadline.max(Instant::now()));
+    Ok(Output {
         status,
-        stdout: collect(stdout),
-        stderr: collect(stderr),
+        stdout: collect(&stdout, until),
+        stderr: collect(&stderr, until),
     })
+}
+
+/// Read `pipe` on a thread, sending each chunk as it arrives; the channel closes at EOF.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
+    if let Some(mut pipe) = pipe {
+        std::thread::spawn(move || {
+            let mut buf = vec![0; 64 * 1024];
+            while let Ok(n @ 1..) = pipe.read(&mut buf) {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    rx
+}
+
+/// Everything drained so far, waiting for EOF no later than `until`.
+fn collect(rx: &mpsc::Receiver<Vec<u8>>, until: Instant) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Ok(chunk) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        out.extend_from_slice(&chunk);
+    }
+    out
+}
+
+/// Run `cmd` and return its stdout if it exits successfully within `timeout`;
+/// `None` if it can't start, fails, or is killed at the deadline.
+pub fn output_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<String> {
+    let out = run_with_timeout(cmd, timeout).ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Spawn a fire-and-forget child (`open`, `xdg-open`, …) and reap it on a
@@ -316,6 +319,62 @@ mod tests {
 
         let out = tool("sh").args(["-c", "echo ok"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_drains_large_output_and_kills_at_the_deadline() {
+        // Well past a pipe buffer on both streams: a child that isn't drained blocks.
+        let out = run_with_timeout(
+            tool("sh").args([
+                "-c",
+                "head -c 1000000 /dev/zero; head -c 300000 /dev/zero >&2",
+            ]),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!((out.stdout.len(), out.stderr.len()), (1_000_000, 300_000));
+
+        let started = Instant::now();
+        let err =
+            run_with_timeout(tool("sleep").arg("30"), Duration::from_millis(200)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        assert_eq!(
+            output_with_timeout(tool("sh").args(["-c", "echo hi"]), Duration::from_secs(20))
+                .as_deref(),
+            Some("hi\n")
+        );
+        assert!(output_with_timeout(&mut tool("false"), Duration::from_secs(20)).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_returns_when_a_background_process_holds_the_pipes() {
+        let started = Instant::now();
+        let out = run_with_timeout(
+            tool("sh").args(["-c", "echo done; sleep 30 &"]),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_kills_the_whole_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = format!("(sleep 1; touch '{}') & sleep 30", marker.display());
+        let err = run_with_timeout(tool("sh").args(["-c", &script]), Duration::from_millis(200))
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "a grandchild outlived the timeout");
     }
 
     #[test]

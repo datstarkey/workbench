@@ -16,6 +16,7 @@ pub mod codex_sessions;
 pub mod codex_transcript;
 pub mod config;
 pub mod git;
+mod git_read;
 pub mod github;
 mod github_api;
 mod http;
