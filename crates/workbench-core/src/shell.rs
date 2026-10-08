@@ -62,15 +62,23 @@ pub fn tool(program: impl AsRef<OsStr>) -> Command {
     }
 }
 
+/// How long to keep reading a child's pipes after it exits, for a process it started
+/// that still holds them (an ssh ControlPersist master, an MCP server).
+const PIPE_GRACE: Duration = Duration::from_millis(250);
+
 /// Run `cmd` to completion, killing it at `timeout` (an `ErrorKind::TimedOut` error).
 /// Stdout and stderr are drained on threads while it runs, so a chatty child can't
-/// stall on a full pipe; stdin is null, so it can't wait on input either.
+/// stall on a full pipe; stdin is null, so it can't wait on input either. On Unix the
+/// child gets its own process group and the whole group is killed at the deadline, so
+/// hooks, ssh and helpers it started don't outlive it.
 pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
-    let mut child = cmd
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    // std keeps using posix_spawn with a process group (POSIX_SPAWN_SETPGROUP).
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    let mut child = cmd.spawn()?;
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
 
@@ -81,6 +89,11 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result
             break status;
         }
         if Instant::now() >= deadline {
+            #[cfg(unix)]
+            if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
+                // SAFETY: plain syscall on the group this child leads.
+                unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            }
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::Error::new(
@@ -91,29 +104,37 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result
         std::thread::sleep(pause.min(deadline.saturating_duration_since(Instant::now())));
         pause = (pause * 2).min(Duration::from_millis(20));
     };
-    // A grandchild that inherited the pipes can hold them open after the child exits;
-    // take what arrived by the deadline rather than wait on it.
-    let collect = |rx: mpsc::Receiver<Vec<u8>>| {
-        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_default()
-    };
+    let until = (Instant::now() + PIPE_GRACE).min(deadline.max(Instant::now()));
     Ok(Output {
         status,
-        stdout: collect(stdout),
-        stderr: collect(stderr),
+        stdout: collect(&stdout, until),
+        stderr: collect(&stderr, until),
     })
 }
 
+/// Read `pipe` on a thread, sending each chunk as it arrives; the channel closes at EOF.
 fn drain(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     if let Some(mut pipe) = pipe {
         std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = pipe.read_to_end(&mut buf);
-            let _ = tx.send(buf);
+            let mut buf = vec![0; 64 * 1024];
+            while let Ok(n @ 1..) = pipe.read(&mut buf) {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
         });
     }
     rx
+}
+
+/// Everything drained so far, waiting for EOF no later than `until`.
+fn collect(rx: &mpsc::Receiver<Vec<u8>>, until: Instant) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Ok(chunk) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        out.extend_from_slice(&chunk);
+    }
+    out
 }
 
 /// Run `cmd` and return its stdout if it exits successfully within `timeout`;
@@ -381,6 +402,33 @@ mod tests {
             Some("hi\n")
         );
         assert!(output_with_timeout(&mut tool("false"), Duration::from_secs(20)).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_returns_when_a_background_process_holds_the_pipes() {
+        let started = Instant::now();
+        let out = run_with_timeout(
+            tool("sh").args(["-c", "echo done; sleep 30 &"]),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_timeout_kills_the_whole_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        let script = format!("(sleep 1; touch '{}') & sleep 30", marker.display());
+        let err = run_with_timeout(tool("sh").args(["-c", &script]), Duration::from_millis(200))
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "a grandchild outlived the timeout");
     }
 
     #[test]

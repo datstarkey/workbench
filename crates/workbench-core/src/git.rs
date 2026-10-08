@@ -13,27 +13,30 @@ use crate::types::{
     GitLogEntry, GitStashEntry, GitStatusResult, WorktreeCopyOptions, WorktreeInfo,
 };
 
-/// Local git work: generous for a cold `status` on a huge checkout, finite so a hung git
-/// (network filesystem, stuck lock) can't block its caller forever.
-pub(crate) const LOCAL_TIMEOUT: Duration = Duration::from_secs(60);
-/// Commands that talk to a remote.
-pub(crate) const NETWORK_TIMEOUT: Duration = Duration::from_secs(600);
+/// Read-only queries (the polled ones): generous for a cold `status` on a huge checkout,
+/// finite so a hung git (network filesystem, stuck lock) can't block its caller forever.
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// Everything else: commits run hooks, checkouts run LFS and hooks, clones and fetches
+/// move data. Killing those midway leaves locks and half-written trees, so the cap is
+/// only there to free a caller from a git that will never finish.
+pub(crate) const LONG_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 pub(crate) fn git_timeout(args: &[&str]) -> Duration {
-    let mut rest = args.iter();
+    let mut rest = args.iter().copied();
     while let Some(arg) = rest.next() {
-        match *arg {
+        match arg {
             "-c" | "-C" => {
                 rest.next();
             }
             a if a.starts_with('-') => {}
-            "fetch" | "pull" | "push" | "clone" | "ls-remote" | "submodule" => {
-                return NETWORK_TIMEOUT
-            }
-            _ => return LOCAL_TIMEOUT,
+            "status" | "rev-parse" | "rev-list" | "log" | "show" | "diff" | "ls-files"
+            | "remote" | "symbolic-ref" | "for-each-ref" | "branch" | "merge-base" | "cat-file"
+            | "check-ignore" => return READ_TIMEOUT,
+            "worktree" | "stash" if rest.next() == Some("list") => return READ_TIMEOUT,
+            _ => return LONG_TIMEOUT,
         }
     }
-    LOCAL_TIMEOUT
+    LONG_TIMEOUT
 }
 
 pub(crate) fn git_output(args: &[&str], cwd: &str) -> Result<String> {

@@ -211,6 +211,8 @@ fn parity_on_a_repo_with_remotes_worktrees_and_stashes() {
     git_in(&repo, None, &["tag", "amb"]);
     git_in(&repo, None, &["branch", "origin/main", "a"]);
     git_in(&repo, None, &["branch", "feature/nested", "b"]);
+    git_in(&repo, None, &["branch", "config"]);
+    git_in(&repo, None, &["branch", "index"]);
 
     std::fs::write(repo.join("file.txt"), "one").unwrap();
     git_in(&repo, None, &["add", "file.txt"]);
@@ -401,6 +403,11 @@ fn parity_on_upstreams() {
     git_in(&repo, None, &["checkout", "-q", "-b", "noup"]);
     check_all(&repo, ALL);
 
+    // Named like a file in .git, which is not a ref.
+    git_in(&repo, None, &["checkout", "-q", "-b", "config"]);
+    check_all(&repo, ALL);
+    assert_eq!(git_read::git_info(p).unwrap().unwrap().branch, "config");
+
     git_in(
         &repo,
         None,
@@ -440,23 +447,23 @@ fn status_does_not_rewrite_the_index() {
 }
 
 #[test]
-fn network_commands_get_the_long_timeout() {
+fn only_read_only_git_gets_the_short_timeout() {
+    use git::{git_timeout, LONG_TIMEOUT, READ_TIMEOUT};
     assert_eq!(
-        git::git_timeout(&["push", "-u", "origin", "x"]),
-        git::NETWORK_TIMEOUT
+        git_timeout(&["status", "--porcelain=v1", "-z"]),
+        READ_TIMEOUT
     );
+    assert_eq!(git_timeout(&["-c", "a=commit", "log"]), READ_TIMEOUT);
     assert_eq!(
-        git::git_timeout(&["-c", "a=b", "fetch"]),
-        git::NETWORK_TIMEOUT
+        git_timeout(&["worktree", "list", "--porcelain"]),
+        READ_TIMEOUT
     );
-    assert_eq!(
-        git::git_timeout(&["status", "--porcelain"]),
-        git::LOCAL_TIMEOUT
-    );
-    assert_eq!(
-        git::git_timeout(&["-c", "user.name=push", "log"]),
-        git::LOCAL_TIMEOUT
-    );
+    assert_eq!(git_timeout(&["stash", "list"]), READ_TIMEOUT);
+    assert_eq!(git_timeout(&["worktree", "add", "x"]), LONG_TIMEOUT);
+    assert_eq!(git_timeout(&["stash", "push"]), LONG_TIMEOUT);
+    assert_eq!(git_timeout(&["commit", "-m", "x"]), LONG_TIMEOUT);
+    assert_eq!(git_timeout(&["push", "-u", "origin", "x"]), LONG_TIMEOUT);
+    assert_eq!(git_timeout(&["clone", "u", "d"]), LONG_TIMEOUT);
 }
 
 #[test]
@@ -476,60 +483,4 @@ fn subject_matches_git_format_subject() {
     );
     assert_eq!(git_read::subject(b"only"), "only");
     assert_eq!(git_read::subject(b""), "");
-}
-
-/// `cargo test -p workbench-core --release -- --ignored --nocapture bench_gix_vs_cli`
-#[test]
-#[ignore]
-fn bench_gix_vs_cli() {
-    use std::time::Instant;
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let path = repo.to_str().unwrap();
-    const N: u32 = 50;
-    fn time<T>(n: u32, f: impl Fn() -> T) -> f64 {
-        f();
-        let start = Instant::now();
-        for _ in 0..n {
-            f();
-        }
-        start.elapsed().as_secs_f64() * 1000.0 / f64::from(n)
-    }
-    let rows: [(&str, f64, f64); 6] = [
-        (
-            "status branch",
-            time(N, || git::status_branch_cli(path)),
-            time(N, || git_read::status_branch(path).unwrap().unwrap()),
-        ),
-        (
-            "git_info",
-            time(N, || git::git_info_cli(path).unwrap()),
-            time(N, || git_read::git_info(path).unwrap().unwrap()),
-        ),
-        (
-            "list_worktrees",
-            time(N, || git::list_worktrees_cli(path).unwrap()),
-            time(N, || git_read::list_worktrees(path).unwrap().unwrap()),
-        ),
-        (
-            "list_branches",
-            time(N, || git::list_branches_cli(path).unwrap()),
-            time(N, || git_read::list_branches(path).unwrap()),
-        ),
-        (
-            "git_log(50)",
-            time(N, || git::git_log_cli(path, 50).unwrap()),
-            time(N, || git_read::git_log(path, 50).unwrap().unwrap()),
-        ),
-        (
-            "git_stash_list",
-            time(N, || git::git_stash_list_cli(path).unwrap()),
-            time(N, || git_read::git_stash_list(path).unwrap().unwrap()),
-        ),
-    ];
-    for (name, cli, fast) in rows {
-        println!(
-            "{name:16} cli {cli:8.3} ms   gix {fast:8.3} ms   x{:.1}",
-            cli / fast
-        );
-    }
 }

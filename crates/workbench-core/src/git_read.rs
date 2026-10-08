@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use gix::bstr::{BStr, BString, ByteSlice};
+use gix::bstr::{BStr, ByteSlice};
 use gix::hash::ObjectId;
 use gix::head::Kind as HeadKind;
 use gix::repository::Kind as RepoKind;
@@ -18,6 +18,7 @@ use gix::Repository;
 
 use crate::git::StatusBranch;
 use crate::types::{BranchInfo, GitInfo, GitLogEntry, GitStashEntry, WorktreeInfo};
+use refname::RefNames;
 
 /// Run `fast`, or `cli` when it declines (`Ok(None)`) or fails. A failure is logged once per
 /// `kind`, so a repository layout gix can't read costs one warning, never a broken sidebar.
@@ -66,81 +67,6 @@ fn git_path(path: &Path) -> Result<String> {
     Ok(s.to_string())
 }
 
-/// Ref names, for git's `shorten_unambiguous_ref` (`%(refname:short)`, `--abbrev-ref`).
-struct RefNames<'r> {
-    repo: &'r Repository,
-    names: HashSet<BString>,
-    strict: bool,
-}
-
-const REV_PARSE_RULES: [(&str, &str); 6] = [
-    ("", ""),
-    ("refs/", ""),
-    ("refs/tags/", ""),
-    ("refs/heads/", ""),
-    ("refs/remotes/", ""),
-    ("refs/remotes/", "/HEAD"),
-];
-
-impl<'r> RefNames<'r> {
-    fn new(repo: &'r Repository) -> Result<Self> {
-        let mut names = HashSet::new();
-        for reference in repo.references()?.all()? {
-            let reference = reference.map_err(|e| anyhow::anyhow!("{e}"))?;
-            names.insert(reference.name().as_bstr().to_owned());
-        }
-        let strict = repo
-            .config_snapshot()
-            .boolean("core.warnAmbiguousRefs")
-            .unwrap_or(true);
-        Ok(Self {
-            repo,
-            names,
-            strict,
-        })
-    }
-
-    fn exists(&self, name: &str) -> bool {
-        if name.starts_with("refs/") {
-            return self.names.contains(BStr::new(name));
-        }
-        // A top-level name (`HEAD`, `FETCH_HEAD`, a stray file) lives in a git dir.
-        let cwd = self.repo.current_dir();
-        [self.repo.git_dir(), self.repo.common_dir()]
-            .iter()
-            .any(|dir| cwd.join(dir).join(name).is_file())
-    }
-
-    /// git's `shorten_unambiguous_ref`: the shortest rule-derived name no other rule resolves.
-    fn shorten(&self, full: &str) -> String {
-        for i in (1..REV_PARSE_RULES.len()).rev() {
-            let (prefix, suffix) = REV_PARSE_RULES[i];
-            let Some(short) = full
-                .strip_prefix(prefix)
-                .and_then(|rest| rest.strip_suffix(suffix))
-                .filter(|short| !short.is_empty())
-            else {
-                continue;
-            };
-            let rules_to_fail = if self.strict {
-                REV_PARSE_RULES.len()
-            } else {
-                i
-            };
-            let ambiguous = (0..rules_to_fail).filter(|&j| j != i).any(|j| {
-                self.exists(&format!(
-                    "{}{short}{}",
-                    REV_PARSE_RULES[j].0, REV_PARSE_RULES[j].1
-                ))
-            });
-            if !ambiguous {
-                return short.to_string();
-            }
-        }
-        full.to_string()
-    }
-}
-
 fn utf8(name: &BStr) -> Result<&str> {
     name.to_str().context("non-UTF-8 ref name")
 }
@@ -154,7 +80,7 @@ pub(crate) fn git_info(path: &str) -> Result<Option<GitInfo>> {
         HeadKind::Detached { .. } => "HEAD".to_string(),
         // `rev-parse HEAD` fails on an unborn branch; let the CLI report it.
         HeadKind::Unborn(_) => return Ok(None),
-        HeadKind::Symbolic(r) => RefNames::new(&repo)?.shorten(utf8(r.name.as_bstr())?),
+        HeadKind::Symbolic(r) => RefNames::new(&repo).shorten(utf8(r.name.as_bstr())?),
     };
     Ok(Some(GitInfo {
         branch,
@@ -256,7 +182,7 @@ pub(crate) fn list_branches(path: &str) -> Result<Option<Vec<BranchInfo>>> {
         HeadKind::Unborn(name) => name,
         HeadKind::Detached { .. } => return Ok(None),
     };
-    let names = RefNames::new(&repo)?;
+    let names = RefNames::with_all_refs(&repo)?;
     let mut refs = Vec::new();
     for prefix in ["refs/heads/", "refs/remotes/"] {
         for reference in repo.references()?.prefixed(prefix)? {
@@ -425,7 +351,11 @@ fn unpushed_ids(repo: &Repository, head: ObjectId) -> Result<HashSet<ObjectId>> 
         }
     }
     let mut ids = HashSet::new();
-    for info in repo.rev_walk([head]).with_hidden(hidden).all()?.take(1000) {
+    // Date order, as `rev-list` picks its 1000.
+    let walk = repo.rev_walk([head]).with_hidden(hidden).sorting(
+        gix::revision::walk::Sorting::ByCommitTime(Default::default()),
+    );
+    for info in walk.all()?.take(1000) {
         ids.insert(info?.id);
     }
     Ok(ids)
@@ -447,7 +377,7 @@ pub(crate) fn status_branch(path: &str) -> Result<Option<StatusBranch>> {
             return Ok(Some(no_upstream("HEAD".to_string())))
         }
     };
-    let branch = RefNames::new(&repo)?.shorten(utf8(name.as_bstr())?);
+    let branch = RefNames::new(&repo).shorten(utf8(name.as_bstr())?);
     let short = utf8(name.as_bstr())?
         .strip_prefix("refs/heads/")
         .unwrap_or_default();
@@ -491,8 +421,9 @@ pub(crate) fn git_stash_list(path: &str) -> Result<Option<Vec<GitStashEntry>>> {
         return Ok(Some(Vec::new()));
     };
     let mut log = stash.log_iter();
+    // Without a reflog git lists the stash ref itself; leave that to it.
     let Some(lines) = log.all()? else {
-        return Ok(Some(Vec::new()));
+        return Ok(None);
     };
     let mut stashes = Vec::new();
     for line in lines {
@@ -511,5 +442,8 @@ pub(crate) fn git_stash_list(path: &str) -> Result<Option<Vec<GitStashEntry>>> {
     Ok(Some(entries))
 }
 
+#[cfg(test)]
+mod bench;
+mod refname;
 #[cfg(test)]
 mod tests;
