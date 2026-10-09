@@ -215,6 +215,7 @@ impl CodexTranscript {
             expired: false,
             decision: None,
             answers: None,
+            in_terminal: false,
         };
         let i = self.upsert(item, changed);
         self.approvals.insert(

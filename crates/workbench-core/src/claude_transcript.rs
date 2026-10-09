@@ -89,7 +89,12 @@ impl ChatView for Transcript {
         self.full_outputs.get(tool_id).map(String::as_str)
     }
     fn waiting_on(&self) -> Option<&TranscriptItem> {
-        let first = self.approvals.values().map(|p| p.item).min()?;
+        let first = self
+            .approvals
+            .values()
+            .filter(|p| !self.in_terminal(p))
+            .map(|p| p.item)
+            .min()?;
         self.items.get(first)
     }
 }
@@ -149,6 +154,8 @@ pub struct Transcript {
     streaming_message: Option<String>,
     /// Streamed text/thinking items, in block order, awaiting their final block.
     stream_slots: HashMap<String, VecDeque<usize>>,
+    /// Open approvals, the terminal-asked (`in_terminal`) ones included:
+    /// those wait for their call's result, and no chat answers them.
     approvals: HashMap<String, PendingApproval>,
     /// Elicitations the terminal asks that have no answer yet, by id.
     terminal_elicitations: HashMap<String, usize>,
@@ -530,9 +537,80 @@ impl Transcript {
     }
 
     fn expire_approval(&mut self, obj: &Value, changed: &mut Vec<usize>) {
-        if let Some(id) = str_at(obj, "request_id") {
-            self.expire_approvals(|r, _| r == id, changed);
+        let Some(id) = str_at(obj, "request_id") else {
+            return;
+        };
+        let Some(item) = self.approvals.get(id).map(|p| p.item) else {
+            return;
+        };
+        let TranscriptItem::Approval {
+            in_terminal,
+            decision,
+            ..
+        } = &mut self.items[item]
+        else {
+            return;
+        };
+        if obj.get("workbench_in_terminal") == Some(&Value::Bool(true)) {
+            // Not withdrawn: no chat had it open, and the terminal asks it instead.
+            *in_terminal = true;
+        } else if *in_terminal {
+            // The plugin cancels a terminal-asked approval as its call starts.
+            *decision = Some(ApprovalDecision::Allow);
+            self.approvals.remove(id);
+        } else {
+            return self.expire_approvals(|r, _| r == id, changed);
         }
+        changed.push(item);
+    }
+
+    /// An approval the terminal asked has its call's result: answered there
+    /// (with the question's answers), or refused.
+    fn settle_terminal_approval(
+        &mut self,
+        tool_id: &str,
+        block: &Value,
+        result: Option<&Value>,
+        changed: &mut Vec<usize>,
+    ) {
+        let Some((id, item)) = self
+            .approvals
+            .iter()
+            .find(|(_, p)| p.tool_use_id.as_deref() == Some(tool_id))
+            .map(|(id, p)| (id.clone(), p.item))
+        else {
+            return;
+        };
+        let TranscriptItem::Approval {
+            in_terminal: true,
+            decision,
+            answers,
+            ..
+        } = &mut self.items[item]
+        else {
+            return;
+        };
+        if block.get("is_error").and_then(Value::as_bool) == Some(true) {
+            *decision = Some(ApprovalDecision::Deny);
+        } else {
+            *decision = Some(ApprovalDecision::Allow);
+            *answers = result
+                .and_then(|r| r.get("answers"))
+                .filter(|a| a.is_object())
+                .cloned();
+        }
+        self.approvals.remove(&id);
+        changed.push(item);
+    }
+
+    fn in_terminal(&self, pending: &PendingApproval) -> bool {
+        matches!(
+            self.items[pending.item],
+            TranscriptItem::Approval {
+                in_terminal: true,
+                ..
+            }
+        )
     }
 
     /// Withdraw the open approvals `which` (request id, tool call) picks: no
@@ -705,6 +783,9 @@ impl Transcript {
         decision: ApprovalDecision,
         answers: Option<&serde_json::Map<String, Value>>,
     ) -> Option<(usize, Value)> {
+        if self.in_terminal(self.approvals.get(request_id)?) {
+            return None;
+        }
         let pending = self.approvals.remove(request_id)?;
         let answers: Option<Value> = answers.map(|a| {
             a.iter()
@@ -753,7 +834,11 @@ impl Transcript {
 
     /// Request ids still waiting for an answer.
     pub fn pending_approval_ids(&self) -> Vec<String> {
-        self.approvals.keys().cloned().collect()
+        self.approvals
+            .iter()
+            .filter(|(_, p)| !self.in_terminal(p))
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// An MCP elicitation the terminal shows (the plugin's
@@ -818,6 +903,7 @@ impl Transcript {
                 expired: false,
                 decision: None,
                 answers: None,
+                in_terminal: false,
             },
             changed,
         );
@@ -1044,6 +1130,7 @@ impl Transcript {
         };
         // The call ran or was refused: an approval still open for it was
         // answered elsewhere, or its asking hook died.
+        self.settle_terminal_approval(tool_id, block, result, changed);
         self.expire_approvals(|_, t| t == Some(tool_id), changed);
         let Some(&i) = self.index.get(tool_id) else {
             return;

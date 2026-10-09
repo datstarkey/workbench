@@ -54,7 +54,11 @@ impl TranscriptItem {
             });
         }
         let Self::Approval {
-            id, tool, input, ..
+            id,
+            tool,
+            input,
+            in_terminal,
+            ..
         } = self
         else {
             return None;
@@ -66,7 +70,7 @@ impl TranscriptItem {
             id: id.clone(),
             tool: tool.clone(),
             preview: truncate_chars(&preview, MAX_CHARS),
-            in_terminal: false,
+            in_terminal: *in_terminal,
         })
     }
 
@@ -104,6 +108,7 @@ mod tests {
             expired: false,
             decision: None,
             answers: None,
+            in_terminal: false,
         }
     }
 

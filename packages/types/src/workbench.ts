@@ -617,6 +617,8 @@ export type TranscriptItem =
 			decision?: ApprovalDecision;
 			/** `AskUserQuestion` answers: question text → chosen label(s) or own words. */
 			answers?: Record<string, string>;
+			/** No chat had it open, so the terminal's dialog asks it: `expired` once answered there. */
+			inTerminal?: boolean;
 	  }
 	| {
 			/** An MCP server asks the person for input (MCP elicitation). `id` is the request id. */

@@ -162,6 +162,88 @@ async fn an_answer_whose_reply_was_lost_is_answered_again() {
     let spent: Value = ask(None).await.unwrap().json().await.unwrap();
     assert_eq!(spent, json!({"fallback": true}));
 
+    // Asked with no chat open: the terminal's dialog takes it, and the session
+    // waits on it there until its call has a result.
+    let mut second = line.clone();
+    second["request_id"] = json!("ask-2");
+    second["request"]["tool_use_id"] = json!("toolu_2");
+    let fell: Value = client
+        .post(format!("{mod_url}/mod/ask"))
+        .header("x-workbench-mod-token", &mod_token)
+        .json(&json!({"sessionId": SID, "requestId": "ask-2", "line": second}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fell, json!({"fallback": true}));
+    let waiting = || async {
+        let agents: Value = client
+            .get(format!("{base}/agent/claude"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        agents[0]["waiting"].clone()
+    };
+    let w = waiting().await;
+    assert_eq!(
+        (&w["id"], &w["inTerminal"]),
+        (&json!("ask-2"), &json!(true)),
+        "{w}"
+    );
+    let result = json!({"type": "user", "message": {"role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "toolu_2", "content": "B"}]}});
+    client
+        .post(format!("{mod_url}/mod/out"))
+        .header("x-workbench-mod-token", &mod_token)
+        .json(&json!({"sessionId": SID, "lines": [result]}))
+        .send()
+        .await
+        .unwrap();
+    assert!(waiting().await.is_null());
+
+    // A chat's question the plugin gave up asking (its requests kept failing)
+    // and handed to the terminal: the session waits on it there too.
+    let mut third = line.clone();
+    third["request_id"] = json!("ask-3");
+    third["request"]["tool_use_id"] = json!("toolu_3");
+    let held = client
+        .post(format!("{mod_url}/mod/ask"))
+        .header("x-workbench-mod-token", &mod_token)
+        .json(&json!({"sessionId": SID, "requestId": "ask-3", "line": third, "hold": true}))
+        .send();
+    let held = tokio::spawn(held);
+    let mut w = Value::Null;
+    for _ in 0..50 {
+        w = waiting().await;
+        if !w.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(w["inTerminal"], json!(null), "a chat's to answer: {w}");
+    let handed = json!({"type": "control_cancel_request", "request_id": "ask-3",
+        "workbench_in_terminal": true});
+    client
+        .post(format!("{mod_url}/mod/out"))
+        .header("x-workbench-mod-token", &mod_token)
+        .json(&json!({"sessionId": SID, "lines": [handed]}))
+        .send()
+        .await
+        .unwrap();
+    let w = waiting().await;
+    assert_eq!(
+        (&w["id"], &w["inTerminal"]),
+        (&json!("ask-3"), &json!(true)),
+        "{w}"
+    );
+    held.abort();
+
     let res = client
         .delete(format!("{base}/agent/claude/{SID}"))
         .bearer_auth(TOKEN)

@@ -376,6 +376,18 @@ export function awaitsAnswer(item: TranscriptItem): item is ApprovalItem | Elici
 	return item.kind === 'elicitation' && !item.action && !item.expired;
 }
 
+/**
+ * An approval the terminal's dialog took over: `waiting` there, or `answered`
+ * there with no answers to show; `null` when its own card says how it went.
+ */
+export function terminalAnswer(item: ApprovalItem): 'waiting' | 'answered' | null {
+	if (!item.inTerminal) return null;
+	if (!item.decision && !item.expired) return 'waiting';
+	return item.decision === 'allow' && item.tool === 'AskUserQuestion' && !item.answers
+		? 'answered'
+		: null;
+}
+
 export function activity(items: TranscriptItem[], meta: TranscriptMeta | null): Activity {
 	for (let i = items.length - 1; i >= 0; i--) {
 		const item = items[i];

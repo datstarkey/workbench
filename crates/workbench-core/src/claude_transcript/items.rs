@@ -78,6 +78,10 @@ pub enum TranscriptItem {
         /// What the person chose, for `AskUserQuestion`: question text → answer.
         #[serde(skip_serializing_if = "Option::is_none")]
         answers: Option<Value>,
+        /// No chat had it open, so the terminal's own dialog asks it: answered
+        /// there, `expired` once it was.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        in_terminal: bool,
     },
     /// An MCP server asks the person for input. `id` is the request id.
     #[serde(rename_all = "camelCase")]

@@ -270,13 +270,18 @@ pub async fn ask(
             let (asking, request_id) = (session.clone(), body.request_id.clone());
             let waiting =
                 crate::routes::blocking(move || Ok(asking.waiting_for(&request_id))).await?;
-            link.fall_back(&body.request_id, waiting);
-            refresh_attention(&session).await?;
+            if let Some(answer) = link.fall_back(&body.request_id, waiting) {
+                return Ok(Json(json!({ "answer": answer })));
+            }
             feed(
-                vec![json!({"type": "control_cancel_request", "request_id": body.request_id})],
+                vec![
+                    json!({"type": "control_cancel_request", "request_id": body.request_id,
+                    "workbench_in_terminal": true}),
+                ],
                 None,
             )
             .await?;
+            refresh_attention(&session).await?;
             return Ok(Json(json!({ "fallback": true })));
         }
         if tokio::time::Instant::now() >= deadline {
