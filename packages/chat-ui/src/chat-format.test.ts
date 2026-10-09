@@ -566,4 +566,12 @@ describe('slash menu', () => {
 		expect(matchCommands(commands, 'context').map((c) => c.name)).toEqual(['compact']);
 		expect(matchCommands(commands, '')).toHaveLength(4);
 	});
+
+	it('lists a command name once', () => {
+		const twice = [...commands, { name: 'review', description: 'A plugin’s' }];
+		for (const query of ['', 'rev']) {
+			const found = matchCommands(twice, query).filter((c) => c.name === 'review');
+			expect(found).toEqual([commands.find((c) => c.name === 'review')]);
+		}
+	});
 });
