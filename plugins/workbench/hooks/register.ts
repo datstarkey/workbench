@@ -3,6 +3,7 @@ import {
 	noteBackgroundTasks,
 	notePermissionMode,
 	noteTitle,
+	promptTitle,
 	register as registerChat
 } from './chat';
 
@@ -67,8 +68,11 @@ export const register: Register = (on, options) => {
 		return forward($, e, () => next(e));
 	});
 	on('classic.UserPromptSubmit', ($, e, next) => {
-		noteTitle(e.session_title);
-		return forward($, e, () => next(e));
+		const generated = promptTitle(e.session_title);
+		return forward($, e, async () => {
+			const result = await next(e);
+			return generated ? { ...result, sessionTitle: generated } : result;
+		});
 	});
 	on('classic.Stop', ($, e, next) => {
 		noteBackgroundTasks(e.background_tasks);

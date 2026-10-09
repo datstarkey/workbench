@@ -2,10 +2,12 @@ import type { PermissionRequestDecision, Register, TurnStepInput } from 'claude-
 import * as server from './link';
 import { PendingAsks } from './asks';
 import { notifiedJob, startJob, stoppedJobs } from './jobs';
+import { Titles, TITLE_SYSTEM } from './titles';
 import {
 	askLine,
 	attachedFiles,
 	commandRowOutput,
+	KEEPALIVE_PROMPT,
 	midTurn,
 	modelOption,
 	promptText,
@@ -52,6 +54,7 @@ let modelPick: { id: string; choice: string; effortLevels?: string[]; base?: str
 let commandList = '';
 // The session title the chat was last sent.
 let title: string | undefined;
+const titles = new Titles();
 // The running main-thread turn, for an interrupt from chat.
 let runningTurn: string | undefined;
 // The live model's context window, from the latest measurement.
@@ -183,7 +186,10 @@ function commandRan(
 		);
 	}
 	// Written to the JSONL only: the chat would see it on its next load.
-	if (command === 'rename') noteTitle(args);
+	if (command === 'rename') {
+		titles.nameByPerson();
+		noteTitle(args);
+	}
 	if (text !== undefined) printOnce(text);
 }
 
@@ -275,6 +281,16 @@ export function noteTitle(next: string | undefined) {
 	if (!trimmed || trimmed === title || !server.current()) return;
 	title = trimmed;
 	emit({ type: 'custom-title', customTitle: trimmed });
+}
+
+/**
+ * The title for a prompt's `sessionTitle`: one generated since the last prompt
+ * (shown in chat at once, made the engine's own here), else the engine's.
+ */
+export function promptTitle(current: string | undefined): string | undefined {
+	const generated = titles.takePending();
+	noteTitle(generated ?? current);
+	return generated;
 }
 
 function commandsLine(commands: readonly { name: string; description: string }[]) {
@@ -494,6 +510,7 @@ export const register: Register = (on) => {
 		const link = server.current();
 		if (link && (e.reason === 'clear' || e.reason === 'resume')) {
 			server.expectRekey(e.reason);
+			titles.reset();
 			for (const task of [...taskAgents.keys()]) unlinkTask(task);
 			stoppedAgents.clear();
 			endedByStop.clear();
@@ -688,6 +705,7 @@ export const register: Register = (on) => {
 		} else if (m.isMeta) {
 			return next(e);
 		} else if (m.type === 'assistant' && e.door === 'response') {
+			titles.noteReply(promptText(m.content));
 			emit({
 				type: 'assistant',
 				uuid: e.uuid,
@@ -695,7 +713,9 @@ export const register: Register = (on) => {
 				message: { ...m, id: currentMessage || `wbmod-${e.uuid}`, model }
 			});
 		} else if (m.type === 'user' && e.door === 'prompt') {
-			if (echoed.delete(promptText(m.content))) return next(e);
+			const text = promptText(m.content);
+			if (text !== QUEUED_NUDGE && text !== KEEPALIVE_PROMPT) titles.notePrompt(text);
+			if (echoed.delete(text)) return next(e);
 			emit({ type: 'user', uuid: e.uuid, session_id: sessionId, message: m });
 		} else if (m.type === 'user' && e.door === 'tool-result') {
 			const row: Line = { type: 'user', uuid: e.uuid, session_id: sessionId, message: m };
@@ -763,6 +783,22 @@ export const register: Register = (on) => {
 			} else {
 				emit({ type: 'result', subtype: 'success', is_error: false, modelUsage });
 			}
+			// Not awaited: the title follows the turn, nothing waits on it.
+			if (e.reason === 'answer')
+				void titles
+					.retitle(title, (prompt) =>
+						$.model
+							.complete({
+								model: 'haiku',
+								system: TITLE_SYSTEM,
+								prompt,
+								maxTokens: 40,
+								effort: 'low',
+								timeoutMs: 20_000
+							})
+							.then((r) => (r.isAnswered ? r.text : undefined))
+					)
+					.then((next) => next && noteTitle(next));
 			const unread = injected.length > 0;
 			injected = [];
 			// Entries live one turn at most, so a stale one can't hide a later prompt.
