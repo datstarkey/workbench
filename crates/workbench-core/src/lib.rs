@@ -36,3 +36,4 @@ pub mod token;
 pub mod trello;
 pub mod trello_automation;
 pub mod types;
+pub mod workspace;

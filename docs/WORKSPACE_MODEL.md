@@ -1,0 +1,96 @@
+# Workspace model
+
+`crates/workbench-core/src/workspace/` holds the one workspace → tab → pane model that every client renders, and every rule that changes it. It is pure: `ops::apply(&mut Model, Command) -> Result<Vec<Effect>>` edits the model and returns the effects for the caller (the server's workspace service) to carry out in order. Only `persist.rs` does IO. The rules live in `ops/lifecycle.rs` (workspaces, sessions, processes) and `ops/layout.rs` (labels, splits, order).
+
+## Model (`model.rs`)
+
+- `Model { workspaces }`
+- `Workspace { id, projectPath, projectName, worktreePath?, branch?, renderer: xterm|native, tabs, splitView?, transient }`.
+  - Its `cwd()` is the worktree, else the project.
+  - Only a worktree workspace has a `branch`; a main checkout's branch is read from git when shown.
+  - `transient` marks a workspace opened only to host a session started by path. It closes with its last tab, and an explicit `OpenWorkspace` clears the flag.
+- `Tab { id, label, kind, split, panes }`. Every pane in a tab has the tab's kind.
+- `Pane { id, kind: shell|claude|codex, sessionId?, previousIds, accountId?, prompt?, command?, codexMode?: tui|appServer }`. `prompt` is held only until the pane's first spawn.
+
+Paths are compared with `same_path`: trailing separators are ignored, and on Windows so are case and `\` vs `/`.
+
+**Not in the model (per device or per process):** the selected workspace, the active tab, focus, split ratios, a Claude pane's Terminal/Chat display, chat drafts, "Take control", and runtime state (terminal id, status, exited, title, busy, waiting). An exit is runtime state: the pane stays with its process marked exited, so the model has no exit command. A Codex pane's mode _is_ in the model, because it picks the process.
+
+## Commands (`command.rs`)
+
+The wire shape is `{"type": "<camelCase name>", ...camelCase fields}`.
+
+| Command                                                                                                                  | Rule                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `openWorkspace{projectPath, projectName, worktreePath?, branch?, renderer}`                                              | Reuses the workspace with the same project and worktree. A worktree path equal to the project means the main checkout. |
+| `closeWorkspace{workspaceId}` / `closeProject{projectPath}`                                                              | Ends every pane.                                                                                                       |
+| `newSession{workspaceId \| projectPath+worktreePath?, kind, resume?, prompt?, accountId?, label?, command?, codexMode?}` | See below.                                                                                                             |
+| `closePane{paneId}` / `closeTab{tabId}`                                                                                  | Each closed pane is an End. A tab goes with its last pane, and a split holding it is dropped.                          |
+| `restart{tabId}`                                                                                                         | AI tabs only. Stop, then spawn on the same pane ids, session and account. A prompt already sent is never sent again.   |
+| `setCodexMode{paneId, mode}`                                                                                             | Stop, then spawn the other process on the same thread.                                                                 |
+| `rename{tabId, label}`                                                                                                   | Trimmed; an empty label is refused.                                                                                    |
+| `split{tabId, direction}`                                                                                                | See below.                                                                                                             |
+| `movePane{paneId, tabId}` / `moveTab{tabId, toTabId}` / `moveWorkspace{...}`                                             | Within one workspace, and into a tab of the pane's kind. A tab emptied by a move goes.                                 |
+| `trustFolder{paneId}`                                                                                                    | Claude panes only.                                                                                                     |
+| `sessionAttached{paneId, sessionId}`                                                                                     | Server fold-in: a Codex thread got its id, or `/resume` switched conversation (clears `previousIds`). See below.       |
+| `sessionRekeyed{sessionId, previousIds}`                                                                                 | Server fold-in for `/clear`: the pane on any of `previousIds` follows to the new id and keeps the old ones.            |
+
+**`newSession`:**
+
+- **Which workspace.** By path, the session goes in the exact main or worktree workspace, otherwise in a new transient one. It never goes in the main workspace for a worktree cwd.
+- **Resume.** A `resume` of a session a pane already runs (matched by id or `previousIds`, same kind) returns that pane and spawns nothing.
+- **Ids and prompts.** Claude gets its session id up front. A resumed session drops `prompt`.
+- **Labels.** `Claude N` / `Codex N` count that kind + 1; `Terminal N` counts all tabs + 1.
+- **Kind-specific fields.** `command` is shell only; `codexMode` is Codex only.
+
+**`split`:** pairs the tab with the next tab, else the previous one, else a new shell tab. The same direction again unsplits, and another direction turns the split. Refused in a native workspace.
+
+**`sessionAttached` when another pane holds the session:** if a pane of the same kind holds that session (as its id or in its `previousIds`), the command is refused with an error naming that pane. The reporting process is a second one on a live session, and the caller resolves it by stopping that process. The model never shows two panes on one session.
+
+Fold-ins on an unknown pane or session are no-ops, because they can race a close. Commands sent by clients fail on unknown ids.
+
+## Effects
+
+- `spawnShell{paneId, cwd, renderer, command, accountId}`
+- `spawnClaude{paneId, cwd, renderer, sessionId, resume, accountId, prompt}`: `resume` says the session may already exist. The launcher still checks its history, as `claude_launch` does today.
+- `spawnCodex{paneId, cwd, renderer, sessionId?, mode, prompt}`: a `sessionId` whose thread has nothing on disk starts fresh, and the executor reports the new id with `sessionAttached`.
+- `stop{paneId, sessionId}`: the process stops and the pane stays (restart, mode switch).
+- `end{paneId, sessionId}`: the pane is gone, so its process and session end for every device.
+- `trustFolder{paneId, cwd}`
+- `opened{workspaceId, tabId?, paneId?}`: what the command made or found, returned to the client that sent it.
+- `persist`: the model changed.
+
+## Invariants
+
+- One pane per live session: a resume returns the pane that holds the session, and `sessionAttached` refuses a session another pane holds.
+- A prompt is sent with exactly one spawn. The spawn takes it off the pane, and a restart or mode switch never resends it.
+- `stop`/`end` come before the `spawn` that replaces them.
+- Pane ids survive restart, mode switch, re-key and moves. Clients key local state on them.
+- Every pane in a tab has the tab's kind.
+- Every mutation ends with `persist`; a no-op returns no effects.
+
+## Files (`persist.rs`)
+
+`persist::load(dir)` / `persist::save(dir, &WorkspacesFile)` use `workspaces.v2.json`: `{version: 2, workspaces, local}`. `local` holds the desktop's per-device state (`selectedId`, `activeTabIds`, `chatPanes`, `serverTerminalIds`) until the desktop stores it itself.
+
+The new format goes in its own file because older builds read `workspaces.json` strictly, and would lose every workspace on a downgrade if it held v2. So `save` never touches `workspaces.json`. `load` reads `workspaces.v2.json` when present, else migrates `workspaces.json`. After a downgrade, an older build sees the old file as it was when the new format took over.
+
+`version` is read explicitly:
+
+- absent or `1`: the old desktop snapshot, migrated;
+- `2`: current;
+- anything else (newer, zero, non-integer, a string): an error, never a guess.
+
+The migration does the following:
+
+- Claude `view: "chat"` goes to `local.chatPanes`.
+- Codex `view` becomes `codexMode`.
+- A Codex launch command is reduced to its prompt argument.
+- A Claude pane without an id gets one.
+- An empty tab gets a shell pane.
+- A tab mixing pane kinds is split into one tab per kind. The tabs keep pane order, and the first keeps the tab's id.
+- A main checkout's `branch` is dropped.
+- A split naming a missing tab is dropped.
+- `liveTerminal` is ignored, since it is runtime state.
+
+Writes go through `paths::atomic_write`.
