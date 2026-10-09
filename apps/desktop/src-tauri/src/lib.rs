@@ -2,9 +2,9 @@
 // crate root so existing `crate::config`, `crate::git`, `crate::types`, … paths
 // throughout the desktop crate keep resolving without per-file edits.
 pub use workbench_core::{
-    claude_accounts, claude_sessions, codex_config, codex_sessions, config, git, github, net,
-    package_scripts, paths, sandbox_runtime, session_utils, settings, shell, shell_integration,
-    text, trello, trello_automation, types, workspace, worktrees,
+    claude_accounts, claude_plugin, claude_sessions, codex_config, codex_sessions, config, git,
+    github, net, package_scripts, paths, sandbox_runtime, session_utils, settings, shell,
+    shell_integration, text, trello, trello_automation, types, workspace, worktrees,
 };
 
 // The e2e WebDriver server is unauthenticated control of the webview (and so of
@@ -213,6 +213,7 @@ pub fn run() {
                     log::warn!("failed to remove the old Claude hook script: {e}");
                 }
             });
+            claude_plugin::disable_marketplace_install_at_startup();
             let git_watcher = GitWatcher::new(handle);
             app.manage(git_watcher);
             let github_poller = GitHubPoller::new(app.handle().clone());

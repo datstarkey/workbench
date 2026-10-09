@@ -21,6 +21,7 @@ async fn run() -> anyhow::Result<()> {
         .init();
     workbench_server::watchdog::raise_fd_limit();
     workbench_server::watchdog::start(tokio::runtime::Handle::current());
+    workbench_core::claude_plugin::disable_marketplace_install_at_startup();
 
     let token = cli.resolved_token()?;
     if token.is_some() {

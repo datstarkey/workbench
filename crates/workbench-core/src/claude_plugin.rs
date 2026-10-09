@@ -1,14 +1,16 @@
-//! The `workbench` Claude Code plugin (`plugins/workbench`, also installable
-//! from this repo's marketplace) reports session activity to the desktop's
-//! hook bridge. Workbench loads an embedded copy into every process it starts
-//! through `CLAUDE_CODE_PLUGIN_DIRS`; Claude Code loads one plugin per name, so
-//! an installed copy beside it doesn't report twice.
+//! The `workbench` Claude Code plugin (`plugins/workbench`) reports session
+//! activity to the desktop's hook bridge. Workbench loads an embedded copy into
+//! every process it starts through `CLAUDE_CODE_PLUGIN_DIRS`, the only route:
+//! the repo used to be a marketplace too, and that frozen install is disabled
+//! at startup (`disable_marketplace_install`).
 
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use anyhow::Result;
+use serde_json::Value;
 
 use crate::paths;
 
@@ -108,6 +110,114 @@ pub fn plugin_dirs_env() -> Option<OsString> {
     with_dir(std::env::var_os(PLUGIN_DIRS_ENV), &plugin_dir()?)
 }
 
+const MARKETPLACE: &str = "workbench";
+const MARKETPLACE_PLUGIN: &str = "workbench@workbench";
+const MARKETPLACE_REPOS: [&str; 2] = ["datstarkey/workbench", "starkey-digital/workbench"];
+
+/// `owner/name` of a GitHub marketplace source: its `repo`, or a `url` such as
+/// `https://github.com/owner/name.git` or `git@github.com:owner/name`.
+fn github_repo(source: &Value) -> Option<String> {
+    let raw = source.get("repo").or_else(|| source.get("url"))?.as_str()?;
+    let lower = raw.trim().to_ascii_lowercase();
+    let repo = [
+        "https://github.com/",
+        "http://github.com/",
+        "git@github.com:",
+    ]
+    .iter()
+    .find_map(|prefix| lower.strip_prefix(prefix))
+    .unwrap_or(&lower)
+    .trim_end_matches('/');
+    Some(repo.strip_suffix(".git").unwrap_or(repo).to_string())
+}
+
+fn is_our_source(source: &Value) -> bool {
+    github_repo(source).is_some_and(|repo| MARKETPLACE_REPOS.contains(&repo.as_str()))
+}
+
+/// Read-only: whether Claude Code's marketplace registry in `claude_dir` has
+/// this repo as `workbench`.
+fn has_our_marketplace(claude_dir: &Path) -> bool {
+    fs::read_to_string(claude_dir.join("plugins").join("known_marketplaces.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|known| known.get(MARKETPLACE)?.get("source").cloned())
+        .is_some_and(|source| is_our_source(&source))
+}
+
+fn run_claude(claude: &Path, account_dir: Option<&Path>, cwd: &Path, args: &[&str]) -> bool {
+    let mut cmd = crate::shell::command(claude);
+    cmd.args(args).current_dir(cwd).stdin(Stdio::null());
+    match account_dir {
+        Some(dir) => cmd.env(crate::claude_accounts::CONFIG_DIR_ENV, dir),
+        None => cmd.env_remove(crate::claude_accounts::CONFIG_DIR_ENV),
+    };
+    match cmd.output() {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            log::warn!(
+                "`claude {}` failed ({}): {}",
+                args.join(" "),
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            log::warn!("couldn't run `claude {}`: {e}", args.join(" "));
+            false
+        }
+    }
+}
+
+/// Uninstalls a marketplace install of the plugin and drops the marketplace,
+/// through Claude Code's CLI (it owns those files and every settings scope),
+/// only when the registry says the `workbench` marketplace is this repo.
+fn disable_marketplace_install_in(claude: &Path, account_dir: Option<&Path>, claude_dir: &Path) {
+    if !has_our_marketplace(claude_dir) {
+        return;
+    }
+    let uninstalled = run_claude(
+        claude,
+        account_dir,
+        claude_dir,
+        &["plugin", "uninstall", MARKETPLACE_PLUGIN],
+    );
+    let removed = run_claude(
+        claude,
+        account_dir,
+        claude_dir,
+        &["plugin", "marketplace", "remove", MARKETPLACE],
+    );
+    if uninstalled || removed {
+        log::info!(
+            "removed the marketplace-installed workbench plugin from {}",
+            claude_dir.display()
+        );
+    }
+}
+
+/// In the background, removes a marketplace install of the plugin (frozen at
+/// its version, colliding with the injected copy) from each of `dirs`, as
+/// [`crate::claude_accounts::config_dirs`] lists them.
+pub fn spawn_disable_marketplace_install(dirs: Vec<(Option<String>, PathBuf)>) {
+    std::thread::spawn(move || disable_marketplace_installs(dirs));
+}
+
+/// Startup entry point (desktop and standalone server): every saved account.
+pub fn disable_marketplace_install_at_startup() {
+    std::thread::spawn(
+        || disable_marketplace_installs(crate::claude_accounts::saved_config_dirs()),
+    );
+}
+
+fn disable_marketplace_installs(dirs: Vec<(Option<String>, PathBuf)>) {
+    let claude = crate::claude_accounts::claude_binary();
+    for (id, dir) in dirs {
+        disable_marketplace_install_in(&claude, id.is_some().then_some(dir.as_path()), &dir);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +290,85 @@ mod tests {
             without_workbench_dirs(dir.as_os_str()),
             None,
             "nothing of the user's"
+        );
+    }
+
+    #[test]
+    fn matches_only_this_repo_as_a_marketplace_source() {
+        let ours = [
+            serde_json::json!({ "source": "github", "repo": "datstarkey/workbench" }),
+            serde_json::json!({ "source": "github", "repo": "Starkey-Digital/Workbench" }),
+            serde_json::json!({ "source": "url", "url": "https://github.com/starkey-digital/workbench.git" }),
+            serde_json::json!({ "source": "url", "url": "https://github.com/datstarkey/workbench/" }),
+            serde_json::json!({ "source": "url", "url": "git@github.com:datstarkey/workbench.git" }),
+        ];
+        for source in &ours {
+            assert!(is_our_source(source), "{source}");
+        }
+        let others = [
+            serde_json::json!({ "source": "github", "repo": "datstarkey/workbench-plugins" }),
+            serde_json::json!({ "source": "github", "repo": "someone/workbench" }),
+            serde_json::json!({ "source": "github", "repo": "fork-of-datstarkey/workbench" }),
+            serde_json::json!({ "source": "url", "url": "https://example.com/datstarkey/workbench" }),
+            serde_json::json!({ "source": "url", "url": "https://github.com/datstarkey/workbench/tree/main" }),
+            serde_json::json!({ "source": "directory", "path": "/src/datstarkey/workbench" }),
+        ];
+        for source in &others {
+            assert!(!is_our_source(source), "{source}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removes_the_marketplace_install_with_the_cli_only_when_it_is_ours() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("argv.log");
+        let claude = tmp.path().join("claude");
+        fs::write(
+            &claude,
+            format!(
+                "#!/bin/sh\necho \"${{CLAUDE_CONFIG_DIR:-default}}|$*\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let registry = |name: &str, repo: &str| {
+            let dir = tmp.path().join(name);
+            fs::create_dir_all(dir.join("plugins")).unwrap();
+            let known = serde_json::json!({
+                "workbench": { "source": { "source": "github", "repo": repo } },
+                "other": { "source": { "source": "github", "repo": "someone/other" } }
+            });
+            fs::write(
+                dir.join("plugins").join("known_marketplaces.json"),
+                known.to_string(),
+            )
+            .unwrap();
+            dir
+        };
+        let default = registry("default", "datstarkey/workbench");
+        let account = registry("account", "Starkey-Digital/workbench");
+        let fork = registry("fork", "someone/workbench");
+        let empty = tmp.path().join("empty");
+
+        disable_marketplace_install_in(&claude, None, &default);
+        disable_marketplace_install_in(&claude, Some(&account), &account);
+        disable_marketplace_install_in(&claude, Some(&fork), &fork);
+        disable_marketplace_install_in(&claude, Some(&empty), &empty);
+
+        let a = account.display();
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            format!(
+                "default|plugin uninstall workbench@workbench\n\
+                 default|plugin marketplace remove workbench\n\
+                 {a}|plugin uninstall workbench@workbench\n\
+                 {a}|plugin marketplace remove workbench\n"
+            )
         );
     }
 }
