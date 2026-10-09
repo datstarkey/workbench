@@ -683,17 +683,37 @@ pub struct GitHubBranchRuns {
     pub runs: Vec<GitHubWorkflowRun>,
 }
 
-/// `GET /host/update`: the host app's version and the update it can install.
+/// Who started a host update: the desktop's own UI, or a client of its server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateOrigin {
+    Desktop,
+    Remote,
+}
+
+/// `GET /host/update[?fresh=true]`: the host app's version and the update it can install.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostUpdateStatus {
     pub current: String,
+    /// While `installing`, the version being installed.
     pub available: Option<String>,
     /// The available release's notes.
     #[serde(default)]
     pub body: Option<String>,
     /// An install is still running, whichever device started it.
     pub installing: bool,
+    #[serde(default)]
+    pub started_by: Option<UpdateOrigin>,
+}
+
+/// `POST /host/update`'s body: the version the client reviewed. Older clients
+/// send none and get whatever is available.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUpdateInstall {
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 /// `POST /host/update`'s 202: the version the host is installing.

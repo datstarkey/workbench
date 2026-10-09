@@ -102,10 +102,16 @@ describe('HttpTransport route mapping', () => {
 		);
 		const t = createHttpTransport({ baseUrl: 'http://host:4317', token: 'secret' });
 		await expect(t.invoke('host_update_status', undefined)).rejects.toMatchObject({ status: 501 });
-		expect(await t.invoke('host_update_install', undefined)).toEqual({ version: '1.1.0' });
-		expect(f.mock.calls.map(([url, init]) => [init.method, url])).toEqual([
-			['GET', 'http://host:4317/host/update'],
-			['POST', 'http://host:4317/host/update']
+		await expect(t.invoke('host_update_status', { fresh: true })).rejects.toMatchObject({
+			status: 501
+		});
+		expect(await t.invoke('host_update_install', { version: '1.1.0' })).toEqual({
+			version: '1.1.0'
+		});
+		expect(f.mock.calls.map(([url, init]) => [init.method, url, init.body])).toEqual([
+			['GET', 'http://host:4317/host/update', undefined],
+			['GET', 'http://host:4317/host/update?fresh=true', undefined],
+			['POST', 'http://host:4317/host/update', JSON.stringify({ version: '1.1.0' })]
 		]);
 	});
 

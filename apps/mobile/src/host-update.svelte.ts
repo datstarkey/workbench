@@ -47,10 +47,13 @@ export class HostUpdate {
 
 	async install(): Promise<void> {
 		const current = this.status?.current;
-		if (!current || !this.status?.available || this.updating) return;
+		const reviewed = this.status?.available;
+		if (!current || !reviewed || this.updating) return;
 		this.error = null;
 		try {
-			const { version } = await this.transport.invoke('host_update_install', undefined);
+			const { version } = await this.transport.invoke('host_update_install', {
+				version: reviewed
+			});
 			this.generation++;
 			this.from = current;
 			this.target = version;

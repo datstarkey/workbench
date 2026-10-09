@@ -97,10 +97,17 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 		case 'load_workbench_settings':
 			return { method: 'GET', path: '/settings/workbench' };
 		case 'host_update_status':
+			return {
+				method: 'GET',
+				path: '/host/update',
+				...(a.fresh ? { query: { fresh: 'true' } } : {}),
+				timeoutMs: SLOW_TIMEOUT_MS
+			};
 		case 'host_update_install':
 			return {
-				method: name === 'host_update_status' ? 'GET' : 'POST',
+				method: 'POST',
 				path: '/host/update',
+				...(a.version ? { body: { version: a.version } } : {}),
 				timeoutMs: SLOW_TIMEOUT_MS
 			};
 		default:

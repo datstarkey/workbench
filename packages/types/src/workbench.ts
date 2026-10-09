@@ -120,14 +120,19 @@ export interface ServerTerminalMeta {
 	notice?: string;
 }
 
-/** `GET /host/update`. Mirrors `HostUpdateStatus` in crates/workbench-core/src/types.rs. */
+/** Who started a host update. Mirrors `UpdateOrigin` in crates/workbench-core/src/types.rs. */
+export type UpdateOrigin = 'desktop' | 'remote';
+
+/** `GET /host/update[?fresh=true]`. Mirrors `HostUpdateStatus` in crates/workbench-core/src/types.rs. */
 export interface HostUpdateStatus {
 	current: string;
+	/** While `installing`, the version being installed. */
 	available: string | null;
 	/** The available release's notes. */
 	body?: string | null;
 	/** An install is still running, whichever device started it. */
 	installing: boolean;
+	startedBy?: UpdateOrigin | null;
 }
 
 /** `POST /host/update`'s 202. Mirrors `HostUpdateStarted` in crates/workbench-core/src/types.rs. */

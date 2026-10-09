@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { HostUpdateStarted, HostUpdateStatus } from '$types/workbench';
+import type { HostUpdateStarted, HostUpdateStatus, UpdateOrigin } from '$types/workbench';
 
 export type UpdateStatus =
 	| 'idle'
@@ -12,13 +12,24 @@ export type UpdateStatus =
 	| 'up-to-date'
 	| 'error';
 
-/** `update:progress`, sent by Rust's one install path whoever started it. */
+/** Events Rust's one install path sends, whoever started the install. */
+interface UpdateInstalling {
+	version: string;
+	origin: UpdateOrigin;
+}
 interface UpdateProgress {
 	downloaded: number;
 	total: number | null;
 }
+interface UpdateFailed {
+	error: string;
+	origin: UpdateOrigin;
+}
 
-/** UI state for Rust's `host_update_*` commands, which install the same way a phone's `/host/update` does. */
+const installStatus = (origin: UpdateOrigin | null | undefined): UpdateStatus =>
+	origin === 'desktop' ? 'downloading' : 'remote';
+
+/** UI state for `host_update_status`/`host_update_install`: the contract a phone's `/host/update` has. */
 export class UpdaterStore {
 	status = $state<UpdateStatus>('idle');
 	progress = $state(0);
@@ -37,27 +48,28 @@ export class UpdaterStore {
 		listen('menu:check-for-updates', () => {
 			this.manualCheck();
 		});
-		listen<string>('update:installing', ({ payload }) => {
-			this.version = payload;
-			// Ours already shows as downloading; any other install is another device's.
-			if (this.status !== 'downloading') this.status = 'remote';
+		listen<UpdateInstalling>('update:installing', ({ payload }) => {
+			this.version = payload.version;
+			this.status = installStatus(payload.origin);
 			this.dialogOpen = true;
 		});
 		listen<UpdateProgress>('update:progress', ({ payload }) => {
 			this.progress = payload.downloaded;
 			this.contentLength = payload.total ?? 0;
 		});
-		listen<string>('update:failed', ({ payload }) => {
+		listen<UpdateFailed>('update:failed', ({ payload }) => {
 			this.error =
-				this.status === 'remote'
-					? `The update started from another device failed: ${payload}`
-					: payload;
+				payload.origin === 'remote'
+					? `The update started from another device failed: ${payload.error}`
+					: payload.error;
 			this.status = 'error';
 			this.dialogOpen = true;
 		});
 
-		// Auto-check after a short delay on startup
-		setTimeout(() => this.checkForUpdates(), 3000);
+		// Auto-check after a short delay on startup, unless an install already showed up.
+		setTimeout(() => {
+			if (this.status === 'idle') this.checkForUpdates();
+		}, 3000);
 	}
 
 	/** Manual check from the menu or rail — always opens the dialog, which shows a check already running. */
@@ -70,15 +82,19 @@ export class UpdaterStore {
 	async checkForUpdates() {
 		this.status = 'checking';
 		this.error = null;
-		this.progress = 0;
-		this.contentLength = 0;
 
 		try {
-			const update = await invoke<HostUpdateStatus>('host_update_status');
+			const update = await invoke<HostUpdateStatus>('host_update_status', { fresh: true });
 			if (update.installing) {
-				this.status = 'remote';
+				// After a webview reload this can be our own install: keep the progress it reports.
+				this.version = update.available;
+				this.status = installStatus(update.startedBy);
 				this.dialogOpen = true;
-			} else if (update.available) {
+				return;
+			}
+			this.progress = 0;
+			this.contentLength = 0;
+			if (update.available) {
 				this.version = update.available;
 				this.body = update.body ?? null;
 				this.status = 'available';
@@ -92,16 +108,18 @@ export class UpdaterStore {
 		}
 	}
 
-	/** Rust downloads, ends every session, installs and restarts; progress and failure come as events. */
+	/** Installs the version the dialog showed; Rust refuses if the feed now offers another. */
 	async downloadAndInstall() {
-		if (this.status !== 'available') return;
+		if (this.status !== 'available' || !this.version) return;
 
 		this.status = 'downloading';
 		this.progress = 0;
 		this.contentLength = 0;
 
 		try {
-			const started = await invoke<HostUpdateStarted>('host_update_install');
+			const started = await invoke<HostUpdateStarted>('host_update_install', {
+				version: this.version
+			});
 			this.version = started.version;
 		} catch (e) {
 			this.status = 'error';
