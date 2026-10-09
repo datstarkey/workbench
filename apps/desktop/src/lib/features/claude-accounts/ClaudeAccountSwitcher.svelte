@@ -85,10 +85,19 @@
 			<LogInIcon class="size-3.5" />
 			<span>{canLogin ? `Log in to ${active.name}…` : 'Open a project to log in'}</span>
 		</DropdownMenu.Item>
-		<DropdownMenu.Item onSelect={() => (renaming = { id: active.id, name: active.name })}>
-			<PencilIcon class="size-3.5" />
-			<span>Rename {active.name}…</span>
-		</DropdownMenu.Item>
+		<DropdownMenu.Sub>
+			<DropdownMenu.SubTrigger>
+				<PencilIcon class="size-3.5" />
+				<span>Rename account</span>
+			</DropdownMenu.SubTrigger>
+			<DropdownMenu.SubContent class="min-w-40">
+				{#each accounts as account (account.id ?? DEFAULT_ACCOUNT_KEY)}
+					<DropdownMenu.Item onSelect={() => (renaming = { id: account.id, name: account.name })}>
+						<span class="truncate">{account.name}…</span>
+					</DropdownMenu.Item>
+				{/each}
+			</DropdownMenu.SubContent>
+		</DropdownMenu.Sub>
 		<DropdownMenu.Item onSelect={() => (addOpen = true)}>
 			<PlusIcon class="size-3.5" />
 			<span>Add account…</span>

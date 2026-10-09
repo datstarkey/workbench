@@ -31,7 +31,8 @@
 			await settings.renameClaudeAccount(account.id, name);
 			close();
 		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
+			// Closed meanwhile: the next rename starts clean.
+			if (account) error = e instanceof Error ? e.message : String(e);
 		} finally {
 			saving = false;
 		}

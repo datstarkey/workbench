@@ -790,6 +790,11 @@ describe('WorkbenchSettingsStore', () => {
 			expect(saved()?.defaultClaudeAccountName).toBe('Personal');
 
 			await expect(store.renameClaudeAccount(account.id, ' ')).rejects.toThrow('required');
+			await expect(store.renameClaudeAccount(account.id, 'personal')).rejects.toThrow('already');
+			await expect(store.renameClaudeAccount(undefined, 'Greengage')).rejects.toThrow('already');
+			await expect(store.renameClaudeAccount('gone', 'X')).rejects.toThrow('removed');
+			await store.renameClaudeAccount(account.id, 'greengage');
+			expect(saved()?.claudeAccounts?.[0].name).toBe('greengage');
 		});
 
 		it('ignores an active id that names no account', async () => {

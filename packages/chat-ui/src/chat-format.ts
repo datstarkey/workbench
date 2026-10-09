@@ -2,6 +2,7 @@ import { replaceToken, tokenAtCaret, type CaretToken } from './composer-tokens';
 import type { ElicitationItem } from './elicitation-form';
 import { isArtifactTool } from './artifacts';
 import { contextUsage } from './usage-format';
+import { defaultAccountName } from '@workbench/types';
 import type {
 	AgentKind,
 	ClaudeAccount,
@@ -538,7 +539,7 @@ export function limitNotice(
 /** The Claude accounts a chat can run under: the default (`~/.claude`), then each extra one. */
 export function accountChoices(
 	accounts: Pick<ClaudeAccount, 'id' | 'name'>[],
-	defaultName = 'Default'
+	defaultName = defaultAccountName(null)
 ): { key: string; id: string | undefined; name: string }[] {
 	return [
 		{ key: 'default', id: undefined, name: defaultName },

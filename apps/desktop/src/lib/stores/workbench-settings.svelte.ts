@@ -285,6 +285,16 @@ export class WorkbenchSettingsStore {
 	async renameClaudeAccount(id: string | undefined, name: string) {
 		const trimmed = name.trim();
 		if (!trimmed) throw new Error('Account name is required');
+		if (id !== undefined && !this.claudeAccounts.some((a) => a.id === id)) {
+			throw new Error('That account was removed');
+		}
+		const names = [
+			...(id === undefined ? [] : [this.defaultAccountName]),
+			...this.claudeAccounts.filter((a) => a.id !== id).map((a) => a.name)
+		];
+		if (names.some((n) => n.toLowerCase() === trimmed.toLowerCase())) {
+			throw new Error('Another account already has that name');
+		}
 		if (id === undefined) this.defaultClaudeAccountName = trimmed;
 		else
 			this.claudeAccounts = this.claudeAccounts.map((a) =>
