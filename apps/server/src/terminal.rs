@@ -907,8 +907,14 @@ async fn attach(
     // read, so a big paste into a shell that isn't reading pushes back on the
     // client instead of blocking this task (output, takeover and revoke still flow).
     let mut pending: Option<Vec<u8>> = None;
+    let mut heartbeat = crate::state::Heartbeat::new();
     loop {
         tokio::select! {
+            alive = heartbeat.due(pending.is_none()) => {
+                if !alive || !ws_send(&mut socket, Message::Ping(Vec::new())).await {
+                    return;
+                }
+            }
             // Epoch changed → our own send fires this once; a LATER attacher's send
             // means we've been displaced. The atomic is the source of truth.
             _ = epoch_rx.changed() => {
@@ -970,6 +976,7 @@ async fn attach(
                 }
             }
             inbound = socket.recv(), if pending.is_none() => {
+                heartbeat.heard();
                 match inbound {
                     Some(Ok(Message::Text(t))) => {
                         // Only accept input from the current attacher (epoch guard).

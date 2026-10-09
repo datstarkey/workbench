@@ -187,11 +187,13 @@ impl ServerControl {
 fn server_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
+        let runtime = tokio::runtime::Builder::new_multi_thread()
             .thread_name("workbench-server")
             .enable_all()
             .build()
-            .expect("the server runtime should start")
+            .expect("the server runtime should start");
+        workbench_server::watchdog::start(runtime.handle().clone());
+        runtime
     })
 }
 
