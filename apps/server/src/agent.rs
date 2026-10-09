@@ -879,6 +879,15 @@ impl AgentManager {
             }
             if let Some(link) = session.mod_link() {
                 link.note_line(line);
+                // The plugin gave up asking and the terminal asks it: wait there,
+                // before the line's fold publishes the session's state.
+                let handed = line.get("type").and_then(serde_json::Value::as_str)
+                    == Some("control_cancel_request")
+                    && line.get("workbench_in_terminal") == Some(&serde_json::Value::Bool(true));
+                let id = line.get("request_id").and_then(serde_json::Value::as_str);
+                if let Some(id) = id.filter(|id| handed && !link.fell_back(id)) {
+                    link.fall_back(id, session.waiting_for(id));
+                }
             }
             self.forget_replaced_pick(session, line);
             // Anything in the terminal can post a reset: it may move the chat

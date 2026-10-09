@@ -846,12 +846,25 @@ fn a_question_the_terminal_took_over_waits_there_and_shows_its_answers() {
 }
 
 #[test]
-fn an_approval_the_terminal_took_over_settles_when_its_call_goes_ahead() {
+fn an_approval_the_terminal_took_over_settles_only_when_answered_there() {
     let mut t = Transcript::default();
     ask(&mut t, "r1", "Bash", "toolu_1");
     ask(&mut t, "r2", "AskUserQuestion", "toolu_2");
+    assert!(t.pending_approval_ids().is_empty());
+    assert!(matches!(
+        t.items()[0].waiting_summary(),
+        Some(WaitingSummary {
+            in_terminal: true,
+            ..
+        })
+    ));
+    // The plugin cancels it as the approved call starts.
     t.apply(&json!({"type":"control_cancel_request","request_id":"r1"}));
-    assert_eq!(approval_state(&t), (true, true, None, None));
+    assert_eq!(
+        approval_state(&t),
+        (true, false, Some(ApprovalDecision::Allow), None)
+    );
+    // Abandoned in the terminal (Esc, Stop): the turn ends unanswered.
     t.apply(&json!({"type":"result","subtype":"success"}));
     assert!(matches!(
         &t.items()[1],

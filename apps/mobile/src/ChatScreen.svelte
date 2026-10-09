@@ -284,7 +284,7 @@
 
 {#if sheetOpen && waiting}
 	<Sheet label="{name} is waiting on you" onClose={() => (sheetHiddenFor = waiting.id)}>
-		<ChatAnswer item={waiting} {chat} {cwd} />
+		<ChatAnswer item={waiting} {chat} {cwd} onShowTerminal={isClaude ? showTerminal : undefined} />
 	</Sheet>
 {/if}
 

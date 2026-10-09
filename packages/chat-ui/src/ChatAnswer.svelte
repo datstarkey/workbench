@@ -25,8 +25,12 @@
 {#if inTerminal}
 	<p class="flex min-w-0 items-center gap-2 text-xs text-wb-ink-soft">
 		<SquareTerminalIcon class="size-3.5 shrink-0" />
-		<span class="min-w-0 truncate">{inTerminal}</span>
-		{#if item.kind === 'approval' && !item.expired && onShowTerminal}
+		<span class="min-w-0 truncate">
+			{inTerminal === 'waiting'
+				? 'Waiting for your answer in the terminal'
+				: 'Answered in the terminal'}
+		</span>
+		{#if inTerminal === 'waiting' && onShowTerminal}
 			<button type="button" class="shrink-0 underline hover:text-wb-ink" onclick={onShowTerminal}
 				>Show terminal</button
 			>
