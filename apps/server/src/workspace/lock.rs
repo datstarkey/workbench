@@ -42,6 +42,13 @@ impl ModelLock {
     }
 }
 
+impl ModelLock {
+    /// The process holding `dir`'s lock, if it says.
+    pub(super) fn holder_of(dir: &Path) -> Option<u32> {
+        holder(&dir.join(FILE))
+    }
+}
+
 impl Drop for ModelLock {
     fn drop(&mut self) {
         if holder(&self.0) == Some(std::process::id()) {

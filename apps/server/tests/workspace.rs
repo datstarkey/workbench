@@ -327,10 +327,6 @@ async fn deleting_a_panes_terminal_removes_the_pane() {
 async fn a_restarted_service_restores_and_respawns_its_panes() {
     let _serial = serial().await;
     let _ = std::fs::remove_file(env().dir.join("workspaces.v2.json"));
-    let persistent = || Managers {
-        workspace: WorkspaceService::persistent(),
-        ..Managers::default()
-    };
     let managers = persistent();
     let (handle, base) = serve(managers.clone()).await;
     let mut sse = Sse::open(&base).await;
@@ -565,4 +561,115 @@ async fn stopping_a_native_panes_chat_leaves_its_shell() {
     );
     managers.terminals.kill(&terminal);
     handle.stop().await;
+}
+
+fn persistent() -> Managers {
+    Managers {
+        workspace: WorkspaceService::persistent(),
+        ..Managers::default()
+    }
+}
+
+#[tokio::test]
+async fn an_unreadable_model_is_kept_aside_reported_and_never_saved_over() {
+    let _serial = serial().await;
+    let file = env().dir.join("workspaces.v2.json");
+    let broken = r#"{"version":99,"workspaces":[]}"#;
+    std::fs::write(&file, broken).unwrap();
+    let managers = persistent();
+    let (handle, base) = serve(managers.clone()).await;
+    let mut sse = Sse::open(&base).await;
+    let snap = sse.until("a snapshot", |_| true).await;
+    assert_eq!(snap["persistence"]["status"], "error");
+    assert!(snap["persistence"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("workspaces.v2.json"));
+
+    let id = command(&base, new_session("shell")).await["paneId"].clone();
+    sse.until("the pane", |s| pane(s, id.as_str().unwrap()).is_some())
+        .await;
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        broken,
+        "not saved over"
+    );
+    let copies: Vec<_> = std::fs::read_dir(&env().dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("workspaces.v2.json.broken-")
+        })
+        .collect();
+    assert_eq!(copies.len(), 1);
+    handle.stop().await;
+    managers.kill_all();
+    for copy in copies {
+        let _ = std::fs::remove_file(copy.path());
+    }
+    let _ = std::fs::remove_file(&file);
+}
+
+#[tokio::test]
+async fn a_model_another_process_keeps_is_shown_as_unsaved() {
+    let _serial = serial().await;
+    let lock = env().dir.join("workspaces.v2.lock");
+    // Process 1 is always alive and never us.
+    std::fs::write(&lock, "1").unwrap();
+    let managers = persistent();
+    let (handle, base) = serve(managers.clone()).await;
+    let mut sse = Sse::open(&base).await;
+    let snap = sse.until("a snapshot", |_| true).await;
+    assert_eq!(snap["persistence"]["status"], "locked");
+    assert!(snap["persistence"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("pid 1"));
+    handle.stop().await;
+    managers.kill_all();
+    let _ = std::fs::remove_file(&lock);
+}
+
+#[tokio::test]
+async fn the_migrated_local_state_rides_along_and_every_spawn_bumps_the_generation() {
+    let _serial = serial().await;
+    let _ = std::fs::remove_file(env().dir.join("workspaces.v2.json"));
+    std::fs::write(
+        env().dir.join("workspaces.json"),
+        json!({
+            "workspaces": [{
+                "id": "w1", "projectPath": env().project, "projectName": "test",
+                "activeTerminalTabId": "t1",
+                "terminalTabs": [{ "id": "t1", "label": "Claude 1", "split": "horizontal", "type": "claude",
+                    "panes": [{ "id": "p1", "type": "claude", "claudeSessionId": "11111111-1111-1111-1111-111111111111", "view": "chat" }] }]
+            }],
+            "selectedId": "w1"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let managers = persistent();
+    let (handle, base) = serve(managers.clone()).await;
+    let mut sse = Sse::open(&base).await;
+    let snap = sse
+        .until("the migrated pane", |s| pane(s, "p1").is_some())
+        .await;
+    assert_eq!(snap["persistence"]["status"], "ok");
+    assert_eq!(snap["local"]["selectedId"], "w1");
+    assert_eq!(snap["local"]["chatPanes"], json!(["p1"]));
+    let first = pane(&snap, "p1").unwrap()["generation"].as_u64().unwrap();
+    assert!(first >= 1, "booted");
+
+    command(&base, json!({ "type": "restart", "tabId": "t1" })).await;
+    sse.until("a new generation", |s| {
+        pane(s, "p1").and_then(|p| p["generation"].as_u64()) == Some(first + 1)
+    })
+    .await;
+    command(&base, json!({ "type": "closePane", "paneId": "p1" })).await;
+    handle.stop().await;
+    managers.kill_all();
+    let _ = std::fs::remove_file(env().dir.join("workspaces.json"));
+    let _ = std::fs::remove_file(env().dir.join("workspaces.v2.json"));
 }
