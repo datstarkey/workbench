@@ -466,6 +466,12 @@ enum ClientMsg {
     Mode {
         mode: String,
     },
+    /// Carry a Claude chat on under another Claude account (`None`: the default).
+    #[serde(rename_all = "camelCase")]
+    Account {
+        #[serde(default)]
+        account_id: Option<String>,
+    },
     Model {
         model: String,
     },
@@ -610,6 +616,16 @@ fn handle(
             }
         }
         ClientMsg::Mode { mode } => session.set_mode(&mode),
+        ClientMsg::Account { account_id } if session.kind == AgentKind::Claude => {
+            if session.mod_link().is_some_and(|l| l.terminal_id.is_some()) {
+                state
+                    .agents
+                    .account_terminal(&state.terminals, session, account_id)
+            } else {
+                anyhow::bail!("Switch accounts by resuming this session in a new Claude pane.")
+            }
+        }
+        ClientMsg::Account { .. } => anyhow::bail!("only Claude chats switch accounts"),
         ClientMsg::Model { model } => {
             // The plugin's stand-in list has no ids: ask the CLI for its own once.
             if !session.resolves_model(&model) {

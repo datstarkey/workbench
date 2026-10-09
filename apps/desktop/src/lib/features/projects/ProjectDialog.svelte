@@ -2,7 +2,9 @@
 	import { Button } from '@workbench/ui/button';
 	import * as Dialog from '@workbench/ui/dialog';
 	import { Input } from '@workbench/ui/input';
+	import * as Select from '@workbench/ui/select';
 	import type { ProjectFormState } from '$types/workbench';
+	import { getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
 		open = $bindable(),
@@ -19,6 +21,23 @@
 		onSave: () => void;
 		onPickFolder: () => void;
 	} = $props();
+
+	const settings = getWorkbenchSettingsStore();
+	/** Select values: `ACTIVE` follows the active account, `''` is the default login. */
+	const ACTIVE = 'active';
+	const accountOptions = $derived([
+		{ value: ACTIVE, label: 'Active account' },
+		{ value: '', label: 'Default (~/.claude)' },
+		...settings.claudeAccounts.map((a) => ({ value: a.id, label: a.name }))
+	]);
+	const accountValue = $derived(form.claudeAccountId ?? ACTIVE);
+	const accountLabel = $derived(
+		accountOptions.find((o) => o.value === accountValue)?.label ?? 'Active account'
+	);
+
+	function setAccount(value: string) {
+		form = { ...form, claudeAccountId: value === ACTIVE ? undefined : value };
+	}
 </script>
 
 <Dialog.Root bind:open>
@@ -57,6 +76,23 @@
 				>
 				<Input id="project-shell" bind:value={form.shell} placeholder="/bin/zsh" />
 			</div>
+
+			{#if settings.claudeAccounts.length > 0}
+				<div class="grid gap-1.5">
+					<label class="text-sm font-medium" for="project-account">Claude account</label>
+					<Select.Root type="single" value={accountValue} onValueChange={setAccount}>
+						<Select.Trigger id="project-account">{accountLabel}</Select.Trigger>
+						<Select.Content>
+							{#each accountOptions as option (option.value)}
+								<Select.Item value={option.value}>{option.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
+					<p class="text-xs text-muted-foreground">
+						New Claude sessions in this project start under it.
+					</p>
+				</div>
+			{/if}
 
 			{#if error}
 				<p class="text-sm text-destructive">{error}</p>

@@ -4,6 +4,7 @@ import { isArtifactTool } from './artifacts';
 import { contextUsage } from './usage-format';
 import type {
 	AgentKind,
+	ClaudeAccount,
 	CodexMode,
 	EffortLevel,
 	ModelOption,
@@ -532,6 +533,16 @@ export function limitNotice(
 	}
 	const used = info.utilization != null ? `${Math.round(info.utilization * 100)}% of ` : 'most of ';
 	return { tone: 'warn', text: `You've used ${used}your ${name}usage limit.${resets}` };
+}
+
+/** The Claude accounts a chat can run under: the default (`~/.claude`), then each extra one. */
+export function accountChoices(
+	accounts: Pick<ClaudeAccount, 'id' | 'name'>[]
+): { key: string; id: string | undefined; name: string }[] {
+	return [
+		{ key: '', id: undefined, name: 'Default' },
+		...accounts.map(({ id, name }) => ({ key: id, id, name }))
+	];
 }
 
 /** `38 KB`, `1.2 MB`. */

@@ -1,10 +1,11 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import type { SlashCommand } from '@workbench/types';
+	import type { ClaudeAccount, SlashCommand } from '@workbench/types';
 	import { cn } from '@workbench/ui';
 	import type { AgentChat } from './agent-chat.svelte';
-	import { agentName, limitNotice } from './chat-format';
+	import { accountChoices, agentName, limitNotice } from './chat-format';
 	import { promptSuggestions } from './artifacts';
+	import ChatAccountPicker from './ChatAccountPicker.svelte';
 	import ChatCacheHint from './ChatCacheHint.svelte';
 	import ChatComposer from './ChatComposer.svelte';
 	import ChatGoal from './ChatGoal.svelte';
@@ -21,6 +22,7 @@
 		onResume,
 		onThread,
 		popover,
+		accounts = [],
 		class: className
 	}: {
 		chat: AgentChat;
@@ -36,6 +38,8 @@
 		onThread: (sessionId: string, label: string) => void;
 		/** Shown above the composer, e.g. the resume picker. */
 		popover?: Snippet;
+		/** The extra Claude accounts a Claude chat can move to; none hides the picker. */
+		accounts?: Pick<ClaudeAccount, 'id' | 'name'>[];
 		class?: string;
 	} = $props();
 
@@ -49,6 +53,13 @@
 	const limit = $derived(limitNotice(chat.meta?.rateLimit ?? null));
 	const suggestions = $derived(
 		promptSuggestions(chat.meta, chat.live && !chat.rewind, chat.draft.text)
+	);
+	const switchable = $derived(chat.agent === 'claude' && accounts.length > 0);
+	/** At a limit, the other accounts to carry on under. */
+	const fallbacks = $derived(
+		switchable && limit?.tone === 'blocked'
+			? accountChoices(accounts).filter((c) => c.id !== chat.accountId)
+			: []
 	);
 	const commands = $derived([RESUME, ...chat.commands.filter((c) => c.name !== 'resume')]);
 	const disabledReason = $derived.by(() => {
@@ -89,6 +100,16 @@
 			role={limit.tone === 'blocked' ? 'alert' : undefined}
 		>
 			{limit.text}
+			{#each fallbacks as account (account.key)}
+				<button
+					type="button"
+					class="ml-2 rounded px-1.5 py-0.5 font-medium text-wb-accent hover:bg-wb-panel2 focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-50"
+					disabled={Boolean(chat.meta?.busy) || !chat.live}
+					onclick={() => chat.setAccount(account.id)}
+				>
+					Continue on {account.name}
+				</button>
+			{/each}
 		</p>
 	{/if}
 	{#if chat.todos.length > 0}
@@ -119,6 +140,14 @@
 		{popover}
 	>
 		{#snippet controls()}
+			{#if switchable}
+				<ChatAccountPicker
+					{accounts}
+					accountId={chat.accountId}
+					disabled={disabledReason !== null || Boolean(chat.meta?.busy)}
+					onAccount={(id) => chat.setAccount(id)}
+				/>
+			{/if}
 			<ChatModelPicker
 				meta={chat.meta}
 				disabled={disabledReason !== null}

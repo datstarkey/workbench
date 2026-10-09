@@ -20,6 +20,11 @@ export interface ProjectConfig {
 	startupCommand?: string;
 	/** Legacy: replaced by package.json scripts; kept so saving doesn't drop it from disk. */
 	tasks?: ProjectTask[];
+	/**
+	 * The Claude account new Claude sessions here start under, over the active
+	 * one (`''`: the default login); see `projectClaudeAccount`.
+	 */
+	claudeAccountId?: string;
 }
 
 /** A runnable entry from a project's root `package.json` `scripts`. */
@@ -536,6 +541,8 @@ export interface ProjectFormState {
 	path: string;
 	group: string;
 	shell: string;
+	/** `ProjectConfig.claudeAccountId`; absent follows the active account. */
+	claudeAccountId?: string;
 }
 
 /** Which CLI a chat session runs. */
@@ -850,6 +857,8 @@ export type AgentServerMsg =
 			commands: SlashCommand[];
 			cachePolicy?: CachePolicy;
 			exited: boolean;
+			/** The Claude login the chat runs under (`null`: the default); absent from older servers. */
+			claudeAccountId?: string | null;
 	  }
 	| { t: 'cachePolicy'; policy: CachePolicy }
 	/** `[index, item]` pairs that were added or changed. */
@@ -924,6 +933,8 @@ export type AgentClientMsg =
 	| { t: 'interrupt' }
 	| { t: 'restart' }
 	| { t: 'mode'; mode: PermissionMode | CodexMode }
+	/** Carry a Claude chat on under another Claude account (`null`: the default). */
+	| { t: 'account'; accountId: string | null }
 	| { t: 'model'; model: string }
 	| { t: 'effort'; effort: EffortLevel }
 	| { t: 'output'; toolId: string }

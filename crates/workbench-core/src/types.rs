@@ -22,6 +22,10 @@ pub struct ProjectConfig {
     pub startup_command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<ProjectTask>,
+    /// The Claude account new Claude sessions in this project start under,
+    /// over the active one (`""`: the default login). Clients resolve it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_account_id: Option<String>,
 }
 
 /// A runnable entry from a project's root `package.json` `scripts`.
@@ -711,6 +715,7 @@ mod tests {
                 name: "build".to_string(),
                 command: "cargo build".to_string(),
             }],
+            claude_account_id: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: ProjectConfig = serde_json::from_str(&json).unwrap();
@@ -731,6 +736,7 @@ mod tests {
             shell: Some("bash".to_string()),
             startup_command: Some("ls".to_string()),
             tasks: vec![],
+            claude_account_id: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("\"startupCommand\""));
@@ -746,6 +752,7 @@ mod tests {
             shell: None,
             startup_command: None,
             tasks: vec![],
+            claude_account_id: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         // skip_serializing_if = "Option::is_none" should omit group, shell and startupCommand
@@ -781,6 +788,7 @@ mod tests {
                     command: "cargo clippy".to_string(),
                 },
             ],
+            claude_account_id: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();

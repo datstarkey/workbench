@@ -47,6 +47,10 @@ const mockGitStore = {
 const mockWorkbenchSettingsStore = {
 	defaultClaudeView: 'terminal' as 'terminal' | 'chat',
 	activeClaudeAccountId: undefined as string | undefined,
+	claudeAccounts: [
+		{ id: 'work', name: 'Work', configDir: '/w' },
+		{ id: 'personal', name: 'Personal', configDir: '/p' }
+	],
 	launchOptions: {}
 };
 vi.mock('./context', () => ({
@@ -972,6 +976,38 @@ describe('WorkspaceStore', () => {
 
 			const accounts = store.workspaces[0].terminalTabs.map((t) => t.panes[0].claudeAccountId);
 			expect(accounts).toEqual([undefined, undefined, 'work', undefined]);
+		});
+
+		it("a new claude pane runs under its project's own account over the active one", () => {
+			const accountOf: Record<string, string | undefined> = {
+				'/projects/work': 'work',
+				'/projects/home': '',
+				'/projects/gone': 'removed'
+			};
+			store.projectLookup = (path) => makeProject({ path, claudeAccountId: accountOf[path] });
+			mockWorkbenchSettingsStore.activeClaudeAccountId = 'personal';
+			store.workspaces = ['work', 'home', 'gone', 'other'].map((name) =>
+				makeWorkspace({ id: name, projectPath: `/projects/${name}` })
+			);
+			for (const ws of store.workspaces) store.addAISession(ws.id, 'claude');
+
+			const accounts = store.workspaces.map((w) => w.terminalTabs[0].panes[0].claudeAccountId);
+			// `''` is the default login; a removed account falls back to the active one.
+			expect(accounts).toEqual(['work', undefined, 'personal', 'personal']);
+		});
+
+		it('a pane follows its session onto another account', () => {
+			const tab = makeTab({
+				id: 'tab-1',
+				type: 'claude',
+				panes: [{ id: 'pane-1', type: 'claude', claudeSessionId: sessionId }]
+			});
+			store.workspaces = [makeWorkspace({ id: 'ws-a', terminalTabs: [tab] })];
+
+			store.setPaneClaudeAccount('pane-1', 'work');
+			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBe('work');
+			store.setPaneClaudeAccount('pane-1', undefined);
+			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBeUndefined();
 		});
 
 		it('resume uses the account owning the transcript, not the active one', () => {

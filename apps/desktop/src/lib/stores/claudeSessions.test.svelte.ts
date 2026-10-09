@@ -25,6 +25,7 @@ function createMockWorkspaceStore(workspaces: unknown[] = []) {
 		addAIByProject: vi.fn(),
 		updateAISessionByPaneId: vi.fn(),
 		updateAITabLabelByPaneId: vi.fn(),
+		setPaneClaudeAccount: vi.fn(),
 		findAIPaneContext: vi.fn(),
 		isChatPane: vi.fn(() => false),
 		paneForAgent: vi.fn((): string | null => null)
@@ -240,6 +241,15 @@ describe('ClaudeSessionStore', () => {
 				'resumed',
 				'claude'
 			);
+		});
+
+		it('moves the pane to the account its session now runs under', () => {
+			setupClaudePane();
+
+			store.syncFromAgents([summary({ claudeAccountId: 'work' })]);
+			expect(mockWorkspaceStore.setPaneClaudeAccount).toHaveBeenLastCalledWith('pane-1', 'work');
+			store.syncFromAgents([summary({ claudeAccountId: null })]);
+			expect(mockWorkspaceStore.setPaneClaudeAccount).toHaveBeenLastCalledWith('pane-1', undefined);
 		});
 
 		it("leaves a chat pane's session id to its chat", () => {
