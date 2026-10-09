@@ -3,6 +3,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { defineConfig } from 'vite';
 import tauriConf from './src-tauri/tauri.conf.json';
+import { sentryUploadOptions } from '../../scripts/sentry-vite';
 
 // Tauri mobile injects the dev host (device-reachable LAN/tailscale address).
 // For plain web testing we bind 0.0.0.0 so a phone on the same tailnet/LAN can load it.
@@ -20,27 +21,13 @@ function stripCrossorigin() {
 	};
 }
 
-// Release builds in CI set SENTRY_AUTH_TOKEN: source maps are built hidden, uploaded
-// to the self-hosted Sentry under the release Sentry.init reports, then deleted so
-// they never ship. Without the token (local builds, PRs) nothing changes.
-const sentryToken = process.env.SENTRY_AUTH_TOKEN;
-const sentry = sentryToken
-	? sentryVitePlugin({
-			url: 'https://sentry.starkeydigital.com',
-			org: 'starkey-digital',
-			project: 'workbench',
-			authToken: sentryToken,
-			release: { name: `workbench-mobile@${tauriConf.version}`, setCommits: false },
-			sourcemaps: { filesToDeleteAfterUpload: ['./dist/**/*.map'] },
-			telemetry: false
-		})
-	: [];
+const sentry = sentryUploadOptions(`workbench-mobile@${tauriConf.version}`);
 
 export default defineConfig({
 	define: {
 		__APP_VERSION__: JSON.stringify(tauriConf.version)
 	},
-	plugins: [tailwindcss(), svelte(), stripCrossorigin(), sentry],
+	plugins: [tailwindcss(), svelte(), stripCrossorigin(), sentry ? sentryVitePlugin(sentry) : []],
 	clearScreen: false,
 	server: {
 		host: host || '0.0.0.0',
@@ -57,6 +44,6 @@ export default defineConfig({
 	build: {
 		outDir: 'dist',
 		target: 'es2021',
-		sourcemap: sentryToken ? 'hidden' : false
+		sourcemap: sentry ? 'hidden' : false
 	}
 });

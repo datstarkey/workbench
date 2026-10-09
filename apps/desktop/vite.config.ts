@@ -4,30 +4,17 @@ import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import tauriConf from './src-tauri/tauri.conf.json';
+import { sentryUploadOptions } from '../../scripts/sentry-vite';
 
 const host = process.env.TAURI_DEV_HOST;
 
-// Release builds in CI set SENTRY_AUTH_TOKEN: source maps are built hidden, uploaded
-// to the self-hosted Sentry under the release Sentry.init reports, then deleted so
-// they never ship. Without the token (local builds, PRs) nothing changes.
-const sentryToken = process.env.SENTRY_AUTH_TOKEN;
-const sentry = sentryToken
-	? sentryVitePlugin({
-			url: 'https://sentry.starkeydigital.com',
-			org: 'starkey-digital',
-			project: 'workbench',
-			authToken: sentryToken,
-			release: { name: `workbench@${tauriConf.version}`, setCommits: false },
-			sourcemaps: { filesToDeleteAfterUpload: ['./dist/**/*.map'] },
-			telemetry: false
-		})
-	: [];
+const sentry = sentryUploadOptions(`workbench@${tauriConf.version}`);
 
 export default defineConfig({
 	define: {
 		__APP_VERSION__: JSON.stringify(tauriConf.version)
 	},
-	plugins: [tailwindcss(), svelte(), sentry],
+	plugins: [tailwindcss(), svelte(), sentry ? sentryVitePlugin(sentry) : []],
 	resolve: {
 		alias: {
 			$lib: resolve('./src/lib'),
@@ -52,6 +39,6 @@ export default defineConfig({
 	},
 	build: {
 		outDir: 'dist',
-		sourcemap: sentryToken ? 'hidden' : false
+		sourcemap: sentry ? 'hidden' : false
 	}
 });

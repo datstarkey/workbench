@@ -196,9 +196,9 @@ jobs:
           AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
           AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
-          # Uploads the frontend's source maps to Sentry (apps/desktop/vite.config.ts). The JS
-          # bundle is the same on every OS, so only the macOS build uploads it.
-          SENTRY_AUTH_TOKEN: ${{ runner.os == 'macOS' && secrets.SENTRY_AUTH_TOKEN || '' }}
+          # Uploads the frontend's source maps to Sentry (scripts/sentry-vite.ts). Every OS
+          # uploads its own: the plugin injects debug IDs, so each build's bundle differs.
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         with:
           projectPath: apps/desktop
           tagName: v__VERSION__
@@ -395,24 +395,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      # A PR that fixes a Sentry issue says `Fixes WORKBENCH-X` in its body, which Kodiak's
-      # squash puts in the commit. Once the release is out, resolve every issue named since
-      # the previous tag; one that recurs comes back as a regression. Best effort: the
-      # release is already published, so a Sentry failure only warns.
+      # A PR that fixes a Sentry issue starts a line of its body with `Fixes WORKBENCH-X`,
+      # which Kodiak's squash puts in the commit. Once the release is out, resolve every
+      # issue named since the previous tag *in this release*, so events from older builds
+      # still in use don't reopen it; one from this release or later is a regression. The
+      # release is already published, so a failure here only fails this step; resolving
+      # needs a token with event:write.
       - name: Resolve fixed Sentry issues
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
-          api=https://sentry.starkeydigital.com/api/0/organizations/starkey-digital
+          api=https://sentry.starkeydigital.com/api/0
           prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
           ids=$(git log ${prev:+"$prev.."}"$GITHUB_REF_NAME" --format=%B \
-            | grep -oiE '\b(fix(es|ed)?|close[sd]?|resolve[sd]?):? +WORKBENCH-[0-9A-Z]+' \
+            | grep -oiE '^ *(fix(es|ed)?|close[sd]?|resolve[sd]?):? +WORKBENCH-[0-9A-Z]+' \
             | tr '[:lower:]' '[:upper:]' | grep -oE 'WORKBENCH-[0-9A-Z]+' | sort -u || true)
           [ -n "$ids" ] || { echo "No Sentry issues named since ${prev:-the first commit}"; exit 0; }
+          body=$(jq -nc --arg r "workbench@${GITHUB_REF_NAME#v}" '{status:"resolved",statusDetails:{inRelease:$r}}')
+          failed=0
           for id in $ids; do
-            group=$(curl -fsS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" "$api/shortids/$id/" | jq -r .groupId) \
+            group=$(curl -fsS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" "$api/organizations/starkey-digital/shortids/$id/" | jq -r .groupId) \
               && curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
-                   -H 'Content-Type: application/json' -d '{"status":"resolved"}' "$api/issues/$group/" \
-              && echo "Resolved $id" \
-              || echo "::warning::could not resolve $id in Sentry (the token needs event:write)"
+                   -H 'Content-Type: application/json' -d "$body" "$api/projects/starkey-digital/workbench/issues/?id=$group" \
+              && echo "Resolved $id in workbench@${GITHUB_REF_NAME#v}" \
+              || { echo "::error::could not resolve $id in Sentry (the token needs event:write)"; failed=1; }
           done
+          exit $failed
