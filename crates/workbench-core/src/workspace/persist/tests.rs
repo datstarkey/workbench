@@ -26,6 +26,7 @@ const V1: &str = r#"{
               "type": "claude",
               "claudeSessionId": "8d0c3a52-1111-4a7e-9a55-0f6a3e2b1c01",
               "view": "chat",
+              "liveTerminal": true,
               "claudeAccountId": "work",
               "claudePrompt": "Review the diff"
             },
