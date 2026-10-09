@@ -67,44 +67,7 @@ export interface TerminalExitEvent {
 // and the mobile client. Mirror of the Rust structs in apps/server/src/terminal.rs.
 
 /**
- * The Claude session a terminal runs. The server builds the `claude` command
- * (`workbench_core::claude_launch`) so the sandbox wrapper and permission mode
- * can't be skipped.
- */
-export interface ClaudeSessionLaunch {
-	/** Resumed when it has a transcript, else started on this id (the server decides). */
-	id: string;
-	/** A new session's first prompt (an agent action); ignored on a resume. */
-	prompt?: string;
-}
-
-/**
- * Request body for POST /remote/terminals.
- *
- * Desktop xterm panes populate the optional desktop fields (paneId, shell); the
- * server stamps its own hook bridge on every terminal. ZDOTDIR shell-integration is applied
- * server-side (the resolver lives in workbench-core), so it is NOT a wire field.
- */
-export interface CreateServerTerminalBody {
-	projectPath: string;
-	worktreePath?: string;
-	name?: string;
-	/** Optional command typed into the shell once it starts (never with `claudeSession`). */
-	command?: string;
-	/** Run Claude on this session instead of `command`. */
-	claudeSession?: ClaudeSessionLaunch;
-	/** A Claude account (`''`: the default login); absent, the host picks one for a Claude session. */
-	claudeAccountId?: string;
-	cols: number;
-	rows: number;
-	/** Opaque pane ID forwarded as WORKBENCH_PANE_ID env (desktop only). */
-	paneId?: string;
-	/** Project-configured shell to launch; empty/absent falls back to $SHELL. */
-	shell?: string;
-}
-
-/**
- * Metadata returned by POST /remote/terminals and GET /remote/terminals.
+ * A terminal as `GET /remote/terminals` lists it.
  * Mirrors `TerminalMeta` in apps/server/src/terminal.rs.
  */
 export interface ServerTerminalMeta {
@@ -118,12 +81,8 @@ export interface ServerTerminalMeta {
 	claudeSessionId?: string;
 	/** It printed something lately that wasn't the echo of typing (a TUI working). */
 	busy?: boolean;
-	/** Shown by the desktop's native view: not adopted as an xterm tab. */
+	/** Shown by the desktop's native view. */
 	native?: boolean;
-	/** On a create only: something to tell the person about how it started. */
-	notice?: string;
-	/** On a Claude create only: the account the host ran it under (`''`: the default login). */
-	claudeAccountId?: string;
 }
 
 /** Who started a host update. Mirrors `UpdateOrigin` in crates/workbench-core/src/types.rs. */
@@ -882,8 +841,7 @@ export type AgentServerMsg =
 	| { t: 'cachePolicy'; policy: CachePolicy }
 	/** `[index, item]` pairs that were added or changed. */
 	| { t: 'update'; changes: [number, TranscriptItem][]; meta?: TranscriptMeta }
-	/** `ended`: the person ended it (End session), not a crash, `/exit` or a handoff. */
-	| { t: 'exit'; code: number | null; message: string | null; ended?: boolean }
+	| { t: 'exit'; code: number | null; message: string | null }
 	| { t: 'error'; message: string }
 	/** The slash command list changed (sent apart from meta: it's large). */
 	| { t: 'commands'; commands: SlashCommand[] }
@@ -967,28 +925,16 @@ export type AgentClientMsg =
 	 */
 	| { t: 'rewind'; messageId: string; code: boolean; conversation: boolean; dryRun: boolean };
 
-export interface StartAgentBody {
-	/** Picks the route (`/agent/claude` or `/agent/codex`); absent is Claude. */
+/** The running session a chat view attaches to (a pane's). */
+export interface ChatTarget {
+	/** Absent is Claude. */
 	agent?: AgentKind;
 	projectPath: string;
 	worktreePath?: string;
-	/**
-	 * Claude: required, a UUID the client picks. Codex: the thread to resume;
-	 * absent starts a new thread, whose id the start call returns.
-	 */
-	sessionId?: string;
-	permissionMode?: PermissionMode;
-	/** Codex preset; absent uses the server's saved Workbench preset, else Codex config. */
-	codexMode?: CodexMode;
-	codexApprovalPolicy?: Exclude<CodexApprovalPolicy, 'default'>;
-	codexSandboxMode?: Exclude<CodexSandboxMode, 'default'>;
+	sessionId: string;
 	paneId?: string;
-	/** The pane's Claude account (`''`: the default login); absent, the host picks one. */
+	/** The pane's Claude account (`''`: the default login). */
 	claudeAccountId?: string;
-	/** Join the running session only (another device's chat); 404 instead of spawning. */
-	attachOnly?: boolean;
-	/** Claude: the person trusted the folder, so the server answers Claude Code's trust dialog. */
-	trustFolder?: boolean;
 }
 
 /** A running chat session, as `GET /agent` lists it (phone home screen). */

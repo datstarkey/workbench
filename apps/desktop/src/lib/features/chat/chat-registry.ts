@@ -1,5 +1,5 @@
 import type { PaneStatus } from '$types/workspace';
-import type { StartAgentBody } from '$types/workbench';
+import type { ChatTarget } from '$types/workbench';
 import { AgentChat, ChatDraft } from '@workbench/chat-ui';
 import { loopbackAgentApi } from './agent-api';
 
@@ -30,7 +30,7 @@ export interface PaneProcess {
  */
 export function acquireChat(
 	paneId: string,
-	body: StartAgentBody,
+	body: ChatTarget,
 	pane: PaneProcess = {}
 ): { chat: AgentChat; created: boolean } {
 	const existing = chats.get(paneId);
@@ -42,7 +42,7 @@ export function acquireChat(
 	existing?.chat.dispose();
 	let draft = drafts.get(paneId);
 	if (!draft) drafts.set(paneId, (draft = new ChatDraft()));
-	const chat = new AgentChat({ ...body, attachOnly: true }, loopbackAgentApi, { draft });
+	const chat = new AgentChat(body, loopbackAgentApi, { draft });
 	chats.set(paneId, { chat, generation: pane.generation });
 	return { chat, created: true };
 }

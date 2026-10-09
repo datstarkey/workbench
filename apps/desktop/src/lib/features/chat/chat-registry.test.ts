@@ -60,11 +60,6 @@ describe('chat registry', () => {
 		expect(created[0].dispose).toHaveBeenCalled();
 	});
 
-	it('only attaches: the server starts sessions', () => {
-		acquireChat('p1', body('s1'));
-		expect(created[0].body).toMatchObject({ sessionId: 's1', attachOnly: true });
-	});
-
 	it('follows a /clear re-key: the chat moved to the id its pane now shows', () => {
 		const { chat } = acquireChat('p1', body('s1'));
 		chat.sessionId = 's1b';

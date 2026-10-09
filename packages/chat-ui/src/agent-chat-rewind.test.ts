@@ -46,7 +46,7 @@ const items: TranscriptItem[] = [
 ];
 
 const api: AgentApi = {
-	start: async (b) => b.sessionId ?? 'new',
+	attach: async (id) => id,
 	socketUrl: async (id) => `ws://test/agent/claude/${id}/ws`
 };
 
