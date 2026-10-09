@@ -90,7 +90,7 @@ fn close_tab_workspace_and_project_end_every_pane() {
     let effects = apply(
         &mut m,
         Command::CloseProject {
-            project_path: PROJECT.into(),
+            project_path: format!("{PROJECT}/"),
         },
     )
     .unwrap();

@@ -1,6 +1,6 @@
-//! `workspaces.json`: the model plus the desktop's local state, versioned.
-//! A file without `version` is the desktop snapshot written before the model
-//! existed, and is migrated on load.
+//! The model plus the desktop's local state, versioned, in `workspaces.v2.json`.
+//! The old desktop snapshot (`workspaces.json`, no `version`) is migrated on
+//! load when no v2 file exists, and never written: an older build still reads it.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -8,11 +8,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::model::{
-    CodexMode, Model, Pane, PaneKind, Renderer, SplitDirection, SplitView, Tab, Workspace,
+    same_path, CodexMode, Model, Pane, PaneKind, Renderer, SplitDirection, SplitView, Tab,
+    Workspace,
 };
 use super::ops::new_id;
 use crate::paths;
 
+pub const FILE: &str = "workspaces.v2.json";
+pub const LEGACY_FILE: &str = "workspaces.json";
 pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -49,16 +52,21 @@ struct Versioned<'a> {
     file: &'a WorkspacesFile,
 }
 
-pub fn load(path: &Path) -> Result<WorkspacesFile> {
-    if !path.exists() {
-        return Ok(WorkspacesFile::default());
+/// `dir`'s `workspaces.v2.json`, else its migrated `workspaces.json`, else empty.
+pub fn load(dir: &Path) -> Result<WorkspacesFile> {
+    for name in [FILE, LEGACY_FILE] {
+        let path = dir.join(name);
+        if path.exists() {
+            return parse(&std::fs::read_to_string(path)?);
+        }
     }
-    parse(&std::fs::read_to_string(path)?)
+    Ok(WorkspacesFile::default())
 }
 
-pub fn save(path: &Path, file: &WorkspacesFile) -> Result<()> {
+/// Writes `dir`'s `workspaces.v2.json`; `workspaces.json` is left as it was.
+pub fn save(dir: &Path, file: &WorkspacesFile) -> Result<()> {
     paths::save_json(
-        path,
+        &dir.join(FILE),
         &Versioned {
             version: VERSION,
             file,
@@ -66,12 +74,23 @@ pub fn save(path: &Path, file: &WorkspacesFile) -> Result<()> {
     )
 }
 
+/// No `version`, or `1`, is the old desktop snapshot. Anything but that or the
+/// current version is refused rather than guessed at.
 pub fn parse(content: &str) -> Result<WorkspacesFile> {
     let value: serde_json::Value = serde_json::from_str(content)?;
-    match value.get("version").and_then(serde_json::Value::as_u64) {
-        None => Ok(migrate_v1(serde_json::from_value(value)?)),
-        Some(v) if v == u64::from(VERSION) => Ok(serde_json::from_value(value)?),
-        Some(v) => bail!("workspaces.json is version {v}; this Workbench reads up to {VERSION}"),
+    let version = match value.get("version") {
+        None => 1,
+        Some(v) => match v.as_u64() {
+            Some(n @ (1 | 2)) => n,
+            _ => bail!(
+                "Workspaces file version {v} is not one this Workbench reads (1 to {VERSION})"
+            ),
+        },
+    };
+    if version == 1 {
+        Ok(migrate_v1(serde_json::from_value(value)?))
+    } else {
+        Ok(serde_json::from_value(value)?)
     }
 }
 
@@ -186,7 +205,7 @@ fn migrate_workspace(w: V1Workspace, local: &mut LocalState) -> Workspace {
     let tabs: Vec<Tab> = w
         .terminal_tabs
         .into_iter()
-        .map(|t| migrate_tab(t, local))
+        .flat_map(|t| migrate_tab(t, local))
         .collect();
     if tabs.iter().any(|t| t.id == w.active_terminal_tab_id) {
         local
@@ -201,13 +220,14 @@ fn migrate_workspace(w: V1Workspace, local: &mut LocalState) -> Workspace {
             tab_ids: [a, b],
         })
     });
-    let worktree_path = w.worktree_path.filter(|p| *p != w.project_path);
+    let worktree_path = w.worktree_path.filter(|p| !same_path(p, &w.project_path));
     Workspace {
         id: w.id,
         project_path: w.project_path,
         project_name: w.project_name,
+        // A main checkout's branch is read from git when shown.
+        branch: worktree_path.as_ref().and(w.branch),
         worktree_path,
-        branch: w.branch,
         renderer: match w.renderer.as_deref() {
             Some("native") => Renderer::Native,
             _ => Renderer::Xterm,
@@ -218,7 +238,10 @@ fn migrate_workspace(w: V1Workspace, local: &mut LocalState) -> Workspace {
     }
 }
 
-fn migrate_tab(t: V1Tab, local: &mut LocalState) -> Tab {
+/// Every pane in a tab has the tab's kind: a tab mixing kinds is split into
+/// one tab per kind (in pane order, the first keeping its id), and the tab
+/// takes its panes' kind over its own `type`.
+fn migrate_tab(t: V1Tab, local: &mut LocalState) -> Vec<Tab> {
     let tab_kind = kind(t.session_type.as_deref());
     let mut panes: Vec<Pane> = t
         .panes
@@ -231,7 +254,7 @@ fn migrate_tab(t: V1Tab, local: &mut LocalState) -> Tab {
             V1Pane {
                 id: new_id(),
                 startup_command: None,
-                session_type: None,
+                session_type: Some("shell".into()),
                 claude_session_id: None,
                 view: None,
                 claude_account_id: None,
@@ -242,13 +265,25 @@ fn migrate_tab(t: V1Tab, local: &mut LocalState) -> Tab {
             local,
         ));
     }
-    Tab {
-        id: t.id,
-        label: t.label,
-        kind: tab_kind,
-        split: t.split.as_deref().and_then(direction).unwrap_or_default(),
-        panes,
+    let split = t.split.as_deref().and_then(direction).unwrap_or_default();
+    let mut tabs: Vec<Tab> = Vec::new();
+    for pane in panes {
+        match tabs.iter_mut().find(|tab| tab.kind == pane.kind) {
+            Some(tab) => tab.panes.push(pane),
+            None => tabs.push(Tab {
+                id: if tabs.is_empty() {
+                    t.id.clone()
+                } else {
+                    new_id()
+                },
+                label: t.label.clone(),
+                kind: pane.kind,
+                split,
+                panes: vec![pane],
+            }),
+        }
     }
+    tabs
 }
 
 fn migrate_pane(p: V1Pane, tab_kind: PaneKind, local: &mut LocalState) -> Pane {

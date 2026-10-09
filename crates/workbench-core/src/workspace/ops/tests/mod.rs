@@ -1,4 +1,6 @@
 use super::*;
+use crate::workspace::command::Target;
+use crate::workspace::model::{CodexMode, SplitDirection, SplitView};
 
 const PROJECT: &str = "/repo/app";
 const WORKTREE: &str = "/repo/app-feat";
@@ -116,6 +118,8 @@ fn open_workspace_reuses_main_and_worktree_separately() {
     assert_eq!(open(&mut m, Some(WORKTREE)), wt);
     // A worktree path equal to the project is the main checkout.
     assert_eq!(open(&mut m, Some(PROJECT)), main);
+    // Paths match without their trailing separator.
+    assert_eq!(open(&mut m, Some("/repo/app-feat/")), wt);
     assert_eq!(m.workspaces.len(), 2);
     let wt_ws = m.workspace(&wt).unwrap();
     assert_eq!(wt_ws.cwd(), WORKTREE);
@@ -185,7 +189,10 @@ fn new_claude_picks_its_id_up_front_and_spawns() {
     let p = m.pane(&pane).unwrap();
     let id = p.session_id.clone().unwrap();
     assert_eq!(id.len(), 36);
-    assert_eq!(p.prompt.as_deref(), Some("fix the bug"));
+    assert_eq!(
+        p.prompt, None,
+        "a prompt is sent once, with the first spawn"
+    );
     assert_eq!(
         effects,
         vec![

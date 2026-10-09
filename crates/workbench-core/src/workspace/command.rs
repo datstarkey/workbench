@@ -121,10 +121,6 @@ pub enum Command {
         session_id: String,
         previous_ids: Vec<String>,
     },
-    /// Folded in by the server: the process exited without an End. The pane stays.
-    PaneExited {
-        pane_id: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

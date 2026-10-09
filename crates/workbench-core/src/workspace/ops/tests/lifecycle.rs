@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn restart_keeps_ids_session_account_and_prompt() {
+fn restart_keeps_ids_session_and_account_and_never_resends_the_prompt() {
     let mut m = Model::default();
     let ws = open(&mut m, None);
     let cmd = with(session(PaneKind::Claude), |c| {
@@ -38,7 +38,7 @@ fn restart_keeps_ids_session_account_and_prompt() {
                 session_id,
                 resume: true,
                 account_id: Some("work".into()),
-                prompt: Some("go".into()),
+                prompt: None,
             },
             Effect::Opened {
                 workspace_id: ws.clone(),
@@ -52,19 +52,28 @@ fn restart_keeps_ids_session_account_and_prompt() {
 }
 
 #[test]
-fn restart_gives_a_claude_pane_without_an_id_a_new_session() {
+fn a_prompt_still_held_is_sent_once_then_cleared() {
     let mut m = Model::default();
     let ws = open(&mut m, None);
     let (tab, pane, _) = new(&mut m, &ws, session(PaneKind::Claude));
+    // A migrated pane can still hold the agent action's prompt.
     let (w, t, p) = m.pane_at(&pane).unwrap();
-    m.workspaces[w].tabs[t].panes[p].session_id = None;
-    let effects = apply(&mut m, Command::Restart { tab_id: tab }).unwrap();
-    let id = m.pane(&pane).unwrap().session_id.clone().unwrap();
-    assert!(effects.contains(&Effect::Persist));
-    assert!(effects.iter().any(|e| matches!(
+    m.workspaces[w].tabs[t].panes[p].prompt = Some("old".into());
+    let restart = || Command::Restart {
+        tab_id: tab.clone(),
+    };
+    let first = apply(&mut m, restart()).unwrap();
+    assert!(first.iter().any(|e| matches!(
         e,
-        Effect::SpawnClaude { resume: false, session_id, .. } if *session_id == id
+        Effect::SpawnClaude { prompt: Some(p), .. } if p == "old"
     )));
+    assert_eq!(first.last(), Some(&Effect::Persist));
+    assert_eq!(m.pane(&pane).unwrap().prompt, None);
+    let second = apply(&mut m, restart()).unwrap();
+    assert!(second
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnClaude { prompt: None, .. })));
+    assert!(!second.contains(&Effect::Persist));
 }
 
 #[test]
@@ -177,18 +186,26 @@ fn a_codex_prompt_is_only_sent_to_a_new_thread() {
         }
     });
     let (tab, pane, _) = new(&mut m, &ws, cmd);
-    apply(
+    assert_eq!(
+        m.pane(&pane).unwrap().prompt,
+        None,
+        "sent with the first spawn"
+    );
+    // Before the thread has an id, neither a mode switch nor a restart resends it.
+    let switched = apply(
         &mut m,
-        Command::SessionAttached {
-            pane_id: pane,
-            session_id: "t-1".into(),
+        Command::SetCodexMode {
+            pane_id: pane.clone(),
+            mode: CodexMode::AppServer,
         },
     )
     .unwrap();
-    let effects = apply(&mut m, Command::Restart { tab_id: tab }).unwrap();
-    assert!(effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCodex { prompt: None, .. })));
+    let restarted = apply(&mut m, Command::Restart { tab_id: tab }).unwrap();
+    for effects in [switched, restarted] {
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnCodex { prompt: None, .. })));
+    }
 }
 
 #[test]
@@ -239,13 +256,41 @@ fn rekey_follows_clear_and_attach_switches_conversation() {
 }
 
 #[test]
-fn an_exit_keeps_the_pane() {
+fn attaching_a_session_another_pane_holds_is_refused() {
     let mut m = Model::default();
     let ws = open(&mut m, None);
-    let (_, pane, _) = new(&mut m, &ws, session(PaneKind::Claude));
+    let (_, a, _) = new(&mut m, &ws, session(PaneKind::Claude));
+    let (_, b, _) = new(&mut m, &ws, session(PaneKind::Claude));
+    let held = m.pane(&a).unwrap().session_id.clone().unwrap();
+    apply(
+        &mut m,
+        Command::SessionRekeyed {
+            session_id: "new".into(),
+            previous_ids: vec![held.clone()],
+        },
+    )
+    .unwrap();
     let before = m.clone();
-    assert!(apply(&mut m, Command::PaneExited { pane_id: pane })
-        .unwrap()
-        .is_empty());
+    for id in [held, "new".to_string()] {
+        let err = apply(
+            &mut m,
+            Command::SessionAttached {
+                pane_id: b.clone(),
+                session_id: id,
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains(&a), "{err}");
+    }
     assert_eq!(m, before);
+    // A Codex thread may share the id: it is another session.
+    let (_, codex, _) = new(&mut m, &ws, session(PaneKind::Codex));
+    assert!(apply(
+        &mut m,
+        Command::SessionAttached {
+            pane_id: codex,
+            session_id: "new".into(),
+        },
+    )
+    .is_ok());
 }

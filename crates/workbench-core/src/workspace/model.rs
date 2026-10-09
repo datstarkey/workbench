@@ -45,6 +45,7 @@ impl Workspace {
 pub struct Tab {
     pub id: String,
     pub label: String,
+    /// Every pane in the tab has this kind.
     pub kind: PaneKind,
     /// How the tab lays out more than one pane.
     #[serde(default)]
@@ -156,14 +157,37 @@ impl Model {
 
     /// The pane running a session, by its id or one it had before a `/clear`.
     pub fn pane_for_session(&self, kind: PaneKind, session_id: &str) -> Option<&Pane> {
-        self.workspaces
-            .iter()
-            .flat_map(|w| &w.tabs)
-            .flat_map(|t| &t.panes)
-            .find(|p| {
-                p.kind == kind
-                    && (p.session_id.as_deref() == Some(session_id)
-                        || p.previous_ids.iter().any(|id| id == session_id))
-            })
+        self.session_at(kind, session_id)
+            .map(|(w, t, p)| &self.workspaces[w].tabs[t].panes[p])
     }
+
+    /// `(workspace, tab, pane)` indices of `pane_for_session`.
+    pub fn session_at(&self, kind: PaneKind, session_id: &str) -> Option<(usize, usize, usize)> {
+        self.workspaces.iter().enumerate().find_map(|(w, ws)| {
+            ws.tabs.iter().enumerate().find_map(|(t, tab)| {
+                tab.panes
+                    .iter()
+                    .position(|p| {
+                        p.kind == kind
+                            && (p.session_id.as_deref() == Some(session_id)
+                                || p.previous_ids.iter().any(|id| id == session_id))
+                    })
+                    .map(|p| (w, t, p))
+            })
+        })
+    }
+}
+
+/// Whether two paths name the same folder: trailing separators don't count,
+/// and on Windows neither do case or `\` vs `/`.
+pub fn same_path(a: &str, b: &str) -> bool {
+    fn normal(p: &str) -> String {
+        let p = if cfg!(windows) {
+            p.replace('\\', "/").to_lowercase()
+        } else {
+            p.to_string()
+        };
+        p.trim_end_matches('/').to_string()
+    }
+    normal(a) == normal(b)
 }

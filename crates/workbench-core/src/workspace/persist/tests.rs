@@ -124,7 +124,10 @@ fn migrates_the_current_desktop_snapshot_without_losing_fields() {
     assert_eq!(main.project_path, "/home/dev/app");
     assert_eq!(main.project_name, "app");
     assert_eq!(main.worktree_path, None);
-    assert_eq!(main.branch.as_deref(), Some("main"));
+    assert_eq!(
+        main.branch, None,
+        "a main checkout's branch is read from git"
+    );
     assert_eq!(main.renderer, Renderer::Xterm);
     assert!(!main.transient);
     assert_eq!(
@@ -253,16 +256,23 @@ fn reads_a_snapshot_without_server_terminal_ids() {
 }
 
 #[test]
-fn save_then_load_round_trips() {
+fn save_then_load_round_trips_and_leaves_the_old_file_for_older_builds() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("workspaces.json");
-    let mut file = parse(V1).unwrap();
+    let legacy = dir.path().join(LEGACY_FILE);
+    std::fs::write(&legacy, V1).unwrap();
+    let mut file = load(dir.path()).unwrap();
+    assert_eq!(
+        file.local,
+        parse(V1).unwrap().local,
+        "migrated from the old file"
+    );
     file.model.workspaces[0].transient = true;
     file.model.workspaces[0].tabs[1].panes[0].previous_ids = vec!["old".into()];
-    save(&path, &file).unwrap();
+    save(dir.path(), &file).unwrap();
 
+    assert_eq!(std::fs::read_to_string(&legacy).unwrap(), V1);
     let raw: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(FILE)).unwrap()).unwrap();
     assert_eq!(raw["version"], VERSION);
     assert_eq!(
         raw["workspaces"][0]["tabs"][1]["panes"][0]["sessionId"],
@@ -270,18 +280,56 @@ fn save_then_load_round_trips() {
     );
     assert_eq!(raw["local"]["chatPanes"][0], "pane-claude");
 
-    assert_eq!(load(&path).unwrap(), file);
+    assert_eq!(load(dir.path()).unwrap(), file, "the v2 file wins");
 }
 
 #[test]
-fn a_missing_file_is_empty_and_a_newer_one_is_refused() {
+fn a_missing_file_is_empty() {
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(
-        load(&dir.path().join("none.json")).unwrap(),
-        WorkspacesFile::default()
-    );
-    let err = parse(r#"{ "version": 99, "workspaces": [] }"#).unwrap_err();
-    assert!(err.to_string().contains("version 99"));
+    assert_eq!(load(dir.path()).unwrap(), WorkspacesFile::default());
+}
+
+#[test]
+fn versions_are_read_explicitly() {
+    let v1 = parse(r#"{ "version": 1, "workspaces": [], "selectedId": "w" }"#).unwrap();
+    assert_eq!(v1.local.selected_id.as_deref(), Some("w"));
+    assert!(parse(r#"{ "version": 2, "workspaces": [] }"#).is_ok());
+    for bad in [
+        r#"99"#, r#"3"#, r#"0"#, r#""2""#, r#"2.0"#, r#"null"#, r#"-1"#,
+    ] {
+        let err = parse(&format!(r#"{{ "version": {bad}, "workspaces": [] }}"#)).unwrap_err();
+        assert!(err.to_string().contains("version"), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn a_tab_mixing_kinds_is_split_by_kind() {
+    let file = parse(
+        r#"{ "workspaces": [{
+            "id": "w", "projectPath": "/p", "projectName": "p", "activeTerminalTabId": "t",
+            "terminalTabs": [{ "id": "t", "label": "Mixed", "split": "vertical", "type": "claude",
+              "panes": [
+                { "id": "s1" },
+                { "id": "c1", "type": "claude", "claudeSessionId": "c" },
+                { "id": "s2", "type": "shell" }
+              ] }]
+        }] }"#,
+    )
+    .unwrap();
+    let tabs = &file.model.workspaces[0].tabs;
+    assert_eq!(tabs.len(), 2);
+    // A pane without a type takes its tab's: `s1` is Claude, as the tab says.
+    assert_eq!(tabs[0].id, "t");
+    assert_eq!(tabs[0].kind, PaneKind::Claude);
+    let ids = |t: &Tab| t.panes.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&tabs[0]), ["s1", "c1"]);
+    assert_eq!(tabs[1].kind, PaneKind::Shell);
+    assert_eq!(ids(&tabs[1]), ["s2"]);
+    assert_eq!(tabs[1].label, "Mixed");
+    assert_eq!(tabs[1].split, SplitDirection::Vertical);
+    for tab in tabs {
+        assert!(tab.panes.iter().all(|p| p.kind == tab.kind));
+    }
 }
 
 #[test]
