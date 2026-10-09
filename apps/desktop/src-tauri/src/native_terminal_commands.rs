@@ -74,6 +74,12 @@ fn create(
     server: &ServerControl,
     app_handle: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
+    let claude_account_id = crate::claude_accounts::for_launch_saved(
+        claude_account_id.as_deref(),
+        project_root.as_deref().unwrap_or(&project_path),
+        claude_session.as_ref().map(|s| s.id.as_str()),
+    )
+    .map_err(|e| e.to_string())?;
     let claude_config_dir = crate::claude_accounts::resolve_saved(claude_account_id.as_deref())
         .map_err(|e| e.to_string())?;
     // Decided and built here as a server terminal's is (`terminal::create_from_body`),

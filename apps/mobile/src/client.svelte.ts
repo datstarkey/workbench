@@ -9,12 +9,12 @@ import type {
 	ServerTerminalMeta as TerminalMeta,
 	WorkbenchSettings
 } from '@workbench/types';
-import { defaultAccountName, projectClaudeAccount } from '@workbench/types';
+import { defaultAccountName } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { watch as watchValue } from 'runed';
 import { HomeStream, type OpenEventSource } from './home-stream.ts';
 import { HostUpdate } from './host-update.svelte.ts';
-import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { hostOf, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
@@ -61,14 +61,20 @@ export class MobileClient {
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
 	/** What the machine calls its default `~/.claude` account. */
 	defaultAccountName = $state(defaultAccountName(null));
-	accountId = $state<string | undefined>(undefined);
+	/** The host's active account, which new chats run under unless one is picked here. */
+	private hostAccountId = $state<string | undefined>(undefined);
+	/** An account picked on this phone for new chats (`''`: the default login); null follows the host. */
+	private pickedAccountId = $state<string | null>(null);
+	/** The account new chats start under, as the switcher shows it. */
+	readonly accountId = $derived(
+		this.pickedAccountId === null ? this.hostAccountId : this.pickedAccountId || undefined
+	);
 	/** The connected host's version and update; null while disconnected. */
 	hostUpdate = $state.raw<HostUpdate | null>(null);
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
 
 	setAccount(id: string): void {
-		this.accountId = id || undefined;
-		if (this.machineId) lsSet(machineKey('wb.account', this.machineId), id);
+		this.pickedAccountId = id;
 	}
 
 	private async loadAccounts(): Promise<void> {
@@ -81,9 +87,11 @@ export class MobileClient {
 			if (!live()) return;
 			this.accounts = (settings?.claudeAccounts ?? []).map(({ id, name }) => ({ id, name }));
 			this.defaultAccountName = defaultAccountName(settings);
-			const saved = this.machineId ? lsGet(machineKey('wb.account', this.machineId)) : null;
-			const selected = saved ?? settings?.activeClaudeAccount ?? '';
-			this.accountId = this.accounts.some((a) => a.id === selected) ? selected : undefined;
+			const known = (id: string | null | undefined) => this.accounts.some((a) => a.id === id);
+			this.hostAccountId = known(settings?.activeClaudeAccount)
+				? (settings?.activeClaudeAccount ?? undefined)
+				: undefined;
+			if (this.pickedAccountId && !known(this.pickedAccountId)) this.pickedAccountId = null;
 		} catch {
 			/* Older servers still support the default account. */
 		}
@@ -346,7 +354,8 @@ export class MobileClient {
 		this.hostUpdate = null;
 		this.accounts = [];
 		this.defaultAccountName = defaultAccountName(null);
-		this.accountId = undefined;
+		this.hostAccountId = undefined;
+		this.pickedAccountId = null;
 		this.machineId = null;
 		this.projectPrefs = new ProjectPrefs('disconnected');
 		this.terminals = [];
@@ -410,18 +419,15 @@ export class MobileClient {
 		};
 	}
 
-	/** A new Claude conversation in the phone's default view, under the project's account if it sets one. */
-	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) => {
-		const project = this.store?.projects.find((p) => p.path === projectPath);
-		const claudeAccountId = projectClaudeAccount(project, this.accounts, this.accountId);
-		return this.openClaude({
+	/** A new Claude conversation in the phone's default view. Without a pick here the host picks the account. */
+	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) =>
+		this.openClaude({
 			sessionId: crypto.randomUUID(),
 			projectPath,
 			worktreePath,
 			name,
-			...(claudeAccountId ? { claudeAccountId } : {})
+			...(this.pickedAccountId !== null ? { claudeAccountId: this.pickedAccountId } : {})
 		});
-	};
 
 	/** A Claude conversation, new or past (the server resumes one on disk), in the default view. */
 	async openClaude(ref: ChatRef): Promise<void> {
@@ -478,7 +484,8 @@ export class MobileClient {
 
 	/** The open chat moved to another Claude account: remount it for that login's usage. */
 	updateChatAccount(accountId: string | undefined): void {
-		if (!this.activeChat || this.activeChat.claudeAccountId === accountId) return;
+		// `''` (a pick of the default login) and undefined are the same login.
+		if (!this.activeChat || (this.activeChat.claudeAccountId || undefined) === accountId) return;
 		this.activeChat = { ...this.activeChat, claudeAccountId: accountId };
 		this.chatScreenKey++;
 	}
@@ -599,7 +606,7 @@ export class MobileClient {
 	private async openClaudeTerminal(ref: ChatRef): Promise<void> {
 		await this.createTerminal(ref.projectPath, ref.worktreePath, ref.name, {
 			claudeSession: { id: ref.sessionId },
-			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
+			...(ref.claudeAccountId !== undefined ? { claudeAccountId: ref.claudeAccountId } : {})
 		});
 	}
 
@@ -723,6 +730,7 @@ export class MobileClient {
 		void this.store?.refresh();
 		void this.refreshTerminals();
 		void this.refreshChats();
+		void this.loadAccounts();
 		void this.hostUpdate?.check();
 	}
 }

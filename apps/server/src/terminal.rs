@@ -471,6 +471,8 @@ pub struct CreateTerminalBody {
     pub shell: Option<String>,
     /// Saved Claude account whose config dir becomes the shell's
     /// `CLAUDE_CONFIG_DIR`. An id, never a path, so clients can't point it anywhere.
+    /// A create sends only a pick (`""`: the default login); absent, the route
+    /// decides (`claude_accounts::for_launch`).
     pub claude_account_id: Option<String>,
 }
 
@@ -488,7 +490,7 @@ pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<
 
 pub async fn terminal_create(
     State(state): State<AppState>,
-    Json(body): Json<CreateTerminalBody>,
+    Json(mut body): Json<CreateTerminalBody>,
 ) -> ApiResult<Json<TerminalMeta>> {
     if body.command.is_some() && body.claude_session.is_some() {
         return Err(ApiError::bad_request(
@@ -499,9 +501,19 @@ pub async fn terminal_create(
     let agents = state.agents.clone();
     // openpty + fork/exec and the project-allowlist load are blocking — run them off
     // the async executor so a slow spawn doesn't stall a tokio worker thread.
-    crate::routes::blocking(move || create_or_join(&terminals, &agents, body))
-        .await
-        .map(Json)
+    crate::routes::blocking(move || {
+        // Decided before the join below, which compares it to the running session's.
+        if let Some(session) = body.claude_session.as_ref() {
+            body.claude_account_id = workbench_core::claude_accounts::for_launch_saved(
+                body.claude_account_id.as_deref(),
+                &body.project_path,
+                Some(&session.id),
+            )?;
+        }
+        create_or_join(&terminals, &agents, body)
+    })
+    .await
+    .map(Json)
 }
 
 /// Create a terminal, unless its Claude session already runs as a chat in a

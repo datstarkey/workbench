@@ -133,7 +133,6 @@ export class SavedMachines {
 	remove(id: string): void {
 		this.list = this.list.filter((m) => m.id !== id);
 		if (this.activeId === id) this.activeId = null;
-		lsRemove(machineKey('wb.account', id));
 		// Remove drafts only for the forgotten machine.
 		try {
 			const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));

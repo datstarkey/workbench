@@ -22,7 +22,7 @@ export interface ProjectConfig {
 	tasks?: ProjectTask[];
 	/**
 	 * The Claude account new Claude sessions here start under, over the active
-	 * one (`''`: the default login); see `projectClaudeAccount`.
+	 * one (`''`: the default login). The host resolves it at launch.
 	 */
 	claudeAccountId?: string;
 }

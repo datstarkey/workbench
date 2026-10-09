@@ -23,7 +23,7 @@ pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<ProjectTask>,
     /// The Claude account new Claude sessions in this project start under,
-    /// over the active one (`""`: the default login). Clients resolve it.
+    /// over the active one (`""`: the default login); see `claude_accounts::for_launch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_account_id: Option<String>,
 }

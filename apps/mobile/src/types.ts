@@ -15,7 +15,7 @@ export interface ChatRef {
 	projectPath: string;
 	worktreePath?: string;
 	name: string;
-	/** The Claude account it belongs to; absent is the default login. */
+	/** The Claude account it runs under (`''`: the default login); absent, the host decides. */
 	claudeAccountId?: string;
 	/** Join an existing process; only an explicit Restart may start it again. */
 	attachOnly?: boolean;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { hostOf, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import { stubLocalStorage, TOKEN } from './test-helpers.ts';
 
 const PC_TOKEN = 'pc-token-0123456789abcdef0123456789ab';
@@ -135,13 +135,11 @@ describe('SavedMachines', () => {
 		const m = new SavedMachines();
 		const mac = m.save(MAC, TOKEN);
 		const pc = m.save(PC, PC_TOKEN);
-		localStorage.setItem(machineKey('wb.account', pc.id), 'work');
 
 		m.remove(pc.id);
 
 		expect(m.list.map((x) => x.id)).toEqual([mac.id]);
 		expect(m.active).toBeNull();
-		expect(localStorage.getItem(machineKey('wb.account', pc.id))).toBeNull();
 		expect(localStorage.getItem('wb.activeMachine')).toBeNull();
 	});
 

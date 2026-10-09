@@ -10,7 +10,6 @@ import {
 	type TerminalPaneState,
 	type TerminalTabState
 } from '$types/workbench';
-import { projectClaudeAccount } from '$types/accounts';
 import { invoke } from '$lib/transport';
 import {
 	codexCommand,
@@ -82,18 +81,6 @@ export class WorkspaceStore {
 	private gitStore = getGitStore();
 
 	private switchCallbacks: Array<(projectPath: string) => void> = [];
-
-	/** A project's config, for its default Claude account; `ProjectStore` (created later) sets it. */
-	projectLookup: (projectPath: string) => ProjectConfig | undefined = () => undefined;
-
-	/** The account a new Claude session in the project starts under. */
-	private claudeAccountFor(projectPath: string): string | undefined {
-		return projectClaudeAccount(
-			this.projectLookup(projectPath),
-			this.settingsStore.claudeAccounts,
-			this.settingsStore.activeClaudeAccountId
-		);
-	}
 
 	private get launchOptions(): LaunchOptions {
 		return this.settingsStore.launchOptions;
@@ -723,8 +710,7 @@ export class WorkspaceStore {
 								? codexCommandWithPrompt(prompt, this.launchOptions)
 								: codexCommand(this.launchOptions)
 						}
-					: { claudeSessionId: crypto.randomUUID(), ...(prompt && { claudePrompt: prompt }) },
-				this.claudeAccountFor(w.projectPath)
+					: { claudeSessionId: crypto.randomUUID(), ...(prompt && { claudePrompt: prompt }) }
 			);
 			// A plain new Claude tab can open straight into chat; an agent action's
 			// prompt goes to the terminal.

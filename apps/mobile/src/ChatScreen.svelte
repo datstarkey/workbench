@@ -51,7 +51,7 @@
 			...(ref.worktreePath ? { worktreePath: ref.worktreePath } : {}),
 			...(ref.sessionId ? { sessionId: ref.sessionId } : {}),
 			...(ref.attachOnly ? { attachOnly: true } : {}),
-			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
+			...(ref.claudeAccountId !== undefined ? { claudeAccountId: ref.claudeAccountId } : {})
 		},
 		client.agents,
 		{ draft: drafts.get(ref), reconnectOnWake: true }

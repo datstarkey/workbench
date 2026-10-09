@@ -33,8 +33,6 @@ export class ProjectStore {
 
 	constructor(workspaces: WorkspaceStore) {
 		this.workspaces = workspaces;
-		// Created first, the workspace store reads projects (their Claude account) through this.
-		workspaces.projectLookup = (path) => this.getByPath(path);
 	}
 
 	async load() {

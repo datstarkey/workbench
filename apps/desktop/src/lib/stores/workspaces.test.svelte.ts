@@ -966,34 +966,14 @@ describe('WorkspaceStore', () => {
 	describe('claude accounts', () => {
 		const sessionId = '12345678-1234-1234-1234-123456789abc';
 
-		it('a new claude pane runs under the active account; codex and default panes carry none', () => {
+		it('a new claude pane carries no account: the host picks it at launch', () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
-			store.addAISession('ws-a', 'codex');
-			store.addAISession('ws-a', 'claude');
 			mockWorkbenchSettingsStore.activeClaudeAccountId = 'work';
 			store.addAISession('ws-a', 'claude');
 			store.addAISession('ws-a', 'codex');
 
 			const accounts = store.workspaces[0].terminalTabs.map((t) => t.panes[0].claudeAccountId);
-			expect(accounts).toEqual([undefined, undefined, 'work', undefined]);
-		});
-
-		it("a new claude pane runs under its project's own account over the active one", () => {
-			const accountOf: Record<string, string | undefined> = {
-				'/projects/work': 'work',
-				'/projects/home': '',
-				'/projects/gone': 'removed'
-			};
-			store.projectLookup = (path) => makeProject({ path, claudeAccountId: accountOf[path] });
-			mockWorkbenchSettingsStore.activeClaudeAccountId = 'personal';
-			store.workspaces = ['work', 'home', 'gone', 'other'].map((name) =>
-				makeWorkspace({ id: name, projectPath: `/projects/${name}` })
-			);
-			for (const ws of store.workspaces) store.addAISession(ws.id, 'claude');
-
-			const accounts = store.workspaces.map((w) => w.terminalTabs[0].panes[0].claudeAccountId);
-			// `''` is the default login; a removed account falls back to the active one.
-			expect(accounts).toEqual(['work', undefined, 'personal', 'personal']);
+			expect(accounts).toEqual([undefined, undefined]);
 		});
 
 		it('a pane follows its session onto another account', () => {
