@@ -2,9 +2,9 @@
 // crate root so existing `crate::config`, `crate::git`, `crate::types`, … paths
 // throughout the desktop crate keep resolving without per-file edits.
 pub use workbench_core::{
-    claude_accounts, claude_sessions, codex_config, codex_sessions, config, git, github, net,
-    package_scripts, paths, sandbox_runtime, session_utils, settings, shell, shell_integration,
-    text, trello, trello_automation, types, workspace, worktrees,
+    claude_accounts, claude_plugin, claude_sessions, codex_config, codex_sessions, config, git,
+    github, net, package_scripts, paths, sandbox_runtime, session_utils, settings, shell,
+    shell_integration, text, trello, trello_automation, types, workspace, worktrees,
 };
 
 // The e2e WebDriver server is unauthenticated control of the webview (and so of
@@ -208,10 +208,14 @@ pub fn run() {
             let bridge = HookBridgeState::new(handle.clone(), hooks);
             app.manage(bridge);
             // Activity now comes from the `workbench` Claude Code plugin; drop the
-            // hook script older versions registered so events aren't reported twice.
+            // hook script older versions registered and a marketplace install, so events
+            // aren't reported twice.
             std::thread::spawn(|| {
                 if let Err(e) = settings::remove_workbench_hook_integration() {
                     log::warn!("failed to remove the old Claude hook script: {e}");
+                }
+                if let Err(e) = claude_plugin::disable_marketplace_install() {
+                    log::warn!("failed to disable the marketplace workbench plugin: {e}");
                 }
             });
             let git_watcher = GitWatcher::new(handle);
