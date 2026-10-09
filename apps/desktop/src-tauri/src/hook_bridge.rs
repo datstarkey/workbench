@@ -1,15 +1,19 @@
+//! Shows what the server's hook bridge (`workbench_server::hook_bridge`)
+//! hears: a log, a project refresh after a write or git command, and Codex
+//! `notify` for the panes' labels. The server owns the listener and stamps it
+//! on every process it starts.
+
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read};
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::refresh_dispatcher::RefreshDispatcher;
+use workbench_server::hook_bridge::{HookBridge, HookEvent};
 
-mod http;
+use crate::refresh_dispatcher::RefreshDispatcher;
 
 const MAX_LOG_ENTRIES: usize = 500;
 
@@ -27,29 +31,30 @@ pub struct HookLogEntry {
 
 type LogBuffer = Arc<Mutex<VecDeque<HookLogEntry>>>;
 
-/// The bridge listens on loopback, which any local (or sandboxed) process can
-/// reach: each event must carry this launch's secret, which Workbench hands
-/// only to the processes it starts (`WORKBENCH_HOOK_SOCKET` = `host:port#secret`).
 #[derive(Clone)]
 pub struct HookBridgeState {
-    address: Option<String>,
-    socket_path: Option<String>,
+    bridge: HookBridge,
     logs: LogBuffer,
 }
 
 impl HookBridgeState {
-    pub fn new(app_handle: AppHandle) -> Self {
-        tcp::start(app_handle)
-    }
-
-    /// `host:port#secret`, as `WORKBENCH_HOOK_SOCKET` hands it to a process.
-    pub fn socket_path(&self) -> Option<&str> {
-        self.socket_path.as_deref()
-    }
-
-    /// The bare `host:port`, for a network allowlist.
-    pub fn address(&self) -> Option<&str> {
-        self.address.as_deref()
+    /// Follow `bridge` (started here if it isn't yet) for this app's display.
+    pub fn new(app_handle: AppHandle, bridge: HookBridge) -> Self {
+        bridge.start();
+        let state = Self {
+            bridge,
+            logs: Arc::new(Mutex::new(VecDeque::new())),
+        };
+        let (mut events, logs) = (state.bridge.subscribe(), state.logs.clone());
+        std::thread::spawn(move || loop {
+            use tokio::sync::broadcast::error::RecvError;
+            match events.blocking_recv() {
+                Ok(event) => handle_event(event, &app_handle, &logs),
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        });
+        state
     }
 
     pub fn get_logs(&self) -> Vec<HookLogEntry> {
@@ -69,30 +74,6 @@ fn push_log(logs: &LogBuffer, entry: HookLogEntry) {
         buf.pop_front();
     }
     buf.push_back(entry);
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum HookBridgeEnvelope {
-    Claude {
-        pane_id: String,
-        hook: Value,
-    },
-    Codex {
-        pane_id: String,
-        codex: Value,
-        /// The bridge secret: Codex's notify script writes raw lines, so it
-        /// rides in the line rather than a header.
-        #[serde(default)]
-        secret: Option<String>,
-    },
-}
-
-/// Whether `given` is the bridge's secret.
-fn authorized(expected: &str, given: Option<&str>) -> bool {
-    given.is_some_and(|given| {
-        workbench_core::token::constant_time_eq(expected.as_bytes(), given.as_bytes())
-    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -184,151 +165,99 @@ fn emit_project_refresh_event(handle: &AppHandle, hook: &Value) {
     dispatcher.request_refresh(handle, project_path, "claude-hook", trigger);
 }
 
-/// Process lines from a stream, dispatching hook events to the frontend.
-/// `secret`: each line must carry it (a raw Codex line); `None` when the
-/// request already proved it (the plugin's POST header).
-fn handle_stream<R: Read>(
-    reader: BufReader<R>,
-    handle: &AppHandle,
-    logs: &LogBuffer,
-    secret: Option<&str>,
-) {
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(e) => {
-                let entry = HookLogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    level: "error".into(),
-                    event_name: None,
-                    pane_id: None,
-                    source: None,
-                    summary: format!("Failed to read payload: {e}"),
-                    tool_name: None,
-                };
-                push_log(logs, entry.clone());
-                let _ = handle.emit("hook-bridge:log", entry);
-                break;
+fn emit_log(handle: &AppHandle, logs: &LogBuffer, entry: HookLogEntry) {
+    push_log(logs, entry.clone());
+    let _ = handle.emit("hook-bridge:log", entry);
+}
+
+/// Show one event: log it, refresh its project, pass Codex `notify` on.
+fn handle_event(event: HookEvent, handle: &AppHandle, logs: &LogBuffer) {
+    match event {
+        HookEvent::Invalid { summary } => emit_log(
+            handle,
+            logs,
+            HookLogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                level: "error".into(),
+                event_name: None,
+                pane_id: None,
+                source: None,
+                summary,
+                tool_name: None,
+            },
+        ),
+        HookEvent::Claude { pane_id, hook } => {
+            let refreshed = should_emit_project_refresh_for_hook(&hook);
+            if refreshed {
+                emit_project_refresh_event(handle, &hook);
             }
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
 
-        let envelope = match serde_json::from_str::<HookBridgeEnvelope>(&line) {
-            Ok(envelope) => envelope,
-            Err(e) => {
-                let truncated = if line.len() > 200 {
-                    format!("{}…", crate::text::truncate_bytes(&line, 200))
-                } else {
-                    line.clone()
-                };
-                let entry = HookLogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    level: "error".into(),
-                    event_name: None,
-                    pane_id: None,
-                    source: None,
-                    summary: format!("Invalid payload: {e} — {truncated}"),
-                    tool_name: None,
-                };
-                push_log(logs, entry.clone());
-                let _ = handle.emit("hook-bridge:log", entry);
-                continue;
-            }
-        };
-
-        let given = match &envelope {
-            HookBridgeEnvelope::Codex { secret, .. } => secret.as_deref(),
-            HookBridgeEnvelope::Claude { .. } => None,
-        };
-        if secret.is_some_and(|expected| !authorized(expected, given)) {
-            log::warn!("[HookBridge] refused an event without this launch's secret");
-            continue;
-        }
-
-        match envelope {
-            HookBridgeEnvelope::Claude { pane_id, hook } => {
-                let refreshed = should_emit_project_refresh_for_hook(&hook);
-                if refreshed {
-                    emit_project_refresh_event(handle, &hook);
-                }
-
-                let event_name = hook
-                    .get("hook_event_name")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let tool_name = hook
-                    .get("tool_name")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let summary = match (&event_name, &tool_name) {
-                    (Some(ev), Some(tool)) => {
-                        let mut s = format!("{ev}: {tool}");
-                        if ev == "PostToolUse" && tool == "Bash" {
-                            if let Some(cmd) = hook
-                                .get("tool_input")
-                                .and_then(|v| v.get("command"))
-                                .and_then(|v| v.as_str())
-                            {
-                                let display = if cmd.len() > 80 {
-                                    format!("{}…", crate::text::truncate_bytes(cmd, 80))
-                                } else {
-                                    cmd.to_string()
-                                };
-                                s = format!("{s} — {display}");
-                            }
+            let event_name = hook
+                .get("hook_event_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let tool_name = hook
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let summary = match (&event_name, &tool_name) {
+                (Some(ev), Some(tool)) => {
+                    let mut s = format!("{ev}: {tool}");
+                    if ev == "PostToolUse" && tool == "Bash" {
+                        if let Some(cmd) = hook
+                            .get("tool_input")
+                            .and_then(|v| v.get("command"))
+                            .and_then(|v| v.as_str())
+                        {
+                            let display = if cmd.len() > 80 {
+                                format!("{}…", crate::text::truncate_bytes(cmd, 80))
+                            } else {
+                                cmd.to_string()
+                            };
+                            s = format!("{s} — {display}");
                         }
-                        if refreshed {
-                            s.push_str(" → refreshed");
-                        }
-                        s
                     }
-                    (Some(ev), None) => ev.clone(),
-                    _ => "Claude hook event".into(),
-                };
-                let log_entry = HookLogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    level: "event".into(),
-                    event_name,
-                    pane_id: Some(pane_id.clone()),
-                    source: Some("claude".into()),
-                    summary,
-                    tool_name,
-                };
-                push_log(logs, log_entry.clone());
-                let _ = handle.emit("hook-bridge:log", log_entry);
-            }
-            HookBridgeEnvelope::Codex { pane_id, codex, .. } => {
-                let event_name = codex
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let summary = event_name
-                    .clone()
-                    .unwrap_or_else(|| "Codex notification".into());
-                let log_entry = HookLogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    level: "event".into(),
-                    event_name,
-                    pane_id: Some(pane_id.clone()),
-                    source: Some("codex".into()),
-                    summary,
-                    tool_name: None,
-                };
-                push_log(logs, log_entry.clone());
-                let _ = handle.emit("hook-bridge:log", log_entry);
-
-                let event = CodexNotifyEvent::from_payload(pane_id, codex);
-                if event.notify_event.as_deref() == Some("agent-turn-complete") {
-                    if let (Some(id), Some(cwd)) = (&event.session_id, &event.cwd) {
-                        handle
-                            .state::<crate::server_control::ServerControl>()
-                            .codex_notified(&event.pane_id, id, cwd);
+                    if refreshed {
+                        s.push_str(" → refreshed");
                     }
+                    s
                 }
-                let _ = handle.emit("codex:notify", event);
-            }
+                (Some(ev), None) => ev.clone(),
+                _ => "Claude hook event".into(),
+            };
+            let log_entry = HookLogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                level: "event".into(),
+                event_name,
+                pane_id: Some(pane_id.clone()),
+                source: Some("claude".into()),
+                summary,
+                tool_name,
+            };
+            emit_log(handle, logs, log_entry);
+        }
+        HookEvent::Codex { pane_id, codex } => {
+            let event_name = codex
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let summary = event_name
+                .clone()
+                .unwrap_or_else(|| "Codex notification".into());
+            let log_entry = HookLogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                level: "event".into(),
+                event_name,
+                pane_id: Some(pane_id.clone()),
+                source: Some("codex".into()),
+                summary,
+                tool_name: None,
+            };
+            emit_log(handle, logs, log_entry);
+
+            // Labels only: the server puts a finished turn in the attention feed.
+            let event = CodexNotifyEvent::from_payload(pane_id, codex);
+            let _ = handle.emit("codex:notify", event);
         }
     }
 }
@@ -378,8 +307,7 @@ mod tests {
     #[test]
     fn log_state_get_returns_clone() {
         let state = HookBridgeState {
-            address: None,
-            socket_path: None,
+            bridge: Default::default(),
             logs: Arc::new(Mutex::new(VecDeque::new())),
         };
         push_log(&state.logs, make_log_entry("test"));
@@ -391,8 +319,7 @@ mod tests {
     #[test]
     fn log_state_clear() {
         let state = HookBridgeState {
-            address: None,
-            socket_path: None,
+            bridge: Default::default(),
             logs: Arc::new(Mutex::new(VecDeque::new())),
         };
         push_log(&state.logs, make_log_entry("one"));
@@ -526,181 +453,5 @@ mod tests {
             "tool_input": { "command": "echo hello" }
         });
         assert!(!should_emit_project_refresh_for_hook(&payload));
-    }
-
-    // --- HookBridgeEnvelope deserialization ---
-
-    #[test]
-    fn envelope_claude_hook() {
-        let json_str = r#"{"pane_id": "p1", "hook": {"session_id": "s1"}}"#;
-        let envelope: HookBridgeEnvelope = serde_json::from_str(json_str).unwrap();
-
-        match envelope {
-            HookBridgeEnvelope::Claude { pane_id, hook } => {
-                assert_eq!(pane_id, "p1");
-                assert_eq!(hook.get("session_id").unwrap().as_str().unwrap(), "s1");
-            }
-            HookBridgeEnvelope::Codex { .. } => panic!("Expected Claude variant"),
-        }
-    }
-
-    #[test]
-    fn envelope_codex_notify() {
-        let json_str = r#"{"pane_id": "p2", "codex": {"thread-id": "t1"}}"#;
-        let envelope: HookBridgeEnvelope = serde_json::from_str(json_str).unwrap();
-
-        match envelope {
-            HookBridgeEnvelope::Codex { pane_id, codex, .. } => {
-                assert_eq!(pane_id, "p2");
-                assert_eq!(codex.get("thread-id").unwrap().as_str().unwrap(), "t1");
-            }
-            HookBridgeEnvelope::Claude { .. } => panic!("Expected Codex variant"),
-        }
-    }
-
-    #[test]
-    fn envelope_missing_pane_id_fails() {
-        let json_str = r#"{"hook": {"session_id": "s1"}}"#;
-        assert!(serde_json::from_str::<HookBridgeEnvelope>(json_str).is_err());
-    }
-
-    #[test]
-    fn only_this_launchs_secret_is_authorized() {
-        assert!(authorized("s3cret", Some("s3cret")));
-        assert!(!authorized("s3cret", Some("guess")));
-        assert!(!authorized("s3cret", Some("")));
-        assert!(!authorized("s3cret", None));
-    }
-
-    #[test]
-    fn a_codex_line_carries_its_secret() {
-        let line =
-            r#"{"pane_id": "p", "secret": "s3cret", "codex": {"type": "agent-turn-complete"}}"#;
-        match serde_json::from_str::<HookBridgeEnvelope>(line).unwrap() {
-            HookBridgeEnvelope::Codex { secret, .. } => {
-                assert_eq!(secret.as_deref(), Some("s3cret"))
-            }
-            HookBridgeEnvelope::Claude { .. } => panic!("parsed as a Claude hook"),
-        }
-        let bare = r#"{"pane_id": "p", "codex": {}}"#;
-        assert!(matches!(
-            serde_json::from_str::<HookBridgeEnvelope>(bare).unwrap(),
-            HookBridgeEnvelope::Codex { secret: None, .. }
-        ));
-    }
-
-    #[test]
-    fn envelope_no_hook_or_codex_fails() {
-        let json_str = r#"{"pane_id": "p3"}"#;
-        assert!(serde_json::from_str::<HookBridgeEnvelope>(json_str).is_err());
-    }
-}
-
-/// TCP-based hook bridge for all platforms.
-/// Binds to 127.0.0.1:0 (ephemeral port) so there are no port conflicts.
-/// The `workbench` Claude Code plugin POSTs to it (`http`); Codex's notify
-/// script writes raw JSON lines via /dev/tcp (bash) or TcpClient (PowerShell).
-mod tcp {
-    use std::collections::VecDeque;
-    use std::io::{BufReader, Write};
-    use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
-    use tauri::AppHandle;
-
-    use super::{handle_stream, http, HookBridgeState};
-
-    const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(10);
-
-    pub fn start(app_handle: AppHandle) -> HookBridgeState {
-        let logs = Arc::new(Mutex::new(VecDeque::new()));
-
-        let listener = match TcpListener::bind("127.0.0.1:0") {
-            Ok(l) => l,
-            Err(e) => {
-                log::error!("[HookBridge] Failed to bind TCP listener: {e}");
-                return HookBridgeState {
-                    address: None,
-                    socket_path: None,
-                    logs,
-                };
-            }
-        };
-
-        let addr = match listener.local_addr() {
-            Ok(a) => a,
-            Err(e) => {
-                log::error!("[HookBridge] Failed to get listener address: {e}");
-                return HookBridgeState {
-                    address: None,
-                    socket_path: None,
-                    logs,
-                };
-            }
-        };
-
-        let secret = match workbench_core::token::generate() {
-            Ok(secret) => Arc::new(secret),
-            Err(e) => {
-                log::error!("[HookBridge] No secret, so no bridge: {e}");
-                return HookBridgeState {
-                    address: None,
-                    socket_path: None,
-                    logs,
-                };
-            }
-        };
-        let address = format!("127.0.0.1:{}", addr.port());
-        let socket_path = format!("{address}#{secret}");
-        let handle = app_handle.clone();
-        let logs_clone = logs.clone();
-
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let stream = match stream {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!("[HookBridge] TCP accept failed: {e}");
-                        continue;
-                    }
-                };
-
-                let handle = handle.clone();
-                let logs = logs_clone.clone();
-                // A client that connects and goes quiet would hold this
-                // thread forever; hook events arrive in one burst.
-                let _ = stream.set_read_timeout(Some(CONNECTION_READ_TIMEOUT));
-                let secret = secret.clone();
-                std::thread::spawn(move || {
-                    let mut reader = BufReader::new(&stream);
-                    if !http::is_post(&mut reader) {
-                        return handle_stream(reader, &handle, &logs, Some(&secret));
-                    }
-                    // Answer only once the event is handled: the plugin awaits
-                    // the reply, so events reach the frontend in order.
-                    let reply = match http::read_json_body(&mut reader) {
-                        Ok(Some(post)) if super::authorized(&secret, post.secret.as_deref()) => {
-                            handle_stream(
-                                BufReader::new(post.body.as_slice()),
-                                &handle,
-                                &logs,
-                                None,
-                            );
-                            http::ACCEPTED
-                        }
-                        Ok(Some(_)) => http::FORBIDDEN,
-                        _ => http::REFUSED,
-                    };
-                    let _ = (&stream).write_all(reply);
-                });
-            }
-        });
-
-        HookBridgeState {
-            address: Some(address),
-            socket_path: Some(socket_path),
-            logs,
-        }
     }
 }

@@ -64,9 +64,10 @@ pub struct StartAgent {
     /// As the client gave them, for listing; `cwd` is what they resolved to.
     pub project_path: String,
     pub worktree_path: Option<String>,
-    /// Forwarded as `WORKBENCH_PANE_ID` / `WORKBENCH_HOOK_SOCKET` so hooks keep
-    /// driving the desktop's activity tracking, as for terminal panes.
+    /// Forwarded as `WORKBENCH_PANE_ID`, as for terminal panes.
     pub pane_id: Option<String>,
+    /// The server's own hook bridge ([`AgentManager::hooks`]); whatever a
+    /// caller put here is replaced before anything spawns.
     pub hook_socket: Option<String>,
     /// The Claude account id `config_dir` was resolved from, for listing.
     pub claude_account_id: Option<String>,
@@ -215,6 +216,8 @@ type Exiting = (Vec<String>, Arc<AgentSession>);
 #[derive(Clone, Default)]
 pub struct AgentManager {
     pub attention: crate::attention_feed::AttentionFeed,
+    /// Where every terminal and chat this manager starts reports its hooks.
+    pub hooks: crate::hook_bridge::HookBridge,
     inner: session::Registry,
     /// Held across a start's check-spawn-insert and a stop's unregistering, so
     /// two starts for one id can't both spawn. Never across slow work (a
@@ -322,7 +325,8 @@ impl AgentManager {
     /// Start a Codex session, or return the one already running for this id;
     /// a new thread is registered once codex has given it an id. (A Claude
     /// chat starts in a terminal: see `agent_routes::claude_start`.)
-    pub fn start(&self, req: StartAgent) -> Result<Arc<AgentSession>> {
+    pub fn start(&self, mut req: StartAgent) -> Result<Arc<AgentSession>> {
+        req.hook_socket = self.hooks.socket();
         let kind = req.launch.kind();
         let Launch::Codex {
             thread_id,
@@ -413,7 +417,60 @@ impl AgentManager {
 
     /// The terminals and loopback port terminal plugins use; the first listener wins.
     pub fn bind_terminals(&self, terminals: crate::terminal::TerminalManager, port: u16) {
-        self.terminals.get_or_init(|| (terminals, port));
+        let mut first = false;
+        self.terminals.get_or_init(|| {
+            first = true;
+            (terminals, port)
+        });
+        if first {
+            self.hooks.start();
+            self.mirror_codex_notify();
+        }
+    }
+
+    /// A terminal Codex's `notify` goes to the attention feed. A chat's
+    /// completions are already published by its app-server driver.
+    fn mirror_codex_notify(&self) {
+        let (agents, mut events) = (self.clone(), self.hooks.subscribe());
+        std::thread::spawn(move || loop {
+            use tokio::sync::broadcast::error::RecvError;
+            let event = match events.blocking_recv() {
+                Ok(event) => event,
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            };
+            let crate::hook_bridge::HookEvent::Codex { pane_id, codex } = event else {
+                continue;
+            };
+            if let Some((thread, cwd)) = crate::hook_bridge::codex_turn_ended(&codex) {
+                agents.codex_notified(&pane_id, thread, cwd);
+            }
+        });
+    }
+
+    fn codex_notified(&self, pane_id: &str, session_id: &str, cwd: &str) {
+        if self.get(session_id).is_some() {
+            return;
+        }
+        let terminal = self
+            .terminals
+            .get()
+            .and_then(|(terminals, _)| terminals.terminal_for_pane(pane_id));
+        self.attention.publish(crate::attention::Attention {
+            kind: crate::attention::AttentionKind::TurnEnded,
+            agent: AgentKind::Codex,
+            session_id: session_id.into(),
+            previous_ids: Vec::new(),
+            pane_id: Some(pane_id.into()),
+            title: terminal.as_ref().and_then(|t| t.name.clone()),
+            terminal_id: terminal.map(|t| t.id),
+            project_path: cwd.into(),
+            worktree_path: None,
+            claude_account_id: None,
+            waiting: None,
+            busy: false,
+            terminal_only: true,
+        });
     }
 
     /// The port a terminal's plugin reaches the server on (the first listener's).
@@ -437,27 +494,26 @@ impl AgentManager {
     }
 
     /// A token for `grant` and the env that hands it to the terminal's plugin
-    /// (`WORKBENCH_MOD_URL`/`WORKBENCH_MOD_TOKEN`); None while no loopback
-    /// listener serves `/mod`.
+    /// (`WORKBENCH_MOD_URL`/`WORKBENCH_MOD_TOKEN`, the plugin dirs, the hook
+    /// bridge); None while no loopback listener serves `/mod`.
     pub fn mod_env(&self, grant: ModGrant) -> Result<Option<(String, ModEnv)>> {
         let Some(port) = self.mod_port() else {
             return Ok(None);
         };
-        // The plugin is what makes the terminal a chat; a phone sends no hook
-        // socket, which is otherwise what loads it.
-        let load_plugin = grant.hook_socket.is_none();
         let token = self.grant_mod(grant)?;
         let mut env = vec![
             ("WORKBENCH_MOD_URL", format!("http://127.0.0.1:{port}")),
             ("WORKBENCH_MOD_TOKEN", token.clone()),
         ];
-        if load_plugin {
-            if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
-                env.push((
-                    workbench_core::claude_plugin::PLUGIN_DIRS_ENV,
-                    dirs.to_string_lossy().into_owned(),
-                ));
-            }
+        // The plugin is what makes the terminal a chat, and reports its hooks.
+        if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
+            env.push((
+                workbench_core::claude_plugin::PLUGIN_DIRS_ENV,
+                dirs.to_string_lossy().into_owned(),
+            ));
+        }
+        if let Some(socket) = self.hooks.socket() {
+            env.push(("WORKBENCH_HOOK_SOCKET", socket));
         }
         Ok(Some((token, env)))
     }
@@ -563,7 +619,7 @@ impl AgentManager {
                 project_path: grant.project_path,
                 worktree_path: grant.worktree_path,
                 pane_id: grant.pane_id,
-                hook_socket: grant.hook_socket,
+                hook_socket: self.hooks.socket(),
                 claude_account_id: grant.claude_account_id,
                 launch: Launch::Claude {
                     session_id: session_id.to_string(),
@@ -687,15 +743,22 @@ impl AgentManager {
             bail!("That account already has this session; resume it from there instead.");
         }
         let to = Some((account_id, config_dir));
-        self.restart_terminal(terminals, session, "Switch the account", true, to, |launch| {
-            let Launch::Claude {
-                permission_mode, ..
-            } = launch
-            else {
-                bail!("only Claude chats switch accounts");
-            };
-            Ok((None, permission_mode.clone()))
-        })
+        self.restart_terminal(
+            terminals,
+            session,
+            "Switch the account",
+            true,
+            to,
+            |launch| {
+                let Launch::Claude {
+                    permission_mode, ..
+                } = launch
+                else {
+                    bail!("only Claude chats switch accounts");
+                };
+                Ok((None, permission_mode.clone()))
+            },
+        )
     }
 
     /// Restart an idle terminal session's `claude` under the same id, or under
@@ -714,9 +777,13 @@ impl AgentManager {
             .mod_link()
             .context("not a terminal session")?
             .clone();
-        // A desktop native terminal's `claude` can't be restarted from here, and
-        // a new server terminal beside it would run the session twice.
-        if link.terminal_id.is_none() {
+        // A desktop native view shows only its own terminal, and a new server
+        // terminal beside it would run the session twice.
+        if link
+            .terminal_id
+            .as_deref()
+            .is_none_or(|t| terminals.is_native(t))
+        {
             bail!("{what} in this session's own terminal.");
         }
         if idle_only {
@@ -782,19 +849,27 @@ impl AgentManager {
                 cols: 120,
                 rows: 40,
                 pane_id: req.pane_id.clone(),
-                hook_socket: req.hook_socket.clone(),
                 shell: None,
                 claude_account_id: account_id,
+                codex_session: None,
+                native: false,
             }
         };
         let Some((to_id, to_dir)) = to else {
-            self.open_terminal(terminals, open(req.claude_account_id.clone(), config_dir.as_deref()), |_| None)?;
+            self.open_terminal(
+                terminals,
+                open(req.claude_account_id.clone(), config_dir.as_deref()),
+                |_| None,
+            )?;
             return Ok(());
         };
         // The new login resumes the session once its files are in its config
         // dir. This folder ran under the old login, so its trust dialog (kept
         // per config dir) is answered rather than asked again.
-        let cwd = req.worktree_path.clone().unwrap_or_else(|| req.project_path.clone());
+        let cwd = req
+            .worktree_path
+            .clone()
+            .unwrap_or_else(|| req.project_path.clone());
         let switched = workbench_core::claude_accounts::move_session(
             config_dir.as_deref(),
             to_dir.as_deref(),
@@ -817,7 +892,11 @@ impl AgentManager {
         ) {
             tracing::warn!("moving {session_id} back after a failed account switch: {back}");
         }
-        self.open_terminal(terminals, open(req.claude_account_id.clone(), config_dir.as_deref()), |_| None)?;
+        self.open_terminal(
+            terminals,
+            open(req.claude_account_id.clone(), config_dir.as_deref()),
+            |_| None,
+        )?;
         Err(e.context("Couldn't switch the account; the chat carries on where it was"))
     }
 
@@ -1237,6 +1316,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn codex_terminal_notify_reaches_the_shared_feed_without_starting_a_chat() {
+        let agents = AgentManager::default();
+        let cursor = agents.attention.since(None).cursor;
+        agents.codex_notified("pane", "thread", "/project");
+        let batch = agents.attention.since(Some(&cursor));
+        assert_eq!(batch.events.len(), 1);
+        assert!(batch.events[0].terminal_only);
+        assert_eq!(batch.events[0].session_id, "thread");
+        assert!(agents.summaries(None).is_empty());
+    }
+
+    #[test]
     fn mod_env_hands_a_terminal_its_own_token_on_loopback() {
         let grant = || ModGrant {
             pane_id: Some("pane".into()),
@@ -1244,7 +1335,6 @@ mod tests {
             worktree_path: None,
             claude_account_id: None,
             cwd: "/p".into(),
-            hook_socket: Some("/hook.sock".into()),
             resume_at: None,
             permission_mode: None,
             terminal_id: None,
@@ -1258,12 +1348,19 @@ mod tests {
         agents.bind_terminals(crate::terminal::TerminalManager::default(), 4321);
         let (token, env) = agents.mod_env(grant()).unwrap().unwrap();
         assert_eq!(
-            env,
+            env[..2],
             [
                 ("WORKBENCH_MOD_URL", "http://127.0.0.1:4321".to_string()),
                 ("WORKBENCH_MOD_TOKEN", token.clone()),
             ]
         );
+        let hook = env.iter().find(|(k, _)| *k == "WORKBENCH_HOOK_SOCKET");
+        assert_eq!(
+            hook.map(|(_, v)| v.clone()),
+            agents.hooks.socket(),
+            "the server's own bridge"
+        );
+        assert!(hook.is_some());
         assert!(lock(&agents.mod_grants).contains_key(&token));
         let (other, _) = agents.mod_env(grant()).unwrap().unwrap();
         assert_ne!(token, other, "each terminal gets its own");
@@ -1279,7 +1376,6 @@ mod tests {
                 worktree_path: None,
                 claude_account_id: None,
                 cwd: "/p".into(),
-                hook_socket: None,
                 resume_at: None,
                 permission_mode: None,
                 terminal_id: None,

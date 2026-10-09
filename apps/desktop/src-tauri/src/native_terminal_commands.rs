@@ -1,15 +1,16 @@
-//! Tauri command handlers for native macOS terminal (SwiftTerm).
+//! Tauri command handlers for native macOS terminal (SwiftTerm) views.
 //!
 //! All commands in this file are gated behind `#[cfg(target_os = "macos")]`.
 //! Non-macOS stubs for `is_native_terminal_available` live in `commands.rs`.
 //!
-//! Create, resize and kill block (openpty + spawn, `DispatchQueue.main.sync`
-//! into SwiftTerm, waiting for the shell to exit), so they run on
-//! `crate::blocking`; write only queues input.
+//! A native pane's PTY is a server terminal, created exactly as
+//! `POST /remote/terminals` creates one (`terminal::create_from_body`); the
+//! view only shows it. Create, resize and kill block (openpty + spawn,
+//! `DispatchQueue.main.sync` into SwiftTerm, waiting for the shell to exit),
+//! so they run on `crate::blocking`; write only queues input.
 
 #![cfg(target_os = "macos")]
 
-use crate::hook_bridge::HookBridgeState;
 use crate::native_terminal::NativeTerminalManager;
 use crate::server_control::ServerControl;
 use tauri::Manager;
@@ -31,111 +32,59 @@ pub async fn create_native_terminal(
     project_root: Option<String>,
     window: tauri::WebviewWindow,
     app_handle: tauri::AppHandle,
-    hook_bridge: tauri::State<'_, HookBridgeState>,
 ) -> Result<Option<String>, String> {
     // A raw pointer isn't `Send`; the view outlives the call (it's the window's).
     let ns_view = window.ns_view().map_err(|e| e.to_string())? as usize;
-    let hook_socket = hook_bridge.socket_path().map(str::to_string);
     crate::blocking(move || {
-        let server = app_handle.state::<ServerControl>();
-        let manager = app_handle.state::<NativeTerminalManager>();
-        create(
-            session_id,
-            project_path,
-            shell,
-            (x, y, width, height, font_size),
-            startup_command,
+        let managers = app_handle.state::<ServerControl>().managers();
+        // `project_path` is the pane's cwd: a worktree when it isn't the root.
+        let root = project_root.unwrap_or_else(|| project_path.clone());
+        let worktree_path = (root != project_path).then_some(project_path);
+        // Picked here, as a server terminal create picks it (`for_launch`).
+        let claude_account_id = match claude_session.as_ref() {
+            Some(session) => workbench_core::claude_accounts::for_launch_saved(
+                claude_account_id.as_deref(),
+                &root,
+                Some(&session.id),
+            )
+            .map_err(|e| e.to_string())?,
+            None => claude_account_id,
+        };
+        let body = workbench_server::terminal::CreateTerminalBody {
+            project_path: root,
+            worktree_path,
+            name: None,
+            command: startup_command,
             claude_session,
+            codex_session: None,
+            cols: 80,
+            rows: 24,
+            pane_id: Some(session_id.clone()),
+            shell: Some(shell),
             claude_account_id,
-            project_root,
-            hook_socket,
-            ns_view as *mut std::ffi::c_void,
-            &manager,
-            &server,
-            app_handle.clone(),
+            native: true,
+        };
+        let meta = workbench_server::terminal::create_from_body(
+            &managers.terminals,
+            &managers.agents,
+            body,
         )
+        .map_err(|e| e.to_string())?;
+        let attached = app_handle.state::<NativeTerminalManager>().attach(
+            session_id,
+            meta.id.clone(),
+            managers.terminals.clone(),
+            (x, y, width, height, font_size),
+            ns_view as *mut std::ffi::c_void,
+            app_handle.clone(),
+        );
+        if let Err(e) = attached {
+            managers.terminals.kill(&meta.id);
+            return Err(e.to_string());
+        }
+        Ok(meta.notice)
     })
     .await
-}
-
-#[allow(clippy::too_many_arguments)]
-fn create(
-    session_id: String,
-    project_path: String,
-    shell: String,
-    (x, y, width, height, font_size): (f64, f64, f64, f64, f64),
-    startup_command: Option<String>,
-    mut claude_session: Option<workbench_core::claude_launch::ClaudeSessionLaunch>,
-    claude_account_id: Option<String>,
-    project_root: Option<String>,
-    hook_socket: Option<String>,
-    ns_view: *mut std::ffi::c_void,
-    manager: &NativeTerminalManager,
-    server: &ServerControl,
-    app_handle: tauri::AppHandle,
-) -> Result<Option<String>, String> {
-    let settings = crate::config::load_workbench_settings().map_err(|e| e.to_string())?;
-    let projects = crate::config::load_projects().map_err(|e| e.to_string())?;
-    let claude_account_id = match claude_session.as_ref() {
-        Some(session) => crate::claude_accounts::for_launch(
-            &settings,
-            &projects,
-            claude_account_id.as_deref(),
-            project_root.as_deref().unwrap_or(&project_path),
-            Some(&session.id),
-        )
-        .map_err(|e| e.to_string())?,
-        None => claude_account_id,
-    };
-    let claude_config_dir =
-        crate::claude_accounts::config_dir(&settings, claude_account_id.as_deref())
-            .map_err(|e| e.to_string())?;
-    // Decided and built here as a server terminal's is (`terminal::create_from_body`),
-    // so the sandbox wrapper fails closed.
-    if let Some(session) = claude_session.as_mut() {
-        session.resume = workbench_server::agent::claude_history_exists(
-            claude_config_dir.as_deref(),
-            &session.id,
-        );
-    }
-    let notice = claude_session
-        .as_ref()
-        .and_then(workbench_core::claude_launch::prompt_notice);
-    let startup_command = workbench_core::claude_launch::startup_command(
-        startup_command,
-        claude_session.as_ref(),
-        &settings,
-        &projects,
-    )
-    .map_err(|e| e.to_string())?;
-    let mod_env = server.grant_native_terminal(
-        &session_id,
-        project_root.as_deref().unwrap_or(&project_path),
-        &project_path,
-        claude_account_id,
-        hook_socket.clone(),
-    );
-
-    let spawned = manager.spawn(
-        session_id.clone(),
-        project_path,
-        shell,
-        x,
-        y,
-        width,
-        height,
-        font_size,
-        startup_command,
-        hook_socket,
-        claude_config_dir,
-        mod_env,
-        ns_view,
-        app_handle,
-    );
-    if spawned.is_err() {
-        server.revoke_native_terminal(&session_id);
-    }
-    spawned.map(|()| notice).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -152,9 +101,10 @@ pub async fn resize_native_terminal(
         .request_resize(&session_id, (x, y, width, height))
         .map_err(|e| e.to_string())?;
     crate::blocking(move || {
+        let terminals = app_handle.state::<ServerControl>().managers().terminals;
         app_handle
             .state::<NativeTerminalManager>()
-            .resize(&session_id)
+            .resize(&session_id, &terminals)
             .map_err(|e| e.to_string())
     })
     .await
@@ -171,19 +121,23 @@ pub async fn set_native_terminal_visible(
         .map_err(|e| e.to_string())
 }
 
+/// Close a native pane: an End, as closing any pane is, so a chat its
+/// `claude` hosts ends on every device.
 #[tauri::command]
 pub async fn kill_native_terminal(
     session_id: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     crate::blocking(move || {
-        app_handle
-            .state::<ServerControl>()
-            .revoke_native_terminal(&session_id);
-        app_handle
+        let terminal = app_handle
             .state::<NativeTerminalManager>()
-            .kill(&session_id)
-            .map_err(|e| e.to_string())
+            .kill(&session_id);
+        if let Some(id) = terminal {
+            let managers = app_handle.state::<ServerControl>().managers();
+            managers.agents.end_terminal(&id);
+            managers.terminals.kill_and_wait(&id);
+        }
+        Ok(())
     })
     .await
 }

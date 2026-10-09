@@ -30,8 +30,6 @@ pub struct ModGrant {
     pub worktree_path: Option<String>,
     pub claude_account_id: Option<String>,
     pub cwd: String,
-    /// The desktop's hook socket, for a restart (a rewind) to keep.
-    pub hook_socket: Option<String>,
     /// Where a rewound terminal resumed from: history shows the conversation cut there.
     pub resume_at: Option<String>,
     /// The mode picked in chat it was started in, kept across a restart.

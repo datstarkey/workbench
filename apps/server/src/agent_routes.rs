@@ -56,7 +56,6 @@ pub struct StartBody {
     pub worktree_path: Option<String>,
     pub session_id: String,
     pub pane_id: Option<String>,
-    pub hook_socket: Option<String>,
     /// A picked Claude account (`""`: the default login); an id, never a path.
     /// Absent, the server decides (`claude_accounts::for_launch`).
     pub claude_account_id: Option<String>,
@@ -122,9 +121,10 @@ fn claude_start(
         cols: 120,
         rows: 40,
         pane_id: body.pane_id,
-        hook_socket: body.hook_socket,
         shell: None,
         claude_account_id: account,
+        codex_session: None,
+        native: false,
     };
     // The chat asks instead; trusting starts it again with `trustFolder`.
     let started = agents.open_terminal(
@@ -156,7 +156,6 @@ pub struct CodexStartBody {
     #[serde(flatten)]
     pub options: workbench_core::codex_controls::LaunchOptions,
     pub pane_id: Option<String>,
-    pub hook_socket: Option<String>,
     #[serde(default)]
     pub attach_only: bool,
 }
@@ -193,7 +192,7 @@ pub async fn codex_start(
             project_path: body.project_path,
             worktree_path: body.worktree_path,
             pane_id: body.pane_id,
-            hook_socket: body.hook_socket,
+            hook_socket: None,
             claude_account_id: None,
             launch: Launch::Codex {
                 thread_id: body.session_id,
@@ -792,7 +791,6 @@ mod tests {
                 worktree_path: None,
                 claude_account_id: None,
                 cwd: "/tmp".into(),
-                hook_socket: None,
                 resume_at: None,
                 permission_mode: None,
                 terminal_id: None,

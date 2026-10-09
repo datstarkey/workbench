@@ -54,6 +54,9 @@ use tokio::sync::{broadcast, mpsc, watch};
 use crate::error::{ApiError, ApiResult};
 use crate::state::{ws_close, ws_send, AppState};
 
+mod local;
+pub use local::Tap;
+
 /// Scrollback kept per session for replay on reattach.
 const BUFFER_CAP: usize = 256 * 1024;
 
@@ -96,6 +99,12 @@ pub struct TerminalMeta {
     /// listed before its plugin attaches, so clients adopt it as the chat.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_session_id: Option<String>,
+    /// It printed something lately that wasn't the echo of what was typed:
+    /// a TUI (Codex's) is working.
+    pub busy: bool,
+    /// Rendered by the desktop's native view; other devices can still attach.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub native: bool,
     /// On a create only: something the person should know about how it started.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
@@ -138,6 +147,7 @@ struct TerminalSession {
     /// on PTY EOF (try_wait at exit-frame time often races ahead of the reap and
     /// returns None). Read by `exit_frame`.
     exit_code: Mutex<Option<i64>>,
+    activity: local::Activity,
 }
 
 #[derive(Clone, Default)]
@@ -176,11 +186,11 @@ impl TerminalManager {
         cols: u16,
         rows: u16,
         pane_id: Option<String>,
-        hook_socket: Option<String>,
         shell: Option<String>,
         claude_config_dir: Option<&std::path::Path>,
         claude_session_id: Option<String>,
         extra_env: &[(&str, String)],
+        native: bool,
     ) -> anyhow::Result<TerminalMeta> {
         let max = max_terminals();
         if lock(&self.inner).len() >= max {
@@ -215,12 +225,6 @@ impl TerminalManager {
         }
         if let Some(id) = &pane_id {
             cmd.env("WORKBENCH_PANE_ID", id);
-        }
-        if let Some(sock) = &hook_socket {
-            cmd.env("WORKBENCH_HOOK_SOCKET", sock);
-            if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
-                cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
-            }
         }
         for (key, val) in extra_env {
             cmd.env(key, val);
@@ -268,6 +272,8 @@ impl TerminalManager {
             created_at,
             alive: true,
             claude_session_id,
+            busy: false,
+            native,
             notice: None,
             claude_account_id: None,
         };
@@ -288,6 +294,7 @@ impl TerminalManager {
             attacher_kick_tx,
             _epoch_rx_keeper,
             exit_code: Mutex::new(None),
+            activity: Default::default(),
         });
 
         // Drain the PTY on a blocking thread: append to the replay buffer and
@@ -307,6 +314,7 @@ impl TerminalManager {
                             // clients while holding the buffer lock, so a client that
                             // attaches (and subscribes under the same lock) sees each
                             // chunk in exactly one of {replay, live stream}.
+                            session.activity.output();
                             let mut b = lock(&session.buffer);
                             b.extend(chunk.iter().copied());
                             while b.len() > BUFFER_CAP {
@@ -354,7 +362,13 @@ impl TerminalManager {
                 lock(&s.meta).alive = false;
             }
         }
-        let mut out: Vec<TerminalMeta> = map.values().map(|s| lock(&s.meta).clone()).collect();
+        let mut out: Vec<TerminalMeta> = map
+            .values()
+            .map(|s| TerminalMeta {
+                busy: s.activity.busy(),
+                ..lock(&s.meta).clone()
+            })
+            .collect();
         out.sort_by_key(|m| m.created_at);
         out
     }
@@ -370,8 +384,15 @@ impl TerminalManager {
     /// Type into the terminal as an attached client would. `false` when it's
     /// gone or its input queue is full.
     pub fn type_keys(&self, id: &str, keys: &[u8]) -> bool {
-        self.get(id)
-            .is_some_and(|session| session.input.try_send(keys.to_vec()).is_ok())
+        self.get(id).is_some_and(|session| {
+            session.activity.input();
+            session.input.try_send(keys.to_vec()).is_ok()
+        })
+    }
+
+    /// Shown by the desktop's native view (see [`CreateTerminalBody::native`]).
+    pub fn is_native(&self, id: &str) -> bool {
+        self.get(id).is_some_and(|s| lock(&s.meta).native)
     }
 
     fn get(&self, id: &str) -> Option<Arc<TerminalSession>> {
@@ -461,6 +482,9 @@ pub struct CreateTerminalBody {
     /// Run Claude on this session instead of `command`; the server builds the
     /// command so the sandbox wrapper and permission mode can't be skipped.
     pub claude_session: Option<ClaudeSessionLaunch>,
+    /// Run the Codex TUI on this thread (or a new one), built from the saved settings.
+    #[serde(default)]
+    pub codex_session: Option<CodexSessionLaunch>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -468,9 +492,6 @@ pub struct CreateTerminalBody {
     /// Forwarded as `WORKBENCH_PANE_ID` env var into the shell so hook scripts
     /// can identify which terminal pane they belong to.
     pub pane_id: Option<String>,
-    /// Forwarded as `WORKBENCH_HOOK_SOCKET` env var: the desktop hook bridge's
-    /// `host:port#secret` (the secret authenticates the posts; never log it).
-    pub hook_socket: Option<String>,
     /// Shell to launch (desktop forwards the project's configured shell). Empty /
     /// absent falls back to the platform default (`workbench_core::shell`).
     pub shell: Option<String>,
@@ -479,9 +500,14 @@ pub struct CreateTerminalBody {
     /// A create sends only a pick (`""`: the default login); absent, the route
     /// decides (`claude_accounts::for_launch`).
     pub claude_account_id: Option<String>,
+    /// Shown by a renderer in this process (the desktop's native view), never
+    /// another device's xterm: a restart can't move it to a new terminal.
+    #[serde(skip)]
+    pub native: bool,
 }
 
 pub use workbench_core::claude_launch::ClaudeSessionLaunch;
+pub use workbench_core::codex_launch::CodexSessionLaunch;
 
 #[derive(Debug, Deserialize)]
 pub struct KillQuery {
@@ -497,9 +523,14 @@ pub async fn terminal_create(
     State(state): State<AppState>,
     Json(body): Json<CreateTerminalBody>,
 ) -> ApiResult<Json<TerminalMeta>> {
-    if body.command.is_some() && body.claude_session.is_some() {
+    let launches = [
+        body.command.is_some(),
+        body.claude_session.is_some(),
+        body.codex_session.is_some(),
+    ];
+    if launches.into_iter().filter(|l| *l).count() > 1 {
         return Err(ApiError::bad_request(
-            "send either command or claudeSession, not both",
+            "send one of command, claudeSession or codexSession",
         ));
     }
     let terminals = state.terminals.clone();
@@ -615,12 +646,25 @@ fn create(
         .claude_session
         .as_ref()
         .and_then(workbench_core::claude_launch::prompt_notice);
-    let command = workbench_core::claude_launch::startup_command(
-        body.command,
-        body.claude_session.as_ref(),
-        settings,
-        projects,
-    )?;
+    let command = match body.codex_session.take() {
+        Some(mut codex) => {
+            // A thread nobody wrote to yet has nothing to resume.
+            codex.id = codex
+                .id
+                .filter(|id| workbench_core::codex_launch::thread_exists(id));
+            Some(workbench_core::codex_launch::terminal_command(
+                &codex,
+                settings,
+                workbench_core::codex_config::supports_no_daemon(),
+            )?)
+        }
+        None => workbench_core::claude_launch::startup_command(
+            body.command,
+            body.claude_session.as_ref(),
+            settings,
+            projects,
+        )?,
+    };
     // The plugin reads no live mode until a hook reports one, so it's told the
     // one `claude` starts in rather than guessing the settings default. Read
     // before a token is granted: an error returns past the revoke below.
@@ -640,7 +684,6 @@ fn create(
             worktree_path: body.worktree_path.clone(),
             claude_account_id: body.claude_account_id.clone(),
             cwd: cwd.clone(),
-            hook_socket: body.hook_socket.clone(),
             resume_at: body
                 .claude_session
                 .as_ref()
@@ -664,7 +707,6 @@ fn create(
         body.cols,
         body.rows,
         body.pane_id,
-        body.hook_socket,
         body.shell,
         claude_config_dir.as_deref(),
         // Only a terminal its plugin can attach becomes a chat.
@@ -673,6 +715,7 @@ fn create(
             .filter(|_| token.is_some())
             .map(|s| s.id.clone()),
         &mod_env,
+        body.native,
     );
     match (&created, &token) {
         (Ok(meta), Some(token)) => agents.set_grant_terminal(token, &meta.id),
@@ -1060,6 +1103,7 @@ async fn attach(
 
 /// Queue input for the writer thread; hands it back when the queue is full.
 fn enqueue(session: &TerminalSession, bytes: Vec<u8>) -> Option<Vec<u8>> {
+    session.activity.input();
     match session.input.try_send(bytes) {
         Err(mpsc::error::TrySendError::Full(bytes)) => Some(bytes),
         // Closed: the shell is gone and the socket is about to hear so.

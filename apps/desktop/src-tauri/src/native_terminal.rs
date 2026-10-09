@@ -1,28 +1,26 @@
-//! Native macOS terminal support using SwiftTerm via FFI.
-//!
-//! Data flows directly from the PTY reader thread to SwiftTerm via
-//! `swift_term_feed()`, bypassing the frontend WebView for terminal I/O.
-//! Activity events (`terminal:activity`) and exit events (`terminal:exit`)
-//! are still emitted to the frontend via Tauri events.
+//! Native macOS terminal views (SwiftTerm, via FFI) over the server's own
+//! terminals. The PTY is a `workbench_server` terminal like an xterm pane's
+//! (same launch, cwd allowlist and End-on-close, and other devices can attach
+//! it); this view follows its output in-process (`TerminalManager::tap`)
+//! straight into `swift_term_feed()`, bypassing the WebView. Activity
+//! (`terminal:activity`) and exit (`terminal:exit`) events still go to the
+//! frontend.
 
 #![cfg(target_os = "macos")]
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
-use std::io::{Read, Write};
 use std::os::raw::c_char;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
+use workbench_server::TerminalManager;
 
 use crate::types::{TerminalActivityEvent, TerminalDataEvent, TerminalExitEvent};
 
-const PTY_READ_BUFFER_SIZE: usize = 32768;
-const STARTUP_COMMAND_DELAY_MS: u64 = 300;
 const TERMINAL_QUIET_THRESHOLD_MS: u64 = 1000;
 /// Output is handed to SwiftTerm (one main-thread dispatch) and the webview (one
 /// `terminal:data` event) at most once per frame, so a flood of output can't
@@ -89,20 +87,14 @@ extern "C" fn input_callback(context: *mut c_void, data: *const c_void, len: usi
     let _ = ctx.input.send(bytes.to_vec());
 }
 
-/// Write a session's input on its own thread, in order. The queue is unbounded
-/// because its producers (keystrokes and pastes on the main thread, the write
-/// command) must never block, and what a person types is bounded anyway. An
-/// empty chunk is the stop signal (the shell exited); dropping every sender
-/// (`kill`) also ends it.
-fn spawn_writer(mut writer: Box<dyn Write + Send>, input: Receiver<Vec<u8>>) {
+/// Hand a view's input to its terminal on its own thread, in order. The queue
+/// is unbounded because its producers (keystrokes and pastes on the main
+/// thread, the write command) must never block; this thread waits for room in
+/// the terminal's queue instead. Ends when every sender is dropped (`kill`).
+fn forward_input(terminals: TerminalManager, terminal_id: String, input: Receiver<Vec<u8>>) {
     std::thread::spawn(move || {
         while let Ok(bytes) = input.recv() {
-            if bytes.is_empty()
-                || writer
-                    .write_all(&bytes)
-                    .and_then(|()| writer.flush())
-                    .is_err()
-            {
+            if !terminals.write(&terminal_id, bytes) {
                 break;
             }
         }
@@ -191,10 +183,9 @@ extern "C" fn activity_callback(context: *mut c_void, active: bool) {
 // ---------------------------------------------------------------------------
 
 struct NativeSession {
+    /// The server terminal this view shows.
+    terminal_id: String,
     input: Sender<Vec<u8>>,
-    #[allow(dead_code)]
-    master: Box<dyn MasterPty + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
     /// Raw pointer to the heap-allocated CallbackContext.
     /// Freed by `destroy_view()` via `Box::from_raw()`.
     callback_context_ptr: *mut c_void,
@@ -208,9 +199,9 @@ pub type Frame = (f64, f64, f64, f64);
 
 impl NativeSession {
     /// Remove the SwiftTerm view, then free the callback context. Called under
-    /// the session lock by `kill` and by the reader when the shell exits; the
-    /// second call finds nothing to do. `swift_term_destroy` waits for the main
-    /// thread, where the callbacks run, so none can use the context once freed.
+    /// the session lock by `kill` and when the terminal exits; the second call
+    /// finds nothing to do. `swift_term_destroy` waits for the main thread,
+    /// where the callbacks run, so none can use the context once freed.
     fn destroy_view(&mut self) {
         unsafe {
             swift_term_destroy(self.session_id_cstr.as_ptr());
@@ -247,7 +238,6 @@ impl NativeTerminalManager {
         }
     }
 
-    /// Get a reference to a session by ID. Locks the map only briefly.
     fn get_session(&self, session_id: &str) -> Option<Arc<Mutex<NativeSession>>> {
         self.sessions
             .lock()
@@ -256,7 +246,6 @@ impl NativeTerminalManager {
             .cloned()
     }
 
-    /// Remove a session from the map. Returns the session if it existed.
     fn remove_session(
         sessions: &SessionMap,
         session_id: &str,
@@ -267,116 +256,32 @@ impl NativeTerminalManager {
             .remove(session_id)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn(
+    /// Show server terminal `terminal_id` in a SwiftTerm view keyed by the pane
+    /// id `session_id`, sized to the view.
+    pub fn attach(
         &self,
         session_id: String,
-        project_path: String,
-        shell: String,
-        x: f64,
-        y: f64,
-        width: f64,
-        height: f64,
-        font_size: f64,
-        startup_command: Option<String>,
-        hook_socket_path: Option<String>,
-        claude_config_dir: Option<std::path::PathBuf>,
-        mod_env: Vec<(&'static str, String)>,
+        terminal_id: String,
+        terminals: TerminalManager,
+        (x, y, width, height, font_size): (f64, f64, f64, f64, f64),
         ns_view_ptr: *mut c_void,
         app_handle: AppHandle,
     ) -> Result<()> {
-        let pty_system = native_pty_system();
-
-        // Start with a default size — we'll resize after SwiftTerm reports actual
-        // cols/rows based on the view frame.
-        let size = PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-
-        let pair = pty_system.openpty(size).context("Failed to open PTY")?;
-
-        let shell_path = if shell.is_empty() {
-            crate::shell::default_shell()
-        } else {
-            shell
-        };
-
-        let mut cmd = CommandBuilder::new(&shell_path);
-        for arg in crate::shell::login_args() {
-            cmd.arg(arg);
-        }
-        cmd.cwd(&project_path);
-
-        for (key, val) in crate::shell::inherited_env() {
-            cmd.env(key, val);
-        }
-        cmd.env(
-            "LANG",
-            std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string()),
-        );
-        cmd.env("WORKBENCH_PANE_ID", session_id.clone());
-        if let Some(socket_path) = hook_socket_path {
-            cmd.env("WORKBENCH_HOOK_SOCKET", socket_path);
-            if let Some(dirs) = workbench_core::claude_plugin::plugin_dirs_env() {
-                cmd.env(workbench_core::claude_plugin::PLUGIN_DIRS_ENV, dirs);
-            }
-        }
-        if let Some(dir) = claude_config_dir {
-            cmd.env(crate::claude_accounts::CONFIG_DIR_ENV, dir);
-        }
-        let mod_token = mod_env
-            .iter()
-            .find(|(key, _)| *key == "WORKBENCH_MOD_TOKEN")
-            .map(|(_, token)| token.clone());
-        for (key, val) in mod_env {
-            cmd.env(key, val);
-        }
-
-        // Shell integration (OSC 133) — inject ZDOTDIR for zsh
-        if startup_command.is_none() && shell_path.contains("zsh") {
-            if let Ok(zsh_dir) = crate::shell_integration::ensure_shell_integration_dir() {
-                if let Ok(orig) = std::env::var("ZDOTDIR") {
-                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", orig);
-                } else if let Ok(home) = std::env::var("HOME") {
-                    cmd.env("WORKBENCH_ORIG_ZDOTDIR", home);
-                }
-                cmd.env("ZDOTDIR", zsh_dir.to_string_lossy().as_ref());
-            }
-        }
-
-        let child = workbench_core::pty::spawn(&pair, cmd).context("Failed to spawn shell")?;
-
-        drop(pair.slave);
-
+        let tap = terminals
+            .tap(&terminal_id)
+            .ok_or_else(|| anyhow!("terminal {terminal_id} is gone"))?;
         let (input, input_rx) = mpsc::channel::<Vec<u8>>();
-        spawn_writer(
-            pair.master
-                .take_writer()
-                .context("Failed to get PTY writer")?,
-            input_rx,
-        );
+        forward_input(terminals.clone(), terminal_id.clone(), input_rx);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .context("Failed to get PTY reader")?;
-
-        // Create the callback context on the heap
         let ctx = Box::new(CallbackContext {
             session_id: session_id.clone(),
             input: input.clone(),
             app_handle: app_handle.clone(),
         });
         let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
-
-        // Create the SwiftTerm view
         let session_cstr =
             CString::new(session_id.clone()).context("Invalid session_id for CString")?;
         let font_family_cstr = CString::new("Menlo").context("Invalid font family for CString")?;
-
         let created = unsafe {
             swift_term_create(
                 session_cstr.as_ptr(),
@@ -392,169 +297,60 @@ impl NativeTerminalManager {
                 ctx_ptr,
             )
         };
-
         if !created {
-            // Reclaim the context to avoid a leak
             let _ = unsafe { Box::from_raw(ctx_ptr as *mut CallbackContext) };
             return Err(anyhow!("swift_term_create failed for session {session_id}"));
         }
 
-        // Resize the PTY to match SwiftTerm's actual grid size
-        let mut cols: u16 = 80;
-        let mut rows: u16 = 24;
+        // The PTY takes SwiftTerm's actual grid size.
+        let (mut cols, mut rows) = (80u16, 24u16);
         unsafe {
             swift_term_get_size(session_cstr.as_ptr(), &mut cols, &mut rows);
         }
         if cols > 0 && rows > 0 {
-            let _ = pair.master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
+            let _ = terminals.resize(&terminal_id, cols, rows);
         }
 
         let session = Arc::new(Mutex::new(NativeSession {
-            input: input.clone(),
-            master: pair.master,
-            child,
+            terminal_id,
+            input,
             callback_context_ptr: ctx_ptr,
             session_id_cstr: session_cstr.clone(),
             frame: None,
         }));
-
-        // Insert into map before spawning threads
         self.sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.clone(), Arc::clone(&session));
 
-        // ── Activity tracking thread ───────────────────────────────────
-        let activity_sid = session_id.clone();
-        let activity_handle = app_handle.clone();
-        let (activity_tx, activity_rx) = std::sync::mpsc::channel::<()>();
-        let quiet_window = Duration::from_millis(TERMINAL_QUIET_THRESHOLD_MS);
-
-        std::thread::spawn(move || {
-            let mut active = false;
-            loop {
-                let signal = match activity_rx.recv_timeout(quiet_window) {
-                    Ok(()) => true, // data received
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        // Emit final inactive if needed
-                        if active {
-                            let _ = activity_handle.emit(
-                                "terminal:activity",
-                                TerminalActivityEvent {
-                                    session_id: activity_sid.clone(),
-                                    active: false,
-                                },
-                            );
-                        }
-                        break;
-                    }
-                };
-
-                let (was_active, is_active) = (active, signal);
-                match (was_active, is_active) {
-                    (false, true) => {
-                        active = true;
-                        let _ = activity_handle.emit(
-                            "terminal:activity",
-                            TerminalActivityEvent {
-                                session_id: activity_sid.clone(),
-                                active: true,
-                            },
-                        );
-                    }
-                    (true, false) => {
-                        active = false;
-                        let _ = activity_handle.emit(
-                            "terminal:activity",
-                            TerminalActivityEvent {
-                                session_id: activity_sid.clone(),
-                                active: false,
-                            },
-                        );
-                    }
-                    _ => {}
-                }
-            }
-        });
-
-        // ── Reader thread — output goes to SwiftTerm via `pump_output` ─
-        let reader_session_cstr = session_cstr.clone();
-        let sessions_for_cleanup = Arc::clone(&self.sessions);
-        let session_for_cleanup = Arc::clone(&session);
-        let sid = session_id.clone();
-        let handle = app_handle;
-        let stop_writer = input.clone();
-
-        std::thread::spawn(move || {
-            let (output, output_rx) = mpsc::channel::<Vec<u8>>();
-            let pump = {
-                let (cstr, sid, handle) =
-                    (reader_session_cstr.clone(), sid.clone(), handle.clone());
-                std::thread::spawn(move || {
-                    pump_output(output_rx, &cstr, &sid, &activity_tx, &handle)
-                })
-            };
-            let mut buf = [0u8; PTY_READ_BUFFER_SIZE];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let _ = output.send(buf[..n].to_vec());
-                    }
-                }
-            }
-            drop(output);
+        let activity = spawn_activity(session_id.clone(), app_handle.clone());
+        let (output, output_rx) = mpsc::channel::<Vec<u8>>();
+        let pump = {
+            let (cstr, sid, handle) = (session_cstr, session_id.clone(), app_handle.clone());
+            std::thread::spawn(move || pump_output(output_rx, &cstr, &sid, &activity, &handle))
+        };
+        let sessions = Arc::clone(&self.sessions);
+        tauri::async_runtime::spawn(async move {
+            let code = follow(tap, output).await;
             let _ = pump.join();
-            let _ = stop_writer.send(Vec::new());
-
-            // Cleanup: remove session from map and emit exit event.
-            Self::remove_session(&sessions_for_cleanup, &sid);
-            // A shell that exits on its own never sees `kill_native_terminal`.
-            if let Some(token) = &mod_token {
-                handle
-                    .state::<crate::server_control::ServerControl>()
-                    .revoke_native_token(&sid, token);
-            }
-
-            let exit_code = {
-                let mut sess = session_for_cleanup
+            // Still ours (not killed): the terminal ended on its own.
+            let exited =
+                Self::remove_session(&sessions, &session_id).filter(|s| Arc::ptr_eq(s, &session));
+            if let Some(session) = exited {
+                session
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                let code = sess
-                    .child
-                    .wait()
-                    .map(|s| if s.success() { 0 } else { 1 })
-                    .unwrap_or(1);
-                sess.destroy_view();
-                code
-            };
-
-            let _ = handle.emit(
+                    .unwrap_or_else(|e| e.into_inner())
+                    .destroy_view();
+            }
+            let _ = app_handle.emit(
                 "terminal:exit",
                 TerminalExitEvent {
-                    session_id: sid,
-                    exit_code,
+                    session_id,
+                    exit_code: code.map_or(1, |c| c as i32),
                     signal: None,
                 },
             );
         });
-
-        // Write startup command after a small delay
-        if let Some(cmd_str) = startup_command {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(STARTUP_COMMAND_DELAY_MS));
-                let mut line = Vec::new();
-                let _ = crate::shell::submit_line(&mut line, &cmd_str);
-                let _ = input.send(line);
-            });
-        }
-
         Ok(())
     }
 
@@ -571,15 +367,19 @@ impl NativeTerminalManager {
     /// Apply the latest requested frame. Blocking (waits on the main thread).
     /// Resizes run on a thread pool in no set order, so each applies the latest
     /// frame rather than its own: whichever runs last leaves the newest size.
-    pub fn resize(&self, session_id: &str) -> Result<()> {
+    pub fn resize(&self, session_id: &str, terminals: &TerminalManager) -> Result<()> {
         let session = self
             .get_session(session_id)
             .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
 
         let _resizing = self.resizing.lock().unwrap_or_else(|e| e.into_inner());
-        let (session_cstr, frame) = {
+        let (session_cstr, frame, terminal_id) = {
             let sess = session.lock().unwrap_or_else(|e| e.into_inner());
-            (sess.session_id_cstr.clone(), sess.frame)
+            (
+                sess.session_id_cstr.clone(),
+                sess.frame,
+                sess.terminal_id.clone(),
+            )
         };
         let Some((x, y, width, height)) = frame else {
             return Ok(());
@@ -590,24 +390,13 @@ impl NativeTerminalManager {
         unsafe {
             swift_term_resize(session_cstr.as_ptr(), x, y, width, height);
         }
-
-        // Read back the new grid dimensions
-        let mut cols: u16 = 0;
-        let mut rows: u16 = 0;
+        let (mut cols, mut rows) = (0u16, 0u16);
         unsafe {
             swift_term_get_size(session_cstr.as_ptr(), &mut cols, &mut rows);
         }
-
         if cols > 0 && rows > 0 {
-            let sess = session.lock().unwrap_or_else(|e| e.into_inner());
-            sess.master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })?;
+            terminals.resize(&terminal_id, cols, rows)?;
         }
-
         Ok(())
     }
 
@@ -615,23 +404,18 @@ impl NativeTerminalManager {
         let session = self
             .get_session(session_id)
             .ok_or_else(|| anyhow!("Session not found: {session_id}"))?;
-
-        let session_cstr = Self::session_cstr(&session);
+        let session_cstr = session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .session_id_cstr
+            .clone();
         unsafe {
             swift_term_set_visible(session_cstr.as_ptr(), visible);
         }
         Ok(())
     }
 
-    fn session_cstr(session: &Mutex<NativeSession>) -> CString {
-        session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .session_id_cstr
-            .clone()
-    }
-
-    /// Queue input for the session's writer thread; never blocks on the PTY.
+    /// Queue input for the terminal; never blocks.
     pub fn write(&self, session_id: &str, data: &[u8]) -> Result<()> {
         let session = self
             .get_session(session_id)
@@ -649,22 +433,78 @@ impl NativeTerminalManager {
             .map_err(|_| anyhow!("Session has exited: {session_id}"))
     }
 
-    /// Blocking: waits for the shell to exit.
-    pub fn kill(&self, session_id: &str) -> Result<()> {
-        let session = match Self::remove_session(&self.sessions, session_id) {
-            Some(s) => s,
-            None => return Ok(()), // already cleaned up by reader thread
-        };
-
+    /// Remove the view; returns the terminal it showed, for the caller to end.
+    pub fn kill(&self, session_id: &str) -> Option<String> {
+        let session = Self::remove_session(&self.sessions, session_id)?;
         let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
         sess.destroy_view();
-
-        // Kill the child process
-        let _ = sess.child.kill();
-        let _ = sess.child.wait();
-
-        Ok(())
+        Some(sess.terminal_id.clone())
     }
+}
+
+/// Feed the terminal's scrollback, then its output, to the pump until it ends.
+/// Returns its exit code, when it has one.
+async fn follow(mut tap: workbench_server::terminal::Tap, output: Sender<Vec<u8>>) -> Option<i64> {
+    use tokio::sync::broadcast::error::RecvError;
+    if !tap.replay.is_empty() {
+        let _ = output.send(std::mem::take(&mut tap.replay));
+    }
+    while !*tap.done.borrow_and_update() {
+        tokio::select! {
+            chunk = tap.output.recv() => match chunk {
+                Ok(bytes) => {
+                    let _ = output.send(bytes);
+                }
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            },
+            changed = tap.done.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    while let Ok(bytes) = tap.output.try_recv() {
+        let _ = output.send(bytes);
+    }
+    tap.exit_code()
+}
+
+/// Emits `terminal:activity` when output starts, and again once it has been
+/// quiet for `TERMINAL_QUIET_THRESHOLD_MS`. Ends when its sender is dropped.
+fn spawn_activity(session_id: String, handle: AppHandle) -> Sender<()> {
+    let (tx, rx) = mpsc::channel::<()>();
+    let quiet = Duration::from_millis(TERMINAL_QUIET_THRESHOLD_MS);
+    std::thread::spawn(move || {
+        let emit = |active| {
+            let _ = handle.emit(
+                "terminal:activity",
+                TerminalActivityEvent {
+                    session_id: session_id.clone(),
+                    active,
+                },
+            );
+        };
+        let mut active = false;
+        loop {
+            let signal = match rx.recv_timeout(quiet) {
+                Ok(()) => true,
+                Err(RecvTimeoutError::Timeout) => false,
+                Err(RecvTimeoutError::Disconnected) => {
+                    if active {
+                        emit(false);
+                    }
+                    break;
+                }
+            };
+            if signal != active {
+                active = signal;
+                emit(active);
+            }
+        }
+    });
+    tx
 }
 
 #[cfg(test)]

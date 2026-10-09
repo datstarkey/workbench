@@ -46,16 +46,6 @@ export function terminalServerStatus(): Promise<ServerStatus> {
 	return invoke<ServerStatus>('terminal_server_status');
 }
 
-/**
- * Hook-bridge socket (`127.0.0.1:<port>#<secret>`: the secret is what lets a
- * process post to the bridge, so keep it out of logs), forwarded to the embedded
- * server so server-hosted xterm panes set `WORKBENCH_HOOK_SOCKET` and the
- * Claude/Codex hook bridge fires for them. Null if the bridge failed to bind.
- */
-export function terminalHookSocket(): Promise<string | null> {
-	return invoke<string | null>('terminal_hook_socket');
-}
-
 export interface PairingAddress {
 	interface: string;
 	address: string;

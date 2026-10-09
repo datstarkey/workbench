@@ -1,19 +1,11 @@
 import { agentClient, type AgentApi } from '@workbench/chat-ui';
 import { resolveServer } from '$features/terminal/terminal-connection';
-import { terminalHookSocket } from '$lib/server-mode';
 import type { AgentSummary } from '$types/workbench';
 
 const loopback = agentClient(resolveServer);
 
-/** Chat sessions on the loopback server. */
-export const loopbackAgentApi: AgentApi = {
-	...loopback,
-	async start(body) {
-		// Hooks then report this session's activity to the sidebar, as for terminals.
-		const hookSocket = body.hookSocket ?? (await terminalHookSocket().catch(() => null));
-		return loopback.start({ ...body, hookSocket: hookSocket ?? undefined });
-	}
-};
+/** Chat sessions on the loopback server, which reports their hooks itself. */
+export const loopbackAgentApi: AgentApi = loopback;
 
 /** A Claude account's plan limits, cached by the loopback server. */
 export const planUsage = loopback.usage;

@@ -8,7 +8,7 @@ import type { AgentSummary, ProjectWorkspace, ServerTerminalMeta } from '$types/
 
 export type AdoptableTerminal = Pick<
 	ServerTerminalMeta,
-	'id' | 'name' | 'cwd' | 'alive' | 'claudeSessionId'
+	'id' | 'name' | 'cwd' | 'alive' | 'claudeSessionId' | 'native'
 >;
 
 /**
@@ -22,7 +22,7 @@ export function adoptableTerminals<T extends AdoptableTerminal>(
 	isClaimed: (id: string) => boolean
 ): T[] {
 	return list.filter(
-		(t) => t.alive && !t.claudeSessionId && !knownIds.has(t.id) && !isClaimed(t.id)
+		(t) => t.alive && !t.claudeSessionId && !t.native && !knownIds.has(t.id) && !isClaimed(t.id)
 	);
 }
 

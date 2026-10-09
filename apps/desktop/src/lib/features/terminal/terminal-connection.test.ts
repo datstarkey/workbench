@@ -223,7 +223,7 @@ describe('TerminalConnection', () => {
 			);
 		});
 
-		it('forwards paneId / shell / hookSocket env fields when provided', async () => {
+		it('forwards paneId / shell env fields when provided', async () => {
 			mockServerRunning();
 			const fetchMock = mockCreateTerminal('t-env');
 
@@ -235,7 +235,6 @@ describe('TerminalConnection', () => {
 				rows: 24,
 				paneId: 'pane-7',
 				shell: '/bin/zsh',
-				hookSocket: '127.0.0.1:6123',
 				claudeSession: { id: 'sid', prompt: 'review' },
 				claudeAccountId: 'work'
 			});
@@ -247,7 +246,6 @@ describe('TerminalConnection', () => {
 			expect(body).toMatchObject({
 				paneId: 'pane-7',
 				shell: '/bin/zsh',
-				hookSocket: '127.0.0.1:6123',
 				claudeSession: { id: 'sid', prompt: 'review' },
 				claudeAccountId: 'work'
 			});
