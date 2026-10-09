@@ -225,7 +225,7 @@ pub(crate) fn extract_codex_user_message(obj: &serde_json::Value) -> Option<Stri
 }
 
 /// Recursively walk a directory up to `max_depth` levels and collect .jsonl files.
-pub(crate) fn collect_jsonl_files(dir: &Path, max_depth: u32) -> Vec<PathBuf> {
+pub fn collect_jsonl_files(dir: &Path, max_depth: u32) -> Vec<PathBuf> {
     let mut results = Vec::new();
     if max_depth == 0 || !dir.is_dir() {
         return results;

@@ -12,6 +12,7 @@ pub mod claude_sessions;
 pub mod claude_transcript;
 pub mod codex_config;
 pub mod codex_controls;
+pub mod codex_launch;
 pub mod codex_sessions;
 pub mod codex_transcript;
 pub mod config;

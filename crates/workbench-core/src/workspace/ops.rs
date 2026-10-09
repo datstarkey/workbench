@@ -97,6 +97,27 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Vec<Effect>> {
     }
 }
 
+/// The effects that start every pane's process, as a host does when it boots
+/// a saved model. A session may already exist, so each is a resume.
+pub fn boot(model: &mut Model) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    let mut consumed = false;
+    for w in 0..model.workspaces.len() {
+        for t in 0..model.workspaces[w].tabs.len() {
+            for p in 0..model.workspaces[w].tabs[t].panes.len() {
+                let resume = model.workspaces[w].tabs[t].panes[p].session_id.is_some();
+                let (effect, took) = spawn_at(model, (w, t, p), resume);
+                effects.push(effect);
+                consumed |= took;
+            }
+        }
+    }
+    if consumed {
+        effects.push(Effect::Persist);
+    }
+    effects
+}
+
 /// The effect that starts a pane's process. A prompt is sent once, so it
 /// leaves the pane here; the flag says whether one did (the model changed).
 fn spawn(cwd: &str, renderer: Renderer, pane: &mut Pane, resume: bool) -> (Effect, bool) {
