@@ -465,3 +465,104 @@ async fn a_codex_pane_launches_from_the_saved_settings() {
     command(&base, json!({ "type": "closePane", "paneId": id })).await;
     handle.stop().await;
 }
+
+#[tokio::test]
+async fn only_the_desktops_own_listener_opens_native_workspaces() {
+    let _serial = serial().await;
+    let open = json!({
+        "type": "openWorkspace",
+        "projectPath": env().project,
+        "projectName": "test",
+        "renderer": "native",
+    });
+    let post = |base: String, cmd: Value| async move {
+        reqwest::Client::new()
+            .post(format!("{base}/workspace/commands"))
+            .bearer_auth(TOKEN)
+            .json(&cmd)
+            .send()
+            .await
+            .unwrap()
+            .status()
+    };
+    // A server with no native views (standalone, a Linux or Windows desktop).
+    let (handle, base) = serve(Managers::default()).await;
+    assert_eq!(post(base, open.clone()).await, 400);
+    handle.stop().await;
+
+    // The macOS desktop: its loopback listener may, its LAN listener may not.
+    let managers = Managers {
+        native_views: true,
+        ..Managers::default()
+    };
+    let (loopback, local) = serve(managers.clone()).await;
+    let (lan, remote) = serve(managers).await;
+    assert_eq!(post(remote, open.clone()).await, 400);
+    assert_eq!(post(local, open).await, 200);
+    lan.stop().await;
+    loopback.stop().await;
+}
+
+#[tokio::test]
+async fn stopping_a_native_panes_chat_leaves_its_shell() {
+    let _serial = serial().await;
+    let managers = Managers::default();
+    let (handle, base) = serve(managers.clone()).await;
+    let sid = "5e5e5e5e-0000-4000-8000-0000000000aa";
+    let body = workbench_server::terminal::CreateTerminalBody {
+        project_path: env().project.to_string_lossy().into_owned(),
+        worktree_path: None,
+        name: None,
+        command: None,
+        claude_session: Some(workbench_server::terminal::ClaudeSessionLaunch {
+            id: sid.into(),
+            ..Default::default()
+        }),
+        codex_session: None,
+        cols: 80,
+        rows: 24,
+        pane_id: Some("native-pane".into()),
+        shell: None,
+        claude_account_id: None,
+        native: true,
+    };
+    let (terminals, agents) = (managers.terminals.clone(), managers.agents.clone());
+    let terminal = tokio::task::spawn_blocking(move || {
+        workbench_server::terminal::create_from_body(&terminals, &agents, body).unwrap()
+    })
+    .await
+    .unwrap()
+    .id;
+    for _ in 0..100 {
+        if managers.agents.get(sid).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(managers.agents.get(sid).is_some(), "the plugin attached");
+    let client = reqwest::Client::new();
+
+    let mode = client
+        .post(format!("{base}/agent/claude/{sid}/message"))
+        .bearer_auth(TOKEN)
+        .body(json!({"t": "mode", "mode": "plan"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mode.status(), 400);
+    assert!(mode.text().await.unwrap().contains("Shift+Tab"));
+
+    let stop = client
+        .delete(format!("{base}/agent/claude/{sid}?end=true"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stop.status(), 204);
+    assert!(
+        alive_terminals(&base).await.contains(&terminal),
+        "the person's shell stays"
+    );
+    managers.terminals.kill(&terminal);
+    handle.stop().await;
+}

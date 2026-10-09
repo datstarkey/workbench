@@ -28,6 +28,9 @@ pub(super) fn start(service: WorkspaceService) {
     runtime.spawn(publish_loop(service));
 }
 
+/// Folds and publishes on a command, or on a process change while there are
+/// panes; ticks (busy decay, a trust dialog) only while someone watches.
+/// With no panes and nobody watching it sleeps until something happens.
 async fn publish_loop(service: WorkspaceService) {
     let Some(ctx) = service.ctx() else {
         return;
@@ -35,20 +38,25 @@ async fn publish_loop(service: WorkspaceService) {
     let mut terminals = ctx.terminals.subscribe();
     let mut sessions = ctx.agents.attention.subscribe_sessions();
     let mut next = Instant::now();
+    let mut pending = true;
     loop {
-        tokio::time::sleep_until(next).await;
-        let s = service.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            s.fold();
-            s.publish();
-        })
-        .await;
-        next = Instant::now() + GAP;
+        let has_panes = service.has_panes();
+        if pending || has_panes {
+            tokio::time::sleep_until(next).await;
+            let s = service.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                s.fold();
+                s.publish();
+            })
+            .await;
+            next = Instant::now() + GAP;
+        }
+        let ticking = service.has_panes() && service.watched();
         tokio::select! {
-            _ = service.0.dirty.notified() => {}
-            _ = changed(&mut terminals) => {}
-            _ = changed(&mut sessions) => {}
-            _ = tokio::time::sleep(TICK) => {}
+            _ = service.0.dirty.notified() => pending = true,
+            _ = changed(&mut terminals) => pending = false,
+            _ = changed(&mut sessions) => pending = false,
+            _ = tokio::time::sleep(TICK), if ticking => pending = false,
         }
     }
 }
@@ -89,6 +97,19 @@ fn follow_codex_notify(service: &WorkspaceService) {
 }
 
 impl WorkspaceService {
+    fn has_panes(&self) -> bool {
+        lock(&self.0.state)
+            .model
+            .workspaces
+            .iter()
+            .any(|w| w.tabs.iter().any(|t| !t.panes.is_empty()))
+    }
+
+    /// A client follows the snapshots (beyond the publisher's own handle).
+    fn watched(&self) -> bool {
+        self.0.published.receiver_count() > 0
+    }
+
     /// Fold a session the pane's process now runs; one another pane holds
     /// makes this process a second one on it, so it stops.
     fn attach_or_stop(&self, pane_id: &str, session_id: String) {

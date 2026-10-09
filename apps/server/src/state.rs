@@ -27,6 +27,9 @@ pub struct Managers {
     pub settings: Changes,
     /// The workspace model every client renders, and the panes' processes.
     pub workspace: WorkspaceService,
+    /// The embedding app shows native terminal views (the macOS desktop), to
+    /// its own loopback listener only.
+    pub native_views: bool,
 }
 
 impl Managers {
@@ -46,6 +49,7 @@ pub struct AppState {
     pub host: Option<Arc<dyn HostControl>>,
     pub settings: Changes,
     pub workspace: WorkspaceService,
+    pub native_views: bool,
     /// When `Some`, requests must present this as a bearer token. Only the
     /// standalone binary on a loopback bind (or with `--insecure-no-token`) runs
     /// with `None`; embedded listeners always carry one.
@@ -69,6 +73,7 @@ impl AppState {
             host: managers.host,
             settings: managers.settings,
             workspace: managers.workspace,
+            native_views: managers.native_views,
             token,
             revoked,
             local_port: None,

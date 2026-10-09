@@ -1,7 +1,8 @@
-//! Carries out the model's effects, in order, on one thread: a stop or end
-//! always lands before the spawn that replaces it. Spawns only start the
-//! process; `fold` sees it attach or exit.
+//! Carries out the model's effects, in order per pane: a stop or end always
+//! lands before the spawn that replaces it. Spawns only start the process;
+//! `fold` sees it attach or exit.
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -48,14 +49,46 @@ pub(super) fn project(path: String) -> Option<ProjectConfig> {
         .find(|p| same_path(&p.path, &path))
 }
 
+/// Hands each effect to its pane's worker: one pane's effects run in order
+/// (a stop before the spawn that replaces it), and a slow one (a stop waiting
+/// out its process, a trust answer, a Codex chat opening its thread) holds up
+/// only that pane. A worker ends with its pane's `end`; pane ids are never reused.
 pub(super) fn start(service: WorkspaceService, jobs: mpsc::Receiver<Job>) {
     std::thread::spawn(move || {
-        for job in jobs {
-            for (effect, pane) in job {
-                run(&service, effect, pane);
+        let mut workers: HashMap<String, mpsc::Sender<(Effect, PaneCtx)>> = HashMap::new();
+        for (effect, pane) in jobs.into_iter().flatten() {
+            let Some(pane_id) = pane_of(&effect).map(str::to_string) else {
+                continue;
+            };
+            let ends = matches!(effect, Effect::End { .. });
+            let worker = workers.entry(pane_id.clone()).or_insert_with(|| {
+                let (tx, rx) = mpsc::channel::<(Effect, PaneCtx)>();
+                let service = service.clone();
+                std::thread::spawn(move || {
+                    for (effect, pane) in rx {
+                        run(&service, effect, pane);
+                    }
+                });
+                tx
+            });
+            let _ = worker.send((effect, pane));
+            if ends {
+                workers.remove(&pane_id);
             }
         }
     });
+}
+
+fn pane_of(effect: &Effect) -> Option<&str> {
+    match effect {
+        Effect::SpawnShell { pane_id, .. }
+        | Effect::SpawnClaude { pane_id, .. }
+        | Effect::SpawnCodex { pane_id, .. }
+        | Effect::Stop { pane_id, .. }
+        | Effect::End { pane_id, .. }
+        | Effect::TrustFolder { pane_id, .. } => Some(pane_id),
+        Effect::Opened { .. } | Effect::Persist => None,
+    }
 }
 
 fn run(service: &WorkspaceService, effect: Effect, pane: PaneCtx) {
@@ -116,14 +149,10 @@ fn run(service: &WorkspaceService, effect: Effect, pane: PaneCtx) {
             prompt,
             ..
         } => {
-            // Waits for codex to open its thread: off this thread, so other
-            // panes' effects don't queue behind it.
-            let service = service.clone();
-            std::thread::spawn(move || {
-                if let Err(e) = start_codex_chat(&service, &pane_id, &pane, session_id, prompt) {
-                    service.update(&pane_id, |rt| failed(rt, &e));
-                }
-            });
+            // Waits for codex to open its thread; a stop queued meanwhile waits too.
+            if let Err(e) = start_codex_chat(service, &pane_id, &pane, session_id, prompt) {
+                service.update(&pane_id, |rt| failed(rt, &e));
+            }
         }
         Effect::Stop { pane_id, .. } => {
             // One process per session file: the old one is gone before a respawn.

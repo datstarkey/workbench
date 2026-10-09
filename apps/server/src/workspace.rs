@@ -23,6 +23,7 @@ use crate::terminal::TerminalManager;
 
 mod exec;
 mod fold;
+mod lock;
 pub mod routes;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -100,6 +101,8 @@ struct Inner {
     published: watch::Sender<Arc<Published>>,
     dirty: Notify,
     ctx: OnceLock<Ctx>,
+    /// Held while this process keeps the config dir's model file.
+    lock: OnceLock<lock::ModelLock>,
 }
 
 #[derive(Clone)]
@@ -125,6 +128,7 @@ impl WorkspaceService {
             published: watch::channel(Arc::new(Published::default())).0,
             dirty: Notify::new(),
             ctx: OnceLock::new(),
+            lock: OnceLock::new(),
         }))
     }
 
@@ -146,8 +150,16 @@ impl WorkspaceService {
             return;
         }
         exec::start(self.clone(), rx);
-        if self.0.persistent {
-            let dir = workbench_core::paths::workbench_config_dir();
+        let dir = workbench_core::paths::workbench_config_dir();
+        let held = self.0.persistent.then(|| lock::ModelLock::take(&dir));
+        if let Some(None) = held {
+            tracing::warn!(
+                "another Workbench process keeps the workspace model in {}; this one runs without saving it",
+                dir.display()
+            );
+        }
+        if let Some(Some(held)) = held {
+            let _ = self.0.lock.set(held);
             // Until the desktop renders this model (Phase 3), its own
             // `workspaces.json` describes panes it runs itself: only a saved v2
             // file is booted, or each of those would run twice.
@@ -350,8 +362,11 @@ impl WorkspaceService {
             .map(|p| p.id.clone())
     }
 
+    /// Follow the snapshots; the first is refreshed for the new watcher.
     pub fn subscribe(&self) -> watch::Receiver<Arc<Published>> {
-        self.0.published.subscribe()
+        let rx = self.0.published.subscribe();
+        self.0.dirty.notify_one();
+        rx
     }
 
     /// Build the snapshot and publish it: a new `rev` only when it changed.

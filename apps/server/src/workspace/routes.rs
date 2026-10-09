@@ -18,7 +18,7 @@ use axum::Json;
 use futures_util::Stream;
 use serde::Deserialize;
 use serde_json::json;
-use workbench_core::workspace::Command;
+use workbench_core::workspace::{Command, Renderer};
 
 use crate::error::ApiError;
 use crate::state::{wait_revoked, AppState};
@@ -37,6 +37,20 @@ pub async fn command(State(state): State<AppState>, Json(cmd): Json<Command>) ->
         Command::SessionAttached { .. } | Command::SessionRekeyed { .. }
     ) {
         return refused(rev(), "Only the server reports what a session did".into());
+    }
+    // A native view exists only in the desktop app, for its own webview.
+    let native = matches!(
+        cmd,
+        Command::OpenWorkspace {
+            renderer: Renderer::Native,
+            ..
+        }
+    );
+    if native && !(state.native_views && crate::auth::serves_mod(&state)) {
+        return refused(
+            rev(),
+            "Native terminals open only in the desktop app on this machine".into(),
+        );
     }
     let applied = {
         let service = service.clone();

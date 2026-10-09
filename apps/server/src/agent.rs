@@ -777,13 +777,8 @@ impl AgentManager {
             .mod_link()
             .context("not a terminal session")?
             .clone();
-        // A desktop native view shows only its own terminal, and a new server
-        // terminal beside it would run the session twice.
-        if link
-            .terminal_id
-            .as_deref()
-            .is_none_or(|t| terminals.is_native(t))
-        {
+        // A new server terminal beside a native one would run the session twice.
+        if self.own_terminal(session).is_none() {
             bail!("{what} in this session's own terminal.");
         }
         if idle_only {
@@ -1168,10 +1163,23 @@ impl AgentManager {
     }
 
     fn kill_terminal(&self, session: &AgentSession) {
-        let terminal = session.mod_link().and_then(|l| l.terminal_id.as_deref());
+        let terminal = self.own_terminal(session);
         if let (Some(id), Some((terminals, _))) = (terminal, self.terminals.get()) {
-            terminals.kill(id);
+            terminals.kill(&id);
         }
+    }
+
+    /// The server terminal a session's `claude` runs in and that the session
+    /// owns. A desktop native pane's terminal is the person's shell: stopping
+    /// the chat leaves it, only closing the pane ends it, and it can't be
+    /// restarted into another terminal (the view shows only its own).
+    pub fn own_terminal(&self, session: &AgentSession) -> Option<String> {
+        let id = session.mod_link()?.terminal_id.clone()?;
+        let native = self
+            .terminals
+            .get()
+            .is_some_and(|(terminals, _)| terminals.is_native(&id));
+        (!native).then_some(id)
     }
 
     /// Stop every session (the app is quitting or installing an update). Blocking.

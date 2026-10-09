@@ -53,7 +53,7 @@ pub async fn require_bearer(
 }
 
 /// This listener is the one terminal plugins are pointed at.
-fn serves_mod(state: &AppState) -> bool {
+pub(crate) fn serves_mod(state: &AppState) -> bool {
     state.local_port.is_some() && state.local_port == state.agents.mod_port()
 }
 

@@ -311,6 +311,7 @@ impl NativeTerminalManager {
             let _ = terminals.resize(&terminal_id, cols, rows);
         }
 
+        let shown = terminal_id.clone();
         let session = Arc::new(Mutex::new(NativeSession {
             terminal_id,
             input,
@@ -333,9 +334,21 @@ impl NativeTerminalManager {
         tauri::async_runtime::spawn(async move {
             let code = follow(tap, output).await;
             let _ = pump.join();
-            // Still ours (not killed): the terminal ended on its own.
-            let exited =
-                Self::remove_session(&sessions, &session_id).filter(|s| Arc::ptr_eq(s, &session));
+            // Ended on its own or killed: either way the server lets it go, or
+            // it would stay listed (and count toward the cap) with no view.
+            terminals.kill(&shown);
+            // Still mapped (not killed): take the view down too.
+            let exited = {
+                let mut map = sessions.lock().unwrap_or_else(|e| e.into_inner());
+                let ours = map
+                    .get(&session_id)
+                    .is_some_and(|s| Arc::ptr_eq(s, &session));
+                if ours {
+                    map.remove(&session_id)
+                } else {
+                    None
+                }
+            };
             if let Some(session) = exited {
                 session
                     .lock()
