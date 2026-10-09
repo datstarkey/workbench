@@ -3,12 +3,9 @@ import type { AgentKind } from '@workbench/types';
 /** How a new Claude session opens on this phone. */
 export type ClaudeView = 'chat' | 'terminal';
 
-/**
- * A chat conversation: Claude (chat, or a terminal running `claude`) or Codex
- * (chat only).
- */
+/** A conversation a chat screen attaches to (never starts). */
 export interface ChatRef {
-	/** Empty for a Codex chat not started yet: the server picks its thread id. */
+	/** A pane shows its chat once it has one (a new Codex thread gets it from the server). */
 	sessionId: string;
 	/** Absent is Claude. */
 	agent?: AgentKind;
@@ -17,6 +14,4 @@ export interface ChatRef {
 	name: string;
 	/** The Claude account it runs under; absent, the default login or (a new chat) the host decides. */
 	claudeAccountId?: string;
-	/** Join an existing process; only an explicit Restart may start it again. */
-	attachOnly?: boolean;
 }

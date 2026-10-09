@@ -219,7 +219,12 @@ async fn a_new_session_shows_its_pane_then_runs() {
     assert!(shown["rev"].as_u64().unwrap() <= reply["rev"].as_u64().unwrap());
     assert_eq!(pane(&shown, &id).unwrap()["kind"], "claude");
     let ran = sse.until("running", |s| running(s, &id)).await;
-    assert!(pane(&ran, &id).unwrap()["sessionId"].is_string());
+    let ran = pane(&ran, &id).unwrap();
+    assert!(ran["sessionId"].is_string());
+    // The activity Home shows comes with the pane.
+    for field in ["busySince", "turnEndedAt", "running", "waitingSince"] {
+        assert!(ran.get(field).is_some(), "{field} in {ran}");
+    }
     handle.stop().await;
 }
 

@@ -54,13 +54,6 @@ export function answerableFromHome(item: Waiting): boolean {
 
 export { baseName };
 
-/** "repo" or "repo · worktree": where a chat runs. */
-export function chatWhere(chat: AgentSummary): string {
-	return chat.worktreePath
-		? `${baseName(chat.projectPath)} · ${baseName(chat.worktreePath)}`
-		: baseName(chat.projectPath);
-}
-
 /** A path with the home directory shown as `~`. */
 export function tildePath(path: string): string {
 	return path.replace(
@@ -69,41 +62,8 @@ export function tildePath(path: string): string {
 	);
 }
 
-export interface WorkspaceGroup<C, T> {
-	key: string;
-	label: string;
-	chats: C[];
-	terminals: T[];
-}
-
 /** One spelling per folder: `/` separators, no trailing one, a Windows drive path in lower case. */
 export function pathKey(path: string): string {
 	const key = path.replace(/\\/g, '/').replace(/(?<=.)\/+$/, '');
 	return /^[A-Za-z]:\//.test(key) ? key.toLowerCase() : key;
-}
-
-/**
- * Running chats and terminals by the folder they run in (worktree, else project),
- * sorted by label so groups hold still as chats update. `labels` names known
- * folders by path key; a chat otherwise names its own, a terminal its folder.
- */
-export function groupByWorkspace<C extends AgentSummary, T extends { cwd: string }>(
-	chats: C[],
-	terminals: T[],
-	labels: ReadonlyMap<string, string> = new Map()
-): WorkspaceGroup<C, T>[] {
-	const groups = new Map<string, WorkspaceGroup<C, T>>();
-	const group = (path: string, fallback: string) => {
-		const key = pathKey(path);
-		let found = groups.get(key);
-		if (!found) {
-			found = { key, label: labels.get(key) ?? fallback, chats: [], terminals: [] };
-			groups.set(key, found);
-		}
-		return found;
-	};
-	for (const chat of chats)
-		group(chat.worktreePath ?? chat.projectPath, chatWhere(chat)).chats.push(chat);
-	for (const t of terminals) group(t.cwd, baseName(t.cwd)).terminals.push(t);
-	return [...groups.values()].sort((a, b) => a.label.localeCompare(b.label));
 }

@@ -1,8 +1,10 @@
 import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MobileClient } from './client.svelte.ts';
+import type { LegacyRemote } from './legacy-remote.svelte.ts';
 import {
 	CONNECT_ROUTES,
+	FakeEventSource,
 	jsonResponse,
 	routeFetch,
 	stubLocalStorage,
@@ -11,25 +13,13 @@ import {
 
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 
-class FakeEventSource extends EventTarget {
-	closed = false;
-	constructor(readonly url: string) {
-		super();
-	}
-	close() {
-		this.closed = true;
-	}
-	emit(type: string, data?: unknown) {
-		this.dispatchEvent(
-			data === undefined ? new Event(type) : new MessageEvent(type, { data: JSON.stringify(data) })
-		);
-	}
-}
-
 const chat = { sessionId: 's1', agent: 'claude', projectPath: '/p', previousIds: [] };
 const terminal = { id: 't1', cwd: '/p', createdAt: 0, alive: true };
 
-describe('home event stream', () => {
+/** The old host's lists, behind the workspace fallback. */
+const lists = (c: MobileClient) => c.remote as LegacyRemote;
+
+describe('home event stream (older hosts)', () => {
 	let sources: FakeEventSource[];
 	let fetchSpy: ReturnType<typeof routeFetch>;
 	let stop: () => void;
@@ -76,8 +66,8 @@ describe('home event stream', () => {
 		expect(latest().url).toBe(`http://box:4317/events/home?token=${TOKEN}`);
 		latest().emit('agents', [chat]);
 		latest().emit('terminals', [terminal]);
-		expect(c.chats.map((x) => x.sessionId)).toEqual(['s1']);
-		expect(c.terminals.map((t) => t.id)).toEqual(['t1']);
+		expect(lists(c).chats.map((x) => x.sessionId)).toEqual(['s1']);
+		expect(lists(c).terminals.map((t) => t.id)).toEqual(['t1']);
 
 		const before = listCalls();
 		await vi.advanceTimersByTimeAsync(12_000);
@@ -90,7 +80,7 @@ describe('home event stream', () => {
 		expect(latest().closed).toBe(true);
 
 		await vi.advanceTimersByTimeAsync(4000);
-		expect(c.terminals.map((t) => t.id)).toEqual(['t1']);
+		expect(lists(c).terminals.map((t) => t.id)).toEqual(['t1']);
 		expect(sources).toHaveLength(2);
 
 		// The retry fails too (an older host): the next one waits twice as long.
@@ -117,16 +107,11 @@ describe('home event stream', () => {
 		expect(sources[0].closed).toBe(true);
 	});
 
-	it('closes the stream off Home and in the background, and reopens it on return', async () => {
+	it('keeps streaming while a screen is open, closes in the background and reopens on return', async () => {
 		const c = await watching();
-		const first = latest();
-		c.openChat({ sessionId: 's1', projectPath: '/p', name: 'p' });
+		c.openPane('term:t1');
 		await tick();
-		expect(first.closed).toBe(true);
-
-		c.closeChat();
-		await tick();
-		expect(sources).toHaveLength(2);
+		expect(sources).toHaveLength(1);
 		expect(latest().closed).toBe(false);
 
 		vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
@@ -137,7 +122,7 @@ describe('home event stream', () => {
 		vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
 		document.dispatchEvent(new Event('visibilitychange'));
 		await tick();
-		expect(sources).toHaveLength(3);
+		expect(sources).toHaveLength(2);
 	});
 
 	it('stops streaming when the watch stops or the machine disconnects', async () => {
@@ -184,6 +169,6 @@ describe('home event stream', () => {
 		latest().emit('terminals', [terminal]);
 		answer(jsonResponse([]));
 		await vi.advanceTimersByTimeAsync(0);
-		expect(c.terminals.map((t) => t.id)).toEqual(['t1']);
+		expect(lists(c).terminals.map((t) => t.id)).toEqual(['t1']);
 	});
 });
