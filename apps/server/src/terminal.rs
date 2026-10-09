@@ -205,6 +205,10 @@ impl TerminalManager {
         for (key, val) in workbench_core::shell::inherited_env() {
             cmd.env(key, val);
         }
+        // CommandBuilder inherits the whole env: only what this pane is given below may reach it.
+        for key in workbench_core::shell::PARENT_ONLY_ENV {
+            cmd.env_remove(key);
+        }
         if let Some(id) = &pane_id {
             cmd.env("WORKBENCH_PANE_ID", id);
         }
@@ -553,6 +557,7 @@ pub fn create_from_body(
                 .as_ref()
                 .and_then(|s| s.permission_mode.clone()),
             terminal_id: None,
+            session_ids: body.claude_session.iter().map(|s| s.id.clone()).collect(),
         })?
         .unzip();
     let mut mod_env = mod_env.unwrap_or_default();

@@ -792,6 +792,7 @@ mod tests {
                 resume_at: None,
                 permission_mode: None,
                 terminal_id: None,
+                session_ids: Vec::new(),
             })
             .unwrap();
         let session = state

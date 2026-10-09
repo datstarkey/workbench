@@ -132,6 +132,8 @@ impl ServerControl {
             resume_at: None,
             permission_mode: None,
             terminal_id: None,
+            // A native shell runs whatever `claude` is typed into it.
+            session_ids: Vec::new(),
         };
         let (token, env) = match agents.mod_env(grant) {
             Ok(Some(granted)) => granted,

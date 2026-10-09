@@ -46,6 +46,20 @@ pub(super) fn is_pending(key: &str) -> bool {
     key.starts_with(PENDING)
 }
 
+/// The id a `conversation_reset` line moves to, and whether it resumes
+/// another conversation; `None` for any other line.
+fn reset_target(line: &str) -> Option<(String, bool)> {
+    if !line.contains("conversation_reset") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value["type"] != "conversation_reset" {
+        return None;
+    }
+    let id = value.get("new_conversation_id")?.as_str()?.to_string();
+    Some((id, value["resumed"] == true))
+}
+
 pub struct AgentSession {
     pub kind: AgentKind,
     /// Changes when `/clear` continues the conversation under a new id; empty
@@ -122,6 +136,7 @@ pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgen
         }
     }
     cmd.env_remove("WORKBENCH_TOKEN");
+    workbench_core::shell::without_parent_env(&mut cmd);
     // The notify bridge keeps driving the desktop's activity tracking, as for terminal panes.
     if let Some(id) = &req.pane_id {
         cmd.env("WORKBENCH_PANE_ID", id);
@@ -134,15 +149,29 @@ pub(super) fn base_command(program: impl AsRef<std::ffi::OsStr>, req: &StartAgen
     cmd
 }
 
-/// Register `session` under `new_id`; a resumed conversation drops its old ids.
-pub(super) fn rekey(registry: &Registry, session: &Arc<AgentSession>, new_id: &str, resumed: bool) {
+/// Register `session` under `new_id`; a resumed conversation drops its old
+/// ids. `false`, changing nothing, when another live session has that id:
+/// taking it would send that chat's clients and prompts here.
+pub(super) fn rekey(
+    registry: &Registry,
+    session: &Arc<AgentSession>,
+    new_id: &str,
+    resumed: bool,
+) -> bool {
     let mut registry = lock(registry);
+    if registry
+        .get(new_id)
+        .is_some_and(|s| !Arc::ptr_eq(s, session))
+    {
+        return false;
+    }
     if resumed {
         registry.retain(|_, s| !Arc::ptr_eq(s, session));
     }
     registry.insert(new_id.to_string(), session.clone());
     drop(registry);
     session.attention.sessions_changed();
+    true
 }
 
 impl AgentSession {
@@ -462,7 +491,7 @@ impl AgentSession {
         else {
             return false;
         };
-        self.apply_line(&entry.to_string(), |_, _| {});
+        self.apply_line(&entry.to_string(), |_, _| true);
         true
     }
 
@@ -957,10 +986,17 @@ impl AgentSession {
     /// Apply one line (codex's stdout, or a terminal plugin's post). `alias`
     /// registers the new id when `/clear` or `/resume` (`true`) moves the
     /// conversation — before any client hears of it, so a start or attach
-    /// with the new id can never open a second process.
-    pub(super) fn apply_line(&self, line: &str, alias: impl FnOnce(&str, bool)) {
+    /// with the new id can never open a second process — or refuses it
+    /// (`false`), and then the line isn't applied and this returns `false`.
+    pub(super) fn apply_line(&self, line: &str, alias: impl FnOnce(&str, bool) -> bool) -> bool {
         let _writer = lock(&self.writer);
         let mut d = lock(&self.driver);
+        // Before the driver resets anything, so a refusal leaves the chat whole.
+        if let Some((new_id, resumed)) = reset_target(line) {
+            if !alias(&new_id, resumed) {
+                return false;
+            }
+        }
         let effects = d.apply_line(line);
         for frame in &effects.frames {
             self.frames.emit(d.view(), frame.to_string());
@@ -995,7 +1031,6 @@ impl AgentSession {
                     self.cache_policies.set(&new_id, &policy);
                 }
             }
-            alias(&new_id, effects.resumed);
             // `/resume` continues a conversation that has history; `/clear`'s has
             // none yet. Read outside the driver lock (`writer` keeps the order).
             if matches!(&*d, Driver::Claude(_)) {
@@ -1010,7 +1045,7 @@ impl AgentSession {
             }
             self.touch(d.view());
             self.broadcast_snapshot(d.view());
-            return;
+            return true;
         }
         let view = d.view();
         if let Some(ready) = effects.ready {
@@ -1021,6 +1056,28 @@ impl AgentSession {
             self.broadcast_snapshot(view);
         } else if !effects.items.is_empty() || effects.meta {
             self.broadcast_update(view, &effects.items);
+        }
+        true
+    }
+
+    /// Approvals a Claude chat still shows as answerable.
+    pub(super) fn pending_approvals(&self) -> Vec<String> {
+        match &*lock(&self.driver) {
+            Driver::Claude(t) => t.pending_approval_ids(),
+            Driver::Codex(_) => Vec::new(),
+        }
+    }
+
+    /// Show a line from Workbench in a Claude chat.
+    pub(super) fn notice(&self, text: String) {
+        let mut d = lock(&self.driver);
+        let Driver::Claude(t) = &mut *d else {
+            return;
+        };
+        if let Some(i) = t.push_notice(uuid::Uuid::new_v4().to_string(), text) {
+            self.broadcast_update(d.view(), &[i]);
+            // Now: the chat may be let go of right after.
+            self.frames.flush(d.view());
         }
     }
 

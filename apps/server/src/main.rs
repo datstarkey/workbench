@@ -1,8 +1,16 @@
 use clap::Parser;
 use workbench_server::cli::Cli;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Before the runtime's threads start: changing the env isn't thread-safe.
+    workbench_core::shell::scrub_inherited_env();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()

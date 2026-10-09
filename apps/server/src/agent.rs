@@ -423,6 +423,17 @@ impl AgentManager {
         Ok(Some((token, env)))
     }
 
+    /// A terminal opened for a session may also attach as the id its
+    /// `/clear` or `/resume` moved it to; a plain shell is never pinned.
+    fn bind_grant(&self, token: &str, session_id: &str) {
+        if let Some(grant) = lock(&self.mod_grants).get_mut(token) {
+            if !grant.session_ids.is_empty() && !grant.session_ids.iter().any(|id| id == session_id)
+            {
+                grant.session_ids.push(session_id.to_string());
+            }
+        }
+    }
+
     /// Record which terminal a token was issued to.
     pub fn set_grant_terminal(&self, token: &str, terminal_id: &str) {
         if let Some(grant) = lock(&self.mod_grants).get_mut(token) {
@@ -455,12 +466,17 @@ impl AgentManager {
             self.revoke_grant(token);
             bail!("unknown terminal token");
         }
+        // Anything in the terminal holds its token (a prompt-injected Bash
+        // too): a terminal opened for a session attaches as nothing else.
+        if !grant.session_ids.is_empty() && !grant.session_ids.iter().any(|id| id == session_id) {
+            bail!("this terminal was opened for another session");
+        }
         // Answer what needs no history first: a re-attach, or a refusal.
         self.wait_exited(session_id);
         if let Some(existing) = self.get(session_id) {
             // The plugin's worker restarted (a hot reload, a respawn): its
             // session-only picks went with it.
-            if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
+            if let Some(link) = existing.mod_link().filter(|l| l.has_token(token)) {
                 link.touch();
                 self.send_picks(&existing, self.picks(session_id))?;
                 return Ok(existing);
@@ -479,7 +495,7 @@ impl AgentManager {
             self.ensure_exited(session_id)?;
             let stale = match self.get(session_id) {
                 Some(existing) => {
-                    if let Some(link) = existing.mod_link().filter(|l| l.token == token) {
+                    if let Some(link) = existing.mod_link().filter(|l| l.has_token(token)) {
                         link.touch();
                         self.send_picks(&existing, self.picks(session_id))?;
                         return Ok(existing);
@@ -547,7 +563,7 @@ impl AgentManager {
     /// only once the old terminal's `claude` went without saying so (stale).
     fn takes_over(&self, existing: &AgentSession, token: &str, session_id: &str) -> Result<()> {
         match existing.mod_link() {
-            Some(link) if link.is_stale() && link.token != token => Ok(()),
+            Some(link) if link.is_stale() && !link.has_token(token) => Ok(()),
             Some(_) => bail!("another terminal runs {session_id}"),
             None => bail!("a chat process already runs {session_id}"),
         }
@@ -734,7 +750,7 @@ impl AgentManager {
     /// The mod session `session_id` attached with `token`, or else the one the
     /// token attached under any id (`/clear` re-keyed it).
     pub fn mod_session(&self, token: &str, session_id: &str) -> Option<Arc<AgentSession>> {
-        let owned = |s: &Arc<AgentSession>| s.mod_link().is_some_and(|l| l.token == token);
+        let owned = |s: &Arc<AgentSession>| s.mod_link().is_some_and(|l| l.has_token(token));
         self.get(session_id)
             .filter(owned)
             .or_else(|| lock(&self.inner).values().find(|s| owned(s)).cloned())
@@ -749,18 +765,52 @@ impl AgentManager {
         epoch: Option<&str>,
         seq: Option<u64>,
     ) {
+        let mut let_go = false;
         let fold = |line: &serde_json::Value| {
+            if let_go {
+                return;
+            }
             if let Some(link) = session.mod_link() {
                 link.note_line(line);
             }
             self.forget_replaced_pick(session, line);
-            session.apply_line(&line.to_string(), |new_id, resumed| {
-                session::rekey(&self.inner, session, new_id, resumed)
+            // Anything in the terminal can post a reset: it may move the chat
+            // only to a well-formed id no other live session has.
+            let mut refused = None;
+            let applied = session.apply_line(&line.to_string(), |new_id, resumed| {
+                if claude::validate(new_id).is_err() {
+                    refused = Some(format!("The terminal moved to a session id Workbench can't use ({new_id:?})."));
+                    return false;
+                }
+                if !session::rekey(&self.inner, session, new_id, resumed) {
+                    refused = Some(format!("The terminal moved to session {new_id}, which another chat already has open."));
+                    return false;
+                }
+                if let Some(link) = session.mod_link() {
+                    self.bind_grant(&link.token, new_id);
+                }
+                true
             });
+            if !applied {
+                // The terminal's `claude` now runs another conversation: what
+                // it posts no longer belongs in this chat, so the chat lets go.
+                let why = refused.unwrap_or_default();
+                tracing::warn!("refused a conversation reset: {why}");
+                session.notice(format!(
+                    "{why} This chat let go of the terminal; open the session there to continue."
+                ));
+                self.detach(session);
+                let_go = true;
+                return;
+            }
             match line.get("type").and_then(serde_json::Value::as_str) {
                 Some("result") => {
                     session.learn_cache_ttl();
                     session.recheck_goal();
+                    // Asks the turn's end withdrew have nobody to answer.
+                    if let Some(link) = session.mod_link() {
+                        link.keep_asks(&session.pending_approvals());
+                    }
                 }
                 Some("assistant") => session.learn_cache_ttl_early(),
                 Some("workbench_goal_status") => {
@@ -1082,6 +1132,7 @@ mod tests {
             resume_at: None,
             permission_mode: None,
             terminal_id: None,
+            session_ids: Vec::new(),
         };
         let agents = AgentManager::default();
         assert!(
@@ -1116,6 +1167,7 @@ mod tests {
                 resume_at: None,
                 permission_mode: None,
                 terminal_id: None,
+                session_ids: Vec::new(),
             })
             .unwrap();
         let sid = "5e5e5e5e-0000-4000-8000-0000000000ad";

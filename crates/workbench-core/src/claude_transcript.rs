@@ -135,6 +135,8 @@ struct PendingApproval {
     item: usize,
     input: Value,
     suggestions: Value,
+    /// The tool call it is for: its result means nobody waits on the answer.
+    tool_use_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -528,16 +530,50 @@ impl Transcript {
     }
 
     fn expire_approval(&mut self, obj: &Value, changed: &mut Vec<usize>) {
-        let Some(id) = str_at(obj, "request_id") else {
-            return;
-        };
-        let Some(pending) = self.approvals.remove(id) else {
-            return;
-        };
-        if let TranscriptItem::Approval { expired, .. } = &mut self.items[pending.item] {
-            *expired = true;
+        if let Some(id) = str_at(obj, "request_id") {
+            self.expire_approvals(|r, _| r == id, changed);
         }
-        changed.push(pending.item);
+    }
+
+    /// Withdraw the open approvals `which` (request id, tool call) picks: no
+    /// hook waits on them any more, so a card left answerable would hold the
+    /// session "waiting" for nobody.
+    fn expire_approvals(
+        &mut self,
+        mut which: impl FnMut(&str, Option<&str>) -> bool,
+        changed: &mut Vec<usize>,
+    ) {
+        let items = &mut self.items;
+        self.approvals.retain(|id, pending| {
+            if !which(id, pending.tool_use_id.as_deref()) {
+                return true;
+            }
+            if let TranscriptItem::Approval { expired, .. } = &mut items[pending.item] {
+                *expired = true;
+            }
+            changed.push(pending.item);
+            false
+        });
+    }
+
+    fn background_agents_running(&self) -> bool {
+        self.meta.tasks.iter().any(|t| {
+            t.background && t.kind == "agent" && matches!(t.status.as_str(), "pending" | "running")
+        })
+    }
+
+    /// Show a line from Workbench itself in the chat; its index.
+    pub fn push_notice(&mut self, id: String, text: String) -> Option<usize> {
+        let mut changed = Vec::new();
+        self.upsert(
+            TranscriptItem::Notice {
+                id,
+                text,
+                in_terminal: false,
+            },
+            &mut changed,
+        );
+        changed.first().copied()
     }
 
     /// Mark a prompt as sent before the CLI echoes it, so the chat shows the
@@ -792,6 +828,7 @@ impl Transcript {
                 item,
                 input,
                 suggestions,
+                tool_use_id: str_at(req, "tool_use_id").map(String::from),
             },
         );
     }
@@ -815,7 +852,11 @@ impl Transcript {
                 self.meta.context_window = Some(window);
             }
         }
-        // Unanswered at the turn's end: the terminal's dialog went with it.
+        // Unanswered at the turn's end: whatever asked went with it, unless a
+        // background agent still runs and may be the one asking.
+        if !self.background_agents_running() {
+            self.expire_approvals(|_, _| true, changed);
+        }
         for (_, i) in self.terminal_elicitations.drain() {
             if elicitation::expire(&mut self.items, i) {
                 changed.push(i);
@@ -1001,6 +1042,9 @@ impl Transcript {
         let Some(tool_id) = str_at(block, "tool_use_id") else {
             return;
         };
+        // The call ran or was refused: an approval still open for it was
+        // answered elsewhere, or its asking hook died.
+        self.expire_approvals(|_, t| t == Some(tool_id), changed);
         let Some(&i) = self.index.get(tool_id) else {
             return;
         };
