@@ -124,8 +124,9 @@
 		{#if !open}
 			<button
 				type="button"
-				class="h-9 shrink-0 rounded-lg bg-wb-accent px-3 text-[12.5px] font-semibold text-wb-accent-ink active:brightness-90"
+				class="h-9 shrink-0 rounded-lg bg-wb-accent px-3 text-[12.5px] font-semibold text-wb-accent-ink active:brightness-90 disabled:opacity-50"
 				aria-label="Start Claude in {name}"
+				disabled={!!client.screens.starting}
 				onclick={() => client.start('claude', { projectPath: project.path })}
 			>
 				Claude

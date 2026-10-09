@@ -49,11 +49,35 @@ describe('legacyWorkspaces', () => {
 		]);
 	});
 
-	it('keeps one pane id before the plugin attaches and across /clear', () => {
+	it('keys a conversation by its current session, before and after its chat attaches', () => {
 		const before = legacyWorkspaces([], [terminal])[0].tabs[0].panes[0];
 		expect(before).toMatchObject({ id: 'claude:s1', status: 'starting', terminalId: 't1' });
+		expect(legacyWorkspaces([chat], [terminal])[0].tabs[0].panes[0].id).toBe('claude:s1');
 		const cleared = { ...chat, sessionId: 's2', previousIds: ['s1'] };
-		expect(legacyWorkspaces([cleared], [terminal])[0].tabs[0].panes[0].id).toBe('claude:s1');
+		expect(legacyWorkspaces([cleared], [terminal])[0].tabs[0].panes[0]).toMatchObject({
+			id: 'claude:s2',
+			previousIds: ['s1']
+		});
+	});
+
+	it('shows a conversation once: its live chat over a dead terminal of the same session', () => {
+		const dead = { ...terminal, id: 't0', alive: false };
+		const fresh = { ...terminal, id: 't2' };
+		const panes = legacyWorkspaces([{ ...chat, terminalId: 't2' }], [dead, fresh]).flatMap((w) =>
+			w.tabs.flatMap((t) => t.panes)
+		);
+		expect(panes.map((p) => [p.id, p.terminalId])).toEqual([['claude:s1', 't2']]);
+	});
+
+	it('never repeats a pane id, preferring a live terminal', () => {
+		const dead = { ...terminal, id: 't0', alive: false };
+		const ids = legacyWorkspaces([], [dead, terminal]).flatMap((w) =>
+			w.tabs.flatMap((t) => t.panes.map((p) => [p.id, p.terminalId]))
+		);
+		expect(ids).toEqual([
+			['claude:s1', 't1'],
+			['claude:s1~2', 't0']
+		]);
 	});
 
 	it('leaves out exited chats, and shows a plain terminal as a shell', () => {
@@ -85,7 +109,10 @@ describe('MobileClient commands on an older host', () => {
 						: terminals
 				),
 			'/agent': () => jsonResponse(chats),
-			'/agent/claude/s1': () => new Response(null, { status: 204 })
+			'/agent/claude/s1': () => new Response(null, { status: 204 }),
+			'/agent/claude/s1/message': () => new Response(null, { status: 204 }),
+			'/agent/claude/th': () => new Response(null, { status: 204 }),
+			'/agent/codex': () => jsonResponse({ sessionId: 'th' })
 		});
 		const c = new MobileClient();
 		c.url = 'box:4317';
@@ -113,6 +140,40 @@ describe('MobileClient commands on an older host', () => {
 			terminalId: 't9',
 			sessionId: create.body.claudeSession.id
 		});
+	});
+
+	it('the open screen follows its conversation across /clear', async () => {
+		let chats: unknown[] = [chat];
+		const { c } = await connected([terminal], []);
+		routeFetch({
+			...CONNECT_ROUTES,
+			'/remote/terminals': () => jsonResponse([terminal]),
+			'/agent': () => jsonResponse(chats)
+		});
+		await c.remote!.refresh();
+		c.openPane('claude:s1');
+		chats = [{ ...chat, sessionId: 's2', previousIds: ['s1'] }];
+		await c.remote!.refresh();
+		expect(c.screens.openPaneId).toBe('claude:s2');
+		expect(c.activePane?.pane.sessionId).toBe('s2');
+	});
+
+	it('restarts as the old chat did: Claude in place, Codex by stop and resume', async () => {
+		const codex = { ...chat, agent: 'codex', sessionId: 'th', terminalId: undefined };
+		const { c, sent } = await connected([terminal], [chat, codex]);
+		expect(c.canRestart(c.panes.find((e) => e.pane.id === 'claude:s1')!.pane)).toBe(true);
+		await c.restart('claude:s1');
+		await c.restart('codex:th');
+		expect(sent()).toEqual([
+			{ call: 'POST /agent/claude/s1/message', body: { t: 'restart' } },
+			{ call: 'DELETE /agent/claude/th', body: undefined },
+			{ call: 'POST /agent/codex', body: expect.objectContaining({ sessionId: 'th' }) }
+		]);
+	});
+
+	it('offers no Restart for a terminal without a chat', async () => {
+		const { c } = await connected([terminal]);
+		expect(c.canRestart(c.panes[0].pane)).toBe(false);
 	});
 
 	it('End on a chat ends its session everywhere', async () => {

@@ -1,11 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentSummary } from '@workbench/types';
-import { answerableFromHome, pathKey, repoLabel, tildePath, waitingLabel } from './home-format.ts';
+import {
+	age,
+	answerableFromHome,
+	pathKey,
+	repoLabel,
+	tildePath,
+	waitingLabel
+} from './home-format.ts';
 
 const approval = (tool: string): NonNullable<AgentSummary['waiting']> => ({
 	id: 'r1',
 	tool,
 	preview: ''
+});
+
+describe('age', () => {
+	it('rounds down to minutes, hours, then days', () => {
+		const now = 10 * 86_400_000;
+		expect(age(now - 30_000, now)).toBe('now');
+		expect(age(now - 12 * 60_000, now)).toBe('12m');
+		expect(age(now - 3 * 3_600_000, now)).toBe('3h');
+		expect(age(now - 50 * 3_600_000, now)).toBe('2d');
+	});
 });
 
 describe('repoLabel', () => {

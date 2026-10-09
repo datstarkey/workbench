@@ -130,7 +130,7 @@ describe('MobileClient with several machines', () => {
 
 		expect(c.store).not.toBe(pcStore);
 		expect(c.store).not.toBeNull();
-		expect(c.openPaneId).toBeNull();
+		expect(c.screens.openPaneId).toBeNull();
 		expect(c.connection).toEqual({ url: url('mac'), token: tokenOf('mac') });
 		expect(c.machine?.url).toBe(url('mac'));
 		expect(new MobileClient().machines.active?.url).toBe(url('mac'));
@@ -147,7 +147,7 @@ describe('MobileClient with several machines', () => {
 		await c.switchTo(idOf(c, 'mac'));
 
 		expect(c.store).toBe(store);
-		expect(c.openPaneId).toBe('pane');
+		expect(c.screens.openPaneId).toBe('pane');
 		expect(c.machine?.url).toBe(url('pc'));
 		expect(c.machines.active?.url).toBe(url('pc'));
 		expect(c.notice).toMatch(/Couldn't switch to mac: .*fetch/i);
@@ -213,7 +213,7 @@ describe('MobileClient with several machines', () => {
 		await opening;
 
 		expect(hosts.pc.calls.slice(pcCalls)).toEqual([]);
-		expect(c.openPaneId).toBeNull();
+		expect(c.screens.openPaneId).toBeNull();
 		expect(c.panes).toEqual([]);
 		expect(c.notice).toBeNull();
 	});
@@ -328,6 +328,6 @@ describe('MobileClient with several machines', () => {
 		late.release();
 		await opening;
 		expect(c.panes).toEqual([]);
-		expect(c.openPaneId).toBeNull();
+		expect(c.screens.openPaneId).toBeNull();
 	});
 });

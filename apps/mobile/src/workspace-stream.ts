@@ -22,7 +22,14 @@ export interface WorkspacePane {
 	status: PaneStatus;
 	title: string | null;
 	busy: boolean;
+	/** Unix ms: the current turn's start, the last turn's end. */
+	busySince: number | null;
+	turnEndedAt: number | null;
+	/** The tool call the turn is running. */
+	running: AgentSummary['running'];
 	waiting: AgentSummary['waiting'];
+	/** Unix ms the pane started waiting on `waiting`. */
+	waitingSince: number | null;
 	error: string | null;
 }
 
@@ -66,12 +73,13 @@ export type WorkspaceCommand =
 	| { type: 'restart'; tabId: string }
 	| { type: 'trustFolder'; paneId: string };
 
-/** Answered once a snapshot at `rev` shows the command. */
+/** Answered once a snapshot at `rev` shows the command; `error` when the model refused it. */
 export interface CommandResult {
 	rev: number;
 	workspaceId?: string | null;
 	tabId?: string | null;
 	paneId?: string | null;
+	error?: string;
 }
 
 export interface WorkspaceServer {
@@ -79,21 +87,42 @@ export interface WorkspaceServer {
 	token: string;
 }
 
-/** Send one command; rejects with the server's reason when the model refuses it. */
-export async function workspaceCommand(
+/** The two workspace routes, shaped like `@workbench/transport`'s so it can replace this. */
+export interface WorkspaceTransport {
+	/** Rejects only when the host can't be reached; a refusal resolves with `error`. */
+	workspaceCommand(cmd: WorkspaceCommand): Promise<CommandResult>;
+	/** Follow the snapshots until the returned function is called. */
+	subscribeWorkspace(
+		onSnapshot: (snapshot: WorkspaceSnapshot) => void,
+		onStatus?: (live: boolean) => void
+	): () => void;
+}
+
+export function createWorkspaceTransport(
 	server: WorkspaceServer,
-	cmd: WorkspaceCommand,
-	fetchImpl: typeof fetch = fetch
-): Promise<CommandResult> {
-	const res = await fetchImpl(`${server.url}/workspace/commands`, {
-		method: 'POST',
-		headers: { 'content-type': 'application/json', authorization: `Bearer ${server.token}` },
-		body: JSON.stringify(cmd),
-		signal: AbortSignal.timeout(30_000)
-	});
-	const body = (await res.json().catch(() => null)) as (CommandResult & { error?: string }) | null;
-	if (!res.ok || !body) throw new Error(body?.error || `the server returned ${res.status}`);
-	return body;
+	openEventSource?: OpenEventSource
+): WorkspaceTransport {
+	return {
+		async workspaceCommand(cmd) {
+			const res = await fetch(`${server.url}/workspace/commands`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json', authorization: `Bearer ${server.token}` },
+				body: JSON.stringify(cmd),
+				signal: AbortSignal.timeout(30_000)
+			});
+			const body = (await res.json().catch(() => null)) as CommandResult | null;
+			if (body && (res.ok || body.error)) return body;
+			throw new Error(`the server returned ${res.status}`);
+		},
+		subscribeWorkspace(onSnapshot, onStatus = () => {}) {
+			const stream = new WorkspaceStream(
+				{ snapshot: onSnapshot, status: onStatus },
+				openEventSource
+			);
+			stream.follow(server);
+			return () => stream.follow(null);
+		}
+	};
 }
 
 const BASE_RETRY_MS = 1000;

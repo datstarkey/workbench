@@ -24,7 +24,11 @@ function pane(id: string, extra: Partial<WorkspacePane> = {}): WorkspacePane {
 		status: 'running',
 		title: null,
 		busy: false,
+		busySince: null,
+		turnEndedAt: null,
+		running: null,
 		waiting: null,
+		waitingSince: null,
 		error: null,
 		...extra
 	};
@@ -101,7 +105,7 @@ describe('MobileClient on a host with the workspace API', () => {
 		expect(commands).toEqual([
 			{ type: 'newSession', projectPath: '/repo', projectName: 'repo', kind: 'claude' }
 		]);
-		expect(c.openPaneId).toBe('p1');
+		expect(c.screens.openPaneId).toBe('p1');
 
 		snapshot(1, workspace(pane('p1')));
 		expect(c.activePane?.pane.id).toBe('p1');
@@ -112,6 +116,7 @@ describe('MobileClient on a host with the workspace API', () => {
 		await vi.waitFor(() => expect(c.store?.projects).toHaveLength(1));
 		await c.store!.loadWorktrees('/repo');
 		await c.start('codex', { projectPath: '/repo' });
+		snapshot(1, workspace(pane('p1', { kind: 'codex', codexMode: 'appServer' })));
 		await c.start('shell', { projectPath: '/repo', worktreePath: '/repo-wt' });
 		expect(commands).toEqual([
 			{
@@ -169,7 +174,91 @@ describe('MobileClient on a host with the workspace API', () => {
 		c.openPane('p1');
 		await c.endPane('p1');
 		expect(commands).toEqual([{ type: 'closePane', paneId: 'p1' }]);
-		expect(c.openPaneId).toBeNull();
+		snapshot(2, workspace());
+		expect(c.screens.openPaneId).toBeNull();
+	});
+
+	it('shows Starting at once, takes one start at a time, and opens the pane once shown', async () => {
+		let answer!: () => void;
+		reply = () => jsonResponse({ rev: 1, paneId: 'p1' });
+		const { c } = await connected({
+			'/workspace/commands': async (init) => {
+				commands.push(JSON.parse(String(init?.body)));
+				await new Promise<void>((done) => (answer = done));
+				return reply({});
+			}
+		});
+		const first = c.start('claude', { projectPath: '/repo' });
+		expect(c.screens.starting).toEqual({ kind: 'claude' });
+		await c.start('shell', { projectPath: '/repo' });
+		expect(commands).toHaveLength(1);
+
+		answer();
+		await first;
+		expect(c.screens.starting).not.toBeNull();
+		expect(c.activePane).toBeNull();
+		snapshot(1, workspace(pane('p1')));
+		expect(c.screens.starting).toBeNull();
+		expect(c.activePane?.pane.id).toBe('p1');
+	});
+
+	it('gives up on a start the host never shows', async () => {
+		const { c } = await connected();
+		vi.useFakeTimers();
+		await c.start('claude', { projectPath: '/repo' });
+		await vi.advanceTimersByTimeAsync(15_000);
+		vi.useRealTimers();
+		expect(c.screens.starting).toBeNull();
+		expect(c.screens.openPaneId).toBeNull();
+		expect(c.notice).toMatch(/did not show up/);
+	});
+
+	it('Back during a start drops it, and the late answer opens nothing', async () => {
+		let answer!: () => void;
+		const { c } = await connected({
+			'/workspace/commands': async () => {
+				await new Promise<void>((done) => (answer = done));
+				return jsonResponse({ rev: 1, paneId: 'p1' });
+			}
+		});
+		const starting = c.start('shell', { projectPath: '/repo' });
+		c.closeScreen();
+		answer();
+		await starting;
+		snapshot(1, workspace(pane('p1', { kind: 'shell' })));
+		expect(c.activePane).toBeNull();
+	});
+
+	it('a chat re-attaches while its pane relaunches, instead of failing', async () => {
+		const { c } = await connected();
+		snapshot(1, workspace(pane('p1', { sessionId: 's' })));
+		const gone = Object.assign(new Error('no chat session'), { status: 404, ended: false });
+		const start = vi
+			.spyOn(c.agents, 'start')
+			.mockRejectedValueOnce(gone)
+			.mockResolvedValueOnce('s');
+		const attaching = c.attachApi.start({ projectPath: '/repo', sessionId: 's' });
+		await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+		snapshot(2, workspace(pane('p1', { sessionId: 's', status: 'running' })));
+		await expect(attaching).resolves.toBe('s');
+		expect(start).toHaveBeenLastCalledWith({
+			projectPath: '/repo',
+			sessionId: 's',
+			attachOnly: true
+		});
+	});
+
+	it('an attach to a session no pane holds fails at once', async () => {
+		const { c } = await connected();
+		const gone = Object.assign(new Error('no chat session'), { status: 404, ended: false });
+		vi.spyOn(c.agents, 'start').mockRejectedValue(gone);
+		await expect(c.attachApi.start({ projectPath: '/repo', sessionId: 'x' })).rejects.toBe(gone);
+	});
+
+	it("a chat's account is the pane's, from the host", async () => {
+		const { c } = await connected();
+		snapshot(1, workspace(pane('p1', { accountId: 'work' })));
+		expect(c.chatRef(c.panes[0]).claudeAccountId).toBe('work');
 	});
 
 	it('Restart and Trust are commands on the tab and pane', async () => {
@@ -227,7 +316,7 @@ describe('MobileClient on a host with the workspace API', () => {
 			title: null,
 			claudeAccountId: null
 		});
-		expect(c.openPaneId).toBe('p1');
+		expect(c.screens.openPaneId).toBe('p1');
 		expect(c.paneView(c.activePane!.pane)).toBe('chat');
 	});
 

@@ -13,6 +13,7 @@ import type {
 } from '@workbench/types';
 import { baseName, pathKey } from './home-format.ts';
 import { HomeStream } from './home-stream.ts';
+import { paneEntries, type PaneEntry } from './panes.ts';
 import type { PaneRemote } from './remote.svelte.ts';
 import type {
 	CommandResult,
@@ -26,13 +27,20 @@ import type {
 /** List refresh while the app is in front and the event stream is down. */
 const POLL_MS = 4000;
 
-/** A conversation keeps one pane id across `/clear` (its first id) and before its chat attaches. */
-const sessionPaneId = (kind: string, ids: string[]) => `${kind}:${ids[0]}`;
-
-/** Chats and terminals as one pane each, grouped by the folder they run in. */
+/**
+ * Chats and terminals as one pane each, grouped by the folder they run in. A
+ * conversation's pane is `<kind>:<its current session id>` (a screen follows it
+ * across `/clear` through `previousIds`); a live chat wins over any terminal
+ * of the same conversation, and a live terminal over a dead one.
+ */
 export function legacyWorkspaces(chats: AgentSummary[], terminals: TerminalMeta[]): Workspace[] {
 	const workspaces: Record<string, Workspace> = {};
+	const taken: Record<string, true> = {};
 	const add = (projectPath: string, worktreePath: string | undefined, pane: WorkspacePane) => {
+		// Ids must stay unique: Home keys its rows by them.
+		let id = pane.id;
+		for (let n = 2; taken[id]; n++) id = `${pane.id}~${n}`;
+		taken[id] = true;
 		const key = pathKey(worktreePath ?? projectPath);
 		const ws = (workspaces[key] ??= {
 			id: key,
@@ -42,17 +50,23 @@ export function legacyWorkspaces(chats: AgentSummary[], terminals: TerminalMeta[
 			tabs: []
 		});
 		ws.tabs.push({
-			id: pane.id,
+			id,
 			label: pane.title ?? baseName(key),
 			kind: pane.kind,
-			panes: [pane]
+			panes: [{ ...pane, id }]
 		});
 	};
 	const live = chats.filter((c) => !c.exited);
-	const backing = live.map((c) => c.terminalId);
+	const chatOwns = (t: TerminalMeta) =>
+		live.some(
+			(c) =>
+				c.terminalId === t.id ||
+				(!!t.claudeSessionId &&
+					(c.sessionId === t.claudeSessionId || c.previousIds.includes(t.claudeSessionId)))
+		);
 	for (const c of live) {
 		add(c.projectPath, c.worktreePath ?? undefined, {
-			id: sessionPaneId(c.agent, [...c.previousIds, c.sessionId]),
+			id: `${c.agent}:${c.sessionId}`,
 			kind: c.agent,
 			sessionId: c.sessionId,
 			previousIds: c.previousIds,
@@ -62,15 +76,19 @@ export function legacyWorkspaces(chats: AgentSummary[], terminals: TerminalMeta[
 			status: 'running',
 			title: c.title,
 			busy: c.busy,
+			busySince: c.busySince,
+			turnEndedAt: c.turnEndedAt ?? null,
+			running: c.running,
 			waiting: c.waiting,
+			waitingSince: c.waiting ? c.updatedAt : null,
 			error: null
 		});
 	}
-	for (const t of terminals) {
-		if (backing.includes(t.id)) continue;
+	const others = terminals.filter((t) => !chatOwns(t)).sort((a, b) => +b.alive - +a.alive);
+	for (const t of others) {
 		const claude = t.claudeSessionId;
 		add(t.cwd, undefined, {
-			id: claude ? sessionPaneId('claude', [claude]) : `term:${t.id}`,
+			id: claude ? `claude:${claude}` : `term:${t.id}`,
 			kind: claude ? 'claude' : 'shell',
 			...(claude ? { sessionId: claude } : {}),
 			terminalId: t.id,
@@ -78,7 +96,11 @@ export function legacyWorkspaces(chats: AgentSummary[], terminals: TerminalMeta[
 			status: !t.alive ? 'exited' : claude ? 'starting' : 'running',
 			title: t.name ?? null,
 			busy: !!t.busy,
+			busySince: null,
+			turnEndedAt: null,
+			running: null,
 			waiting: null,
+			waitingSince: null,
 			error: null
 		});
 	}
@@ -91,6 +113,7 @@ export class LegacyRemote implements PaneRemote {
 	/** Counts list updates: what a command's result reports as its `rev`. */
 	private rev = 0;
 	online = $state(true);
+	onChange: (() => void) | null = null;
 	workspaces = $derived(legacyWorkspaces(this.chats, this.terminals));
 	private readonly server: WorkspaceServer;
 	/** Bound to this host: a late call after a switch never reaches the next machine. */
@@ -122,6 +145,7 @@ export class LegacyRemote implements PaneRemote {
 		if (lists.chats) this.chats = lists.chats;
 		if (lists.terminals) this.terminals = lists.terminals;
 		this.rev++;
+		this.onChange?.();
 	}
 
 	follow(on: boolean): void {
@@ -141,6 +165,7 @@ export class LegacyRemote implements PaneRemote {
 	dispose(): void {
 		this.follow(false);
 		this.disposed = true;
+		this.onChange = null;
 	}
 
 	async refresh(): Promise<void> {
@@ -180,13 +205,8 @@ export class LegacyRemote implements PaneRemote {
 		return { authorization: `Bearer ${this.server.token}` };
 	}
 
-	private pane(id: string): { ws: Workspace; pane: WorkspacePane } | null {
-		for (const ws of this.workspaces)
-			for (const tab of ws.tabs) {
-				const pane = tab.panes.find((p) => p.id === id);
-				if (pane) return { ws, pane };
-			}
-		return null;
+	private pane(id: string): PaneEntry | null {
+		return paneEntries(this.workspaces).find((e) => e.pane.id === id) ?? null;
 	}
 
 	async command(cmd: WorkspaceCommand): Promise<CommandResult> {
@@ -197,7 +217,7 @@ export class LegacyRemote implements PaneRemote {
 				if (cmd.kind === 'codex') {
 					const id = await this.agents.start({ agent: 'codex', ...where, sessionId: cmd.resume });
 					await this.refresh();
-					return { rev: this.rev, paneId: sessionPaneId('codex', [id]) };
+					return { rev: this.rev, paneId: `codex:${id}` };
 				}
 				const sessionId = cmd.kind === 'claude' ? (cmd.resume ?? crypto.randomUUID()) : null;
 				const meta = await this.createTerminal({
@@ -210,7 +230,7 @@ export class LegacyRemote implements PaneRemote {
 				});
 				return {
 					rev: this.rev,
-					paneId: sessionId ? sessionPaneId('claude', [sessionId]) : `term:${meta.id}`
+					paneId: sessionId ? `claude:${sessionId}` : `term:${meta.id}`
 				};
 			}
 			case 'closePane':
@@ -218,22 +238,39 @@ export class LegacyRemote implements PaneRemote {
 				await this.end('paneId' in cmd ? cmd.paneId : cmd.tabId);
 				return { rev: this.rev };
 			case 'restart': {
-				const found = this.pane(cmd.tabId);
-				if (!found?.pane.sessionId || found.pane.kind === 'shell')
-					throw new Error('Only a Claude or Codex session can restart');
-				await this.agents.start({
-					agent: found.pane.kind,
-					projectPath: found.ws.projectPath,
-					worktreePath: found.ws.worktreePath,
-					sessionId: found.pane.sessionId,
-					claudeAccountId: found.pane.accountId
-				});
+				await this.restart(cmd.tabId);
 				await this.refresh();
 				return { rev: this.rev };
 			}
 			default:
 				throw new Error('This machine needs a newer Workbench');
 		}
+	}
+
+	/** Only a running chat can restart: the old routes have nothing for a bare terminal. */
+	canRestart(pane: WorkspacePane): boolean {
+		return (
+			pane.kind !== 'shell' && this.chats.some((c) => !c.exited && c.sessionId === pane.sessionId)
+		);
+	}
+
+	/** As the old chat did: Claude restarts in its terminal, Codex stops and resumes. */
+	private async restart(paneId: string): Promise<void> {
+		const found = this.pane(paneId);
+		const sessionId = found?.pane.sessionId;
+		if (!found || !sessionId || found.pane.kind === 'shell')
+			throw new Error('Only a Claude or Codex session can restart');
+		if (found.pane.kind === 'claude') {
+			await this.agents.send(sessionId, { t: 'restart' });
+			return;
+		}
+		await this.agents.stop(sessionId);
+		await this.agents.start({
+			agent: 'codex',
+			projectPath: found.workspace.projectPath,
+			worktreePath: found.workspace.worktreePath,
+			sessionId
+		});
 	}
 
 	/** End a chat's session, else close its terminal (which ends a chat it hosts). */

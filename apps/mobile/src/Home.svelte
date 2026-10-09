@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { AgentIcon } from '@workbench/ui/agent-icon';
+	import { onMount } from 'svelte';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import XIcon from '@lucide/svelte/icons/x';
-	import { shortPath } from '@workbench/chat-ui';
+	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { MobileClient } from './client.svelte.ts';
-	import { answerableFromHome, waitingLabel } from './home-format.ts';
+	import { age, answerableFromHome, waitingLabel } from './home-format.ts';
 	import MachinesSheet from './MachinesSheet.svelte';
 	import { paneTitle, workspaceLabel, type PaneEntry } from './panes.ts';
 	import ProjectList from './ProjectList.svelte';
@@ -27,6 +28,13 @@
 		client.connecting ? 'switching' : client.online ? 'connected' : 'not responding'
 	);
 
+	/** Re-render relative times without refetching. */
+	let now = $state(Date.now());
+	onMount(() => {
+		const timer = setInterval(() => (now = Date.now()), 30_000);
+		return () => clearInterval(timer);
+	});
+
 	const needsYou = $derived(client.panes.filter((e) => e.pane.waiting && e.pane.sessionId));
 	/** The host's workspaces as it orders them, each with its panes. */
 	const running = $derived(
@@ -39,11 +47,16 @@
 	);
 	const runningCount = $derived(running.reduce((n, group) => n + group.entries.length, 0));
 
-	function activity({ pane }: PaneEntry): string {
+	function activity({ pane, workspace }: PaneEntry): string {
 		if (pane.status === 'needsTrust') return 'Needs folder trust';
 		if (pane.status === 'starting') return 'Starting';
 		if (pane.status === 'exited') return 'Exited';
 		if (pane.kind === 'shell') return 'Terminal';
+		if (pane.running)
+			return (
+				shortPath(pane.running.detail, workspace.worktreePath ?? workspace.projectPath) ||
+				pane.running.name
+			);
 		return pane.busy ? 'Thinking' : 'Your turn';
 	}
 </script>
@@ -128,6 +141,11 @@
 									>codex</span
 								>
 							{/if}
+							{#if pane.waitingSince}
+								<span class="ml-auto font-mono text-[11px] text-wb-ink-soft"
+									>{age(pane.waitingSince, now)}</span
+								>
+							{/if}
 						</div>
 						<span class="truncate text-[14px] font-semibold">{paneTitle(entry)}</span>
 						{#if answerableFromHome(waiting)}
@@ -208,20 +226,35 @@
 									</span>
 									<span class="flex min-w-0 flex-col">
 										<span class="truncate text-[13.5px] font-medium">{title}</span>
-										<span class="flex items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
-											{#if pane.busy}<span class="spinner size-3 shrink-0"></span>{/if}
-											<span class="truncate">{activity(entry)}</span>
-										</span>
+										<span
+											class={cn(
+												'truncate text-[11.5px] text-wb-ink-mute',
+												pane.running && 'font-mono text-[11px] text-wb-ink'
+											)}>{activity(entry)}</span
+										>
+									</span>
+									<span
+										class="ml-auto flex shrink-0 flex-col items-end gap-1 font-mono text-[11px] text-wb-ink-soft"
+									>
+										{#if pane.busy && pane.busySince}
+											<span class="spinner size-3"></span>
+											<Elapsed since={pane.busySince} />
+										{:else if pane.turnEndedAt}
+											{age(pane.turnEndedAt, now)}
+										{/if}
 									</span>
 								</button>
-								<button
-									type="button"
-									class="grid size-8 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-err"
-									aria-label="End {title}"
-									onclick={() => client.endPane(pane.id)}
-								>
-									<XIcon class="size-4" />
-								</button>
+								<!-- Ending a Claude or Codex session is in its chat's menu, not one stray tap away. -->
+								{#if pane.kind === 'shell'}
+									<button
+										type="button"
+										class="grid size-8 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-err"
+										aria-label="Close {title}"
+										onclick={() => client.endPane(pane.id)}
+									>
+										<XIcon class="size-4" />
+									</button>
+								{/if}
 							</div>
 						{/each}
 					</div>

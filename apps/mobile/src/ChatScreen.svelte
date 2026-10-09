@@ -61,7 +61,8 @@
 		client.attachApi,
 		{ draft: drafts.get(opened), reconnectOnWake: true }
 	);
-	chat.onAccount = (accountId) => client.updateChatAccount(paneId, accountId);
+	// Restart / Try again on an ended chat restarts the pane on the host; the attach then waits for it.
+	chat.onTakeOver = () => void client.restart(entry.tab.id);
 	const draft = chat.draft;
 	const name = agentName(chat.agent);
 	const isClaude = chat.agent === 'claude';
@@ -186,9 +187,11 @@
 					>Review changes</DropdownMenu.Item
 				>
 				<DropdownMenu.Item onSelect={() => chat.open()}>Reconnect</DropdownMenu.Item>
-				<DropdownMenu.Item onSelect={() => client.restart(entry.tab.id)}
-					>Restart session</DropdownMenu.Item
-				>
+				{#if client.canRestart(entry.pane)}
+					<DropdownMenu.Item onSelect={() => client.restart(entry.tab.id)}
+						>Restart session</DropdownMenu.Item
+					>
+				{/if}
 				<DropdownMenu.Item class="text-wb-err" onSelect={() => client.endPane(paneId)}>
 					End session
 				</DropdownMenu.Item>

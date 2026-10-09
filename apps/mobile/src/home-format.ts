@@ -2,6 +2,15 @@ import { baseName, type AgentSummary } from '@workbench/types';
 
 type Waiting = NonNullable<AgentSummary['waiting']>;
 
+/** "now", "4m", "2h", "3d": how long since `then` (both unix ms). */
+export function age(then: number, now: number): string {
+	const mins = Math.floor((now - then) / 60_000);
+	if (mins < 1) return 'now';
+	if (mins < 60) return `${mins}m`;
+	const hours = Math.floor(mins / 60);
+	return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
 /** "github.com/o/r": a repo web URL without its scheme. */
 export function repoLabel(url: string): string {
 	return url.replace(/^https?:\/\//, '');

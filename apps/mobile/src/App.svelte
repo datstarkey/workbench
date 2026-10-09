@@ -6,6 +6,7 @@
 	import Home from './Home.svelte';
 	import MachineList from './MachineList.svelte';
 	import PaneScreen from './PaneScreen.svelte';
+	import PaneWaiting from './PaneWaiting.svelte';
 	import ScanOverlay from './ScanOverlay.svelte';
 	import { MobileClient } from './client.svelte.ts';
 	import UpdateBanner from './UpdateBanner.svelte';
@@ -56,6 +57,8 @@
 	{#key c.activePane.pane.id}
 		<PaneScreen client={c} entry={c.activePane} />
 	{/key}
+{:else if c.screens.starting && c.store}
+	<PaneWaiting client={c} starting={c.screens.starting.kind} />
 {:else if c.store}
 	<div class="flex h-full flex-col">
 		<div class="min-h-0 flex-1"><Home client={c} /></div>

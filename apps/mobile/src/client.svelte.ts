@@ -12,7 +12,14 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { HostUpdate } from './host-update.svelte.ts';
 import { LegacyRemote } from './legacy-remote.svelte.ts';
 import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
-import { findPane, paneEntries, paneTitle, type PaneEntry } from './panes.ts';
+import {
+	attachThroughRelaunch,
+	findPane,
+	paneEntries,
+	paneTitle,
+	type PaneEntry
+} from './panes.ts';
+import { PaneScreens } from './pane-screens.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { WorkspaceRemote, type PaneRemote } from './remote.svelte.ts';
 import { verifyServer } from './server-check.ts';
@@ -78,13 +85,8 @@ export class MobileClient {
 	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
 	/** Why the last action failed; shown on whichever screen is up. */
 	notice = $state<string | null>(null);
-	/** The pane whose screen is open. It closes when the pane leaves the host's model. */
-	openPaneId = $state<string | null>(null);
-	/** Chat or Terminal per Claude pane: this phone's presentation only. */
-	views = $state<Record<string, ClaudeView>>({});
-	/** Bumped to remount the chat screen (it moved to another Claude account). */
-	chatScreenKey = $state(0);
-	private chatAccounts: Record<string, string | undefined> = {};
+	/** The open screen and a start in flight; it closes when its pane leaves the host's model. */
+	screens = $state.raw(this.newScreens());
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
 
 	readonly agents = agentClient(() => ({
@@ -94,12 +96,17 @@ export class MobileClient {
 	/** Chat screens only ever attach: starting a process is a command. */
 	readonly attachApi: AgentApi = {
 		...this.agents,
-		start: (body) => this.agents.start({ ...body, attachOnly: true })
+		start: (body) =>
+			attachThroughRelaunch(
+				() => this.agents.start({ ...body, attachOnly: true }),
+				() => !!findPane(this.panes, { sessionId: body.sessionId }),
+				(ms) => this.screens.nextChange(ms)
+			)
 	};
 
 	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
 	panes = $derived(paneEntries(this.remote?.workspaces ?? []));
-	activePane = $derived(this.panes.find((e) => e.pane.id === this.openPaneId) ?? null);
+	activePane = $derived(this.panes.find((e) => e.pane.id === this.screens.openPaneId) ?? null);
 	online = $derived(this.remote?.online ?? true);
 
 	private readonly pairing: PairingScan;
@@ -219,6 +226,7 @@ export class MobileClient {
 				? new WorkspaceRemote(this.connection, this.openEventSource)
 				: new LegacyRemote(this.connection, this.openEventSource);
 			this.remote = remote;
+			remote.onChange = () => this.screens.reconcile();
 			remote.follow(this.visible);
 			await Promise.all([remote instanceof LegacyRemote && remote.refresh(), this.loadAccounts()]);
 		} catch (e) {
@@ -300,9 +308,8 @@ export class MobileClient {
 		this.accountId = undefined;
 		this.machineId = null;
 		this.projectPrefs = new ProjectPrefs('disconnected');
-		this.openPaneId = null;
-		this.views = {};
-		this.chatAccounts = {};
+		this.screens.close();
+		this.screens = this.newScreens();
 		this.notice = null;
 	}
 
@@ -345,7 +352,9 @@ export class MobileClient {
 		this.notice = null;
 		try {
 			const result = await remote.command(cmd);
-			return live() ? result : null;
+			if (!live()) return null;
+			if (result.error) throw new Error(result.error);
+			return result;
 		} catch (e) {
 			if (live()) this.notice = `${failure}: ${errorText(e)}`;
 			return null;
@@ -367,6 +376,8 @@ export class MobileClient {
 		opts: { resume?: string; accountId?: string },
 		view?: ClaudeView
 	): Promise<void> {
+		if (!this.remote || !this.screens.begin(kind)) return;
+		const screens = this.screens;
 		const project = this.store?.projects.find((p) => p.path === projectPath);
 		const branch = worktreePath
 			? this.store?.worktrees[projectPath]?.find((w) => w.path === worktreePath)?.branch
@@ -389,42 +400,38 @@ export class MobileClient {
 			},
 			kind === 'shell' ? "Couldn't open a terminal" : `Couldn't start ${agentName(kind)}`
 		);
-		if (result?.paneId) this.openPane(result.paneId, view);
+		screens.started(result?.paneId, view);
+	}
+
+	private newScreens(): PaneScreens {
+		return new PaneScreens(
+			() => this.panes,
+			() => (this.notice = 'The new session did not show up on the host in time.')
+		);
 	}
 
 	/** Show a pane's screen; `view` picks Chat or Terminal for a Claude pane. */
 	openPane(paneId: string, view?: ClaudeView): void {
 		this.notice = null;
-		const known = this.panes.map((e) => e.pane.id);
-		const views = Object.fromEntries(
-			Object.entries(this.views).filter(([id]) => known.includes(id))
-		);
-		this.views = view ? { ...views, [paneId]: view } : views;
-		this.openPaneId = paneId;
+		this.screens.open(paneId, view);
 	}
 
 	/** Back: navigation only. The session keeps running on the host. */
-	closeScreen = (): void => {
-		this.openPaneId = null;
-	};
+	closeScreen = (): void => this.screens.close();
 
 	/** What the phone shows for a pane: Claude per the phone's pick, Codex by its process. */
-	paneView(pane: WorkspacePane): ClaudeView {
-		if (pane.kind === 'shell') return 'terminal';
-		if (pane.kind === 'codex') return pane.codexMode === 'appServer' ? 'chat' : 'terminal';
-		return this.views[pane.id] ?? this.defaultView;
-	}
+	paneView = (pane: WorkspacePane): ClaudeView => this.screens.paneView(pane, this.defaultView);
 
 	setView(paneId: string, view: ClaudeView): void {
 		this.notice = null;
-		this.views = { ...this.views, [paneId]: view };
+		this.screens.setView(paneId, view);
 	}
 
-	/** End: the pane goes on every device, like the desktop's ×. */
-	async endPane(paneId: string): Promise<void> {
-		const result = await this.send({ type: 'closePane', paneId }, "Couldn't end the session");
-		if (result && this.openPaneId === paneId) this.openPaneId = null;
-	}
+	/** End: the pane goes on every device, like the desktop's ×; its screen closes when it leaves. */
+	endPane = (paneId: string) =>
+		this.send({ type: 'closePane', paneId }, "Couldn't end the session");
+
+	canRestart = (pane: WorkspacePane): boolean => !!this.remote?.canRestart(pane);
 
 	restart = (tabId: string) =>
 		this.send({ type: 'restart', tabId }, "Couldn't restart the session");
@@ -434,21 +441,14 @@ export class MobileClient {
 
 	chatRef(entry: PaneEntry): ChatRef {
 		const { workspace, pane } = entry;
-		const accountId = pane.id in this.chatAccounts ? this.chatAccounts[pane.id] : pane.accountId;
 		return {
 			sessionId: pane.sessionId ?? '',
 			...(pane.kind === 'codex' ? { agent: 'codex' as const } : {}),
 			projectPath: workspace.projectPath,
 			...(workspace.worktreePath ? { worktreePath: workspace.worktreePath } : {}),
 			name: paneTitle(entry),
-			...(accountId ? { claudeAccountId: accountId } : {})
+			...(pane.accountId ? { claudeAccountId: pane.accountId } : {})
 		};
-	}
-
-	/** The open chat moved to another Claude account: remount it for that login's usage. */
-	updateChatAccount(paneId: string, accountId: string | undefined): void {
-		this.chatAccounts[paneId] = accountId;
-		this.chatScreenKey++;
 	}
 
 	/** A notification opens the pane that runs its session; it never starts one. */
@@ -468,7 +468,7 @@ export class MobileClient {
 		}
 		const found = find();
 		if (!found) {
-			this.openPaneId = null;
+			this.screens.close();
 			this.notice = chat.terminalOnly
 				? 'This Codex terminal is available on the desktop.'
 				: 'That session is no longer running.';

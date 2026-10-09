@@ -21,16 +21,19 @@
 		wide?: boolean;
 	} = $props();
 	const folder = $derived({ projectPath, worktreePath });
+	/** One start at a time: the host shows it before another can go. */
+	const busy = $derived(!!client.screens.starting);
 </script>
 
 <div class={['flex shrink-0 overflow-hidden rounded-lg', wide && 'w-full']}>
 	<button
 		type="button"
 		class={[
-			'flex h-9 items-center justify-center gap-1.5 bg-wb-accent px-3 text-[13px] font-semibold text-wb-accent-ink active:brightness-90',
+			'flex h-9 items-center disabled:opacity-50 justify-center gap-1.5 bg-wb-accent px-3 text-[13px] font-semibold text-wb-accent-ink active:brightness-90',
 			wide && 'flex-1'
 		]}
 		aria-label="Start Claude in {name}"
+		disabled={busy}
 		onclick={() => client.start('claude', folder)}
 	>
 		<AgentIcon agent="claude" class="size-4 text-current" />Claude
@@ -38,10 +41,11 @@
 	<button
 		type="button"
 		class={[
-			'flex h-9 items-center justify-center gap-1.5 border border-l-0 border-wb-hair bg-wb-panel2 px-2.5 text-[13px] font-semibold text-wb-codex active:bg-wb-panel',
+			'flex h-9 items-center disabled:opacity-50 justify-center gap-1.5 border border-l-0 border-wb-hair bg-wb-panel2 px-2.5 text-[13px] font-semibold text-wb-codex active:bg-wb-panel',
 			wide && 'flex-1'
 		]}
 		aria-label="Start a Codex chat in {name}"
+		disabled={busy}
 		onclick={() => client.start('codex', folder)}
 	>
 		<AgentIcon agent="codex" class="size-4" />Codex
@@ -49,10 +53,11 @@
 	<button
 		type="button"
 		class={[
-			'flex h-9 items-center justify-center gap-1.5 border border-l-0 border-wb-hair bg-wb-panel2 text-[13px] font-semibold text-wb-ink-mute active:bg-wb-panel',
+			'flex h-9 items-center disabled:opacity-50 justify-center gap-1.5 border border-l-0 border-wb-hair bg-wb-panel2 text-[13px] font-semibold text-wb-ink-mute active:bg-wb-panel',
 			wide ? 'flex-1' : 'w-9'
 		]}
 		aria-label="Open a terminal in {name}"
+		disabled={busy}
 		onclick={() => client.start('shell', folder)}
 	>
 		<SquareTerminalIcon class="size-4" />
