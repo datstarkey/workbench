@@ -53,14 +53,23 @@ pub fn startup_command(
 ) -> Result<Option<String>> {
     match (command, session) {
         (Some(_), Some(_)) => bail!("send either command or claudeSession, not both"),
-        (_, Some(session)) => terminal_command(
-            session,
-            &crate::config::load_workbench_settings()?,
-            &crate::sandbox_runtime::settings_path(),
-        )
-        .map(Some),
+        (_, Some(session)) => {
+            let settings = crate::config::load_workbench_settings()?;
+            let sandbox = if sandboxed(&settings) {
+                crate::sandbox_runtime::refresh_with(&settings)
+                    .context("couldn't write the sandbox settings file")?
+            } else {
+                crate::sandbox_runtime::settings_path()
+            };
+            terminal_command(session, &settings, &sandbox).map(Some)
+        }
         (command, None) => Ok(command),
     }
+}
+
+/// srt wraps Claude when enabled; its Windows support is alpha, so never there.
+fn sandboxed(settings: &WorkbenchSettings) -> bool {
+    settings.sandbox_runtime_enabled && !cfg!(windows)
 }
 
 /// The `--permission-mode` a Claude terminal starts with: a `picked` one, else
@@ -87,12 +96,10 @@ pub fn terminal_command(
         bail!("session id must be a UUID");
     }
     let mut cmd = String::new();
-    if settings.sandbox_runtime_enabled && !cfg!(windows) {
+    if sandboxed(settings) {
         // Fail closed: launching unwrapped would silently drop the sandbox.
         if !sandbox_settings.is_file() {
-            bail!(
-                "The sandbox settings file is missing; open Workbench on the desktop to write it"
-            );
+            bail!("The sandbox settings file is missing");
         }
         let path = sandbox_settings
             .to_str()
@@ -271,6 +278,7 @@ mod tests {
 
     #[test]
     fn a_terminal_runs_its_command_or_claude_never_both() {
+        crate::paths::test_config_dir();
         let shell = Some("ls".to_string());
         assert_eq!(startup_command(shell.clone(), None).unwrap(), shell);
         assert!(startup_command(shell, Some(&launch(true))).is_err());
@@ -425,5 +433,35 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("sandbox settings file is missing"));
+    }
+
+    /// No desktop needed: a launch writes the file from the saved settings and
+    /// projects (a standalone server's case).
+    #[cfg(unix)]
+    #[test]
+    fn a_sandboxed_launch_writes_the_settings_file_itself() {
+        let config = crate::paths::test_config_dir();
+        let project = tempfile::tempdir().unwrap();
+        let project_path = project.path().to_string_lossy().to_string();
+        crate::config::save_projects(&[crate::types::ProjectConfig {
+            name: "p".into(),
+            path: project_path.clone(),
+            group: None,
+            shell: None,
+            startup_command: None,
+            tasks: Vec::new(),
+            claude_account_id: None,
+        }])
+        .unwrap();
+        crate::config::save_workbench_settings(&settings("default", true)).unwrap();
+        let file = config.join("sandbox-runtime.json");
+        let _ = std::fs::remove_file(&file);
+
+        let cmd = startup_command(None, Some(&launch(true))).unwrap().unwrap();
+
+        assert!(cmd.contains(&shell_quote(file.to_str().unwrap())), "{cmd}");
+        let written = std::fs::read_to_string(&file).unwrap();
+        let canonical = std::fs::canonicalize(&project_path).unwrap();
+        assert!(written.contains(canonical.to_str().unwrap()), "{written}");
     }
 }

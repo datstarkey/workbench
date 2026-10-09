@@ -820,6 +820,9 @@ async fn terminal_claude_session_is_built_by_the_server() {
         json!({"sandboxRuntimeEnabled": true}).to_string(),
     )
     .unwrap();
+    // Make the write fail: the launch is refused rather than run unwrapped.
+    let sandbox_file = cfg.path().join("sandbox-runtime.json");
+    std::fs::create_dir(&sandbox_file).unwrap();
     let res = create(json!({
         "projectPath": project, "claudeSession": {"id": sid, "resume": false},
     }))
@@ -830,9 +833,29 @@ async fn terminal_claude_session_is_built_by_the_server() {
         body["error"]
             .as_str()
             .unwrap()
-            .contains("sandbox settings file is missing"),
+            .contains("couldn't write the sandbox settings file"),
         "the sandbox fails closed: {body}"
     );
+    std::fs::remove_dir(&sandbox_file).unwrap();
+
+    // No desktop needed: the launch writes the file itself.
+    let meta: Value = create(json!({
+        "projectPath": project, "claudeSession": {"id": sid, "resume": false},
+    }))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    http.delete(format!(
+        "{base}/remote/terminals/{}",
+        meta["id"].as_str().unwrap()
+    ))
+    .send()
+    .await
+    .unwrap();
+    let written = std::fs::read_to_string(&sandbox_file).unwrap();
+    assert!(written.contains("allowWrite"), "{written}");
 
     handle.stop().await;
 }

@@ -32,6 +32,7 @@
 //! `Refusing to run with the default config`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -181,6 +182,37 @@ pub struct SandboxRuntimeConfig {
 /// Absolute path of the generated settings file.
 pub fn settings_path() -> PathBuf {
     paths::workbench_config_dir().join(SETTINGS_FILE)
+}
+
+/// The hook bridge's `host:port`, which only the desktop runs for now; a
+/// standalone server has none, so its file carries no entry for it.
+static HOOK_SOCKET: Mutex<Option<String>> = Mutex::new(None);
+
+/// One writer of the file at a time, each reading the projects inside it, so
+/// an older allowlist never lands after a newer one.
+static WRITING: Mutex<()> = Mutex::new(());
+
+/// Name the hook bridge every later [`refresh`] allows.
+pub fn set_hook_socket(address: Option<String>) {
+    *HOOK_SOCKET.lock().unwrap_or_else(|e| e.into_inner()) = address;
+}
+
+/// Regenerate the file from the saved settings and projects and return its
+/// path. Every Claude launch does it (`claude_launch::startup_command`), so the
+/// allowlist is never staler than the launch, whoever wrote `projects.json`.
+pub fn refresh() -> Result<PathBuf> {
+    refresh_with(&crate::config::load_workbench_settings()?)
+}
+
+/// [`refresh`] with settings the caller already loaded.
+pub fn refresh_with(settings: &WorkbenchSettings) -> Result<PathBuf> {
+    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    let projects = crate::config::load_projects()?;
+    let hook_socket = HOOK_SOCKET
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    write_settings(settings, &projects, hook_socket.as_deref())
 }
 
 /// Build the config without touching the filesystem — the unit-testable half of

@@ -20,6 +20,16 @@ pub fn set_workbench_config_dir(dir: PathBuf) {
     let _ = CONFIG_DIR.set(dir);
 }
 
+/// Points this test process at a private config dir, so a test that reads or
+/// writes the saved config never touches `~/.workbench`.
+#[cfg(test)]
+pub(crate) fn test_config_dir() -> PathBuf {
+    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let dir = DIR.get_or_init(|| tempfile::tempdir().unwrap()).path();
+    set_workbench_config_dir(dir.to_path_buf());
+    workbench_config_dir()
+}
+
 pub fn workbench_config_dir() -> PathBuf {
     if let Some(dir) = CONFIG_DIR.get() {
         return dir.clone();

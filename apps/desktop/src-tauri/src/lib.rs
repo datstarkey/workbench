@@ -204,9 +204,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             menu::build(&handle).expect("failed to build menu");
             let bridge = HookBridgeState::new(handle.clone());
-            // The sandbox-runtime settings file has to name the hook bridge's
-            // loopback port, which is ephemeral and only known once it is bound.
-            commands::refresh_sandbox_runtime_settings(None, &bridge);
+            // Each launch's sandbox-runtime file names the hook bridge's loopback
+            // port, which is ephemeral and only known once it is bound.
+            sandbox_runtime::set_hook_socket(bridge.address().map(String::from));
             app.manage(bridge);
             // Activity now comes from the `workbench` Claude Code plugin; drop the
             // hook script older versions registered so events aren't reported twice.
