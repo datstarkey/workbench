@@ -642,22 +642,24 @@ fn create(
         session.resume =
             crate::agent::claude_history_exists(claude_config_dir.as_deref(), &session.id);
     }
-    let notice = body
-        .claude_session
-        .as_ref()
-        .and_then(workbench_core::claude_launch::prompt_notice);
+    // A thread nobody wrote to yet has nothing to resume.
+    if let Some(codex) = body.codex_session.as_mut() {
+        codex.id = codex
+            .id
+            .take()
+            .filter(|id| workbench_core::codex_launch::thread_exists(id));
+    }
+    let notice = match (&body.claude_session, &body.codex_session) {
+        (Some(claude), _) => workbench_core::claude_launch::prompt_notice(claude),
+        (None, Some(codex)) => workbench_core::codex_launch::prompt_notice(codex),
+        (None, None) => None,
+    };
     let command = match body.codex_session.take() {
-        Some(mut codex) => {
-            // A thread nobody wrote to yet has nothing to resume.
-            codex.id = codex
-                .id
-                .filter(|id| workbench_core::codex_launch::thread_exists(id));
-            Some(workbench_core::codex_launch::terminal_command(
-                &codex,
-                settings,
-                workbench_core::codex_config::supports_no_daemon(),
-            )?)
-        }
+        Some(codex) => Some(workbench_core::codex_launch::terminal_command(
+            &codex,
+            settings,
+            workbench_core::codex_config::supports_no_daemon(),
+        )?),
         None => workbench_core::claude_launch::startup_command(
             body.command,
             body.claude_session.as_ref(),

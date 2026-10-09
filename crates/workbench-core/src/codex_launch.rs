@@ -2,14 +2,16 @@
 //! host's saved settings as `claude_launch` builds Claude's, so no client
 //! sends a raw command for an AI pane.
 
+use std::path::Path;
+
 use anyhow::{bail, Result};
+use chrono::{Duration, Local, TimeZone};
 use serde::Deserialize;
 
 use crate::claude_transcript::is_uuid;
+use crate::codex_controls::{APPROVAL_POLICIES, SANDBOX_MODES};
+use crate::launch_prompt;
 use crate::types::WorkbenchSettings;
-
-const APPROVAL_POLICIES: &[&str] = &["never", "on-request", "untrusted", "on-failure"];
-const SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
 
 /// The Codex thread a terminal runs (`codexSession` in a terminal create).
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -23,20 +25,51 @@ pub struct CodexSessionLaunch {
     pub prompt: Option<String>,
 }
 
-/// Whether Codex has a thread on disk to `resume`.
+/// Whether Codex has a thread on disk to `resume`. Codex writes a thread to
+/// `sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`, dated when it started,
+/// which a UUIDv7 id carries: only that day's folder (and its neighbours, for
+/// time zones) is read. Any other id falls back to walking every folder.
 pub fn thread_exists(id: &str) -> bool {
-    let suffix = format!("{id}.jsonl");
-    crate::codex_sessions::collect_jsonl_files(&crate::paths::codex_sessions_dir(), 4)
-        .iter()
-        .any(|f| {
-            f.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(&suffix))
-        })
+    thread_exists_in(&crate::paths::codex_sessions_dir(), id)
 }
 
-/// `codex [--no-daemon] -c tui.alternate_screen=never [-c overrides] [resume <id> | <prompt>]`.
-/// `no_daemon` is whether the installed CLI takes `--no-daemon`.
+fn thread_exists_in(sessions: &Path, id: &str) -> bool {
+    let suffix = format!("-{id}.jsonl");
+    let named = |p: &Path| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(&suffix))
+    };
+    let Some(started) = uuid_v7_ms(id).and_then(|ms| Local.timestamp_millis_opt(ms).single())
+    else {
+        return crate::codex_sessions::collect_jsonl_files(sessions, 4)
+            .iter()
+            .any(|f| named(f));
+    };
+    [-1, 0, 1].into_iter().any(|days| {
+        let day = (started + Duration::days(days))
+            .format("%Y/%m/%d")
+            .to_string();
+        std::fs::read_dir(sessions.join(day))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| named(&e.path()))
+    })
+}
+
+/// The Unix milliseconds a UUIDv7 starts with.
+fn uuid_v7_ms(id: &str) -> Option<i64> {
+    let hex: String = id.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 || hex.as_bytes()[12] != b'7' {
+        return None;
+    }
+    i64::from_str_radix(&hex[..12], 16).ok()
+}
+
+/// `codex [--no-daemon] -c tui.alternate_screen=never [-c overrides] [resume <id> | -- <prompt>]`.
+/// `no_daemon` is whether the installed CLI takes `--no-daemon`. A prompt
+/// Windows' shells can't take is left out (see [`prompt_notice`]).
 pub fn terminal_command(
     session: &CodexSessionLaunch,
     settings: &WorkbenchSettings,
@@ -44,7 +77,7 @@ pub fn terminal_command(
 ) -> Result<String> {
     // Tests point it at a fake (`WORKBENCH_CODEX_BIN`).
     let mut cmd = match std::env::var("WORKBENCH_CODEX_BIN") {
-        Ok(bin) if !bin.is_empty() => shell_quote(&bin),
+        Ok(bin) if !bin.is_empty() => launch_prompt::shell_quote(&bin),
         _ => "codex".to_string(),
     };
     if no_daemon {
@@ -69,33 +102,28 @@ pub fn terminal_command(
         Some(id) if !is_uuid(id) => bail!("Codex thread id must be a UUID"),
         Some(id) => cmd.push_str(&format!(" resume {id}")),
         None => {
-            if let Some(prompt) = new_prompt(session.prompt.as_deref()) {
-                cmd.push(' ');
-                cmd.push_str(&prompt_arg(&prompt)?);
+            // `--` ends codex's options (clap), so a prompt like
+            // `--dangerously-bypass-approvals-and-sandbox` is the prompt, never a flag.
+            if let Some(arg) = new_prompt(session).as_deref().and_then(launch_prompt::arg) {
+                cmd.push_str(" -- ");
+                cmd.push_str(&arg);
             }
         }
     }
     Ok(cmd)
 }
 
-fn new_prompt(prompt: Option<&str>) -> Option<String> {
-    let prompt = prompt?.replace("\r\n", "\n").replace('\r', "\n");
-    let prompt = prompt.trim();
-    (!prompt.is_empty()).then(|| prompt.to_string())
+/// Why a new thread's prompt was left out of its command, to tell the person.
+pub fn prompt_notice(session: &CodexSessionLaunch) -> Option<String> {
+    let prompt = new_prompt(session)?;
+    launch_prompt::arg(&prompt)
+        .is_none()
+        .then(|| launch_prompt::dropped_notice("Codex"))
 }
 
-fn prompt_arg(prompt: &str) -> Result<String> {
-    if cfg!(windows) {
-        if prompt.contains(['"', '%', '$', '`', '!', '\n']) {
-            bail!("On Windows a Codex prompt can't contain \" % $ ` ! or line breaks");
-        }
-        return Ok(format!("\"{prompt}\""));
-    }
-    Ok(shell_quote(prompt))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r#"'"'"'"#))
+/// A resumed thread already started with its prompt.
+fn new_prompt(session: &CodexSessionLaunch) -> Option<String> {
+    launch_prompt::normalize(session.prompt.as_deref().filter(|_| session.id.is_none()))
 }
 
 #[cfg(test)]
@@ -138,18 +166,59 @@ mod tests {
         assert!(terminal_command(&resume, &s, false)
             .unwrap()
             .ends_with(&format!(" resume {TID}")));
-        let fresh = CodexSessionLaunch {
-            id: None,
-            prompt: Some(" it's\r\n".into()),
-        };
-        #[cfg(unix)]
-        assert!(terminal_command(&fresh, &s, false)
-            .unwrap()
-            .ends_with(r#" 'it'"'"'s'"#));
         let bad = CodexSessionLaunch {
             id: Some("--x".into()),
             prompt: None,
         };
         assert!(terminal_command(&bad, &s, false).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prompt_is_never_read_as_a_flag() {
+        let s = settings("default", "default");
+        let launch = |prompt: &str| CodexSessionLaunch {
+            id: None,
+            prompt: Some(prompt.into()),
+        };
+        let cmd = terminal_command(&launch(" it's\r\n"), &s, false).unwrap();
+        assert!(cmd.ends_with(r#" -- 'it'"'"'s'"#), "{cmd}");
+        let cmd = terminal_command(
+            &launch("--dangerously-bypass-approvals-and-sandbox"),
+            &s,
+            false,
+        )
+        .unwrap();
+        assert!(
+            cmd.ends_with(" -- '--dangerously-bypass-approvals-and-sandbox'"),
+            "{cmd}"
+        );
+        assert_eq!(prompt_notice(&launch("fine")), None);
+    }
+
+    #[test]
+    fn finds_a_thread_in_its_start_days_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = "019dd4f4-8f05-7e10-9d3d-2f4ab5c4f0a1";
+        assert!(!thread_exists_in(tmp.path(), id));
+        let ms = uuid_v7_ms(id).unwrap();
+        let day = Local
+            .timestamp_millis_opt(ms)
+            .unwrap()
+            .format("%Y/%m/%d")
+            .to_string();
+        let dir = tmp.path().join(day);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("rollout-2026-01-01T00-00-00-{id}.jsonl")),
+            "",
+        )
+        .unwrap();
+        assert!(thread_exists_in(tmp.path(), id));
+        // A v4 id walks every folder.
+        let v4_dir = tmp.path().join("2025/01/01");
+        std::fs::create_dir_all(&v4_dir).unwrap();
+        std::fs::write(v4_dir.join(format!("rollout-x-{TID}.jsonl")), "").unwrap();
+        assert!(thread_exists_in(tmp.path(), TID));
     }
 }

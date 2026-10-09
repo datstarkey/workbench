@@ -22,6 +22,7 @@ mod git_read;
 pub mod github;
 mod github_api;
 mod http;
+pub mod launch_prompt;
 pub mod net;
 pub mod package_scripts;
 pub mod paths;
