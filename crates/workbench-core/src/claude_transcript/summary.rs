@@ -104,6 +104,7 @@ mod tests {
             expired: false,
             decision: None,
             answers: None,
+            in_terminal: false,
         }
     }
 

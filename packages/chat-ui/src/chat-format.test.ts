@@ -34,6 +34,7 @@ import {
 	parseQuestions,
 	patchStats,
 	shortPath,
+	terminalAnswer,
 	toolDetail
 } from './chat-format';
 
@@ -106,6 +107,16 @@ describe('activity', () => {
 		expect(activity([approval('r1')], busy)).toMatchObject({ kind: 'approval' });
 		expect(activity([approval('r1', { decision: 'allow' })], meta)).toEqual({ kind: 'idle' });
 		expect(activity([approval('r1', { expired: true })], meta)).toEqual({ kind: 'idle' });
+	});
+
+	it('leaves an approval the terminal took over to the terminal', () => {
+		const asked = approval('r1', { tool: 'AskUserQuestion', inTerminal: true });
+		expect(activity([asked], meta)).toEqual({ kind: 'idle' });
+		if (asked.kind !== 'approval') throw new Error('not an approval');
+		expect(terminalAnswer(asked)).toBe('Waiting for your answer in the terminal');
+		expect(terminalAnswer({ ...asked, expired: true })).toBe('Answered in the terminal');
+		expect(terminalAnswer({ ...asked, decision: 'allow' }), 'its answers show').toBeNull();
+		expect(terminalAnswer({ ...asked, inTerminal: false, expired: true })).toBeNull();
 	});
 
 	it('names what a busy turn is doing', () => {

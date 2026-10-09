@@ -802,6 +802,68 @@ fn a_withdrawn_approval_expires_and_cannot_be_answered() {
         .is_none());
 }
 
+fn ask(t: &mut Transcript, request_id: &str, tool: &str, tool_use_id: &str) {
+    t.apply(&json!({"type":"control_request","request_id":request_id,"request":{"subtype":"can_use_tool",
+        "tool_name":tool,"tool_use_id":tool_use_id,"input":{"questions":[{"question":"Which?"}]}}}));
+    t.apply(&json!({"type":"control_cancel_request","request_id":request_id,"workbench_in_terminal":true}));
+}
+
+fn approval_state(t: &Transcript) -> (bool, bool, Option<ApprovalDecision>, Option<Value>) {
+    match &t.items()[0] {
+        TranscriptItem::Approval {
+            in_terminal,
+            expired,
+            decision,
+            answers,
+            ..
+        } => (*in_terminal, *expired, *decision, answers.clone()),
+        other => panic!("not an approval: {other:?}"),
+    }
+}
+
+#[test]
+fn a_question_the_terminal_took_over_waits_there_and_shows_its_answers() {
+    let mut t = Transcript::default();
+    ask(&mut t, "r", "AskUserQuestion", "toolu_q");
+    assert_eq!(approval_state(&t), (true, false, None, None));
+    assert!(t.waiting_on().is_none(), "the chat can't answer it");
+    assert!(t
+        .resolve_approval("r", ApprovalDecision::Allow, None)
+        .is_none());
+    let result = json!({"type":"user","uuid":"res","message":{"role":"user","content":[
+        {"type":"tool_result","tool_use_id":"toolu_q","content":"User answered"}]},
+        "tool_use_result":{"questions":[{"question":"Which?"}],"answers":{"Which?":"B"}}});
+    assert_eq!(t.apply(&result).items, vec![0]);
+    assert_eq!(
+        approval_state(&t),
+        (
+            true,
+            false,
+            Some(ApprovalDecision::Allow),
+            Some(json!({"Which?":"B"}))
+        )
+    );
+}
+
+#[test]
+fn an_approval_the_terminal_took_over_settles_when_its_call_goes_ahead() {
+    let mut t = Transcript::default();
+    ask(&mut t, "r1", "Bash", "toolu_1");
+    ask(&mut t, "r2", "AskUserQuestion", "toolu_2");
+    t.apply(&json!({"type":"control_cancel_request","request_id":"r1"}));
+    assert_eq!(approval_state(&t), (true, true, None, None));
+    t.apply(&json!({"type":"result","subtype":"success"}));
+    assert!(matches!(
+        &t.items()[1],
+        TranscriptItem::Approval {
+            in_terminal: true,
+            expired: true,
+            decision: None,
+            ..
+        }
+    ));
+}
+
 #[test]
 fn clear_starts_over_under_the_new_session_id() {
     let mut t = Transcript::default();

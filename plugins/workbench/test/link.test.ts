@@ -125,13 +125,15 @@ test('a lost ask reply is asked again, resending the line until the server has i
 	expect(calls.map((c) => c.body.line)).toEqual([asked, asked, undefined]);
 });
 
-test('an ask that keeps failing falls back and withdraws the card directly', async () => {
+test('an ask that keeps failing hands the card to the terminal directly', async () => {
 	replies = ['throw', { status: 500, text: '' }, 'throw'];
 	const result = await server.askInChat(fetch, undefined, 'r1', asked, noSignal(), true);
 	await settle();
 	expect(result).toBeNull();
 	expect(paths()).toEqual(['/mod/ask', '/mod/ask', '/mod/ask', '/mod/out']);
-	expect(calls[3].body.lines).toEqual([{ type: 'control_cancel_request', request_id: 'r1' }]);
+	expect(calls[3].body.lines).toEqual([
+		{ type: 'control_cancel_request', request_id: 'r1', workbench_in_terminal: true }
+	]);
 	expect(calls[3].body.seq).toBeUndefined();
 });
 

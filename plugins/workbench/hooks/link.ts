@@ -225,10 +225,19 @@ export function handled(line: Line) {
 	if (typeof line.wbSeq === 'number') inSeq = Math.max(inSeq, line.wbSeq);
 }
 
-/** Withdraw a chat card at once, past a queue a hung post may hold. */
-function withdraw(fetch: Fetch, requestId: string) {
+/**
+ * Withdraw a chat card at once, past a queue a hung post may hold.
+ * `inTerminal`: the terminal's dialog asks it now, so the chat says so.
+ */
+function withdraw(fetch: Fetch, requestId: string, inTerminal = false) {
 	if (!link) return;
-	const lines = [{ type: 'control_cancel_request', request_id: requestId }];
+	const lines = [
+		{
+			type: 'control_cancel_request',
+			request_id: requestId,
+			...(inTerminal && { workbench_in_terminal: true })
+		}
+	];
 	void within(
 		POST_MS,
 		fetch(`${link.url}/mod/out`, init('POST', { sessionId: link.sessionId, lines }))
@@ -306,7 +315,7 @@ export async function askInChat(
 			if (res?.status === 404) hello.needed = true;
 			if (++failed < ASK_TRIES) continue;
 			// The chat's card would stay answerable with nobody waiting on it.
-			withdraw(fetch, requestId);
+			withdraw(fetch, requestId, true);
 			return null;
 		}
 		confirm(batch);

@@ -198,11 +198,12 @@ impl ModLink {
     /// `waiting` (its summary as the chat had it) stays what the session
     /// waits on, so a phone or desktop not looking still hears of it.
     pub fn fall_back(&self, request_id: &str, waiting: Option<WaitingSummary>) {
-        let tool = lock(&self.asks).get_mut(request_id).and_then(|a| {
+        let tool = lock(&self.asks).get_mut(request_id).map(|a| {
             a.fell_back = true;
             a.tool_use_id.clone()
         });
-        if let Some(waiting) = waiting {
+        // Unknown: already spent (its call has a result), so nothing waits.
+        if let (Some(tool), Some(waiting)) = (tool, waiting) {
             let waiting = WaitingSummary {
                 in_terminal: true,
                 ..waiting
@@ -259,6 +260,9 @@ impl ModLink {
                 asked.clear();
                 lock(&self.asks).retain(|_, ask| ask.answer.is_none() && !ask.fell_back);
             }
+            // Moved to the terminal's dialog (`fall_back`), which it still waits on.
+            Some("control_cancel_request")
+                if line.get("workbench_in_terminal") == Some(&Value::Bool(true)) => {}
             Some("control_cancel_request") => {
                 let id = str_at("/request_id");
                 asked.retain(|(w, _)| Some(w.id.as_str()) != id);
@@ -524,7 +528,15 @@ mod tests {
         let link = ModLink::new("t".into(), None);
         link.expect_answer("r1", Some("toolu_1".into()));
         link.fall_back("r1", Some(waiting("r1")));
-        assert!(link.terminal_waiting().unwrap().in_terminal);
+        link.note_line(
+            &json!({"type": "control_cancel_request", "request_id": "r1",
+            "workbench_in_terminal": true}),
+        );
+        assert!(
+            link.terminal_waiting().unwrap().in_terminal,
+            "the fallback's card handover isn't an answer"
+        );
+        assert!(link.fell_back("r1"));
         let result = |id: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id}]}});
         link.note_line(&json!({"type": "stream_event"}));
         link.note_line(&result("toolu_other"));

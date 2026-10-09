@@ -247,7 +247,7 @@
 			</div>
 		{:else if block.item.kind === 'approval' || block.item.kind === 'elicitation'}
 			{#if inlineApprovals || !awaitsAnswer(block.item)}
-				<ChatAnswer item={block.item} {chat} {cwd} />
+				<ChatAnswer item={block.item} {chat} {cwd} {onShowTerminal} />
 			{/if}
 		{:else if block.item.kind === 'event'}
 			<ChatEvent item={block.item} />

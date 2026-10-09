@@ -372,8 +372,14 @@ export function chatTitle(
 /** An approval, question or MCP elicitation still waiting on the person. */
 export function awaitsAnswer(item: TranscriptItem): item is ApprovalItem | ElicitationItem {
 	if (item.kind === 'approval')
-		return !item.decision && !item.expired && item.input?.isBlocking !== false;
+		return !item.decision && !item.expired && !item.inTerminal && item.input?.isBlocking !== false;
 	return item.kind === 'elicitation' && !item.action && !item.expired;
+}
+
+/** Where an approval the terminal's dialog took over stands; `null` for any other. */
+export function terminalAnswer(item: ApprovalItem): string | null {
+	if (!item.inTerminal || item.decision) return null;
+	return item.expired ? 'Answered in the terminal' : 'Waiting for your answer in the terminal';
 }
 
 export function activity(items: TranscriptItem[], meta: TranscriptMeta | null): Activity {

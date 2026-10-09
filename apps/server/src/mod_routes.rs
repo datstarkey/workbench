@@ -273,7 +273,10 @@ pub async fn ask(
             link.fall_back(&body.request_id, waiting);
             refresh_attention(&session).await?;
             feed(
-                vec![json!({"type": "control_cancel_request", "request_id": body.request_id})],
+                vec![
+                    json!({"type": "control_cancel_request", "request_id": body.request_id,
+                    "workbench_in_terminal": true}),
+                ],
                 None,
             )
             .await?;
