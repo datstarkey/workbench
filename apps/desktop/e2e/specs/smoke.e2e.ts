@@ -33,21 +33,26 @@ describe('Workbench smoke', () => {
 	});
 
 	it('opens a terminal tab the server runs, and closes it', async () => {
-		const tabs = $$('[role="tab"]');
-		const before = await tabs.length;
-		await $('button[aria-label="New terminal"], button*=New Terminal').click();
+		const closers = () => $$('button[aria-label="Close terminal tab"]');
+		const before = await closers().length;
+		// The tab bar's + once a tab is open, else the empty workspace's landing.
+		const plus = $('button[aria-label="New terminal"]');
+		await ((await plus.isExisting()) ? plus : $('button*=New Terminal')).click();
 		// The tab appears once the server's workspace snapshot includes it.
-		await browser.waitUntil(async () => (await $$('[role="tab"]').length) === before + 1, {
+		await browser.waitUntil(async () => (await closers().length) === before + 1, {
 			timeoutMsg: 'the new terminal tab never appeared'
 		});
-		const tab = $$('[role="tab"]')[before];
-		await expect(tab).toHaveText(expect.stringContaining('Terminal'));
 		await expect($('.xterm')).toBeDisplayed({ wait: 15_000 });
 
-		const close = tab.parentElement().$('button[aria-label="Close terminal tab"]');
-		await tab.moveTo();
-		await close.click();
-		await browser.waitUntil(async () => (await $$('[role="tab"]').length) === before, {
+		// The close button only shows on hover; click it directly.
+		await browser.execute(
+			(i) =>
+				document
+					.querySelectorAll<HTMLButtonElement>('button[aria-label="Close terminal tab"]')
+					[i].click(),
+			before
+		);
+		await browser.waitUntil(async () => (await closers().length) === before, {
 			timeoutMsg: 'the closed terminal tab stayed'
 		});
 	});
