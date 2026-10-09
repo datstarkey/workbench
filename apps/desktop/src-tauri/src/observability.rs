@@ -13,8 +13,10 @@
 //!
 //! ## Logging
 //!
-//! A global `log` logger is installed in **all** builds, writing to stderr via
-//! `env_logger` (respects `RUST_LOG`, defaults to `info`). In release builds it
+//! A global `log` logger is installed in **all** builds, writing to stderr and
+//! `<config dir>/logs/workbench.log` via `env_logger` (respects `RUST_LOG`,
+//! defaults to `info`). The server's `tracing` events arrive through
+//! tracing's `log` feature. In release builds it
 //! additionally forwards through Sentry:
 //! - `error!` → captured as a standalone Sentry **event** (an issue).
 //! - `warn!` / `info!` → recorded as **breadcrumbs**, attached to whatever
@@ -71,8 +73,9 @@ pub fn init(release: String) -> Option<sentry::ClientInitGuard> {
 /// becomes an event and `warn!`/`info!` become breadcrumbs. Safe to call once;
 /// a second call (e.g. in tests) is ignored.
 fn init_logger() {
-    let dest =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).build();
+    let dest = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Pipe(Box::new(Tee(log_file()))))
+        .build();
     let max_level = dest.filter();
 
     let logger = SentryLogger::with_dest(dest).filter(|metadata| match metadata.level() {
@@ -82,5 +85,42 @@ fn init_logger() {
 
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(max_level);
+    }
+}
+
+/// Kept past a restart: a stall that ran the process out of sockets can't
+/// reach Sentry either.
+const LOG_FILE: &str = "workbench.log";
+/// At startup a bigger log becomes the one previous copy.
+const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+
+fn log_file() -> Option<std::fs::File> {
+    let dir = workbench_core::paths::workbench_config_dir().join("logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(LOG_FILE);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_ROTATE_BYTES) {
+        let _ = std::fs::rename(&path, dir.join(format!("{LOG_FILE}.old")));
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
+/// Every record to stderr and, unbuffered, to the log file.
+struct Tee(Option<std::fs::File>);
+
+impl std::io::Write for Tee {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(file) = &mut self.0 {
+            let _ = file.write_all(buf);
+        }
+        std::io::stderr().write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stderr().flush()
     }
 }

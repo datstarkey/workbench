@@ -17,6 +17,7 @@ pub mod routes;
 pub mod state;
 pub mod terminal;
 pub mod usage;
+pub mod watchdog;
 
 use anyhow::Context;
 use std::net::SocketAddr;
@@ -39,6 +40,7 @@ pub fn app(state: AppState) -> axum::Router {
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     routes::router(state.clone())
+        .layer(axum::middleware::from_fn(watchdog::slow_requests))
         .layer(axum::middleware::from_fn_with_state(
             state,
             auth::require_bearer,
@@ -55,6 +57,8 @@ pub async fn serve(
     token: Option<String>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
+    watchdog::raise_fd_limit();
+    watchdog::spawn(tokio::runtime::Handle::current());
     let (revoke, revoked) = watch::channel(false);
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -131,6 +135,8 @@ pub async fn spawn_embedded(
         "embedded server requires a token of at least {} characters",
         workbench_core::token::MIN_TOKEN_LEN
     );
+    watchdog::raise_fd_limit();
+    watchdog::spawn(tokio::runtime::Handle::current());
     let (revoke, revoked) = watch::channel(false);
     let addr = format!("{bind}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
