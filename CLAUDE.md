@@ -43,7 +43,7 @@ Three Cargo crates: `workbench` (desktop, depends on core + server), `workbench-
 - **Release flow:** write changelog → commit → tag → push commit + tag → let CI publish the release.
 - **Android APK:** the `android` job in `release.yml` (ubuntu, NDK r29, `aarch64` only) builds `apps/mobile` in parallel with desktop, signs it from the `ANDROID_*` secrets (hard failure when empty; see `docs/SIGNING.md` §Android) and uploads `workbench-android-<version>.apk` + `.sha256` as an artifact; `publish` attaches them to the draft (which `build`'s tauri-action creates, so no race) before un-drafting. `workflow_dispatch` runs only the Android build (artifact, no release). Mobile `tauri.conf.json` `version` is synced from the tag like desktop; Tauri derives `versionCode = major*1_000_000 + minor*1_000 + patch`. Release builds allow cleartext (the server is plain HTTP/WS).
 - **Windows signing:** Azure Artifact Signing via the `starkey-digital` org's `AZURE_*` secrets; `signCommand` is in `apps/desktop/src-tauri/tauri.windows-sign.json`, merged with `--config` only by the release job, and the job verifies both signatures (`docs/SIGNING.md` §Windows).
-- **macOS signing/notarization:** see `docs/SIGNING.md`. Driven by `APPLE_*` GitHub secrets; the release workflow degrades to an unsigned build (with a CI warning) when they're absent. Local signed builds: `bun run --cwd apps/desktop build:signed` + a `signing.env` at the repo root.
+- **macOS signing/notarization:** see `docs/SIGNING.md`. Driven by `APPLE_*` GitHub secrets; the release workflow fails when any is empty, unless the repo variable `ALLOW_UNSIGNED_RELEASE=true`. Local signed builds: `bun run --cwd apps/desktop build:signed` + a `signing.env` at the repo root.
 
 ## Workflow
 

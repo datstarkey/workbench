@@ -201,7 +201,8 @@ reputation accrues to Starkey Digital Ltd rather than to each build.
   Nothing is stored per repo.
 - `signCommand` lives in `apps/desktop/src-tauri/tauri.windows-sign.json`, merged with
   `--config` by the release job only, so a local `tauri build` never needs Azure
-  credentials. CI installs `artifact-signing-cli` for it.
+  credentials. CI downloads the pinned `artifact-signing-cli` 0.11.0 release exe and
+  checks its sha256; bump both together.
 - Missing or empty credentials fail the job, like Apple's; `ALLOW_UNSIGNED_RELEASE=true`
   ships unsigned on purpose.
 - The certificate lives 3 days and Microsoft renews it daily, so every signature is

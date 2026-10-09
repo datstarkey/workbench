@@ -1,6 +1,6 @@
 {
 	"name": "workbench",
-	"owner": { "name": "datstarkey" },
+	"owner": { "name": "Starkey Digital" },
 	"plugins": [
 		{
 			"name": "workbench",
