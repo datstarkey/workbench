@@ -20,6 +20,7 @@ pub mod state;
 pub mod terminal;
 pub mod usage;
 pub mod watchdog;
+pub mod workspace;
 
 use anyhow::Context;
 use std::net::SocketAddr;
@@ -69,7 +70,11 @@ pub async fn serve(
     let (revoke, revoked) = watch::channel(false);
     let listener = listen(bind, port).await?;
     let local = listener.local_addr().context("failed to read local addr")?;
-    let app = app(AppState::new(Managers::default(), token, revoked).with_local_port(local.port()));
+    let managers = Managers {
+        workspace: workspace::WorkspaceService::persistent(),
+        ..Managers::default()
+    };
+    let app = app(AppState::new(managers, token, revoked).with_local_port(local.port()));
     accept::serve(listener, app, async move {
         shutdown.await;
         let _ = revoke.send(true);

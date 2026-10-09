@@ -127,8 +127,15 @@ async fn spawn_listener(
 }
 
 impl ServerControl {
+    /// With the workspace model kept in the config dir, as the standalone server keeps it.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            managers: Managers {
+                workspace: workbench_server::workspace::WorkspaceService::persistent(),
+                ..Managers::default()
+            },
+            ..Self::default()
+        }
     }
 
     /// The shared managers: terminals (native views show these too) and chats.

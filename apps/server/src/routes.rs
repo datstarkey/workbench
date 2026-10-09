@@ -52,6 +52,14 @@ pub fn router(state: AppState) -> Router {
             delete(crate::terminal::terminal_kill),
         )
         .route(
+            "/workspace/commands",
+            post(crate::workspace::routes::command),
+        )
+        .route(
+            crate::workspace::routes::EVENTS_PATH,
+            get(crate::workspace::routes::events),
+        )
+        .route(
             crate::home_events::PATH,
             get(crate::home_events::home_events),
         )

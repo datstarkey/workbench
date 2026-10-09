@@ -329,8 +329,14 @@ pub async fn agent_stop(
     Path(id): Path<String>,
     Query(q): Query<StopQuery>,
 ) -> ApiResult<StatusCode> {
-    let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop(&id, q.end))).await?;
+    let (agents, workspace) = (state.agents.clone(), state.workspace.clone());
+    crate::routes::blocking(move || {
+        if q.end {
+            workspace.close_pane(workspace.pane_for_session(&id));
+        }
+        Ok(agents.stop(&id, q.end))
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

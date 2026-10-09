@@ -739,7 +739,9 @@ pub async fn terminal_kill(
     Query(q): Query<KillQuery>,
 ) -> ApiResult<StatusCode> {
     let (agents, terminals) = (state.agents.clone(), state.terminals.clone());
+    let workspace = state.workspace.clone();
     crate::routes::blocking(move || {
+        workspace.close_pane(workspace.pane_for_terminal(&id));
         agents.end_terminal(&id);
         if q.wait {
             terminals.kill_and_wait(&id);
