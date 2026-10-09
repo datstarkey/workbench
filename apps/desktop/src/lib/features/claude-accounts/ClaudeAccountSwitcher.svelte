@@ -3,10 +3,12 @@
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import LogInIcon from '@lucide/svelte/icons/log-in';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
 	import { getWorkbenchSettingsStore, getWorkspaceStore } from '$stores/context';
 	import AddClaudeAccountDialog from './AddClaudeAccountDialog.svelte';
+	import RenameClaudeAccountDialog from './RenameClaudeAccountDialog.svelte';
 	import {
 		ClaudeAccountStatuses,
 		DEFAULT_ACCOUNT_KEY,
@@ -22,10 +24,11 @@
 	const statuses = new ClaudeAccountStatuses();
 
 	let addOpen = $state(false);
+	let renaming = $state<{ id: string | undefined; name: string } | null>(null);
 
 	const activeId = $derived(settings.activeClaudeAccountId);
 	const accounts = $derived([
-		{ id: undefined, name: 'Default', detail: '~/.claude' },
+		{ id: undefined, name: settings.defaultAccountName, detail: '~/.claude' },
 		...settings.claudeAccounts.map((a) => ({ id: a.id, name: a.name, detail: a.configDir }))
 	]);
 	const active = $derived(accounts.find((a) => a.id === activeId) ?? accounts[0]);
@@ -82,6 +85,19 @@
 			<LogInIcon class="size-3.5" />
 			<span>{canLogin ? `Log in to ${active.name}…` : 'Open a project to log in'}</span>
 		</DropdownMenu.Item>
+		<DropdownMenu.Sub>
+			<DropdownMenu.SubTrigger>
+				<PencilIcon class="size-3.5" />
+				<span>Rename account</span>
+			</DropdownMenu.SubTrigger>
+			<DropdownMenu.SubContent class="min-w-40">
+				{#each accounts as account (account.id ?? DEFAULT_ACCOUNT_KEY)}
+					<DropdownMenu.Item onSelect={() => (renaming = { id: account.id, name: account.name })}>
+						<span class="truncate">{account.name}…</span>
+					</DropdownMenu.Item>
+				{/each}
+			</DropdownMenu.SubContent>
+		</DropdownMenu.Sub>
 		<DropdownMenu.Item onSelect={() => (addOpen = true)}>
 			<PlusIcon class="size-3.5" />
 			<span>Add account…</span>
@@ -100,3 +116,4 @@
 </DropdownMenu.Root>
 
 <AddClaudeAccountDialog bind:open={addOpen} onAdded={login} />
+<RenameClaudeAccountDialog bind:account={renaming} />

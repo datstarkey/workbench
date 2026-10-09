@@ -7,18 +7,21 @@
 
 	let {
 		accounts,
+		defaultAccountName,
 		accountId,
 		disabled,
 		onAccount
 	}: {
 		/** The extra Claude accounts; the default one is always offered. */
 		accounts: Pick<ClaudeAccount, 'id' | 'name'>[];
+		/** What the default `~/.claude` account is called. */
+		defaultAccountName?: string;
 		accountId: string | undefined;
 		disabled: boolean;
 		onAccount: (accountId: string | undefined) => void;
 	} = $props();
 
-	const choices = $derived(accountChoices(accounts));
+	const choices = $derived(accountChoices(accounts, defaultAccountName));
 	const current = $derived(choices.find((c) => c.id === accountId) ?? choices[0]);
 </script>
 

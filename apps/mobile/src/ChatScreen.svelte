@@ -275,6 +275,7 @@
 			id="chat-draft-{ref.sessionId}"
 			notice={client.notice}
 			accounts={client.accounts}
+			defaultAccountName={client.defaultAccountName}
 			onResume={() => (reviewOpen = 'history')}
 			onThread={(sessionId, name) => client.openChat({ ...ref, sessionId, name, agent: 'codex' })}
 		/>

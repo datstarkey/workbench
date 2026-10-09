@@ -260,6 +260,7 @@
 				{chat}
 				id="chat-draft-{paneId}"
 				accounts={settingsStore.claudeAccounts}
+				defaultAccountName={settingsStore.defaultAccountName}
 				answerHint="Answer {agentLabel} above first"
 				onResume={() => (resumeOpen = true)}
 				onThread={(id, label) => {

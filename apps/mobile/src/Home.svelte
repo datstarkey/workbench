@@ -349,7 +349,7 @@
 					value={client.accountId ?? ''}
 					onchange={(e) => client.setAccount(e.currentTarget.value)}
 				>
-					<option value="">Default</option>
+					<option value="">{client.defaultAccountName}</option>
 					{#each client.accounts as account (account.id)}<option value={account.id}
 							>{account.name}</option
 						>{/each}

@@ -392,6 +392,9 @@ pub struct WorkbenchSettings {
     /// Account new Claude sessions launch with; `None` is the default `~/.claude`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_claude_account: Option<String>,
+    /// What the default `~/.claude` account is called; `None` shows "Default".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_claude_account_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -484,6 +487,7 @@ impl Default for WorkbenchSettings {
             settings_window_bounds: None,
             claude_accounts: Vec::new(),
             active_claude_account: None,
+            default_claude_account_name: None,
         }
     }
 }
