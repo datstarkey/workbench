@@ -43,3 +43,19 @@ export const CONNECT_ROUTES: Record<string, Route> = {
 	'/health': () => jsonResponse('ok'),
 	'/projects': () => jsonResponse([])
 };
+
+/** An EventSource the test drives: `emit` delivers an event, `close` is recorded. */
+export class FakeEventSource extends EventTarget {
+	closed = false;
+	constructor(readonly url: string) {
+		super();
+	}
+	close() {
+		this.closed = true;
+	}
+	emit(type: string, data?: unknown) {
+		this.dispatchEvent(
+			data === undefined ? new Event(type) : new MessageEvent(type, { data: JSON.stringify(data) })
+		);
+	}
+}

@@ -26,8 +26,9 @@
 	const sections = $derived(projectSections(store.projects, prefs.favourites, query));
 	const live = $derived.by(() => {
 		const counts: Record<string, number> = {};
-		for (const chat of client.chats) {
-			if (!chat.exited) counts[chat.projectPath] = (counts[chat.projectPath] ?? 0) + 1;
+		for (const { workspace, pane } of client.panes) {
+			if (pane.kind !== 'shell' && pane.status !== 'exited')
+				counts[workspace.projectPath] = (counts[workspace.projectPath] ?? 0) + 1;
 		}
 		return counts;
 	});
