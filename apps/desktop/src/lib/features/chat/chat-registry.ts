@@ -1,3 +1,4 @@
+import type { PaneStatus } from '$types/workspace';
 import type { StartAgentBody } from '$types/workbench';
 import { AgentChat, ChatDraft } from '@workbench/chat-ui';
 import { loopbackAgentApi } from './agent-api';
@@ -9,7 +10,7 @@ import { loopbackAgentApi } from './agent-api';
  * Released when the pane goes back to the terminal or leaves the snapshot.
  * Every chat only attaches: the server's workspace service runs the session.
  */
-const chats = new Map<string, AgentChat>();
+const chats = new Map<string, { chat: AgentChat; generation: number | undefined }>();
 /**
  * Composer drafts by pane. They outlive the chat (Terminal | Chat toggles
  * release it); an emptied one is dropped on release, so a closed pane leaves
@@ -17,24 +18,53 @@ const chats = new Map<string, AgentChat>();
  */
 const drafts = new Map<string, ChatDraft>();
 
-/** The pane's chat, created on first use or when the pane moved to another session. */
+/** What the pane's process is: its status and which spawn it is (`generation`). */
+export interface PaneProcess {
+	status?: PaneStatus;
+	generation?: number;
+}
+
+/**
+ * The pane's chat, created on first use or when the pane moved to another
+ * session. `pane` is the process it attaches to.
+ */
 export function acquireChat(
 	paneId: string,
-	body: StartAgentBody
+	body: StartAgentBody,
+	pane: PaneProcess = {}
 ): { chat: AgentChat; created: boolean } {
 	const existing = chats.get(paneId);
 	// `/clear` re-keys the same chat; any other new id is a different conversation.
-	if (existing && existing.sessionId === body.sessionId) return { chat: existing, created: false };
-	existing?.dispose();
+	if (existing && existing.chat.sessionId === body.sessionId) {
+		followPane(paneId, pane);
+		return { chat: existing.chat, created: false };
+	}
+	existing?.chat.dispose();
 	let draft = drafts.get(paneId);
 	if (!draft) drafts.set(paneId, (draft = new ChatDraft()));
 	const chat = new AgentChat({ ...body, attachOnly: true }, loopbackAgentApi, { draft });
-	chats.set(paneId, chat);
+	chats.set(paneId, { chat, generation: pane.generation });
 	return { chat, created: true };
 }
 
+/**
+ * Re-attach the pane's chat when it runs a process the chat isn't attached
+ * to: every spawn (a Restart, from any device) bumps the pane's generation,
+ * whether or not this window saw the pane stop. An ended chat re-attaches
+ * once its pane runs again.
+ */
+export function followPane(paneId: string, pane: PaneProcess): void {
+	const entry = chats.get(paneId);
+	if (!entry || pane.status !== 'running') return;
+	const restarted = pane.generation !== undefined && pane.generation !== entry.generation;
+	const ended = entry.chat.status === 'exited' || entry.chat.status === 'failed';
+	if (!restarted && !ended) return;
+	entry.generation = pane.generation;
+	void entry.chat.attach();
+}
+
 export function releaseChat(paneId: string): void {
-	chats.get(paneId)?.dispose();
+	chats.get(paneId)?.chat.dispose();
 	chats.delete(paneId);
 	const draft = drafts.get(paneId);
 	if (draft && !draft.text && draft.images.length === 0 && draft.files.length === 0)

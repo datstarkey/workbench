@@ -47,13 +47,14 @@ function paneView(p: WorkspacePane, ui: WorkspaceUi): TerminalPaneState {
 		type: p.kind,
 		...(p.sessionId && { claudeSessionId: p.sessionId }),
 		...(p.previousIds?.length && { previousIds: p.previousIds }),
-		...(p.accountId && { claudeAccountId: p.accountId }),
+		...(p.accountId !== undefined && { claudeAccountId: p.accountId }),
 		...(view && { view }),
 		terminalId: p.terminalId,
 		status: p.status,
 		title: p.title,
 		busy: p.busy,
 		waiting: p.waiting,
-		error: p.error
+		error: p.error,
+		generation: p.generation
 	};
 }

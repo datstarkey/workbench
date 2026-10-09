@@ -58,8 +58,12 @@ export class ProjectStore {
 			this.favourites.add(project.path);
 			this.saveFavourites();
 		}
+		const before = this.getByPath(previousPath);
 		this.projects = this.projects.map((p) => (p.path === previousPath ? project : p));
 		await this.persist();
+		// Open workspaces follow a moved or renamed project, on every device.
+		if (before && (before.path !== project.path || before.name !== project.name))
+			await this.workspaces.updateProject(previousPath, project);
 	}
 
 	async remove(projectPath: string) {

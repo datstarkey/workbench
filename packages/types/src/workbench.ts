@@ -191,6 +191,8 @@ export interface TerminalPaneState {
 	waiting?: AgentSummary['waiting'];
 	/** Why its last start failed. */
 	error?: string | null;
+	/** Bumped by every spawn, so a view re-attaches after a restart. */
+	generation?: number;
 }
 
 export type PaneView = 'terminal' | 'chat';

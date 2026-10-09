@@ -15,7 +15,7 @@ import { transport } from '$lib/transport';
 import { effectivePath } from '$lib/utils/path';
 import { releaseChat } from '$features/chat/chat-registry';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
-import { loadUi, pruneUi, saveUi, type WorkspaceUi } from './workspace-ui';
+import { hasSavedUi, loadUi, pruneUi, saveUi, seededUi, type WorkspaceUi } from './workspace-ui';
 import { workspaceView } from './workspace-view';
 
 export type WorkspaceApi = Pick<ControlPlaneTransport, 'workspaceCommand' | 'subscribeWorkspace'>;
@@ -45,6 +45,8 @@ interface NewSessionOptions {
 export class WorkspaceStore {
 	private snapshot = $state.raw<WorkspaceSnapshot>({ rev: 0, workspaces: [] });
 	private ui = $state.raw<WorkspaceUi>(loadUi());
+	/** No state saved on this device yet: take the one an older desktop saved with the model. */
+	private seed = !hasSavedUi();
 	/** Ids a command made, kept from pruning until a snapshot at that rev arrives. */
 	private pending: Record<string, number> = {};
 	private unsubscribe: (() => void) | null = null;
@@ -57,6 +59,19 @@ export class WorkspaceStore {
 	constructor(api: WorkspaceApi = transport()) {
 		this.api = api;
 	}
+
+	/** Whether the server saves the model; anything but `ok` loses tabs on quit. */
+	readonly persistence = $derived(this.snapshot.persistence ?? { status: 'ok', message: null });
+
+	/** Every workspace, tab and pane id the snapshot shows. */
+	private readonly ids: Record<string, true> = $derived(
+		Object.fromEntries(
+			this.snapshot.workspaces.flatMap((w) => [
+				[w.id, true],
+				...w.tabs.flatMap((t) => [[t.id, true], ...t.panes.map((p) => [p.id, true])])
+			])
+		)
+	);
 
 	readonly workspaces: ProjectWorkspace[] = $derived.by(() =>
 		this.snapshot.workspaces.map((w) => workspaceView(w, this.ui))
@@ -95,11 +110,14 @@ export class WorkspaceStore {
 	/** A snapshot from the stream. `fresh`: a new connection, whose `rev` may have restarted. */
 	apply(next: WorkspaceSnapshot, fresh = false): void {
 		if (!fresh && next.rev <= this.snapshot.rev) return;
-		const kept = next.workspaces.flatMap((w) => w.tabs.flatMap((t) => t.panes.map((p) => p.id)));
-		for (const paneId of Object.keys(this.paneIndex))
-			if (!kept.includes(paneId)) releaseChat(paneId);
+		const gone = Object.keys(this.paneIndex);
 		const prevProject = this.activeProjectPath;
 		this.snapshot = next;
+		for (const paneId of gone) if (!(paneId in this.ids)) releaseChat(paneId);
+		if (this.seed && next.local) {
+			this.seed = false;
+			this.setUi(seededUi(next.local));
+		}
 		this.pending = Object.fromEntries(
 			Object.entries(this.pending).filter(([, rev]) => next.rev < rev)
 		);
@@ -118,7 +136,7 @@ export class WorkspaceStore {
 		try {
 			const result = await this.api.workspaceCommand(cmd);
 			for (const id of [result.workspaceId, result.tabId, result.paneId])
-				if (id && !(id in this.paneIndex)) this.pending = { ...this.pending, [id]: result.rev };
+				if (id && !(id in this.ids)) this.pending = { ...this.pending, [id]: result.rev };
 			return result;
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
@@ -229,10 +247,6 @@ export class WorkspaceStore {
 		this.setUi({ ...this.ui, chatPanes: view === 'chat' ? [...chatPanes, paneId] : chatPanes });
 	}
 
-	isChatPane(paneId: string): boolean {
-		return this.paneIndex[paneId]?.pane.view === 'chat';
-	}
-
 	// --- lookups ---
 
 	pane(paneId: string): TerminalPaneState | undefined {
@@ -250,15 +264,6 @@ export class WorkspaceStore {
 
 	getByWorktreePath(worktreePath: string): ProjectWorkspace | undefined {
 		return this.workspaces.find((w) => w.worktreePath === worktreePath);
-	}
-
-	getWorkspacesForProject(projectPath: string): ProjectWorkspace[] {
-		return this.workspaces.filter((w) => w.projectPath === projectPath);
-	}
-
-	findPaneLocation(paneId: string): { workspaceId: string; tabId: string } | null {
-		const at = this.paneIndex[paneId];
-		return at ? { workspaceId: at.workspace.id, tabId: at.tab.id } : null;
 	}
 
 	/** The pane on that session (or one it had before a `/clear`). */
@@ -375,8 +380,17 @@ export class WorkspaceStore {
 		return tabId ? this.send({ type: 'split', tabId, direction }) : Promise.resolve(null);
 	}
 
-	movePane(paneId: string, tabId: string): Promise<unknown> {
-		return this.send({ type: 'movePane', paneId, tabId });
+	/** A project moved or was renamed: its workspaces follow, on every device. */
+	updateProject(
+		projectPath: string,
+		project: Pick<ProjectConfig, 'path' | 'name'>
+	): Promise<unknown> {
+		return this.send({
+			type: 'updateProject',
+			projectPath,
+			newPath: project.path,
+			projectName: project.name
+		});
 	}
 
 	trustFolder(paneId: string): Promise<unknown> {

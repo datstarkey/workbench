@@ -14,6 +14,7 @@
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
 	import { splitInset, visibleSplit } from '$features/terminal/split-view';
 	import WorkspaceLanding from '$features/workspaces/WorkspaceLanding.svelte';
+	import PersistenceBanner from '$features/workspaces/PersistenceBanner.svelte';
 	import RightSidebar from '$features/sidebar/RightSidebar.svelte';
 	import WorkspaceTabs from '$features/workspaces/WorkspaceTabs.svelte';
 	import WorktreeManager from '$features/worktrees/WorktreeManager.svelte';
@@ -194,7 +195,12 @@
 		instancesStore.load();
 		await Promise.all([workbenchSettingsStore.load(), projectStore.load()]);
 		await workspaceStore.load();
-		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
+		// Not while the model isn't saved: an empty model there may hide the person's tabs.
+		if (
+			workspaceStore.persistence.status === 'ok' &&
+			workspaceStore.workspaces.length === 0 &&
+			projectStore.projects.length === 1
+		) {
 			void projectStore.openProject(projectStore.projects[0].path);
 		}
 		gitStore.refreshAll(projectStore.projects.map((p) => p.path));
@@ -262,6 +268,7 @@
 					<Resizable.Handle withHandle class="cursor-col-resize" />
 					<Resizable.Pane defaultSize={83} minSize={50} class="h-full">
 						<main class="flex h-full min-w-0 flex-1 flex-col">
+							<PersistenceBanner />
 							{#if workspaceStore.workspaces.length === 0}
 								<EmptyState />
 							{:else}

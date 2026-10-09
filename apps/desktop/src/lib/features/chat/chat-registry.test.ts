@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const created: {
 	sessionId: string;
 	body: unknown;
+	status: string;
 	dispose: ReturnType<typeof vi.fn>;
+	attach: ReturnType<typeof vi.fn>;
 }[] = [];
 vi.mock('./agent-api', () => ({ loopbackAgentApi: {} }));
 vi.mock('@workbench/chat-ui', () => ({
@@ -12,7 +14,9 @@ vi.mock('@workbench/chat-ui', () => ({
 		agent: string;
 		draft: unknown;
 		body: unknown;
+		status = 'live';
 		dispose = vi.fn();
+		attach = vi.fn(async () => {});
 		constructor(
 			body: { sessionId?: string; agent?: string },
 			_api: unknown,
@@ -32,7 +36,7 @@ vi.mock('@workbench/chat-ui', () => ({
 	}
 }));
 
-const { acquireChat, releaseChat } = await import('./chat-registry');
+const { acquireChat, followPane, releaseChat } = await import('./chat-registry');
 const body = (sessionId: string) => ({ projectPath: '/repo', sessionId, paneId: 'p1' });
 
 describe('chat registry', () => {
@@ -75,6 +79,29 @@ describe('chat registry', () => {
 		draft.text = '';
 		releaseChat('p1');
 		expect(acquireChat('p1', body('s1')).chat.draft).not.toBe(draft);
+	});
+
+	it('re-attaches when the pane runs a new spawn, even one this window never saw stop', () => {
+		acquireChat('p1', body('s1'), { status: 'running', generation: 1 });
+		followPane('p1', { status: 'running', generation: 1 });
+		expect(created[0].attach).not.toHaveBeenCalled();
+
+		followPane('p1', { status: 'starting', generation: 2 });
+		expect(created[0].attach).not.toHaveBeenCalled();
+		followPane('p1', { status: 'running', generation: 2 });
+		expect(created[0].attach).toHaveBeenCalledOnce();
+		followPane('p1', { status: 'running', generation: 2 });
+		expect(created[0].attach).toHaveBeenCalledOnce();
+	});
+
+	it('re-attaches an ended chat once its pane runs again', () => {
+		acquireChat('p1', body('s1'), { status: 'running', generation: 1 });
+		created[0].status = 'exited';
+		followPane('p1', { status: 'exited', generation: 1 });
+		expect(created[0].attach).not.toHaveBeenCalled();
+		// Remounting the view after the restart finds the same chat, ended.
+		acquireChat('p1', body('s1'), { status: 'running', generation: 1 });
+		expect(created[0].attach).toHaveBeenCalledOnce();
 	});
 
 	it('disposes on release', () => {

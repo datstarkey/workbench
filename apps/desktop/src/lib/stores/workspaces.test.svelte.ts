@@ -48,6 +48,7 @@ function pane(id: string, over: Partial<WorkspacePane> = {}): WorkspacePane {
 		busy: false,
 		waiting: null,
 		error: null,
+		generation: 1,
 		...over
 	};
 }
@@ -154,7 +155,7 @@ describe('WorkspaceStore', () => {
 					])
 				])
 			);
-			expect(store.isChatPane('p1')).toBe(true);
+			expect(store.pane('p1')?.view).toBe('chat');
 		});
 
 		it('ignores a frame whose rev is not newer, but takes any rev on a new connection', async () => {
@@ -203,7 +204,7 @@ describe('WorkspaceStore', () => {
 			await ready;
 			expect(again.activeWorkspaceId).toBe('w2');
 			expect(again.activeTerminalTab?.id).toBe('t3');
-			expect(again.isChatPane('p2')).toBe(true);
+			expect(again.pane('p2')?.view).toBe('chat');
 			again.dispose();
 		});
 
@@ -256,6 +257,64 @@ describe('WorkspaceStore', () => {
 				snap(3, [ws('w1', [tab('t1', [pane('p1')]), tab('t9', [pane('p9')])])])
 			);
 			expect(store.activeTerminalTab?.id).toBe('t9');
+		});
+
+		it('takes over the state an older desktop saved, once, when this device has none', async () => {
+			const first = snap(1, [
+				ws('w1', [tab('t1', [pane('p1')])]),
+				ws('w2', [
+					tab('t2', [pane('p2', { kind: 'claude', sessionId: 's' })]),
+					tab('t3', [pane('p3')])
+				])
+			]);
+			await loaded({
+				...first,
+				local: { selectedId: 'w2', activeTabIds: { w2: 't3' }, chatPanes: ['p2'] }
+			});
+			expect(store.activeWorkspaceId).toBe('w2');
+			expect(store.activeTerminalTab?.id).toBe('t3');
+			expect(store.pane('p2')?.view).toBe('chat');
+
+			// Later frames carry it too, but this device's own choices now win.
+			store.selectedId = 'w1';
+			transport.emitWorkspace({ ...first, rev: 2, local: { selectedId: 'w2' } });
+			expect(store.activeWorkspaceId).toBe('w1');
+		});
+
+		it('never seeds over state this device saved', async () => {
+			storage[UI_KEY] = JSON.stringify({ selectedId: 'w1', activeTabs: {}, chatPanes: [] });
+			const s2 = new WorkspaceStore(transport);
+			const ready = s2.load();
+			transport.emitWorkspace(
+				{ ...snap(1, [ws('w1', []), ws('w2', [])]), local: { selectedId: 'w2' } },
+				true
+			);
+			await ready;
+			expect(s2.activeWorkspaceId).toBe('w1');
+			s2.dispose();
+		});
+
+		it("reports the server's persistence, ok when it doesn't say", async () => {
+			await loaded(snap(1, []));
+			expect(store.persistence.status).toBe('ok');
+			transport.emitWorkspace({
+				...snap(2, []),
+				persistence: { status: 'locked', message: 'Another Workbench server (pid 7)' }
+			});
+			expect(store.persistence).toEqual({
+				status: 'locked',
+				message: 'Another Workbench server (pid 7)'
+			});
+		});
+
+		it('keeps a workspace a command opened selected until a snapshot shows it', async () => {
+			await loaded(snap(1, [ws('w1', [])]));
+			transport.mockWorkspaceCommand(() => ({ rev: 3, workspaceId: 'w9' }));
+			await store.open({ name: 'Repo', path: '/repo' });
+			transport.emitWorkspace(snap(2, [ws('w1', [])]));
+			expect(savedUi().selectedId).toBe('w9');
+			transport.emitWorkspace(snap(3, [ws('w1', []), ws('w9', [])]));
+			expect(store.activeWorkspaceId).toBe('w9');
 		});
 
 		it('opens a new Claude tab as chat when that is the default', async () => {
@@ -403,11 +462,6 @@ describe('WorkspaceStore', () => {
 				{ type: 'split', tabId: 't1', direction: 'vertical' }
 			],
 			[
-				'movePane',
-				(s: WorkspaceStore) => s.movePane('p1', 't2'),
-				{ type: 'movePane', paneId: 'p1', tabId: 't2' }
-			],
-			[
 				'reorderTerminalTab',
 				(s: WorkspaceStore) => s.reorderTerminalTab('w1', 't2', 't1'),
 				{ type: 'moveTab', tabId: 't2', toTabId: 't1' }
@@ -421,6 +475,11 @@ describe('WorkspaceStore', () => {
 				'trustFolder',
 				(s: WorkspaceStore) => s.trustFolder('p1'),
 				{ type: 'trustFolder', paneId: 'p1' }
+			],
+			[
+				'updateProject',
+				(s: WorkspaceStore) => s.updateProject('/repo', { path: '/moved', name: 'Moved' }),
+				{ type: 'updateProject', projectPath: '/repo', newPath: '/moved', projectName: 'Moved' }
 			]
 		])('%s sends exactly one command', async (_name, act, command) => {
 			await act(store);

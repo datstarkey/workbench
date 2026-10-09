@@ -1,4 +1,4 @@
-import type { ServerWorkspace } from '$types/workspace';
+import type { ServerWorkspace, WorkspaceLocalSeed } from '$types/workspace';
 
 /**
  * What this device alone decides about the server's workspaces: which one is
@@ -16,6 +16,24 @@ export interface WorkspaceUi {
 export const UI_KEY = 'workbench.workspace-ui';
 
 const empty = (): WorkspaceUi => ({ selectedId: null, activeTabs: {}, chatPanes: [] });
+
+/** This device saved its state before (never throws). */
+export function hasSavedUi(): boolean {
+	try {
+		return localStorage.getItem(UI_KEY) !== null;
+	} catch {
+		return false;
+	}
+}
+
+/** The state an older desktop saved with the model, as this device's. */
+export function seededUi(local: WorkspaceLocalSeed): WorkspaceUi {
+	return {
+		selectedId: local.selectedId ?? null,
+		activeTabs: { ...local.activeTabIds },
+		chatPanes: [...(local.chatPanes ?? [])]
+	};
+}
 
 /** Never throws: storage can be missing, blocked or hold anything. */
 export function loadUi(): WorkspaceUi {

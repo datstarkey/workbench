@@ -32,7 +32,7 @@
 	import PRStatusBadge from '$features/projects/PRStatusBadge.svelte';
 	import { openUrl } from '$lib/utils/open-url';
 	import { planUsage } from './agent-api';
-	import { acquireChat } from './chat-registry';
+	import { acquireChat, followPane } from './chat-registry';
 	import { desktopChatPlatform } from './chat-platform';
 	import ChatResumePicker from './ChatResumePicker.svelte';
 	import PanelResizeHandle from './PanelResizeHandle.svelte';
@@ -44,6 +44,7 @@
 		tabId,
 		sessionId,
 		status,
+		generation,
 		project,
 		cwd,
 		claudeAccountId,
@@ -56,6 +57,8 @@
 		sessionId: string;
 		/** The pane's process, as the server reports it. */
 		status?: PaneStatus;
+		/** Which spawn of the pane runs now; a new one means re-attach. */
+		generation?: number;
 		project: ProjectConfig;
 		cwd?: string;
 		/** The pane's Claude account, for its plan usage. */
@@ -73,13 +76,17 @@
 	// svelte-ignore state_referenced_locally
 	const agentLabel = agentName(agent);
 	// svelte-ignore state_referenced_locally
-	const { chat } = acquireChat(paneId, {
-		agent,
-		projectPath: project.path,
-		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
-		sessionId,
-		paneId
-	});
+	const { chat } = acquireChat(
+		paneId,
+		{
+			agent,
+			projectPath: project.path,
+			...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
+			sessionId,
+			paneId
+		},
+		{ status, generation }
+	);
 	const workspace = $derived(
 		cwd && cwd !== project.path
 			? workspaceStore.getByWorktreePath(cwd)
@@ -91,11 +98,8 @@
 	// The chat's Restart is the pane's: the server restarts it, then the chat re-attaches.
 	chat.onRestart = () => void workspaceStore.restartAISession('', tabId);
 	watch(
-		() => status,
-		(now) => {
-			if (now === 'running' && (chat.status === 'exited' || chat.status === 'failed'))
-				void chat.attach();
-		}
+		() => [status, generation],
+		() => followPane(paneId, { status, generation })
 	);
 
 	let resumeOpen = $state(false);

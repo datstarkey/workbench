@@ -27,6 +27,8 @@ export interface WorkspacePane {
 	waiting: AgentSummary['waiting'];
 	/** Why the last spawn failed. */
 	error: string | null;
+	/** Bumped by every spawn (start, restart, mode switch). */
+	generation: number;
 }
 
 export interface WorkspaceTab {
@@ -50,9 +52,25 @@ export interface ServerWorkspace {
 	transient?: boolean;
 }
 
+/** Whether the server saves the model: `locked` (another process keeps it) and `error` (unreadable) don't. */
+export interface WorkspacePersistence {
+	status: 'ok' | 'locked' | 'error';
+	message: string | null;
+}
+
+/** The desktop's per-device state saved with an older model, for it to take over once. */
+export interface WorkspaceLocalSeed {
+	selectedId?: string | null;
+	activeTabIds?: Record<string, string>;
+	chatPanes?: string[];
+}
+
 export interface WorkspaceSnapshot {
 	rev: number;
 	workspaces: ServerWorkspace[];
+	/** Absent from servers that predate it. */
+	persistence?: WorkspacePersistence;
+	local?: WorkspaceLocalSeed;
 }
 
 /** Where a new session goes: a workspace, or a project (and worktree) by path. */
@@ -90,7 +108,8 @@ export type WorkspaceCommand =
 	| { type: 'movePane'; paneId: string; tabId: string }
 	| { type: 'moveTab'; tabId: string; toTabId: string }
 	| { type: 'moveWorkspace'; workspaceId: string; toWorkspaceId: string }
-	| { type: 'trustFolder'; paneId: string };
+	| { type: 'trustFolder'; paneId: string }
+	| { type: 'updateProject'; projectPath: string; newPath: string; projectName: string };
 
 /** `POST /workspace/commands`: what the command opened or found, at the `rev` that shows it. */
 export interface WorkspaceCommandResult {

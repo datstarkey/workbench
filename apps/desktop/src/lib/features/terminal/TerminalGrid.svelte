@@ -76,6 +76,7 @@
 							tabId={tab.id}
 							sessionId={chatSessionId}
 							status={pane.status}
+							generation={pane.generation}
 							{project}
 							{cwd}
 							claudeAccountId={pane.claudeAccountId}
