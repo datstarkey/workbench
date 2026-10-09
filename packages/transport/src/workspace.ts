@@ -1,5 +1,5 @@
 import type { WorkspaceCommand, WorkspaceCommandResult, WorkspaceSnapshot } from '@workbench/types';
-import { DEFAULT_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
+import { SLOW_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
 import type { Unsubscribe } from './transport.ts';
 
 /** Where the workspace service is: a remote server, or the desktop's loopback one. */
@@ -124,15 +124,40 @@ export class WorkspaceStream {
 	}
 }
 
-/** `POST /workspace/commands`; a refused command throws the server's reason. */
+/** 32 hex chars; `crypto.randomUUID` needs a secure context, which a phone's WebView isn't. */
+function requestId(): string {
+	return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
+		b.toString(16).padStart(2, '0')
+	).join('');
+}
+
+/**
+ * `POST /workspace/commands`; a refused command throws the server's reason.
+ * A `newSession` carries a `requestId` and is sent once more when the first
+ * try got no answer (a slow link): the server applies it once either way.
+ */
 export async function sendWorkspaceCommand(
+	server: ServerAddress,
+	cmd: WorkspaceCommand
+): Promise<WorkspaceCommandResult> {
+	if (cmd.type !== 'newSession') return postCommand(server, cmd);
+	const once = { ...cmd, requestId: cmd.requestId ?? requestId() };
+	try {
+		return await postCommand(server, once);
+	} catch (e) {
+		if ((e as { status?: number }).status !== undefined) throw e;
+		return postCommand(server, once);
+	}
+}
+
+async function postCommand(
 	server: ServerAddress,
 	cmd: WorkspaceCommand
 ): Promise<WorkspaceCommandResult> {
 	const base = server.baseUrl.replace(/\/$/, '');
 	return withTimeout(
 		'workbench-server: POST /workspace/commands',
-		DEFAULT_TIMEOUT_MS,
+		SLOW_TIMEOUT_MS,
 		async (signal) => {
 			const res = await fetch(`${base}/workspace/commands`, {
 				method: 'POST',

@@ -1,4 +1,4 @@
-import { agentClient, agentName, type AgentApi } from '@workbench/chat-ui';
+import { agentClient, agentName } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
 import { createHttpTransport, type OpenEventSource } from '@workbench/transport';
 import type {
@@ -6,20 +6,15 @@ import type {
 	ApprovalDecision,
 	ClaudeAccount,
 	PaneKind,
+	ServerWorkspace,
 	WorkbenchSettings,
 	WorkspaceCommand,
 	WorkspacePane
 } from '@workbench/types';
-import { defaultAccountName } from '@workbench/types';
+import { defaultAccountName, paneNotices } from '@workbench/types';
 import { HostUpdate } from './host-update.svelte.ts';
 import { hostOf, normalizeUrl, SavedMachines } from './machines.svelte.ts';
-import {
-	attachThroughRelaunch,
-	findPane,
-	paneEntries,
-	paneTitle,
-	type PaneEntry
-} from './panes.ts';
+import { findPane, paneEntries, paneTitle, type PaneEntry } from './panes.ts';
 import { PaneScreens } from './pane-screens.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
 import { WorkspaceRemote } from './remote.svelte.ts';
@@ -79,22 +74,13 @@ export class MobileClient {
 	/** The open screen and a start in flight; it closes when its pane leaves the host's model. */
 	screens = $state.raw(this.newScreens());
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
+	/** Spawn notices already shown, by pane and spawn. */
+	private shownNotices: Record<string, true> = {};
 
 	readonly agents = agentClient(() => ({
 		baseUrl: this.connection?.url ?? '',
 		token: this.connection?.token ?? ''
 	}));
-	/** Chat screens only ever attach: starting a process is a command. */
-	readonly attachApi: AgentApi = {
-		...this.agents,
-		attach: (sessionId) =>
-			attachThroughRelaunch(
-				() => this.agents.attach(sessionId),
-				() => !!findPane(this.panes, { sessionId }),
-				(ms) => this.screens.nextChange(ms)
-			)
-	};
-
 	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
 	panes = $derived(paneEntries(this.remote?.workspaces ?? []));
 	activePane = $derived(this.panes.find((e) => e.pane.id === this.screens.openPaneId) ?? null);
@@ -224,7 +210,10 @@ export class MobileClient {
 			void this.hostUpdate.check();
 			const remote = new WorkspaceRemote(controlPlane);
 			this.remote = remote;
-			remote.onChange = () => this.screens.reconcile();
+			remote.onChange = () => {
+				this.screens.reconcile();
+				this.showNotices(remote.workspaces);
+			};
 			remote.follow(this.visible);
 			await this.loadAccounts();
 		} catch (e) {
@@ -234,6 +223,15 @@ export class MobileClient {
 			else this.connectError = saved ? `${saved.name}: ${errorText(e)}` : errorText(e);
 		} finally {
 			if (!superseded()) this.endConnecting();
+		}
+	}
+
+	/** Each spawn's notice (a prompt the host's shell couldn't take), once. */
+	private showNotices(workspaces: ServerWorkspace[]): void {
+		for (const { key, notice } of paneNotices(workspaces)) {
+			if (key in this.shownNotices) continue;
+			this.shownNotices[key] = true;
+			this.notice = notice;
 		}
 	}
 

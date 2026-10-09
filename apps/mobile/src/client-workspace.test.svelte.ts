@@ -79,7 +79,9 @@ describe('MobileClient on a host with the workspace API', () => {
 			'/projects/worktrees': () =>
 				jsonResponse([{ path: '/repo-wt', branch: 'feat/x', isMain: false }]),
 			'/workspace/commands': (init) => {
-				const cmd = JSON.parse(String(init?.body));
+				// A newSession's requestId is random: the transport's own tests cover it.
+				const { requestId, ...cmd } = JSON.parse(String(init?.body));
+				if (cmd.type === 'newSession') expect(requestId).toMatch(/^[0-9a-f]{32}$/);
 				commands.push(cmd);
 				return reply(cmd);
 			},
@@ -236,28 +238,6 @@ describe('MobileClient on a host with the workspace API', () => {
 		expect(c.activePane).toBeNull();
 	});
 
-	it('a chat re-attaches while its pane relaunches, instead of failing', async () => {
-		const { c } = await connected();
-		snapshot(1, workspace(pane('p1', { sessionId: 's' })));
-		const gone = Object.assign(new Error('no chat session'), { status: 404 });
-		const attach = vi
-			.spyOn(c.agents, 'attach')
-			.mockRejectedValueOnce(gone)
-			.mockResolvedValueOnce('s');
-		const attaching = c.attachApi.attach('s');
-		await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(1));
-		snapshot(2, workspace(pane('p1', { sessionId: 's', status: 'running' })));
-		await expect(attaching).resolves.toBe('s');
-		expect(attach).toHaveBeenLastCalledWith('s');
-	});
-
-	it('an attach to a session no pane holds fails at once', async () => {
-		const { c } = await connected();
-		const gone = Object.assign(new Error('no chat session'), { status: 404 });
-		vi.spyOn(c.agents, 'attach').mockRejectedValue(gone);
-		await expect(c.attachApi.attach('x')).rejects.toBe(gone);
-	});
-
 	it("shows the host's account, switches it on the host, and lets the host pick a new chat's", async () => {
 		let active: string | null = 'work';
 		const puts: unknown[] = [];
@@ -284,6 +264,17 @@ describe('MobileClient on a host with the workspace API', () => {
 		active = 'work';
 		c.refreshAll();
 		await vi.waitFor(() => expect(c.accountId).toBe('work'));
+	});
+
+	it("shows a spawn's notice once", async () => {
+		const { c } = await connected();
+		snapshot(1, workspace(pane('p1', { notice: 'Prompt left out' })));
+		expect(c.notice).toBe('Prompt left out');
+		c.notice = null;
+		snapshot(2, workspace(pane('p1', { notice: 'Prompt left out', busy: true })));
+		expect(c.notice).toBeNull();
+		snapshot(3, workspace(pane('p1', { notice: 'Prompt left out', generation: 2 })));
+		expect(c.notice).toBe('Prompt left out');
 	});
 
 	it("a chat's account is the pane's, from the host", async () => {
