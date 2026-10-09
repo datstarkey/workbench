@@ -8,7 +8,7 @@
 
 	const projectManager = getProjectManager();
 
-	const DOCS_URL = 'https://github.com/datstarkey/workbench';
+	const DOCS_URL = 'https://github.com/starkey-digital/workbench';
 
 	let cloneOpen = $state(false);
 </script>

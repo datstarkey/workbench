@@ -2,13 +2,13 @@
 
 A desktop terminal manager built with Tauri v2 and Svelte 5. Add local project folders, and each project gets a tabbed workspace with real shell terminals, Claude Code + Codex integration, and git worktree support.
 
-[Website](https://workbench.starkeydigital.com/) · [Download](https://github.com/datstarkey/workbench/releases/latest)
+[Website](https://workbench.starkeydigital.com/) · [Download](https://github.com/starkey-digital/workbench/releases/latest)
 
 The public landing page lives in `site/` and deploys to GitHub Pages. See [landing page development](docs/LANDING_PAGE.md).
 
 ## Installation
 
-Download the latest release from the [Releases page](https://github.com/datstarkey/workbench/releases/latest):
+Download the latest release from the [Releases page](https://github.com/starkey-digital/workbench/releases/latest):
 
 - **macOS (Universal)** — `Workbench_x.x.x_universal.dmg`
 
@@ -21,7 +21,7 @@ Open the `.dmg` and drag Workbench to your Applications folder.
 Workbench tracks Claude session activity with its own Claude Code plugin ([`plugins/workbench`](plugins/workbench)), which it loads into every Claude process it starts, so there's nothing to install. To keep it loaded in sessions started outside Workbench too, install it from this repo:
 
 ```
-/plugin marketplace add datstarkey/workbench
+/plugin marketplace add starkey-digital/workbench
 /plugin install workbench@workbench
 ```
 

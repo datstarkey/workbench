@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LATEST_RELEASE_URL, checkForUpdate, parseSemver, selectUpdate } from './updater';
 
-const DOWNLOAD = 'https://github.com/datstarkey/workbench/releases/download';
+const DOWNLOAD = 'https://github.com/starkey-digital/workbench/releases/download';
 
 function release(tag: string, overrides: Record<string, unknown> = {}) {
 	const version = tag.replace(/^v/, '');

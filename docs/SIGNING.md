@@ -1,4 +1,4 @@
-# Code signing & notarization (macOS, Android)
+# Code signing & notarization (macOS, Windows, Android)
 
 Workbench ships as a Developer ID–signed, notarized app. Without this, macOS
 Gatekeeper refuses to open the download ("Apple could not verify…") and
@@ -16,7 +16,8 @@ unsigned. Only tagged CI releases and `bun run build:signed` sign.
 | `Workbench_x.y.z_*.dmg`          | yes                                  | yes, stapled — as a separate step, see below |
 | `Workbench.app.tar.gz` (updater) | derived from the signed app          | inherits the staple                          |
 
-Windows is **not** signed yet — the NSIS installer still trips SmartScreen.
+Windows: `workbench.exe` and the NSIS installer are signed as **Starkey Digital Ltd**
+through Azure Artifact Signing, see [Windows](#windows).
 
 ## One-time setup
 
@@ -187,6 +188,28 @@ weakening of the hardened runtime and Apple reviews them for notarization.
   not support anything older, so the old value was a claim the binary couldn't honour.
 - Certificates expire after 5 years; notarization of already-stapled builds keeps
   working after expiry, but new builds do not.
+
+## Windows
+
+Tagged releases sign `workbench.exe` and the NSIS setup with Azure Artifact Signing
+(account `starkeydigital`, profile `starkeydigital-public`, North Europe), so SmartScreen
+reputation accrues to Starkey Digital Ltd rather than to each build.
+
+- Credentials are the `starkey-digital` **org** secrets `AZURE_TENANT_ID`,
+  `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` (service principal
+  `sp-starkeydigital-github-signing`, Signer role only; the secret expires ~Oct 2027).
+  Nothing is stored per repo.
+- `signCommand` lives in `apps/desktop/src-tauri/tauri.windows-sign.json`, merged with
+  `--config` by the release job only, so a local `tauri build` never needs Azure
+  credentials. CI installs `artifact-signing-cli` for it.
+- Missing or empty credentials fail the job, like Apple's; `ALLOW_UNSIGNED_RELEASE=true`
+  ships unsigned on purpose.
+- The certificate lives 3 days and Microsoft renews it daily, so every signature is
+  timestamped. The job checks both files with `Get-AuthenticodeSignature` (status
+  `Valid`, signer `CN=Starkey Digital Ltd`, a timestamp) and fails otherwise.
+
+Tauri signs the exe before bundling and the installer after, and writes the updater
+signature over the signed installer, so the updater needs no extra step.
 
 ## Android (APK)
 

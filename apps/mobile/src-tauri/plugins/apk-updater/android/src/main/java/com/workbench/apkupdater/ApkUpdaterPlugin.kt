@@ -24,7 +24,7 @@ import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-private const val RELEASE_PREFIX = "https://github.com/datstarkey/workbench/releases/download/"
+private const val RELEASE_PREFIX = "https://github.com/starkey-digital/workbench/releases/download/"
 private val REDIRECT_HOSTS = setOf("release-assets.githubusercontent.com", "objects.githubusercontent.com")
 private val SHA256_HEX = Regex("[0-9a-f]{64}")
 private const val MAX_REDIRECTS = 5
