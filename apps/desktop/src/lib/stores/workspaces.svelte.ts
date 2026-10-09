@@ -279,10 +279,12 @@ export class WorkspaceStore {
 		this.persist();
 	}
 
+	private allPanes(): TerminalPaneState[] {
+		return this.workspaces.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes));
+	}
+
 	private findPane(paneId: string): TerminalPaneState | undefined {
-		return this.workspaces
-			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
-			.find((p) => p.id === paneId);
+		return this.allPanes().find((p) => p.id === paneId);
 	}
 
 	/** Server terminal ids the adoption poller must skip: mapped to panes or released. */
@@ -892,6 +894,23 @@ export class WorkspaceStore {
 		this.selectedId = location.workspaceId;
 		this.setActiveTab(location.workspaceId, location.tabId);
 		return true;
+	}
+
+	/**
+	 * Focus the Claude tab already running a session under that account, so a
+	 * resume doesn't open it twice. False when no tab has it or it isn't live.
+	 */
+	async focusLiveSession(sessionId: string, accountId: string | undefined): Promise<boolean> {
+		const pane = this.allPanes().find(
+			(p) =>
+				p.type === 'claude' && p.claudeSessionId === sessionId && p.claudeAccountId === accountId
+		);
+		if (!pane) return false;
+		const agents = await listAgents();
+		const live = agents?.some(
+			(a) => a.agent === 'claude' && !a.exited && a.sessionId === sessionId
+		);
+		return live === true && this.focusPane(pane.id);
 	}
 
 	/** Find workspace/tab context for an AI pane. */

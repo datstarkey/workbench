@@ -32,6 +32,7 @@ pub fn load_workspaces() -> Result<WorkspaceFile> {
         WorkspaceFile {
             workspaces: Vec::new(),
             selected_id: None,
+            server_terminal_ids: Default::default(),
         },
     )
 }
@@ -138,6 +139,7 @@ mod tests {
         let file = WorkspaceFile {
             workspaces: Vec::new(),
             selected_id: None,
+            server_terminal_ids: Default::default(),
         };
         let json = serde_json::to_string(&file).unwrap();
         let parsed: WorkspaceFile = serde_json::from_str(&json).unwrap();
@@ -171,8 +173,10 @@ mod tests {
                 split_view: None,
                 worktree_path: Some("/Users/jake/project-wt".into()),
                 branch: Some("feature/test".into()),
+                renderer: None,
             }],
             selected_id: Some("ws-1".into()),
+            server_terminal_ids: Default::default(),
         };
         let json = serde_json::to_string_pretty(&file).unwrap();
         let parsed: WorkspaceFile = serde_json::from_str(&json).unwrap();
@@ -211,8 +215,10 @@ mod tests {
                 split_view: None,
                 worktree_path: None,
                 branch: None,
+                renderer: None,
             }],
             selected_id: Some("ws-1".into()),
+            server_terminal_ids: Default::default(),
         };
         let json = serde_json::to_string(&file).unwrap();
         assert!(json.contains("projectPath"));
