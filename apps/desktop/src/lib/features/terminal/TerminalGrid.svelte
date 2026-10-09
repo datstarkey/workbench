@@ -66,7 +66,8 @@
 			{#if inChat && agent}
 				<!-- Only while visible: every grid stays mounted, and a hidden chat would keep streaming. -->
 				{#if active}
-					{#key chatSessionId}
+					<!-- An account switch remounts it for that login's usage; the chat itself is kept. -->
+					{#key `${chatSessionId}|${pane.claudeAccountId ?? ''}`}
 						<SessionChat
 							{agent}
 							paneId={pane.id}

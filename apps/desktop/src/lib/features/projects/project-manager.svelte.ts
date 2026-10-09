@@ -59,7 +59,8 @@ export class ProjectManagerStore {
 			name: project.name,
 			path: project.path,
 			group: project.group || '',
-			shell: project.shell || ''
+			shell: project.shell || '',
+			...(project.claudeAccountId !== undefined && { claudeAccountId: project.claudeAccountId })
 		};
 		this.formError = '';
 		this.dialogOpen = true;
@@ -101,7 +102,8 @@ export class ProjectManagerStore {
 			name: nextName,
 			path: nextPath,
 			group: this.form.group.trim() || undefined,
-			shell: this.form.shell.trim() || undefined
+			shell: this.form.shell.trim() || undefined,
+			claudeAccountId: this.form.claudeAccountId
 		};
 
 		if (this.dialogMode === 'create') {

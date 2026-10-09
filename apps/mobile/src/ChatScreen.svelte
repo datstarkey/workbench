@@ -58,6 +58,7 @@
 	);
 	// Ended on another device (e.g. the desktop closed its tab): leave the screen.
 	chat.onEnded = () => client.chatEnded(chat.sessionId);
+	chat.onAccount = (accountId) => client.updateChatAccount(accountId);
 	const draft = chat.draft;
 	const name = agentName(chat.agent);
 	const isClaude = chat.agent === 'claude';
@@ -273,6 +274,7 @@
 			{chat}
 			id="chat-draft-{ref.sessionId}"
 			notice={client.notice}
+			accounts={client.accounts}
 			onResume={() => (reviewOpen = 'history')}
 			onThread={(sessionId, name) => client.openChat({ ...ref, sessionId, name, agent: 'codex' })}
 		/>

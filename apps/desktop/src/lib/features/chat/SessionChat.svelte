@@ -22,7 +22,12 @@
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { AgentKind, DiscoveredClaudeSession, ProjectConfig } from '$types/workbench';
-	import { getClaudeSessionStore, getGitHubStore, getWorkspaceStore } from '$stores/context';
+	import {
+		getClaudeSessionStore,
+		getGitHubStore,
+		getWorkbenchSettingsStore,
+		getWorkspaceStore
+	} from '$stores/context';
 	import PRStatusBadge from '$features/projects/PRStatusBadge.svelte';
 	import { openUrl } from '$lib/utils/open-url';
 	import { planUsage } from './agent-api';
@@ -64,6 +69,7 @@
 	const claudeSessionStore = getClaudeSessionStore();
 	const workspaceStore = getWorkspaceStore();
 	const githubStore = getGitHubStore();
+	const settingsStore = getWorkbenchSettingsStore();
 	// svelte-ignore state_referenced_locally
 	const agentLabel = agentName(agent);
 	// svelte-ignore state_referenced_locally
@@ -92,6 +98,7 @@
 	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
 	chat.onEnded = () => workspaceStore.closeEndedChat(paneId);
 	chat.onTerminal = (terminalId) => workspaceStore.linkLiveTerminal(paneId, terminalId);
+	chat.onAccount = (accountId) => workspaceStore.setPaneClaudeAccount(paneId, accountId);
 
 	watch(
 		() => chat.sessionId,
@@ -252,6 +259,7 @@
 			<ChatDock
 				{chat}
 				id="chat-draft-{paneId}"
+				accounts={settingsStore.claudeAccounts}
 				answerHint="Answer {agentLabel} above first"
 				onResume={() => (resumeOpen = true)}
 				onThread={(id, label) => {

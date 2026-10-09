@@ -281,10 +281,117 @@ fn parse_usage(stdout: &str) -> Vec<UsageLimit> {
         .collect()
 }
 
+/// Move a session to another account's config dir (`None` is `~/.claude`) so
+/// that login `--resume`s it: its JSONL, the folder beside it (subagents, tool
+/// results), its file checkpoints, session env and todos. A move, not a copy:
+/// one id under two accounts is found under either. A session with no JSONL
+/// yet has nothing to move.
+pub fn move_session(from: Option<&Path>, to: Option<&Path>, session_id: &str) -> Result<()> {
+    let root = |dir: Option<&Path>| dir.map(Path::to_path_buf).unwrap_or_else(paths::claude_user_dir);
+    let (from, to) = (root(from), root(to));
+    if from == to {
+        return Ok(());
+    }
+    let Some(jsonl) = crate::claude_transcript::find_transcript(&from.join("projects"), session_id)
+    else {
+        return Ok(());
+    };
+    if crate::claude_transcript::find_transcript(&to.join("projects"), session_id).is_some() {
+        bail!("the other account already has a session {session_id}");
+    }
+    let project = jsonl
+        .parent()
+        .and_then(Path::file_name)
+        .context("session transcript outside a project folder")?;
+    let dest = to.join("projects").join(project);
+    std::fs::create_dir_all(&dest)
+        .with_context(|| format!("creating {}", dest.display()))?;
+    let moved_jsonl = dest.join(format!("{session_id}.jsonl"));
+    // Config dirs on different volumes can't rename across: copy, then remove.
+    std::fs::rename(&jsonl, &moved_jsonl)
+        .or_else(|_| {
+            std::fs::copy(&jsonl, &moved_jsonl)?;
+            std::fs::remove_file(&jsonl)
+        })
+        .with_context(|| format!("moving {}", jsonl.display()))?;
+    // The transcript is what `--resume` needs; the rest only enriches it.
+    let mut extras = vec![(jsonl.with_extension(""), dest.join(session_id))];
+    for dir in ["file-history", "session-env"] {
+        extras.push((from.join(dir).join(session_id), to.join(dir).join(session_id)));
+    }
+    // `todos/<session>-agent-<agent>.json`, one per agent of the session.
+    if let Ok(entries) = std::fs::read_dir(from.join("todos")) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(session_id) {
+                extras.push((entry.path(), to.join("todos").join(entry.file_name())));
+            }
+        }
+    }
+    for (src, dst) in extras {
+        if !src.exists() || dst.exists() {
+            continue;
+        }
+        let moved = dst
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::rename(&src, &dst));
+        if let Err(e) = moved {
+            log::warn!("moving {} to another account: {e}", src.display());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::ClaudeAccount;
+
+    #[test]
+    fn move_session_takes_the_transcript_and_its_folders() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let id = "0b5a3c1e-9d2f-4e7a-8c6b-1f2e3d4c5b6a";
+        let project = a.path().join("projects/-repo");
+        std::fs::create_dir_all(project.join(id).join("subagents")).unwrap();
+        std::fs::write(project.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        std::fs::create_dir_all(a.path().join("file-history").join(id)).unwrap();
+        std::fs::create_dir_all(a.path().join("session-env").join(id)).unwrap();
+        std::fs::create_dir_all(a.path().join("todos")).unwrap();
+        let todo = format!("{id}-agent-{id}.json");
+        std::fs::write(a.path().join("todos").join(&todo), "[]").unwrap();
+        std::fs::write(a.path().join("todos/other-agent-x.json"), "[]").unwrap();
+
+        move_session(Some(a.path()), Some(b.path()), id).unwrap();
+
+        let moved = b.path().join("projects/-repo");
+        assert!(moved.join(format!("{id}.jsonl")).is_file());
+        assert!(moved.join(id).join("subagents").is_dir());
+        assert!(b.path().join("file-history").join(id).is_dir());
+        assert!(b.path().join("session-env").join(id).is_dir());
+        assert!(b.path().join("todos").join(&todo).is_file());
+        assert!(a.path().join("todos/other-agent-x.json").is_file());
+        assert!(!project.join(format!("{id}.jsonl")).exists());
+        assert!(!project.join(id).exists());
+    }
+
+    #[test]
+    fn move_session_refuses_an_id_the_other_account_has() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let id = "0b5a3c1e-9d2f-4e7a-8c6b-1f2e3d4c5b6a";
+        for dir in [a.path(), b.path()] {
+            std::fs::create_dir_all(dir.join("projects/-repo")).unwrap();
+            std::fs::write(dir.join(format!("projects/-repo/{id}.jsonl")), "{}\n").unwrap();
+        }
+        assert!(move_session(Some(a.path()), Some(b.path()), id).is_err());
+        assert!(a.path().join(format!("projects/-repo/{id}.jsonl")).is_file());
+    }
+
+    #[test]
+    fn move_session_without_a_transcript_is_a_no_op() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        move_session(Some(a.path()), Some(b.path()), "0b5a3c1e-9d2f-4e7a-8c6b-1f2e3d4c5b6a")
+            .unwrap();
+    }
 
     #[test]
     fn probes_never_inherit_a_panes_wiring() {

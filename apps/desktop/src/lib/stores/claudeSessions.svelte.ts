@@ -413,6 +413,8 @@ export class ClaudeSessionStore {
 				this.workspaces.updateAISessionByPaneId(paneId, a.sessionId, 'claude');
 			}
 			if (a.title) this.workspaces.updateAITabLabelByPaneId(paneId, a.title, 'claude');
+			// An account switch (from any device) moved the session to another login.
+			this.workspaces.setPaneClaudeAccount(paneId, a.claudeAccountId ?? undefined);
 		}
 	}
 

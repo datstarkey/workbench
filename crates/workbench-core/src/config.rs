@@ -72,6 +72,7 @@ mod tests {
                     name: "build".into(),
                     command: "cargo build".into(),
                 }],
+                claude_account_id: None,
             }],
         };
         let json = serde_json::to_string(&projects).unwrap();
@@ -108,6 +109,7 @@ mod tests {
             shell: None,
             startup_command: Some("npm start".into()),
             tasks: vec![],
+            claude_account_id: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("startupCommand"));
@@ -125,6 +127,7 @@ mod tests {
             shell: None,
             startup_command: None,
             tasks: vec![],
+            claude_account_id: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(!json.contains("tasks"));

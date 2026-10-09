@@ -381,6 +381,7 @@ mod tests {
             shell: None,
             startup_command: None,
             tasks: Vec::new(),
+            claude_account_id: None,
         }
     }
 

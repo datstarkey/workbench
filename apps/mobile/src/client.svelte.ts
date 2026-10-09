@@ -9,6 +9,7 @@ import type {
 	ServerTerminalMeta as TerminalMeta,
 	WorkbenchSettings
 } from '@workbench/types';
+import { projectClaudeAccount } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { watch as watchValue } from 'runed';
 import { HomeStream, type OpenEventSource } from './home-stream.ts';
@@ -405,15 +406,18 @@ export class MobileClient {
 		};
 	}
 
-	/** A new Claude conversation in the phone's default view. */
-	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) =>
-		this.openClaude({
+	/** A new Claude conversation in the phone's default view, under the project's account if it sets one. */
+	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) => {
+		const project = this.store?.projects.find((p) => p.path === projectPath);
+		const claudeAccountId = projectClaudeAccount(project, this.accounts, this.accountId);
+		return this.openClaude({
 			sessionId: crypto.randomUUID(),
 			projectPath,
 			worktreePath,
 			name,
-			...(this.accountId ? { claudeAccountId: this.accountId } : {})
+			...(claudeAccountId ? { claudeAccountId } : {})
 		});
+	};
 
 	/** A Claude conversation, new or past (the server resumes one on disk), in the default view. */
 	async openClaude(ref: ChatRef): Promise<void> {
@@ -466,6 +470,13 @@ export class MobileClient {
 	/** Update the screen's reference without remounting it when Codex starts or /clear re-keys. */
 	updateChatId(id: string): void {
 		if (this.activeChat && id) this.activeChat = { ...this.activeChat, sessionId: id };
+	}
+
+	/** The open chat moved to another Claude account: remount it for that login's usage. */
+	updateChatAccount(accountId: string | undefined): void {
+		if (!this.activeChat || this.activeChat.claudeAccountId === accountId) return;
+		this.activeChat = { ...this.activeChat, claudeAccountId: accountId };
+		this.chatScreenKey++;
 	}
 
 	/** The open chat was ended on another device: leave it. An End from here leaves by itself. */

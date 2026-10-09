@@ -979,6 +979,8 @@ impl AgentSession {
             "commands": t.commands(),
             "cachePolicy": self.cache_policy(),
             "exited": exited,
+            // The login a Claude chat runs under; it changes with an account switch.
+            "claudeAccountId": self.claude_account_id(),
         })
         .to_string()
     }

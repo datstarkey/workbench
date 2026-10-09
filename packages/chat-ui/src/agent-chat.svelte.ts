@@ -179,6 +179,10 @@ export class AgentChat {
 	onEnded: (() => void) | null = null;
 	/** The server terminal this Claude chat's `claude` runs in, once started. */
 	onTerminal: ((terminalId: string) => void) | null = null;
+	/** The Claude login the chat runs under (`undefined`: the default); follows the server's. */
+	accountId = $state<string | undefined>(undefined);
+	/** The chat moved to another Claude account (from here or another device). */
+	onAccount: ((accountId: string | undefined) => void) | null = null;
 	/** Callbacks waiting on `output` / `taskOutput` replies; not UI state, so not reactive. */
 	private outputWaiters: Record<string, (text: string | null) => void> = {};
 	private taskWaiters: Record<string, (out: TaskOutput | null) => void> = {};
@@ -204,6 +208,7 @@ export class AgentChat {
 		this.api = api;
 		this.agent = body.agent ?? 'claude';
 		this.sessionId = body.sessionId ?? '';
+		this.accountId = body.claudeAccountId;
 		this.draft = opts.draft ?? new ChatDraft();
 		this.reconnectOnWake = !!opts.reconnectOnWake && typeof document !== 'undefined';
 		if (this.reconnectOnWake) {
@@ -384,6 +389,7 @@ export class AgentChat {
 				this.items = msg.items;
 				this.commands = msg.commands;
 				this.cachePolicy = msg.cachePolicy ?? { compactOnExpiry: false };
+				if (msg.claudeAccountId !== undefined) this.followAccount(msg.claudeAccountId ?? undefined);
 				this.setMeta(msg.meta);
 				this.status = msg.exited ? 'exited' : 'live';
 				this.reconnectAttempts = 0;
@@ -632,6 +638,22 @@ export class AgentChat {
 
 	setMode(mode: PermissionMode | CodexMode): void {
 		if (this.send({ t: 'mode', mode })) this.mode = mode;
+	}
+
+	/** Carry the chat on under another Claude account; the server restarts it there (`replaced`). */
+	setAccount(accountId: string | undefined): void {
+		if (accountId !== this.accountId) this.send({ t: 'account', accountId: accountId ?? null });
+	}
+
+	/**
+	 * A later start (an app restart) must resume under the login that now holds
+	 * the session: under the old one it would open an empty conversation.
+	 */
+	private followAccount(accountId: string | undefined): void {
+		if (accountId === this.accountId) return;
+		this.accountId = accountId;
+		this.body = { ...this.body, claudeAccountId: accountId };
+		this.onAccount?.(accountId);
 	}
 
 	setModel(model: string): void {

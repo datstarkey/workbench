@@ -2,7 +2,10 @@
 	import { Button } from '@workbench/ui/button';
 	import * as Dialog from '@workbench/ui/dialog';
 	import { Input } from '@workbench/ui/input';
+	import * as Select from '@workbench/ui/select';
 	import type { ProjectFormState } from '$types/workbench';
+	import { accountChoices } from '@workbench/chat-ui';
+	import { getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
 		open = $bindable(),
@@ -19,6 +22,27 @@
 		onSave: () => void;
 		onPickFolder: () => void;
 	} = $props();
+
+	const settings = getWorkbenchSettingsStore();
+	/** Follows the active account; the other options are `accountChoices` keys. */
+	const ACTIVE = 'active';
+	const choices = $derived(accountChoices(settings.claudeAccounts));
+	const accountOptions = $derived([
+		{ key: ACTIVE, label: 'Active account' },
+		...choices.map((c) => ({ key: c.key, label: c.id ? c.name : 'Default (~/.claude)' }))
+	]);
+	// `''` saves the default login; a removed account's id behaves as (and shows) the active one.
+	const accountKey = $derived(
+		form.claudeAccountId === ''
+			? (choices.find((c) => !c.id)?.key ?? ACTIVE)
+			: (choices.find((c) => c.id && c.id === form.claudeAccountId)?.key ?? ACTIVE)
+	);
+	const accountLabel = $derived(accountOptions.find((o) => o.key === accountKey)?.label);
+
+	function setAccount(key: string) {
+		const choice = choices.find((c) => c.key === key);
+		form = { ...form, claudeAccountId: key === ACTIVE ? undefined : (choice?.id ?? '') };
+	}
 </script>
 
 <Dialog.Root bind:open>
@@ -57,6 +81,23 @@
 				>
 				<Input id="project-shell" bind:value={form.shell} placeholder="/bin/zsh" />
 			</div>
+
+			{#if settings.claudeAccounts.length > 0}
+				<div class="grid gap-1.5">
+					<label class="text-sm font-medium" for="project-account">Claude account</label>
+					<Select.Root type="single" value={accountKey} onValueChange={setAccount}>
+						<Select.Trigger id="project-account">{accountLabel}</Select.Trigger>
+						<Select.Content>
+							{#each accountOptions as option (option.key)}
+								<Select.Item value={option.key}>{option.label}</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
+					<p class="text-xs text-muted-foreground">
+						New Claude sessions in this project start under it.
+					</p>
+				</div>
+			{/if}
 
 			{#if error}
 				<p class="text-sm text-destructive">{error}</p>

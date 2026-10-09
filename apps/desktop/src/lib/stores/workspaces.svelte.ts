@@ -10,6 +10,7 @@ import {
 	type TerminalPaneState,
 	type TerminalTabState
 } from '$types/workbench';
+import { projectClaudeAccount } from '$types/accounts';
 import { invoke } from '$lib/transport';
 import {
 	codexCommand,
@@ -81,6 +82,18 @@ export class WorkspaceStore {
 	private gitStore = getGitStore();
 
 	private switchCallbacks: Array<(projectPath: string) => void> = [];
+
+	/** A project's config, for its default Claude account; `ProjectStore` (created later) sets it. */
+	projectLookup: (projectPath: string) => ProjectConfig | undefined = () => undefined;
+
+	/** The account a new Claude session in the project starts under. */
+	private claudeAccountFor(projectPath: string): string | undefined {
+		return projectClaudeAccount(
+			this.projectLookup(projectPath),
+			this.settingsStore.claudeAccounts,
+			this.settingsStore.activeClaudeAccountId
+		);
+	}
 
 	private get launchOptions(): LaunchOptions {
 		return this.settingsStore.launchOptions;
@@ -709,7 +722,7 @@ export class WorkspaceStore {
 								: codexCommand(this.launchOptions)
 						}
 					: { claudeSessionId: crypto.randomUUID(), ...(prompt && { claudePrompt: prompt }) },
-				this.settingsStore.activeClaudeAccountId
+				this.claudeAccountFor(w.projectPath)
 			);
 			// A plain new Claude tab can open straight into chat; an agent action's
 			// prompt goes to the terminal.
@@ -801,6 +814,13 @@ export class WorkspaceStore {
 			patch = { ...codexTerminalAfterChat(pane, started, this.launchOptions), view };
 		}
 		this.patchPane(paneId, patch);
+	}
+
+	/** A Claude pane's session moved to another account, so its restarts and resumes use that login. */
+	setPaneClaudeAccount(paneId: string, accountId: string | undefined): void {
+		const pane = this.findPane(paneId);
+		if (pane && pane.claudeAccountId !== accountId)
+			this.patchPane(paneId, { claudeAccountId: accountId });
 	}
 
 	private patchPane(paneId: string, patch: Partial<TerminalPaneState>): void {

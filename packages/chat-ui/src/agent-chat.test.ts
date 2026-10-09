@@ -332,6 +332,46 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('moves to another account and starts under the one the server reports', async () => {
+		const start = vi.fn<AgentApi['start']>(async (b) => b.sessionId ?? 'sid');
+		const { chat, ws } = await connected(fakeApi(start));
+		const onAccount = vi.fn();
+		chat.onAccount = onAccount;
+		chat.setAccount(undefined);
+		chat.setAccount('work');
+		expect(ws.sent).toEqual([{ t: 'account', accountId: 'work' }]);
+		// Nothing changes until the server restarts it there and says so.
+		expect(chat.accountId).toBeUndefined();
+
+		ws.emit({ t: 'replaced' });
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
+		FakeSocket.last!.emit({
+			t: 'snapshot',
+			sessionId: 'sid',
+			start: 0,
+			items: [],
+			meta: meta(),
+			commands: [],
+			exited: false,
+			claudeAccountId: 'work'
+		});
+		expect(chat.accountId).toBe('work');
+		expect(onAccount).toHaveBeenCalledExactlyOnceWith('work');
+
+		// A later start (an app restart, Restart) resumes under the new login.
+		start.mockClear();
+		void chat.open();
+		await vi.waitFor(() => expect(start).toHaveBeenCalled());
+		expect(start.mock.calls[0][0]).toMatchObject({ claudeAccountId: 'work' });
+		chat.dispose();
+	});
+
+	it('keeps its account when an older server sends none', async () => {
+		const { chat } = await connected(fakeApi(), { ...body, claudeAccountId: 'work' });
+		expect(chat.accountId).toBe('work');
+		chat.dispose();
+	});
+
 	it('reports a failed start and can try again', async () => {
 		const start = vi
 			.fn<AgentApi['start']>()

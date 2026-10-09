@@ -142,6 +142,45 @@ pub enum TerminalStart {
     Stopped(serde_json::Value),
 }
 
+/// Between Claude Code's trust dialog appearing and it reading keys.
+const TRUST_SETTLE: Duration = Duration::from_secs(1);
+/// After answering the trust dialog, how long before answering once more.
+const TRUST_RETRY: Duration = Duration::from_secs(5);
+
+/// An [`AgentManager::open_terminal`] watch for Claude Code's folder trust
+/// dialog, which comes before any plugin loads: with `trust` it answers it
+/// (again once if `claude` still hasn't attached), else it kills the terminal
+/// and stops the wait with `{needsTrust: cwd}`.
+pub fn trust_watch<'a>(
+    terminals: &'a crate::terminal::TerminalManager,
+    trust: bool,
+    cwd: String,
+) -> impl FnMut(&str) -> Option<serde_json::Value> + 'a {
+    let mut answers: Vec<Instant> = Vec::new();
+    move |terminal| {
+        let answer_again = answers.len() == 1 && answers[0].elapsed() > TRUST_RETRY;
+        let asks = (answers.is_empty() || answer_again)
+            && terminals
+                .recent_output(terminal)
+                .is_some_and(|out| workbench_core::claude_launch::shows_trust_prompt(&out));
+        if !asks {
+            return None;
+        }
+        if !trust {
+            terminals.kill(terminal);
+            return Some(serde_json::json!({ "needsTrust": cwd }));
+        }
+        // Keys typed as the dialog first draws are lost.
+        std::thread::sleep(TRUST_SETTLE);
+        for keys in workbench_core::claude_launch::TRUST_ACCEPT_KEYS {
+            terminals.type_keys(terminal, keys);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        answers.push(Instant::now());
+        None
+    }
+}
+
 /// Whether a Claude session has a transcript to `--resume` (else `--session-id` starts it).
 pub fn claude_history_exists(config_dir: Option<&std::path::Path>, session_id: &str) -> bool {
     claude::history(config_dir, session_id).is_some()
@@ -578,7 +617,7 @@ impl AgentManager {
         session: &Arc<AgentSession>,
         message_id: &str,
     ) -> Result<()> {
-        self.restart_terminal(terminals, session, "Rewind", true, |launch| {
+        self.restart_terminal(terminals, session, "Rewind", true, None, |launch| {
             let Launch::Claude {
                 session_id,
                 config_dir,
@@ -602,7 +641,7 @@ impl AgentManager {
         terminals: &crate::terminal::TerminalManager,
         session: &Arc<AgentSession>,
     ) -> Result<()> {
-        self.restart_terminal(terminals, session, "Restart it", false, |launch| {
+        self.restart_terminal(terminals, session, "Restart it", false, None, |launch| {
             let Launch::Claude {
                 permission_mode, ..
             } = launch
@@ -625,19 +664,50 @@ impl AgentManager {
         if !workbench_core::claude_launch::PERMISSION_MODES.contains(&mode) {
             bail!("unknown permission mode: {mode}");
         }
-        self.restart_terminal(terminals, session, "Change the mode", true, |_| {
+        self.restart_terminal(terminals, session, "Change the mode", true, None, |_| {
             Ok((None, Some(mode.to_string())))
         })
     }
 
-    /// Restart an idle terminal session's `claude` under the same id; `plan`
-    /// reads its launch and picks where it resumes and the mode it runs in.
+    /// Move an idle terminal session to another Claude account: its terminal
+    /// restarts under that login's `CLAUDE_CONFIG_DIR`, resuming the session
+    /// moved there, so a chat at one account's limit carries on under another.
+    pub fn account_terminal(
+        &self,
+        terminals: &crate::terminal::TerminalManager,
+        session: &Arc<AgentSession>,
+        account_id: Option<String>,
+    ) -> Result<()> {
+        if session.claude_account_id() == account_id {
+            return Ok(());
+        }
+        let config_dir = workbench_core::claude_accounts::resolve_saved(account_id.as_deref())?;
+        // Refused before the restart, so the chat keeps running where it is.
+        if claude_history_exists(config_dir.as_deref(), &session.id()) {
+            bail!("That account already has this session; resume it from there instead.");
+        }
+        let to = Some((account_id, config_dir));
+        self.restart_terminal(terminals, session, "Switch the account", true, to, |launch| {
+            let Launch::Claude {
+                permission_mode, ..
+            } = launch
+            else {
+                bail!("only Claude chats switch accounts");
+            };
+            Ok((None, permission_mode.clone()))
+        })
+    }
+
+    /// Restart an idle terminal session's `claude` under the same id, or under
+    /// the account `to` names; `plan` reads its launch and picks where it
+    /// resumes and the mode it runs in.
     fn restart_terminal(
         &self,
         terminals: &crate::terminal::TerminalManager,
         session: &Arc<AgentSession>,
         what: &str,
         idle_only: bool,
+        to: Option<(Option<String>, Option<std::path::PathBuf>)>,
         plan: impl FnOnce(&Launch) -> Result<(Option<String>, Option<String>)>,
     ) -> Result<()> {
         let link = session
@@ -662,8 +732,6 @@ impl AgentManager {
         else {
             bail!("only Claude terminal sessions restart");
         };
-        // A session nobody has written to yet has no file to `--resume`.
-        let resume = claude_history_exists(config_dir.as_deref(), &session_id);
         // Clients re-attach on `replaced` by starting the session: they wait here
         // for this restart rather than open a second `claude` beside it.
         let starting = self.start_lock(&session_id);
@@ -672,6 +740,11 @@ impl AgentManager {
         // finds this old session: restarting it again would start a second `claude`.
         if session.is_replaced() {
             bail!("The chat just restarted; try again once it has reconnected.");
+        }
+        if to.is_some() {
+            // Picks resolved against the old login's models may not exist on the new one.
+            lock(&self.model_picks).remove(&session_id);
+            lock(&self.effort_picks).remove(&session_id);
         }
         let owed = self.picks(&session_id);
         if !owed.is_empty() {
@@ -691,27 +764,61 @@ impl AgentManager {
         if let Some(old) = &link.terminal_id {
             terminals.kill_and_wait(old);
         }
-        let body = crate::terminal::CreateTerminalBody {
-            project_path: req.project_path,
-            worktree_path: req.worktree_path,
-            name: None,
-            command: None,
-            claude_session: Some(crate::terminal::ClaudeSessionLaunch {
-                id: session_id,
-                resume,
-                resume_at,
-                permission_mode,
-                prompt: None,
-            }),
-            cols: 120,
-            rows: 40,
-            pane_id: req.pane_id,
-            hook_socket: req.hook_socket,
-            shell: None,
-            claude_account_id: req.claude_account_id,
+        let open = |account_id: Option<String>, config_dir: Option<&std::path::Path>| {
+            // A session nobody has written to yet has no file to `--resume`.
+            let resume = claude_history_exists(config_dir, &session_id);
+            crate::terminal::CreateTerminalBody {
+                project_path: req.project_path.clone(),
+                worktree_path: req.worktree_path.clone(),
+                name: None,
+                command: None,
+                claude_session: Some(crate::terminal::ClaudeSessionLaunch {
+                    id: session_id.clone(),
+                    resume,
+                    resume_at: resume_at.clone(),
+                    permission_mode: permission_mode.clone(),
+                    prompt: None,
+                }),
+                cols: 120,
+                rows: 40,
+                pane_id: req.pane_id.clone(),
+                hook_socket: req.hook_socket.clone(),
+                shell: None,
+                claude_account_id: account_id,
+            }
         };
-        self.open_terminal(terminals, body, |_| None)?;
-        Ok(())
+        let Some((to_id, to_dir)) = to else {
+            self.open_terminal(terminals, open(req.claude_account_id.clone(), config_dir.as_deref()), |_| None)?;
+            return Ok(());
+        };
+        // The new login resumes the session once its files are in its config
+        // dir. This folder ran under the old login, so its trust dialog (kept
+        // per config dir) is answered rather than asked again.
+        let cwd = req.worktree_path.clone().unwrap_or_else(|| req.project_path.clone());
+        let switched = workbench_core::claude_accounts::move_session(
+            config_dir.as_deref(),
+            to_dir.as_deref(),
+            &session_id,
+        )
+        .context("the session's files couldn't move to that account")
+        .and_then(|()| {
+            let body = open(to_id, to_dir.as_deref());
+            self.open_terminal(terminals, body, trust_watch(terminals, true, cwd))
+        });
+        let Err(e) = switched else {
+            return Ok(());
+        };
+        // Back where it was, or a start under the old login would find no
+        // history and open an empty conversation under the same id.
+        if let Err(back) = workbench_core::claude_accounts::move_session(
+            to_dir.as_deref(),
+            config_dir.as_deref(),
+            &session_id,
+        ) {
+            tracing::warn!("moving {session_id} back after a failed account switch: {back}");
+        }
+        self.open_terminal(terminals, open(req.claude_account_id.clone(), config_dir.as_deref()), |_| None)?;
+        Err(e.context("Couldn't switch the account; the chat carries on where it was"))
     }
 
     /// Open a server terminal running `claude` on its `claude_session` and
