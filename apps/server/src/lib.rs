@@ -1,6 +1,7 @@
 //! Workbench control-plane server, usable both as a standalone binary and
 //! embedded inside the desktop app ("server mode").
 
+mod accept;
 pub mod agent;
 pub mod agent_routes;
 pub mod attention;
@@ -48,27 +49,11 @@ pub fn app(state: AppState) -> axum::Router {
         .layer(cors)
 }
 
-/// Idle this long, a connection is probed; unanswered probes close it.
-const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
-const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Bind a listener whose accepted sockets inherit TCP keepalive, so a peer
-/// that vanished without closing (a phone asleep or off the network) has its
-/// idle connection, and the descriptor, freed instead of held forever.
 async fn listen(bind: &str, port: u16) -> anyhow::Result<tokio::net::TcpListener> {
-    watchdog::raise_fd_limit();
-    watchdog::spawn(tokio::runtime::Handle::current());
     let addr = format!("{bind}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
+    tokio::net::TcpListener::bind(&addr)
         .await
-        .with_context(|| format!("failed to bind {addr}"))?;
-    let probes = socket2::TcpKeepalive::new()
-        .with_time(KEEPALIVE_IDLE)
-        .with_interval(KEEPALIVE_INTERVAL);
-    if let Err(e) = socket2::SockRef::from(&listener).set_tcp_keepalive(&probes) {
-        tracing::warn!("couldn't turn on TCP keepalive for {addr}: {e}");
-    }
-    Ok(listener)
+        .with_context(|| format!("failed to bind {addr}"))
 }
 
 /// Serve until `shutdown` resolves (or forever if it never does). Returns the
@@ -84,13 +69,11 @@ pub async fn serve(
     let listener = listen(bind, port).await?;
     let local = listener.local_addr().context("failed to read local addr")?;
     let app = app(AppState::new(Managers::default(), token, revoked).with_local_port(local.port()));
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown.await;
-            let _ = revoke.send(true);
-        })
-        .await
-        .context("server error")?;
+    accept::serve(listener, app, async move {
+        shutdown.await;
+        let _ = revoke.send(true);
+    })
+    .await;
     Ok(())
 }
 
@@ -160,11 +143,10 @@ pub async fn spawn_embedded(
 
     let (tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = rx.await;
-            })
-            .await;
+        accept::serve(listener, app, async {
+            let _ = rx.await;
+        })
+        .await;
     });
 
     Ok(ServerHandle {

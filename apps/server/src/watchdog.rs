@@ -14,10 +14,17 @@ const STALL: Duration = Duration::from_secs(5);
 /// Longer than any request waits on purpose (long polls 20s, chat starts 30s).
 const SLOW_REQUEST: Duration = Duration::from_secs(45);
 
-/// Raise the soft open-file limit as far as the hard limit allows. An app
-/// started by launchd gets 256, which a few terminals (three descriptors
-/// each) and sockets use up; past it every `accept` fails and the API stops
-/// answering.
+/// Raise the soft open-file limit as far as the hard limit allows; once, at
+/// process start, before any server runs. An app started by launchd gets 256,
+/// which a few terminals (three descriptors each) and sockets use up; past it
+/// every `accept` fails and the API stops answering.
+///
+/// Shells, `claude` and `codex` started afterwards inherit the raised limit.
+/// That's left as is: restoring 256 in them would need `pre_exec` (which makes
+/// std fork this many-threaded process, see `workbench_core::pty`) or a
+/// wrapper around every launch, and a raised soft limit is what Node-based
+/// tools (Claude Code included) and most terminal apps already give their
+/// children. The cap keeps a child that closes every possible descriptor cheap.
 #[cfg(unix)]
 pub fn raise_fd_limit() {
     let mut limit = libc::rlimit {
@@ -45,15 +52,13 @@ pub fn raise_fd_limit() {
 #[cfg(not(unix))]
 pub fn raise_fd_limit() {}
 
-/// Watch, once per process, that the runtime's async workers and blocking
-/// pool still run work and that open files stay clear of the limit.
-pub fn spawn(handle: tokio::runtime::Handle) {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        let _ = std::thread::Builder::new()
-            .name("workbench-server-watchdog".into())
-            .spawn(move || watch(handle));
-    });
+/// Watch, until the runtime shuts down, that its async workers and blocking
+/// pool still run work and that open files stay clear of the limit. Called by
+/// whoever builds the runtime the server runs on.
+pub fn start(handle: tokio::runtime::Handle) {
+    let _ = std::thread::Builder::new()
+        .name("workbench-server-watchdog".into())
+        .spawn(move || watch(handle));
 }
 
 fn watch(handle: tokio::runtime::Handle) {
@@ -103,7 +108,9 @@ fn check_files(was_low: bool) -> bool {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0
+        || limit.rlim_cur == libc::RLIM_INFINITY
+    {
         return was_low;
     }
     let open = match std::fs::read_dir("/dev/fd") {
@@ -115,7 +122,7 @@ fn check_files(was_low: bool) -> bool {
             return true;
         }
     };
-    let low = open * 5 > limit.rlim_cur * 4;
+    let low = open.saturating_mul(5) > limit.rlim_cur.saturating_mul(4);
     if low && !was_low {
         tracing::error!(
             "{open} of {} file descriptors open: new connections will soon fail",
@@ -132,18 +139,18 @@ fn check_files(was_low: bool) -> bool {
 
 /// Name a request still unanswered after [`SLOW_REQUEST`], and when it is.
 pub async fn slow_requests(request: Request, next: Next) -> Response {
-    let route = request
-        .extensions()
-        .get::<MatchedPath>()
-        .map_or("unmatched", |p| p.as_str())
-        .to_string();
-    let what = format!("{} {route}", request.method());
+    let route = request.extensions().get::<MatchedPath>().cloned();
+    let method = request.method().clone();
     let started = Instant::now();
     let run = next.run(request);
     tokio::pin!(run);
     if let Ok(response) = tokio::time::timeout(SLOW_REQUEST, &mut run).await {
         return response;
     }
+    let what = format!(
+        "{method} {}",
+        route.as_ref().map_or("unmatched", |p| p.as_str())
+    );
     tracing::warn!("{what} unanswered after {}s", SLOW_REQUEST.as_secs());
     let response = run.await;
     tracing::warn!(

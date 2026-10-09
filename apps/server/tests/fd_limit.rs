@@ -2,16 +2,16 @@
 //! limit of 256. Every terminal holds three descriptors and every socket one,
 //! so a desktop with many chats and panes open (plus the phone) ran out: axum's
 //! accept loop then fails with EMFILE, sleeps a second and tries again, forever,
-//! and the API stops answering while existing sockets carry on. The server
-//! raises the soft limit to what the hard limit allows when it starts.
+//! and the API stops answering while existing sockets carry on. The desktop and
+//! standalone server raise the soft limit at start (`watchdog::raise_fd_limit`).
 //! Its own test binary because it changes the process's open-file limit.
 #![cfg(unix)]
 
 mod support;
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use workbench_server::{spawn_embedded, Managers};
@@ -31,21 +31,22 @@ for line in sys.stdin:
     pass
 "#;
 
-/// Started before the load, since the test process may have no descriptors
-/// left to spawn one later: on each line (a URL), GETs it and prints
-/// `<status> <seconds>`.
-const PROBE: &str = r#"
-import sys, time, urllib.request
-token = sys.argv[1]
-for url in sys.stdin:
-    start = time.monotonic()
-    try:
-        req = urllib.request.Request(url.strip(), headers={"authorization": "Bearer " + token})
-        status = urllib.request.urlopen(req, timeout=3).status
-    except Exception as e:
-        status = type(e).__name__
-    print(status, round(time.monotonic() - start, 3), flush=True)
-"#;
+/// GET `path` on a fresh connection: its status line, and how long it took.
+fn probe(addr: SocketAddr, path: &str) -> (String, Duration) {
+    let started = Instant::now();
+    let answer = (|| {
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut head = [0; 12];
+        stream.read_exact(&mut head)?;
+        Ok::<_, std::io::Error>(String::from_utf8_lossy(&head).into_owned())
+    })();
+    (answer.unwrap_or_else(|e| e.to_string()), started.elapsed())
+}
 
 /// Counted without opening one (`/dev/fd` can't be read once they run out).
 fn open_fds() -> usize {
@@ -84,14 +85,11 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
     std::env::set_var("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
 
-    let mut probe = Command::new("python3")
-        .args(["-c", PROBE, TOKEN])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut probe_in = probe.stdin.take().unwrap();
-    let mut probe_out = BufReader::new(probe.stdout.take().unwrap());
+    // What the desktop does at startup, before any listener.
+    workbench_server::watchdog::raise_fd_limit();
+    // The probe's own end of its connection, kept for it while the load may
+    // take every other descriptor: the server's end is what's under test.
+    let spare = std::fs::File::open("/dev/null").unwrap();
 
     let handle = spawn_embedded("127.0.0.1", 0, Managers::default(), TOKEN.to_string())
         .await
@@ -171,15 +169,14 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
         open_fds()
     );
 
-    for path in ["/health", "/agent/claude"] {
-        writeln!(probe_in, "{base}{path}").unwrap();
-        let mut line = String::new();
-        tokio::task::block_in_place(|| probe_out.read_line(&mut line)).unwrap();
-        let (status, secs) = line.trim().split_once(' ').unwrap();
-        let secs: f64 = secs.parse().unwrap();
+    drop(spare);
+    // At the limit an accept can still win a descriptor something else just
+    // let go of, a second or more apart: every request must be quick.
+    for path in ["/health", "/agent/claude"].repeat(3) {
+        let (status, took) = tokio::task::block_in_place(|| probe(addr, path));
         assert!(
-            status == "200" && secs < 1.0,
-            "{path} answered {status} after {secs}s"
+            status == "HTTP/1.1 200" && took < Duration::from_millis(500),
+            "{path} answered {status:?} after {took:?}"
         );
     }
     assert_eq!((chats, terminals), (CHATS, TERMINALS));
@@ -194,6 +191,4 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
         .await
         .unwrap();
     assert_eq!(agents.len(), CHATS);
-    drop(probe_in);
-    let _ = probe.wait();
 }

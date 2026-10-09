@@ -8384,6 +8384,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "futures-util",
+ "hyper-util",
  "libc",
  "portable-pty",
  "reqwest 0.12.28",

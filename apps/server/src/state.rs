@@ -123,12 +123,17 @@ pub(crate) struct Heartbeat {
 
 const PONGS_MISSED: u8 = 2;
 
-/// `WORKBENCH_WS_PING_MS` overrides it for tests.
+/// `WORKBENCH_WS_PING_MS` overrides it for tests (at least 10ms).
 fn ping_every() -> Duration {
-    std::env::var("WORKBENCH_WS_PING_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map_or(Duration::from_secs(30), Duration::from_millis)
+    static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *EVERY.get_or_init(|| {
+        std::env::var("WORKBENCH_WS_PING_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(Duration::from_secs(30), |ms| {
+                Duration::from_millis(ms.max(10))
+            })
+    })
 }
 
 impl Heartbeat {
