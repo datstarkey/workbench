@@ -110,6 +110,18 @@ pub enum Command {
     TrustFolder {
         pane_id: String,
     },
+    /// A project moved or was renamed: its workspaces follow. Worktree paths stay.
+    UpdateProject {
+        project_path: String,
+        new_path: String,
+        project_name: String,
+    },
+    /// Folded in by the server: the pane's session moved to another Claude
+    /// account (`""`: the default login), so later spawns use it.
+    AccountMoved {
+        pane_id: String,
+        account_id: String,
+    },
     /// Folded in by the server: the pane's process runs this session (a Codex
     /// thread got its id, `/resume` switched conversation).
     SessionAttached {

@@ -127,14 +127,13 @@ async fn spawn_listener(
 }
 
 impl ServerControl {
-    /// Native views are offered to this machine's own webview. The workspace
-    /// model stays in memory and boots nothing until the desktop renders it
-    /// (Phase 3 switches to `WorkspaceService::persistent()`): saved panes
-    /// would otherwise respawn with no tab to show them.
+    /// The workspace model the desktop renders, kept in the config dir; native
+    /// views are offered to this machine's own webview.
     pub fn new() -> Self {
         Self {
             managers: Managers {
                 native_views: cfg!(target_os = "macos"),
+                workspace: workbench_server::workspace::WorkspaceService::persistent(),
                 ..Managers::default()
             },
             ..Self::default()

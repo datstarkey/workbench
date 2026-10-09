@@ -6,6 +6,7 @@ import type {
 	Unsubscribe
 } from './transport.ts';
 import { DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
+import { workspaceMethods } from './workspace.ts';
 
 export interface HttpTransportOptions {
 	/** Base URL of the workbench-server, e.g. `http://my-box:4317`. */
@@ -185,6 +186,7 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 
 	return {
 		capabilities,
+		...workspaceMethods(async () => ({ baseUrl: base, token: opts.token })),
 
 		async invoke(name, args) {
 			const req = toRequest(name, args);

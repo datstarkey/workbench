@@ -14,6 +14,7 @@
 	import TerminalTabs from '$features/terminal/TerminalTabs.svelte';
 	import { splitInset, visibleSplit } from '$features/terminal/split-view';
 	import WorkspaceLanding from '$features/workspaces/WorkspaceLanding.svelte';
+	import PersistenceBanner from '$features/workspaces/PersistenceBanner.svelte';
 	import RightSidebar from '$features/sidebar/RightSidebar.svelte';
 	import WorkspaceTabs from '$features/workspaces/WorkspaceTabs.svelte';
 	import WorktreeManager from '$features/worktrees/WorktreeManager.svelte';
@@ -50,18 +51,12 @@
 	import { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 	import { ProjectStore } from '$stores/projects.svelte';
 	import { WorkspaceStore } from '$stores/workspaces.svelte';
+	import { invoke } from '@tauri-apps/api/core';
 	import { listen } from '@tauri-apps/api/event';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { startServer } from '$lib/server-mode';
 	import { onDestroy, onMount } from 'svelte';
-	import {
-		AdoptionPoller,
-		adoptableTerminals,
-		adoptionRound,
-		shared
-	} from '$features/terminal/server-terminals';
-	import { isClaimedLocally, listServerTerminals } from '$features/terminal/terminal-connection';
-	import { listAgents } from '$features/chat/agent-api';
+	import { effectivePath } from '$lib/utils/path';
 	import { watch } from 'runed';
 	import { Toaster, toast } from 'svelte-sonner';
 
@@ -76,7 +71,7 @@
 	const githubStore = setGitHubStore(new GitHubStore());
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
-	setProjectManager(new ProjectManagerStore(projectStore, workspaceStore, gitStore));
+	setProjectManager(new ProjectManagerStore(projectStore, gitStore));
 	setWorktreeManager(new WorktreeManagerStore(projectStore, workspaceStore, gitStore, githubStore));
 	const trelloStore = setTrelloStore(new TrelloStore());
 	setSidebarStore(new SidebarStore());
@@ -178,49 +173,35 @@
 		}
 	});
 
-	// Terminals and chats opened from another device appear as background tabs. Started
-	// only once workspaces are loaded, or every persisted pane's session would look foreign.
-	// A Claude chat runs in a server terminal of its own: it's adopted as the chat, not twice.
-	let chatTerminalIds = new Set<string>();
-	const agents = shared(listAgents);
-	const adoption = new AdoptionPoller([
-		adoptionRound({
-			list: async () => {
-				const [terminals, chats] = await Promise.all([listServerTerminals(), agents()]);
-				// A failed listing keeps the last set rather than adopting chats' terminals.
-				if (chats)
-					chatTerminalIds = new Set(chats.flatMap((c) => (c.terminalId ? [c.terminalId] : [])));
-				return terminals;
-			},
-			adoptable: (list) =>
-				adoptableTerminals(
-					list,
-					new Set([...workspaceStore.knownServerTerminalIds(), ...chatTerminalIds]),
-					isClaimedLocally
-				),
-			adopt: (t) => workspaceStore.adoptServerTerminal(t),
-			onAdopted: (t) => toast.info(`Terminal opened on another device: ${t.name ?? 'terminal'}`)
-		}),
-		adoptionRound({
-			list: agents,
-			adoptable: (list) => {
-				claudeSessionStore.syncFromAgents(list);
-				return workspaceStore.adoptableServerChats(list);
-			},
-			adopt: (c) => workspaceStore.adoptServerChat(c, projectStore.getByPath(c.projectPath)),
-			onAdopted: (c) => toast.info(`Chat opened on another device: ${c.title ?? 'chat'}`)
-		})
-	]);
-	onDestroy(() => adoption.dispose());
+	// The workspaces are the server's model: a session opened on any device is a tab here.
+	onDestroy(() => workspaceStore.dispose());
+
+	// Watch the git state of every open project (worktrees resolve to theirs in Rust).
+	watch(
+		() =>
+			workspaceStore.workspaces
+				.map((w) => w.projectPath)
+				.filter((p, i, all) => all.indexOf(p) === i)
+				.sort()
+				.join('\n'),
+		(paths) => {
+			void invoke('watch_git_projects', { projectPaths: paths ? paths.split('\n') : [] }).catch(
+				(e) => console.warn('[App] git watch:', e)
+			);
+		}
+	);
 
 	onMount(async () => {
 		instancesStore.load();
 		await Promise.all([workbenchSettingsStore.load(), projectStore.load()]);
 		await workspaceStore.load();
-		workspaceStore.ensureShape();
-		adoption.start();
-		if (workspaceStore.workspaces.length === 0 && projectStore.projects.length === 1) {
-			projectStore.openProject(projectStore.projects[0].path);
+		// Not while the model isn't saved: an empty model there may hide the person's tabs.
+		if (
+			workspaceStore.persistence.status === 'ok' &&
+			workspaceStore.workspaces.length === 0 &&
+			projectStore.projects.length === 1
+		) {
+			void projectStore.openProject(projectStore.projects[0].path);
 		}
 		gitStore.refreshAll(projectStore.projects.map((p) => p.path));
 		githubStore.initForProjects(projectStore.projects.map((p) => p.path));
@@ -287,6 +268,7 @@
 					<Resizable.Handle withHandle class="cursor-col-resize" />
 					<Resizable.Pane defaultSize={83} minSize={50} class="h-full">
 						<main class="flex h-full min-w-0 flex-1 flex-col">
+							<PersistenceBanner />
 							{#if workspaceStore.workspaces.length === 0}
 								<EmptyState />
 							{:else}
@@ -325,17 +307,11 @@
 														}}
 													>
 														{#if ws.renderer === 'native'}
-															<NativeTerminalGrid
-																panes={tab.panes}
-																active={isShown}
-																project={wsProject}
-																cwd={ws.worktreePath}
-															/>
+															<NativeTerminalGrid {tab} active={isShown} cwd={effectivePath(ws)} />
 														{:else}
 															<TerminalGrid
 																workspaceId={ws.id}
-																panes={tab.panes}
-																split={tab.split}
+																{tab}
 																active={isShown}
 																project={wsProject}
 																cwd={ws.worktreePath}

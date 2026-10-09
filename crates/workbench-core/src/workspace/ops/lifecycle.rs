@@ -87,6 +87,44 @@ pub(super) fn close_project(model: &mut Model, project_path: &str) -> Vec<Effect
     ended(closing.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.panes))
 }
 
+pub(super) fn update_project(
+    model: &mut Model,
+    project_path: &str,
+    new_path: &str,
+    project_name: &str,
+) -> Vec<Effect> {
+    let mut changed = false;
+    for w in model
+        .workspaces
+        .iter_mut()
+        .filter(|w| same_path(&w.project_path, project_path))
+    {
+        if w.project_path != new_path || w.project_name != project_name {
+            w.project_path = new_path.to_string();
+            w.project_name = project_name.to_string();
+            changed = true;
+        }
+    }
+    if changed {
+        vec![Effect::Persist]
+    } else {
+        vec![]
+    }
+}
+
+/// A fold-in: unknown panes are a no-op (they can race a close).
+pub(super) fn account_moved(model: &mut Model, pane_id: &str, account_id: String) -> Vec<Effect> {
+    let Some((w, t, p)) = model.pane_at(pane_id) else {
+        return vec![];
+    };
+    let pane = &mut model.workspaces[w].tabs[t].panes[p];
+    if pane.kind != PaneKind::Claude || pane.account_id.as_deref() == Some(account_id.as_str()) {
+        return vec![];
+    }
+    pane.account_id = Some(account_id);
+    vec![Effect::Persist]
+}
+
 pub(super) fn new_session(model: &mut Model, target: Target, new: NewPane) -> Result<Vec<Effect>> {
     if new.kind == PaneKind::Shell && (new.resume.is_some() || new.prompt.is_some()) {
         bail!("A shell has no session to resume or prompt");

@@ -22,7 +22,6 @@
 		name,
 		onClose,
 		onShowChat,
-		switching = false,
 		notice = null
 	}: {
 		serverUrl: string;
@@ -30,10 +29,9 @@
 		id: string;
 		name: string;
 		onClose: () => void;
-		/** Set when this terminal runs a Claude conversation that can move to chat. */
+		/** Set when this terminal runs a Claude conversation that can show as chat. */
 		onShowChat?: () => void;
-		switching?: boolean;
-		/** Why the last switch failed. */
+		/** Why the last action failed. */
 		notice?: string | null;
 	} = $props();
 	useBack(() => onClose());
@@ -192,7 +190,7 @@
 			</span>
 		{/if}
 		{#if onShowChat}
-			<ViewSwitch view="terminal" disabled={switching} onSwitch={onShowChat} />
+			<ViewSwitch view="terminal" onSwitch={onShowChat} />
 		{/if}
 	</header>
 	{#if onShowChat}
@@ -202,8 +200,7 @@
 			<AgentIcon agent="claude" class="size-4" />Same conversation in the Claude CLI
 			<button
 				type="button"
-				class="ml-auto rounded-lg border border-wb-hair bg-wb-panel2 px-3 py-1.5 font-medium text-wb-ink active:bg-wb-bg disabled:opacity-50"
-				disabled={switching}
+				class="ml-auto rounded-lg border border-wb-hair bg-wb-panel2 px-3 py-1.5 font-medium text-wb-ink active:bg-wb-bg"
 				onclick={onShowChat}
 			>
 				Back to chat

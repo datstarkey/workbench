@@ -192,6 +192,8 @@ struct NativeSession {
     session_id_cstr: CString,
     /// The latest frame asked for (`request_resize`), applied by `resize`.
     frame: Option<Frame>,
+    /// Stops following the terminal when the view detaches (the terminal runs on).
+    detached: tokio::sync::watch::Sender<bool>,
 }
 
 /// A view frame: x, y, width, height.
@@ -312,12 +314,15 @@ impl NativeTerminalManager {
         }
 
         let shown = terminal_id.clone();
+        let (detached, detached_rx) = tokio::sync::watch::channel(false);
+        let was_detached = detached_rx.clone();
         let session = Arc::new(Mutex::new(NativeSession {
             terminal_id,
             input,
             callback_context_ptr: ctx_ptr,
             session_id_cstr: session_cstr.clone(),
             frame: None,
+            detached,
         }));
         self.sessions
             .lock()
@@ -332,10 +337,13 @@ impl NativeTerminalManager {
         };
         let sessions = Arc::clone(&self.sessions);
         tauri::async_runtime::spawn(async move {
-            let code = follow(tap, output).await;
+            let code = follow(tap, output, detached_rx).await;
             let _ = pump.join();
-            // Ended on its own or killed: either way the server lets it go, or
-            // it would stay listed (and count toward the cap) with no view.
+            if *was_detached.borrow() {
+                return; // the view went; the terminal runs on until its pane closes
+            }
+            // Ended on its own: the server lets it go, or it would stay listed
+            // (and count toward the cap) with no view.
             terminals.kill(&shown);
             // Still mapped (not killed): take the view down too.
             let exited = {
@@ -446,18 +454,24 @@ impl NativeTerminalManager {
             .map_err(|_| anyhow!("Session has exited: {session_id}"))
     }
 
-    /// Remove the view; returns the terminal it showed, for the caller to end.
-    pub fn kill(&self, session_id: &str) -> Option<String> {
-        let session = Self::remove_session(&self.sessions, session_id)?;
-        let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
-        sess.destroy_view();
-        Some(sess.terminal_id.clone())
+    /// Remove the view and stop following its terminal, which runs on: the
+    /// server's workspace service ends it when its pane closes.
+    pub fn detach(&self, session_id: &str) {
+        if let Some(session) = Self::remove_session(&self.sessions, session_id) {
+            let mut sess = session.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = sess.detached.send(true);
+            sess.destroy_view();
+        }
     }
 }
 
 /// Feed the terminal's scrollback, then its output, to the pump until it ends.
 /// Returns its exit code, when it has one.
-async fn follow(mut tap: workbench_server::terminal::Tap, output: Sender<Vec<u8>>) -> Option<i64> {
+async fn follow(
+    mut tap: workbench_server::terminal::Tap,
+    output: Sender<Vec<u8>>,
+    mut detached: tokio::sync::watch::Receiver<bool>,
+) -> Option<i64> {
     use tokio::sync::broadcast::error::RecvError;
     if !tap.replay.is_empty() {
         let _ = output.send(std::mem::take(&mut tap.replay));
@@ -476,6 +490,7 @@ async fn follow(mut tap: workbench_server::terminal::Tap, output: Sender<Vec<u8>
                     break;
                 }
             }
+            _ = detached.changed() => return None,
         }
     }
     while let Ok(bytes) = tap.output.try_recv() {

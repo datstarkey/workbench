@@ -19,7 +19,7 @@ use crate::types::GitHubProjectStatusEvent;
 use crate::types::{
     BranchInfo, CreateWorktreeRequest, DiscoveredClaudeSession, GitHubRemote, GitHubRepo, GitInfo,
     HookScriptInfo, IntegrationStatus, PackageInfo, PluginInfo, ProjectConfig, SkillInfo,
-    WorkbenchSettings, WorkspaceFile, WorktreeInfo,
+    WorkbenchSettings, WorktreeInfo,
 };
 use crate::worktrees;
 
@@ -77,21 +77,11 @@ pub async fn open_in_vscode(path: String) -> Result<bool, String> {
     .await
 }
 
+/// Watch the git state of the projects the workspace model has open.
 #[tauri::command]
-pub fn load_workspaces(git_watcher: State<'_, GitWatcher>) -> Result<WorkspaceFile, String> {
-    let snapshot = config::load_workspaces().map_err(|e| e.to_string())?;
-    git_watcher.sync_projects(workspace_project_paths(&snapshot));
-    Ok(snapshot)
-}
-
-#[tauri::command]
-pub fn save_workspaces(
-    snapshot: WorkspaceFile,
-    git_watcher: State<'_, GitWatcher>,
-) -> Result<bool, String> {
-    config::save_workspaces(&snapshot).map_err(|e| e.to_string())?;
-    git_watcher.sync_projects(workspace_project_paths(&snapshot));
-    Ok(true)
+pub fn watch_git_projects(project_paths: Vec<String>, git_watcher: State<'_, GitWatcher>) {
+    let unique: HashSet<String> = project_paths.into_iter().collect();
+    git_watcher.sync_projects(unique.into_iter().collect());
 }
 
 // Async: it reads every session file of every account, off the main thread.
@@ -428,70 +418,4 @@ pub async fn get_package_info(path: String) -> Result<Option<PackageInfo>, Strin
         package_scripts::read(std::path::Path::new(&path)).map_err(|e| e.to_string())
     })
     .await
-}
-
-fn workspace_project_paths(snapshot: &WorkspaceFile) -> Vec<String> {
-    snapshot
-        .workspaces
-        .iter()
-        .map(|ws| ws.project_path.clone())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use crate::types::{WorkspaceFile, WorkspaceSnapshot};
-
-    use super::workspace_project_paths;
-
-    fn make_workspace(id: &str, project_path: &str) -> WorkspaceSnapshot {
-        WorkspaceSnapshot {
-            id: id.to_string(),
-            project_path: project_path.to_string(),
-            project_name: format!("project-{id}"),
-            terminal_tabs: vec![],
-            active_terminal_tab_id: String::new(),
-            split_view: None,
-            worktree_path: None,
-            branch: None,
-            renderer: None,
-        }
-    }
-
-    #[test]
-    fn workspace_project_paths_dedupes_project_paths() {
-        let snapshot = WorkspaceFile {
-            workspaces: vec![
-                make_workspace("1", "/repo/a"),
-                make_workspace("2", "/repo/a"),
-                make_workspace("3", "/repo/b"),
-            ],
-            selected_id: Some("1".to_string()),
-            server_terminal_ids: Default::default(),
-        };
-
-        let paths = workspace_project_paths(&snapshot);
-        let path_set: HashSet<String> = paths.into_iter().collect();
-
-        assert_eq!(
-            path_set,
-            HashSet::from(["/repo/a".to_string(), "/repo/b".to_string()])
-        );
-    }
-
-    #[test]
-    fn workspace_project_paths_empty_snapshot_returns_empty_vec() {
-        let snapshot = WorkspaceFile {
-            workspaces: vec![],
-            selected_id: None,
-            server_terminal_ids: Default::default(),
-        };
-
-        let paths = workspace_project_paths(&snapshot);
-        assert!(paths.is_empty());
-    }
 }

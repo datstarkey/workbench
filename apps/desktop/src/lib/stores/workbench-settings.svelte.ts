@@ -25,8 +25,7 @@ import { IS_WINDOWS } from '$lib/utils/platform';
 import {
 	isClaudePermissionMode,
 	isCodexApprovalPolicy,
-	isCodexSandboxMode,
-	type LaunchOptions
+	isCodexSandboxMode
 } from '$lib/utils/claude';
 import { rotateServerToken } from '$lib/server-mode';
 
@@ -91,15 +90,6 @@ export class WorkbenchSettingsStore {
 	get sandboxSettingsPath(): string | undefined {
 		if (!this.sandboxRuntimeEnabled || IS_WINDOWS) return undefined;
 		return this.sandboxRuntimeSettingsPath || undefined;
-	}
-
-	/** How new Codex sessions are launched (Claude's command is built by the server). */
-	get launchOptions(): LaunchOptions {
-		return {
-			codexApprovalPolicy: this.codexApprovalPolicy,
-			codexSandboxMode: this.codexSandboxMode,
-			codexNoDaemon: this.codexNoDaemon
-		};
 	}
 
 	/** Account id new Claude sessions launch with; undefined is the default `~/.claude`. */

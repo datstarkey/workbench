@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const created: {
 	sessionId: string;
+	body: unknown;
+	status: string;
 	dispose: ReturnType<typeof vi.fn>;
-	open: ReturnType<typeof vi.fn>;
+	attach: ReturnType<typeof vi.fn>;
 }[] = [];
 vi.mock('./agent-api', () => ({ loopbackAgentApi: {} }));
 vi.mock('@workbench/chat-ui', () => ({
@@ -11,13 +13,16 @@ vi.mock('@workbench/chat-ui', () => ({
 		sessionId: string;
 		agent: string;
 		draft: unknown;
+		body: unknown;
+		status = 'live';
 		dispose = vi.fn();
-		open = vi.fn(async () => {});
+		attach = vi.fn(async () => {});
 		constructor(
 			body: { sessionId?: string; agent?: string },
 			_api: unknown,
 			opts: { draft: unknown }
 		) {
+			this.body = body;
 			this.sessionId = body.sessionId ?? '';
 			this.agent = body.agent ?? 'claude';
 			this.draft = opts.draft;
@@ -31,7 +36,7 @@ vi.mock('@workbench/chat-ui', () => ({
 	}
 }));
 
-const { acquireChat, isChatClaimed, releaseChat, reopenChat } = await import('./chat-registry');
+const { acquireChat, followPane, releaseChat } = await import('./chat-registry');
 const body = (sessionId: string) => ({ projectPath: '/repo', sessionId, paneId: 'p1' });
 
 describe('chat registry', () => {
@@ -55,13 +60,15 @@ describe('chat registry', () => {
 		expect(created[0].dispose).toHaveBeenCalled();
 	});
 
-	it('keeps a new Codex chat while it has no id, and once the pane stores the one it got', () => {
-		const codex = { agent: 'codex' as const, projectPath: '/repo', paneId: 'p1' };
-		const first = acquireChat('p1', codex).chat;
-		expect(acquireChat('p1', codex).chat).toBe(first);
-		first.sessionId = 'thread-1';
-		expect(acquireChat('p1', { ...codex, sessionId: 'thread-1' }).chat).toBe(first);
-		expect(created).toHaveLength(1);
+	it('only attaches: the server starts sessions', () => {
+		acquireChat('p1', body('s1'));
+		expect(created[0].body).toMatchObject({ sessionId: 's1', attachOnly: true });
+	});
+
+	it('follows a /clear re-key: the chat moved to the id its pane now shows', () => {
+		const { chat } = acquireChat('p1', body('s1'));
+		chat.sessionId = 's1b';
+		expect(acquireChat('p1', body('s1b')).chat).toBe(chat);
 	});
 
 	it("keeps the pane's draft when its chat is released, and drops it once empty", () => {
@@ -74,25 +81,32 @@ describe('chat registry', () => {
 		expect(acquireChat('p1', body('s1')).chat.draft).not.toBe(draft);
 	});
 
+	it('re-attaches when the pane runs a new spawn, even one this window never saw stop', () => {
+		acquireChat('p1', body('s1'), { status: 'running', generation: 1 });
+		followPane('p1', { status: 'running', generation: 1 });
+		expect(created[0].attach).not.toHaveBeenCalled();
+
+		followPane('p1', { status: 'starting', generation: 2 });
+		expect(created[0].attach).not.toHaveBeenCalled();
+		followPane('p1', { status: 'running', generation: 2 });
+		expect(created[0].attach).toHaveBeenCalledOnce();
+		followPane('p1', { status: 'running', generation: 2 });
+		expect(created[0].attach).toHaveBeenCalledOnce();
+	});
+
+	it('re-attaches an ended chat once its pane runs again', () => {
+		acquireChat('p1', body('s1'), { status: 'running', generation: 1 });
+		created[0].status = 'exited';
+		followPane('p1', { status: 'exited', generation: 1 });
+		expect(created[0].attach).not.toHaveBeenCalled();
+		// Remounting the view after the restart finds the same chat, ended.
+		acquireChat('p1', body('s1'), { status: 'running', generation: 1 });
+		expect(created[0].attach).toHaveBeenCalledOnce();
+	});
+
 	it('disposes on release', () => {
 		acquireChat('p1', body('s1'));
 		releaseChat('p1');
 		expect(created[0].dispose).toHaveBeenCalled();
-	});
-
-	it('claims the sessions its live chats hold, following a /clear re-key', () => {
-		const { chat } = acquireChat('p1', body('claim-1'));
-		chat.sessionId = 'claim-1b';
-		expect(isChatClaimed('claim-1b')).toBe(true);
-		releaseChat('p1');
-		expect(isChatClaimed('claim-1b')).toBe(false);
-		expect(isChatClaimed('phone')).toBe(false);
-	});
-
-	it('reopens the pane chat on request', () => {
-		acquireChat('p1', body('s1'));
-		reopenChat('p1');
-		reopenChat('unknown');
-		expect(created[0].open).toHaveBeenCalledOnce();
 	});
 });

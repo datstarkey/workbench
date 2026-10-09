@@ -40,17 +40,13 @@
 		selected = null;
 		void (tab === 'history' ? review.history(agent, account || undefined) : review.changes());
 	}
+	/** Continue it on the host: a pane already running it is reused, never a second process. */
 	function pick(session: DiscoveredClaudeSession) {
 		// Before closing: `folder` is a live prop, and a parent that closes the
 		// sheet by clearing it (Home) hands back null at once.
-		const ref = { ...folder, sessionId: session.sessionId, name: session.label };
+		const where = { projectPath: folder.projectPath, worktreePath: folder.worktreePath };
 		onClose();
-		if (agent === 'codex') client.openChat({ ...ref, agent });
-		else
-			void client.openClaude({
-				...ref,
-				...(session.accountId ? { claudeAccountId: session.accountId } : {})
-			});
+		void client.resume(agent, where, session.sessionId, session.accountId);
 	}
 	function preview(file: GitFileStatus, staged: boolean) {
 		selected = { file, staged };

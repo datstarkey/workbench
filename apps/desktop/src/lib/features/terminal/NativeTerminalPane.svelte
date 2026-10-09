@@ -1,35 +1,22 @@
 <script lang="ts">
 	import { watch } from 'runed';
 	import { onDestroy, onMount } from 'svelte';
-	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { TERMINAL_BG } from '$lib/terminal-config';
-	import { toast } from 'svelte-sonner';
 	import {
-		createNativeTerminal,
-		killNativeTerminal,
+		attachNativeTerminal,
+		detachNativeTerminal,
 		resizeNativeTerminal,
 		setNativeTerminalVisible,
 		onSessionTerminalExit
 	} from '$lib/utils/terminal';
 
 	let {
-		sessionId,
-		project,
-		active,
-		startupCommand,
-		claudeSession,
-		claudeAccountId,
-		cwd
+		terminalId,
+		active
 	}: {
-		sessionId: string;
-		project: ProjectConfig;
+		/** The server terminal it shows, which keys its view; fixed for this component's life (the parent re-keys). */
+		terminalId: string;
 		active: boolean;
-		startupCommand?: string;
-		/** A Claude pane's session; Rust builds its `claude` command. */
-		claudeSession?: ClaudeSessionLaunch;
-		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
-		claudeAccountId?: string;
-		cwd?: string;
 	} = $props();
 
 	let container: HTMLDivElement;
@@ -67,7 +54,7 @@
 			const rect = container.getBoundingClientRect();
 			if (rect.width <= 0 || rect.height <= 0) return;
 			const nsRect = domToNSView(rect);
-			void resizeNativeTerminal(sessionId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
+			void resizeNativeTerminal(terminalId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
 		}, 100);
 	}
 
@@ -79,13 +66,13 @@
 		() => {
 			if (!created || exited) return;
 			const shouldBeVisible = active && !overlayOpen;
-			void setNativeTerminalVisible(sessionId, shouldBeVisible);
+			void setNativeTerminalVisible(terminalId, shouldBeVisible);
 			if (active && container) {
 				requestAnimationFrame(() => {
 					const rect = container.getBoundingClientRect();
 					if (rect.width > 0 && rect.height > 0) {
 						const nsRect = domToNSView(rect);
-						void resizeNativeTerminal(sessionId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
+						void resizeNativeTerminal(terminalId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
 					}
 				});
 			}
@@ -97,29 +84,23 @@
 			const rect = container.getBoundingClientRect();
 			const nsRect = domToNSView(rect);
 
-			const notice = await createNativeTerminal({
-				sessionId,
-				projectPath: cwd ?? project.path,
-				projectRoot: project.path,
-				shell: project.shell || '',
+			await attachNativeTerminal({
+				terminalId,
 				x: nsRect.x,
 				y: nsRect.y,
 				width: nsRect.width,
 				height: nsRect.height,
-				fontSize: 13,
-				...(claudeSession ? { claudeSession } : { startupCommand }),
-				claudeAccountId
+				fontSize: 13
 			});
 
 			created = true;
-			if (notice) toast.warning(notice);
 
 			// Set initial visibility
 			if (!active) {
-				await setNativeTerminalVisible(sessionId, false);
+				await setNativeTerminalVisible(terminalId, false);
 			}
 
-			unlistenExit = await onSessionTerminalExit(sessionId, () => {
+			unlistenExit = await onSessionTerminalExit(terminalId, () => {
 				exited = true;
 			});
 
@@ -142,7 +123,7 @@
 				childList: true
 			});
 		} catch (error) {
-			terminalError = `Failed to start native terminal: ${String(error)}`;
+			terminalError = `Failed to show native terminal: ${String(error)}`;
 		}
 	});
 
@@ -151,8 +132,9 @@
 		unlistenExit?.();
 		resizeObserver?.disconnect();
 		mutationObserver?.disconnect();
+		// Only the view goes: the terminal is the server's, and ends when its pane closes.
 		if (created && !exited) {
-			void killNativeTerminal(sessionId);
+			void detachNativeTerminal(terminalId);
 		}
 	});
 </script>

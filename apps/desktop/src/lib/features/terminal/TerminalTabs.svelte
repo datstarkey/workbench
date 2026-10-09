@@ -10,7 +10,7 @@
 	import * as Tooltip from '@workbench/ui/tooltip';
 	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import ClaudeSessionMenu from '$features/claude/ClaudeSessionMenu.svelte';
-	import { getClaudeSessionStore, getProjectStore, getWorkspaceStore } from '$stores/context';
+	import { getClaudeSessionStore, getWorkspaceStore } from '$stores/context';
 	import { overlayScrollbars } from '$lib/utils/overlay-scrollbars';
 	import { effectivePath } from '$lib/utils/path';
 	import { TabReorder } from '$lib/utils/tab-reorder.svelte';
@@ -19,7 +19,6 @@
 
 	const workspaceStore = getWorkspaceStore();
 	const claudeSessionStore = getClaudeSessionStore();
-	const projectStore = getProjectStore();
 
 	let {
 		workspace
@@ -29,7 +28,6 @@
 
 	let tabs = $derived(workspace.terminalTabs);
 	let activeTabId = $derived(workspace.activeTerminalTabId);
-	let wsProject = $derived(projectStore.getByPath(workspace.projectPath));
 	let wsCwd = $derived(effectivePath(workspace));
 	let split = $derived(visibleSplit(workspace));
 	// Per workspace, like the grid App.svelte renders: native panes are OS views CSS can't split.
@@ -41,7 +39,7 @@
 	);
 
 	function toggleSplit(direction: SplitDirection) {
-		if (wsProject) workspaceStore.splitTerminal(workspace.id, direction, wsProject);
+		void workspaceStore.splitTerminal(workspace.id, direction);
 	}
 
 	/** Map of tabId → session status for AI tabs */
@@ -150,8 +148,9 @@
 						size="icon-sm"
 						class="size-6 text-wb-ink-soft hover:bg-wb-panel2 hover:text-wb-ink"
 						type="button"
+						aria-label="New terminal"
 						onclick={() => {
-							if (wsProject) workspaceStore.addTerminalTab(workspace.id, wsProject);
+							void workspaceStore.addTerminalTab(workspace.id);
 						}}
 					>
 						<PlusIcon class="size-3.5" />

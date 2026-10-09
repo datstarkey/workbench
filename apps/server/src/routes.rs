@@ -112,8 +112,10 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> &'static str {
-    "ok"
+/// `workspaceApi`: the version of `/workspace/commands` + `/events/workspace`
+/// this server speaks; a phone without it falls back to the older routes.
+async fn health() -> Json<Value> {
+    Json(serde_json::json!({ "ok": true, "workspaceApi": 1 }))
 }
 
 /// Minimal mobile-friendly web client (spawn sessions / manage worktrees from a

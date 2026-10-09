@@ -14,7 +14,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{watch, Notify};
-use workbench_core::claude_transcript::WaitingSummary;
+use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
 use workbench_core::workspace::persist::{self, LocalState, WorkspacesFile};
 use workbench_core::workspace::{ops, Command, Effect, Model, PaneKind};
 
@@ -23,6 +23,7 @@ use crate::terminal::TerminalManager;
 
 mod exec;
 mod fold;
+mod load;
 mod lock;
 pub mod routes;
 
@@ -50,9 +51,20 @@ pub struct PaneRuntime {
     pub status: Status,
     pub title: Option<String>,
     pub busy: bool,
+    /// Unix ms the current turn started; null while idle.
+    pub busy_since: Option<u64>,
+    /// Unix ms the last turn went idle.
+    pub turn_ended_at: Option<u64>,
+    /// The tool call the current turn is running.
+    pub running: Option<RunningSummary>,
     pub waiting: Option<WaitingSummary>,
+    /// Unix ms the pane started waiting on its current request.
+    pub waiting_since: Option<u64>,
     /// Why the last spawn failed.
     pub error: Option<String>,
+    /// Bumped by every spawn (start, restart, mode switch), so a client knows
+    /// to re-attach even when it never saw the pane stop.
+    pub generation: u64,
     /// Its session ran (a Claude chat attached): gone again is an exit.
     #[serde(skip)]
     ran: bool,
@@ -61,6 +73,7 @@ pub struct PaneRuntime {
 struct State {
     model: Model,
     local: LocalState,
+    persistence: load::Persistence,
     runtime: HashMap<String, PaneRuntime>,
     /// Bumped by every change a snapshot may show.
     gen: u64,
@@ -122,6 +135,7 @@ impl WorkspaceService {
             state: Mutex::new(State {
                 model: Model::default(),
                 local: LocalState::default(),
+                persistence: load::Persistence::default(),
                 runtime: HashMap::new(),
                 gen: 0,
             }),
@@ -157,23 +171,22 @@ impl WorkspaceService {
                 "another Workbench process keeps the workspace model in {}; this one runs without saving it",
                 dir.display()
             );
+            lock(&self.0.state).persistence =
+                load::Persistence::locked(&dir, lock::ModelLock::holder_of(&dir));
         }
         if let Some(Some(held)) = held {
             let _ = self.0.lock.set(held);
-            // Until the desktop renders this model (Phase 3), its own
-            // `workspaces.json` describes panes it runs itself: only a saved v2
-            // file is booted, or each of those would run twice.
-            if dir.join(persist::FILE).exists() {
-                match persist::load(&dir) {
-                    Ok(file) => {
-                        let mut state = lock(&self.0.state);
-                        state.model = file.model;
-                        state.local = file.local;
-                    }
-                    Err(e) => tracing::error!("workspace model not loaded: {e:#}"),
+            // A model that can't be read is never saved over.
+            match load::load(&dir) {
+                Ok(file) => {
+                    let mut state = lock(&self.0.state);
+                    state.model = file.model;
+                    state.local = file.local;
+                    drop(state);
+                    let _ = self.0.dir.set(dir);
                 }
+                Err(failed) => lock(&self.0.state).persistence = failed,
             }
-            let _ = self.0.dir.set(dir);
         }
         let effects = {
             let mut state = lock(&self.0.state);
@@ -280,9 +293,14 @@ impl WorkspaceService {
                 | Effect::SpawnClaude { pane_id, .. }
                 | Effect::SpawnCodex { pane_id, .. } => {
                     let pane = exec::PaneCtx::of(&state.model, pane_id);
-                    state
-                        .runtime
-                        .insert(pane_id.clone(), PaneRuntime::default());
+                    let generation = state.runtime.get(pane_id).map_or(0, |r| r.generation) + 1;
+                    state.runtime.insert(
+                        pane_id.clone(),
+                        PaneRuntime {
+                            generation,
+                            ..PaneRuntime::default()
+                        },
+                    );
                     job.push((effect, pane));
                 }
                 Effect::Stop { pane_id, .. }
@@ -381,7 +399,7 @@ impl WorkspaceService {
             } else {
                 last.rev + 1
             };
-            let json = format!(r#"{{"rev":{rev},"workspaces":{workspaces}}}"#);
+            let json = format!(r#"{{"rev":{rev},{workspaces}}}"#);
             *last = Arc::new(Published {
                 rev,
                 gen,
@@ -392,8 +410,23 @@ impl WorkspaceService {
     }
 }
 
-/// The model's workspaces with each pane's runtime state merged in.
+/// A snapshot's fields after `rev`: the model's workspaces with each pane's
+/// runtime state merged in, whether it's saved, and the desktop's saved
+/// per-device state (`local`) for it to take over once.
 fn snapshot(state: &State) -> String {
+    let local = serde_json::json!({
+        "selectedId": state.local.selected_id,
+        "activeTabIds": state.local.active_tab_ids,
+        "chatPanes": state.local.chat_panes,
+    });
+    let persistence = serde_json::to_string(&state.persistence).unwrap_or_default();
+    format!(
+        r#""workspaces":{},"persistence":{persistence},"local":{local}"#,
+        workspaces(state)
+    )
+}
+
+fn workspaces(state: &State) -> String {
     let mut workspaces = serde_json::to_value(&state.model.workspaces).unwrap_or_default();
     let panes = workspaces
         .as_array_mut()

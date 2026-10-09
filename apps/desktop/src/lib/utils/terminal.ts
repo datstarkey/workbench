@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { ClaudeSessionLaunch, IntegrationStatus, TerminalExitEvent } from '$types/workbench';
+import type { IntegrationStatus, TerminalExitEvent } from '$types/workbench';
 
 // ── Exit event listener for native SwiftTerm terminals ─────────────────────
 // The xterm path uses TerminalConnection (WS), so these listeners are only
@@ -58,37 +58,19 @@ export async function applyCodexIntegration(): Promise<boolean> {
 
 function ignoreSessionGone(): void {}
 
-/** Resolves to a notice about how it started (a Claude prompt left out), if any. */
-export async function createNativeTerminal(request: {
-	sessionId: string;
-	projectPath: string;
-	shell: string;
+/**
+ * Show a server terminal in a SwiftTerm view. The view is keyed by the
+ * terminal id: pass it as `sessionId` to every other native call.
+ */
+export async function attachNativeTerminal(request: {
+	terminalId: string;
 	x: number;
 	y: number;
 	width: number;
 	height: number;
 	fontSize: number;
-	startupCommand?: string;
-	/** Run Claude on this session instead; Rust builds the command. */
-	claudeSession?: ClaudeSessionLaunch;
-	claudeAccountId?: string;
-	/** The registered project `projectPath` (the cwd, maybe a worktree) belongs to. */
-	projectRoot?: string;
-}): Promise<string | null> {
-	return invoke<string | null>('create_native_terminal', {
-		sessionId: request.sessionId,
-		projectPath: request.projectPath,
-		projectRoot: request.projectRoot ?? null,
-		shell: request.shell,
-		x: request.x,
-		y: request.y,
-		width: request.width,
-		height: request.height,
-		fontSize: request.fontSize,
-		startupCommand: request.startupCommand ?? null,
-		claudeSession: request.claudeSession ?? null,
-		claudeAccountId: request.claudeAccountId ?? null
-	});
+}): Promise<void> {
+	await invoke('attach_native_terminal', request);
 }
 
 export async function resizeNativeTerminal(
@@ -107,8 +89,9 @@ export async function setNativeTerminalVisible(sessionId: string, visible: boole
 	await invoke('set_native_terminal_visible', { sessionId, visible }).catch(ignoreSessionGone);
 }
 
-export async function killNativeTerminal(sessionId: string): Promise<void> {
-	await invoke('kill_native_terminal', { sessionId }).catch(ignoreSessionGone);
+/** Remove the view; the terminal runs on until its pane closes. */
+export async function detachNativeTerminal(sessionId: string): Promise<void> {
+	await invoke('detach_native_terminal', { sessionId }).catch(ignoreSessionGone);
 }
 
 export async function writeNativeTerminal(sessionId: string, data: string): Promise<void> {

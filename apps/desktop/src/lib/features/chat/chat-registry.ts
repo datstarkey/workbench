@@ -1,3 +1,4 @@
+import type { PaneStatus } from '$types/workspace';
 import type { StartAgentBody } from '$types/workbench';
 import { AgentChat, ChatDraft } from '@workbench/chat-ui';
 import { loopbackAgentApi } from './agent-api';
@@ -6,9 +7,10 @@ import { loopbackAgentApi } from './agent-api';
  * Chat connections by pane. A chat outlives its view: hidden workspaces
  * unmount `SessionChat`, but the connection stays open so a question or
  * approval in a background chat still reaches the sidebar and notifications.
- * Released when the pane goes back to the terminal or is closed.
+ * Released when the pane goes back to the terminal or leaves the snapshot.
+ * Every chat only attaches: the server's workspace service runs the session.
  */
-const chats = new Map<string, AgentChat>();
+const chats = new Map<string, { chat: AgentChat; generation: number | undefined }>();
 /**
  * Composer drafts by pane. They outlive the chat (Terminal | Chat toggles
  * release it); an emptied one is dropped on release, so a closed pane leaves
@@ -16,54 +18,55 @@ const chats = new Map<string, AgentChat>();
  */
 const drafts = new Map<string, ChatDraft>();
 
-/** The pane's chat, created on first use or when the pane moved to another session. */
+/** What the pane's process is: its status and which spawn it is (`generation`). */
+export interface PaneProcess {
+	status?: PaneStatus;
+	generation?: number;
+}
+
+/**
+ * The pane's chat, created on first use or when the pane moved to another
+ * session. `pane` is the process it attaches to.
+ */
 export function acquireChat(
 	paneId: string,
-	body: StartAgentBody
+	body: StartAgentBody,
+	pane: PaneProcess = {}
 ): { chat: AgentChat; created: boolean } {
 	const existing = chats.get(paneId);
 	// `/clear` re-keys the same chat; any other new id is a different conversation.
-	// No id is a new Codex thread: the chat already starting it keeps it.
-	const same =
-		body.sessionId === undefined
-			? existing?.agent === (body.agent ?? 'claude')
-			: existing?.sessionId === body.sessionId;
-	if (existing && same) return { chat: existing, created: false };
-	existing?.dispose();
+	if (existing && existing.chat.sessionId === body.sessionId) {
+		followPane(paneId, pane);
+		return { chat: existing.chat, created: false };
+	}
+	existing?.chat.dispose();
 	let draft = drafts.get(paneId);
 	if (!draft) drafts.set(paneId, (draft = new ChatDraft()));
-	const chat = new AgentChat(body, loopbackAgentApi, { draft });
-	chats.set(paneId, chat);
+	const chat = new AgentChat({ ...body, attachOnly: true }, loopbackAgentApi, { draft });
+	chats.set(paneId, { chat, generation: pane.generation });
 	return { chat, created: true };
 }
 
 /**
- * A chat in this window holds the session, e.g. it re-keyed (`/clear`) before
- * its pane did. Chat adoption skips it.
+ * Re-attach the pane's chat when it runs a process the chat isn't attached
+ * to: every spawn (a Restart, from any device) bumps the pane's generation,
+ * whether or not this window saw the pane stop. An ended chat re-attaches
+ * once its pane runs again.
  */
-export function isChatClaimed(sessionId: string): boolean {
-	return [...chats.values()].some((c) => c.sessionId === sessionId);
-}
-
-/** Re-attach the pane's chat (a Restart of a chat another device owns). */
-export function reopenChat(paneId: string): void {
-	void chats.get(paneId)?.open();
+export function followPane(paneId: string, pane: PaneProcess): void {
+	const entry = chats.get(paneId);
+	if (!entry || pane.status !== 'running') return;
+	const restarted = pane.generation !== undefined && pane.generation !== entry.generation;
+	const ended = entry.chat.status === 'exited' || entry.chat.status === 'failed';
+	if (!restarted && !ended) return;
+	entry.generation = pane.generation;
+	void entry.chat.attach();
 }
 
 export function releaseChat(paneId: string): void {
-	chats.get(paneId)?.dispose();
+	chats.get(paneId)?.chat.dispose();
 	chats.delete(paneId);
 	const draft = drafts.get(paneId);
 	if (draft && !draft.text && draft.images.length === 0 && draft.files.length === 0)
 		drafts.delete(paneId);
-}
-
-/**
- * The pane's chat has a conversation on disk to resume. Unknown (no chat in
- * this window, e.g. after a restart) counts as yes: resuming is the safe guess
- * for a pane that was in chat before.
- */
-export function chatHasHistory(paneId: string): boolean {
-	const chat = chats.get(paneId);
-	return !chat || chat.hasHistory;
 }

@@ -12,13 +12,15 @@ describe('ProjectStore', () => {
 	let store: ProjectStore;
 	const mockWorkspaceStore = {
 		open: vi.fn(),
-		closeAllForProject: vi.fn()
+		closeAllForProject: vi.fn(),
+		updateProject: vi.fn()
 	} as unknown as WorkspaceStore;
 
 	beforeEach(() => {
 		store = new ProjectStore(mockWorkspaceStore);
 		vi.mocked(mockWorkspaceStore.open).mockReset();
 		vi.mocked(mockWorkspaceStore.closeAllForProject).mockReset();
+		vi.mocked(mockWorkspaceStore.updateProject).mockReset();
 	});
 
 	afterEach(() => {
@@ -100,6 +102,16 @@ describe('ProjectStore', () => {
 			});
 		});
 
+		it("moves the project's open workspaces along", async () => {
+			store.projects = [makeProject({ name: 'A', path: '/a' })];
+			const moved = makeProject({ name: 'A2', path: '/a2' });
+			await store.update('/a', moved);
+			expect(mockWorkspaceStore.updateProject).toHaveBeenCalledExactlyOnceWith('/a', moved);
+
+			await store.update('/a2', { ...moved, group: 'work' });
+			expect(mockWorkspaceStore.updateProject).toHaveBeenCalledOnce();
+		});
+
 		it('does not change anything if path not found', async () => {
 			const original = [makeProject({ name: 'A', path: '/a' })];
 			store.projects = [...original];
@@ -107,6 +119,7 @@ describe('ProjectStore', () => {
 			await store.update('/nonexistent', makeProject({ name: 'X', path: '/x' }));
 
 			expect(store.projects).toEqual(original);
+			expect(mockWorkspaceStore.updateProject).not.toHaveBeenCalled();
 		});
 	});
 

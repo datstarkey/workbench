@@ -113,7 +113,8 @@ async fn health_and_settings_sync_stub() {
 
     let health = http.get(format!("{base}/health")).send().await.unwrap();
     assert_eq!(health.status(), 200);
-    assert_eq!(health.text().await.unwrap(), "ok");
+    let health: serde_json::Value = health.json().await.unwrap();
+    assert_eq!(health["workspaceApi"], 1);
 
     // settings sync is a deliberate 501 seam.
     let sync = http

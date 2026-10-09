@@ -58,8 +58,12 @@ export class ProjectStore {
 			this.favourites.add(project.path);
 			this.saveFavourites();
 		}
+		const before = this.getByPath(previousPath);
 		this.projects = this.projects.map((p) => (p.path === previousPath ? project : p));
 		await this.persist();
+		// Open workspaces follow a moved or renamed project, on every device.
+		if (before && (before.path !== project.path || before.name !== project.name))
+			await this.workspaces.updateProject(previousPath, project);
 	}
 
 	async remove(projectPath: string) {
@@ -112,10 +116,9 @@ export class ProjectStore {
 	}
 
 	/** Open a project workspace (find by path, then open in workspace store) */
-	openProject(projectPath: string) {
+	openProject(projectPath: string): Promise<unknown> {
 		const project = this.getByPath(projectPath);
-		if (!project) return;
-		this.workspaces.open(project);
+		return project ? this.workspaces.open(project) : Promise.resolve();
 	}
 
 	/** Close all workspaces for a project, then remove it from the project list */
