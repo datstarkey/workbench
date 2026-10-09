@@ -1075,6 +1075,24 @@ describe('WorkspaceStore', () => {
 			};
 		}
 
+		it('a resume focuses the tab running the session only while it is live there', async () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' }), makeWorkspace({ id: 'ws-b' })];
+			store.resumeAISession('ws-a', id, 'S', 'claude', 'work');
+			const tabId = store.workspaces[0].terminalTabs[0].id;
+			store.resumeAISession('ws-a', '42345678-1234-1234-1234-123456789abc', 'Other', 'claude');
+			store.selectedId = 'ws-b';
+
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({ exited: true })]);
+			expect(await store.focusLiveSession(id, 'work')).toBe(false);
+			expect(await store.focusLiveSession(id, undefined)).toBe(false);
+			expect(store.selectedId).toBe('ws-b');
+
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({})]);
+			expect(await store.focusLiveSession(id, 'work')).toBe(true);
+			expect(store.selectedId).toBe('ws-a');
+			expect(store.workspaces[0].activeTerminalTabId).toBe(tabId);
+		});
+
 		it("Chat attaches to the terminal's own claude, found by pane or terminal", async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');

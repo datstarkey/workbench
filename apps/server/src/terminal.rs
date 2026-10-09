@@ -499,9 +499,64 @@ pub async fn terminal_create(
     let agents = state.agents.clone();
     // openpty + fork/exec and the project-allowlist load are blocking — run them off
     // the async executor so a slow spawn doesn't stall a tokio worker thread.
-    crate::routes::blocking(move || create_from_body(&terminals, &agents, body))
+    crate::routes::blocking(move || create_or_join(&terminals, &agents, body))
         .await
         .map(Json)
+}
+
+/// Create a terminal, unless its Claude session already runs as a chat in a
+/// live server terminal for the same cwd and account: then that terminal,
+/// since a second `claude` would write the same session file. Blocking.
+fn create_or_join(
+    terminals: &TerminalManager,
+    agents: &crate::agent::AgentManager,
+    body: CreateTerminalBody,
+) -> anyhow::Result<TerminalMeta> {
+    let Some(session_id) = body.claude_session.as_ref().map(|s| s.id.clone()) else {
+        return create_from_body(terminals, agents, body);
+    };
+    crate::agent::validate_claude_session_id(&session_id)?;
+    let cwd = crate::cwd::resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
+    workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    // Decided under the start lock, so an in-flight chat start is seen; created outside it.
+    let running = {
+        let starting = agents.start_lock(&session_id);
+        let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
+        running_terminal(
+            terminals,
+            agents,
+            &session_id,
+            &cwd,
+            &body.claude_account_id,
+        )
+    };
+    match running {
+        Some(meta) => Ok(meta),
+        None => create_from_body(terminals, agents, body),
+    }
+}
+
+/// The live server terminal a chat session runs in, when the session's current
+/// id (not one it had before a `/clear`) is `session_id` and it runs in `cwd`
+/// under `account_id`.
+fn running_terminal(
+    terminals: &TerminalManager,
+    agents: &crate::agent::AgentManager,
+    session_id: &str,
+    cwd: &str,
+    account_id: &Option<String>,
+) -> Option<TerminalMeta> {
+    let session = agents.get(session_id).filter(|s| {
+        !s.has_exited()
+            && s.id() == session_id
+            && s.cwd() == std::path::Path::new(cwd)
+            && &s.claude_account_id() == account_id
+    })?;
+    let terminal_id = session.mod_link()?.terminal_id.clone()?;
+    terminals
+        .list()
+        .into_iter()
+        .find(|t| t.id == terminal_id && t.alive)
 }
 
 /// Create a terminal as `POST /remote/terminals` does (also how a Claude chat
