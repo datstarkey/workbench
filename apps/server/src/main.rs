@@ -19,6 +19,8 @@ async fn run() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "workbench_server=info,tower_http=info".into()),
         )
         .init();
+    workbench_server::watchdog::raise_fd_limit();
+    workbench_server::watchdog::start(tokio::runtime::Handle::current());
 
     let token = cli.resolved_token()?;
     if token.is_some() {

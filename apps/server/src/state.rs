@@ -113,6 +113,57 @@ fn ws_send_timeout(msg: &Message) -> Duration {
     WS_SEND_TIMEOUT + Duration::from_secs((len / WS_SLOW_LINK_BYTES_PER_SEC) as u64)
 }
 
+/// Pings a WebSocket's client so one that vanished without closing (a phone
+/// asleep or off the network) is dropped, not held open forever.
+pub(crate) struct Heartbeat {
+    tick: tokio::time::Interval,
+    heard: bool,
+    missed: u8,
+}
+
+const PONGS_MISSED: u8 = 2;
+
+/// `WORKBENCH_WS_PING_MS` overrides it for tests (at least 10ms).
+fn ping_every() -> Duration {
+    static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *EVERY.get_or_init(|| {
+        std::env::var("WORKBENCH_WS_PING_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map_or(Duration::from_secs(30), |ms| {
+                Duration::from_millis(ms.max(10))
+            })
+    })
+}
+
+impl Heartbeat {
+    pub fn new() -> Self {
+        let every = ping_every();
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        Self {
+            tick,
+            heard: true,
+            missed: 0,
+        }
+    }
+
+    /// Anything from the client answers.
+    pub fn heard(&mut self) {
+        self.heard = true;
+    }
+
+    /// Resolves at each ping time: false once [`PONGS_MISSED`] pings in a row
+    /// went unanswered. `reading`: the socket is being read (a client is never
+    /// blamed while its input is held back).
+    pub async fn due(&mut self, reading: bool) -> bool {
+        self.tick.tick().await;
+        let answered = std::mem::take(&mut self.heard) || !reading;
+        self.missed = if answered { 0 } else { self.missed + 1 };
+        self.missed < PONGS_MISSED
+    }
+}
+
 /// Send a last frame (if any), then a close frame, both under the send timeout.
 pub(crate) async fn ws_close(mut socket: WebSocket, last: Option<Message>) {
     if let Some(msg) = last {

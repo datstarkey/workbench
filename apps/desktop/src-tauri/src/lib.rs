@@ -187,6 +187,7 @@ pub fn run() {
     // any thread are captured. No-op in debug builds. Guard kept alive for the
     // whole process — dropping it flushes pending events on shutdown.
     let _sentry_guard = observability::init(context.package_info().version.to_string());
+    workbench_server::watchdog::raise_fd_limit();
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

@@ -676,8 +676,14 @@ async fn stream(
         ws_close(socket, None).await;
         return;
     }
+    let mut heartbeat = crate::state::Heartbeat::new();
     loop {
         tokio::select! {
+            alive = heartbeat.due(true) => {
+                if !alive || !ws_send(&mut socket, Message::Ping(Vec::new())).await {
+                    return;
+                }
+            }
             frame = rx.recv() => {
                 let (frame, ended) = match frame {
                     Ok(frame) => (frame.render(every_meta).into_owned(), frame.ends()),
@@ -701,6 +707,7 @@ async fn stream(
             }
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(text))) => {
+                    heartbeat.heard();
                     // Restarts (a rewind, a mode switch), saving attachments and the
                     // task-output directory walk block, so keep them off the async workers.
                     let worker = session.clone();
@@ -719,7 +726,7 @@ async fn stream(
                     }
                 }
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
-                Some(Ok(_)) => {}
+                Some(Ok(_)) => heartbeat.heard(),
             },
             _ = wait_revoked(&mut revoked) => {
                 ws_close(socket, Some(Message::Text(r#"{"t":"revoked"}"#.to_string()))).await;

@@ -21,9 +21,13 @@ portable-pty = { workspace = true }
 clap = { workspace = true }
 uuid = { workspace = true }
 base64 = "0.22"
-tracing = "0.1"
+# `log`: with no tracing subscriber (the desktop), events reach its `log` logger and Sentry.
+tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
+# The accept loop (`accept.rs`), for keepalive on each accepted socket.
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
+socket2 = "0.6"
 
 # Process-GROUP termination (kill the shell + its descendants) on Unix, so
 # closing a terminal doesn't orphan child processes.
