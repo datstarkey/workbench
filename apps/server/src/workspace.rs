@@ -6,9 +6,10 @@
 //! Clients follow it as full snapshots (`routes`). The standalone server and
 //! the desktop's embedded one run this same code. See `docs/WORKSPACE_MODEL.md`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -62,6 +63,9 @@ pub struct PaneRuntime {
     pub waiting_since: Option<u64>,
     /// Why the last spawn failed.
     pub error: Option<String>,
+    /// Something to tell the person about how the current spawn started;
+    /// cleared by the next spawn.
+    pub notice: Option<String>,
     /// Bumped by every spawn (start, restart, mode switch), so a client knows
     /// to re-attach even when it never saw the pane stop.
     pub generation: u64,
@@ -91,7 +95,7 @@ pub struct Published {
 }
 
 /// What a command opened or found, and the change it made.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Applied {
     pub gen: u64,
     pub workspace_id: Option<String>,
@@ -116,7 +120,14 @@ struct Inner {
     ctx: OnceLock<Ctx>,
     /// Held while this process keeps the config dir's model file.
     lock: OnceLock<lock::ModelLock>,
+    /// Recent commands by their client `requestId`, so a retry gets the first
+    /// answer instead of a second session.
+    requests: Mutex<VecDeque<(String, Instant, Applied)>>,
 }
+
+/// How many request ids, and for how long, a command's answer is kept.
+const REQUESTS_KEPT: usize = 256;
+const REQUEST_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub struct WorkspaceService(Arc<Inner>);
@@ -143,6 +154,7 @@ impl WorkspaceService {
             dirty: Notify::new(),
             ctx: OnceLock::new(),
             lock: OnceLock::new(),
+            requests: Mutex::new(VecDeque::new()),
         }))
     }
 
@@ -200,8 +212,29 @@ impl WorkspaceService {
         self.0.ctx.get()
     }
 
+    /// Apply a client's command once per `request_id`: a retry of one already
+    /// applied gets its answer again. Blocking.
+    pub fn command_once(&self, request_id: Option<String>, cmd: Command) -> Result<Applied> {
+        let Some(request_id) = request_id else {
+            return self.command(cmd);
+        };
+        // Held across the apply, so a retry racing the first waits for its answer.
+        let mut requests = lock(&self.0.requests);
+        requests.retain(|(_, at, _)| at.elapsed() < REQUEST_TTL);
+        if let Some((_, _, applied)) = requests.iter().find(|(id, ..)| *id == request_id) {
+            return Ok(applied.clone());
+        }
+        let applied = self.command(cmd)?;
+        if requests.len() >= REQUESTS_KEPT {
+            requests.pop_front();
+        }
+        requests.push_back((request_id, Instant::now(), applied.clone()));
+        Ok(applied)
+    }
+
     /// Apply a client's command. Blocking (it may save the model).
     pub fn command(&self, cmd: Command) -> Result<Applied> {
+        self.follow_rekey(&cmd);
         let cmd = self.with_defaults(cmd)?;
         let effects = {
             let mut state = lock(&self.0.state);
@@ -224,6 +257,32 @@ impl WorkspaceService {
         };
         self.run(effects);
         Ok(())
+    }
+
+    /// A resume of a session `/clear` re-keyed: fold the re-key in now rather
+    /// than at the next fold tick, so the model finds the pane that holds it
+    /// (by its new id or an old one) instead of opening a second.
+    fn follow_rekey(&self, cmd: &Command) {
+        let (
+            Command::NewSession {
+                resume: Some(id), ..
+            },
+            Some(ctx),
+        ) = (cmd, self.ctx())
+        else {
+            return;
+        };
+        let live = ctx
+            .agents
+            .summaries()
+            .into_iter()
+            .find(|s| s.session_id == *id || s.previous_ids.contains(id));
+        if let Some(s) = live.filter(|s| !s.previous_ids.is_empty()) {
+            let _ = self.fold_in(Command::SessionRekeyed {
+                session_id: s.session_id,
+                previous_ids: s.previous_ids,
+            });
+        }
     }
 
     /// A Claude NewSession's account, decided as every launch's is

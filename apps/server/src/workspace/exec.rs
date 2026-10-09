@@ -1,6 +1,8 @@
 //! Carries out the model's effects, in order per pane: a stop or end always
 //! lands before the spawn that replaces it. Spawns only start the process;
-//! `fold` sees it attach or exit.
+//! `fold` sees it attach or exit. Spawns and stops of a session hold its
+//! start lock (`AgentManager::start_lock`), as a rewind, mode or account
+//! restart does, so no two of them ever run one session in two processes.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -106,7 +108,7 @@ fn run(service: &WorkspaceService, effect: Effect, pane: PaneCtx) {
         } => {
             let mut body = terminal_body(&pane, &pane_id, renderer, account_id);
             body.command = command;
-            spawn_terminal(service, &pane_id, body, Status::Running);
+            spawn_terminal(service, &pane_id, body, Status::Running, None);
         }
         Effect::SpawnClaude {
             pane_id,
@@ -117,15 +119,22 @@ fn run(service: &WorkspaceService, effect: Effect, pane: PaneCtx) {
             prompt,
             ..
         } => {
-            let mut body = terminal_body(&pane, &pane_id, renderer, account_id);
-            body.claude_session = Some(ClaudeSessionLaunch {
+            let starting = agents.start_lock(&session_id);
+            let _starting = super::lock(&starting);
+            if adopt_running(service, &pane_id, &session_id) {
+                return;
+            }
+            let launch = ClaudeSessionLaunch {
                 id: session_id,
                 resume,
                 prompt,
                 ..Default::default()
-            });
+            };
+            let notice = workbench_core::claude_launch::prompt_notice(&launch);
+            let mut body = terminal_body(&pane, &pane_id, renderer, account_id);
+            body.claude_session = Some(launch);
             // Running once its plugin attaches (`fold`).
-            spawn_terminal(service, &pane_id, body, Status::Starting);
+            spawn_terminal(service, &pane_id, body, Status::Starting, notice);
         }
         Effect::SpawnCodex {
             pane_id,
@@ -135,12 +144,16 @@ fn run(service: &WorkspaceService, effect: Effect, pane: PaneCtx) {
             prompt,
             ..
         } => {
-            let mut body = terminal_body(&pane, &pane_id, renderer, None);
-            body.codex_session = Some(CodexSessionLaunch {
+            let starting = session_id.as_deref().map(|id| agents.start_lock(id));
+            let _starting = starting.as_deref().map(super::lock);
+            let launch = CodexSessionLaunch {
                 id: session_id,
                 prompt,
-            });
-            spawn_terminal(service, &pane_id, body, Status::Running);
+            };
+            let notice = workbench_core::codex_launch::prompt_notice(&launch);
+            let mut body = terminal_body(&pane, &pane_id, renderer, None);
+            body.codex_session = Some(launch);
+            spawn_terminal(service, &pane_id, body, Status::Running, notice);
         }
         Effect::SpawnCodex {
             pane_id,
@@ -150,11 +163,19 @@ fn run(service: &WorkspaceService, effect: Effect, pane: PaneCtx) {
             ..
         } => {
             // Waits for codex to open its thread; a stop queued meanwhile waits too.
+            let starting = session_id.as_deref().map(|id| agents.start_lock(id));
+            let _starting = starting.as_deref().map(super::lock);
             if let Err(e) = start_codex_chat(service, &pane_id, &pane, session_id, prompt) {
                 service.update(&pane_id, |rt| failed(rt, &e));
             }
         }
-        Effect::Stop { pane_id, .. } => {
+        Effect::Stop {
+            pane_id,
+            session_id,
+        } => {
+            // After a rewind or mode restart in flight, so its process is the one stopped.
+            let starting = session_id.as_deref().map(|id| agents.start_lock(id));
+            let _starting = starting.as_deref().map(super::lock);
             // One process per session file: the old one is gone before a respawn.
             if let Some(id) = &pane.terminal_id {
                 terminals.kill_and_wait(id);
@@ -204,11 +225,45 @@ fn terminal_body(
     }
 }
 
+/// The pane's session already runs in its own terminal (a rewind or mode
+/// restart that finished meanwhile): show that one instead of a second `claude`.
+fn adopt_running(service: &WorkspaceService, pane_id: &str, session_id: &str) -> bool {
+    let Some(ctx) = service.ctx() else {
+        return false;
+    };
+    let Some(session) = ctx
+        .agents
+        .get(session_id)
+        .filter(|s| !s.has_exited() && s.pane_id.as_deref() == Some(pane_id))
+    else {
+        return false;
+    };
+    let Some(terminal) = session.mod_link().and_then(|l| l.terminal_id.clone()) else {
+        return false;
+    };
+    if !ctx
+        .terminals
+        .list()
+        .iter()
+        .any(|t| t.id == terminal && t.alive)
+    {
+        return false;
+    }
+    service.update(pane_id, |rt| {
+        rt.terminal_id = Some(terminal);
+        rt.status = Status::Running;
+    });
+    true
+}
+
+/// `notice`: something to tell the person about how it started (a prompt
+/// Windows' shells can't take was left out), shown once by each client.
 fn spawn_terminal(
     service: &WorkspaceService,
     pane_id: &str,
     body: CreateTerminalBody,
     status: Status,
+    notice: Option<String>,
 ) {
     let Some(ctx) = service.ctx() else {
         return;
@@ -220,6 +275,7 @@ fn spawn_terminal(
                 service.update(pane_id, |rt| {
                     rt.terminal_id = Some(meta.id);
                     rt.status = status;
+                    rt.notice = notice;
                 });
             } else {
                 ctx.agents.end_terminal(&meta.id);

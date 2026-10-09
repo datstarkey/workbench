@@ -213,9 +213,10 @@ pub struct AgentManager {
     upkeep: Arc<OnceLock<()>>,
     /// Terminal tokens a pane's plugin attaches its `claude` with, by token.
     mod_grants: Arc<Mutex<HashMap<String, ModGrant>>>,
-    /// One lock per Claude session id, held across its start (terminal opened,
-    /// plugin attached) so two starts of one id can't open two terminals.
-    /// Apart from `lifecycle`, which the attach it waits for takes.
+    /// One lock per session id, held by every spawn and stop of it: the
+    /// workspace service's (`workspace/exec.rs`) and a rewind, mode or account
+    /// restart's (terminal opened, plugin attached), so none of them runs one
+    /// session in two processes. Apart from `lifecycle`, which the attach takes.
     starting: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// The terminals grants are issued for (to drop a dead one's grant) and
     /// the loopback port their plugins reach: set by the first listener.
@@ -449,7 +450,7 @@ impl AgentManager {
         self.terminals.get().map(|(_, port)| *port)
     }
 
-    /// The lock serializing starts of one Claude session id (see `starting`).
+    /// The lock serializing spawns and stops of one session id (see `starting`).
     pub fn start_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
         lock(&self.starting)
             .entry(session_id.to_string())
@@ -764,7 +765,7 @@ impl AgentManager {
         else {
             bail!("only Claude terminal sessions restart");
         };
-        // Two restarts of one session never open two `claude`s beside each other.
+        // Serialized with the workspace's spawns and stops of this session (`start_lock`).
         let starting = self.start_lock(&session_id);
         let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
         // A second pick sent while the first restarted waits on its socket, then

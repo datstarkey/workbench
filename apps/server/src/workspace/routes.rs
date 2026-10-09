@@ -1,6 +1,7 @@
 //! - `POST /workspace/commands`: one `Command` (JSON, `{"type": …}`), answered
 //!   `{rev, workspaceId?, tabId?, paneId?}` once a snapshot at that `rev`
-//!   includes it, or `{rev, error}` (400) when the model refused it.
+//!   includes it, or `{rev, error}` (400) when the model refused it. An
+//!   optional `requestId` makes a retry of it get the same answer, applied once.
 //! - `GET /events/workspace`: Server-Sent Events. `snapshot` frames carry the
 //!   whole model with each pane's runtime state, `{rev, workspaces}`: one on
 //!   connect, then one per new `rev` (at most every 150ms, never a repeat).
@@ -17,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::Stream;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use workbench_core::workspace::{Command, Renderer};
 
 use crate::error::ApiError;
@@ -28,9 +29,17 @@ const HEARTBEAT: Duration = Duration::from_secs(15);
 /// How long a command waits for the snapshot that shows it.
 const PUBLISH_WAIT: Duration = Duration::from_secs(2);
 
-pub async fn command(State(state): State<AppState>, Json(cmd): Json<Command>) -> Response {
+pub async fn command(State(state): State<AppState>, Json(mut body): Json<Value>) -> Response {
     let service = state.workspace.clone();
     let rev = || service.subscribe().borrow().rev;
+    let request_id = body
+        .as_object_mut()
+        .and_then(|o| o.remove("requestId"))
+        .and_then(|v| v.as_str().map(String::from));
+    let cmd: Command = match serde_json::from_value(body) {
+        Ok(cmd) => cmd,
+        Err(e) => return refused(rev(), e.to_string()),
+    };
     // Fold-ins report what a process did: only the server sees that.
     if matches!(
         cmd,
@@ -56,7 +65,7 @@ pub async fn command(State(state): State<AppState>, Json(cmd): Json<Command>) ->
     }
     let applied = {
         let service = service.clone();
-        tokio::task::spawn_blocking(move || service.command(cmd)).await
+        tokio::task::spawn_blocking(move || service.command_once(request_id, cmd)).await
     };
     let applied = match applied {
         Ok(Ok(applied)) => applied,

@@ -19,8 +19,18 @@ use workbench_server::{spawn_embedded, Managers, ServerHandle};
 
 const TOKEN: &str = "e2e-token-0123456789abcdef0123456789";
 
-/// Idles until its stdin closes: the bridge makes it a chat.
-const FAKE_CLAUDE: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
+/// Idles until its stdin closes (the bridge makes it a chat); a `/clear`
+/// moves it to [`CLEARED`], as the plugin reports one.
+const FAKE_CLAUDE: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'/clear'*)
+      echo '{"type":"conversation_reset","new_conversation_id":"c1ea4ed0-0000-4000-8000-000000000001"}'
+      ;;
+  esac
+done
+"#;
+const CLEARED: &str = "c1ea4ed0-0000-4000-8000-000000000001";
 /// Prints how it was launched, then idles like a TUI.
 const FAKE_CODEX: &str =
     "#!/bin/sh\n[ \"$1\" = --help ] && exit 0\necho \"FAKECODEX $*\"\nexec cat\n";
@@ -571,4 +581,225 @@ async fn the_migrated_local_state_rides_along_and_every_spawn_bumps_the_generati
     managers.kill_all();
     let _ = std::fs::remove_file(env().dir.join("workspaces.json"));
     let _ = std::fs::remove_file(env().dir.join("workspaces.v2.json"));
+}
+
+fn panes(snap: &Value) -> usize {
+    snap["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|w| w["tabs"].as_array().into_iter().flatten())
+        .map(|t| t["panes"].as_array().map_or(0, Vec::len))
+        .sum()
+}
+
+/// The alive terminals running Claude session `sid`.
+async fn session_terminals(base: &str, sid: &str) -> Vec<String> {
+    support::get(base, "/remote/terminals")
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["alive"] == true && t["claudeSessionId"] == sid)
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_retried_command_is_applied_once() {
+    let _serial = serial().await;
+    let (handle, base) = serve(Managers::default()).await;
+    let mut cmd = new_session("shell");
+    cmd["requestId"] = "retry-1".into();
+    let (a, b) = tokio::join!(command(&base, cmd.clone()), command(&base, cmd.clone()));
+    let again = command(&base, cmd).await;
+    let id = a["paneId"].as_str().unwrap().to_string();
+    assert_eq!(b["paneId"], a["paneId"]);
+    assert_eq!(again["paneId"], a["paneId"]);
+
+    let mut sse = Sse::open(&base).await;
+    let snap = sse.until("running", |s| running(s, &id)).await;
+    assert_eq!(panes(&snap), 1, "{snap}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(alive_terminals(&base).await.len(), 1, "one process");
+    command(&base, json!({ "type": "closePane", "paneId": id })).await;
+    handle.stop().await;
+}
+
+#[tokio::test]
+async fn resuming_a_just_cleared_session_returns_its_pane() {
+    let _serial = serial().await;
+    let (handle, base) = serve(Managers::default()).await;
+    let mut sse = Sse::open(&base).await;
+    let id = command(&base, new_session("claude")).await["paneId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let snap = sse.until("running", |s| running(s, &id)).await;
+    let sid = pane(&snap, &id).unwrap()["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    support::wait_for_agent(&base, &sid).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/agent/claude/{sid}/message"))
+        .bearer_auth(TOKEN)
+        .body(json!({"t": "prompt", "text": "/clear"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+    // Re-keyed in the chat; the model's fold may not have run: don't wait for it.
+    let mut rekeyed = false;
+    for _ in 0..200 {
+        let list = support::get(&base, "/agent").await;
+        if list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["sessionId"] == CLEARED)
+        {
+            rekeyed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(rekeyed, "the chat moved to {CLEARED}");
+    let mut resume = new_session("claude");
+    resume["resume"] = CLEARED.into();
+    assert_eq!(command(&base, resume).await["paneId"], id.as_str());
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let snap = Sse::open(&base).await.next().await.unwrap();
+    assert_eq!(panes(&snap), 1, "no second pane: {snap}");
+    assert_eq!(alive_terminals(&base).await.len(), 1, "no second claude");
+    assert_eq!(
+        support::get(&base, "/agent")
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    command(&base, json!({ "type": "closePane", "paneId": id })).await;
+    handle.stop().await;
+}
+
+#[tokio::test]
+async fn a_restart_racing_a_rewind_leaves_one_process() {
+    use futures_util::SinkExt;
+    const SID: &str = "5e5e5e5e-0000-4000-8000-0000000000b1";
+    const FIRST: &str = "11111111-1111-4111-8111-1111111111b1";
+    const REPLY: &str = "33333333-3333-4333-8333-3333333333b1";
+    const SECOND: &str = "22222222-2222-4222-8222-2222222222b1";
+    let _serial = serial().await;
+    let sessions = env().dir.join(".claude/projects/-project");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let entry = |kind: &str, id: &str, parent: Option<&str>, text: &str| {
+        let message = if kind == "user" {
+            json!({"role": "user", "content": text})
+        } else {
+            json!({"id": format!("m-{id}"), "content": [{"type": "text", "text": text}]})
+        };
+        json!({"type": kind, "uuid": id, "parentUuid": parent, "message": message}).to_string()
+    };
+    let history = [
+        entry("user", FIRST, None, "first"),
+        entry("assistant", REPLY, Some(FIRST), "one"),
+        entry("user", SECOND, Some(REPLY), "second"),
+        entry("assistant", "a2-b1", Some(SECOND), "two"),
+    ]
+    .join("\n");
+    std::fs::write(sessions.join(format!("{SID}.jsonl")), history).unwrap();
+
+    let (handle, base) = serve(Managers::default()).await;
+    let mut cmd = new_session("claude");
+    cmd["resume"] = SID.into();
+    let reply = command(&base, cmd).await;
+    let (id, tab) = (
+        reply["paneId"].as_str().unwrap().to_string(),
+        reply["tabId"].as_str().unwrap().to_string(),
+    );
+    support::wait_for_agent(&base, SID).await;
+    let url = format!(
+        "{}/agent/claude/{SID}/ws?token={TOKEN}",
+        base.replace("http://", "ws://")
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let rewind = json!({"t": "rewind", "messageId": SECOND, "code": false,
+        "conversation": true, "dryRun": false});
+    let (sent, _) = tokio::join!(
+        ws.send(Message::Text(rewind.to_string())),
+        command(&base, json!({ "type": "restart", "tabId": tab })),
+    );
+    sent.unwrap();
+
+    // Settled: one terminal runs the session, the pane shows it, one session listed.
+    let settled = || async {
+        let terminals = session_terminals(&base, SID).await;
+        let listed = support::get(&base, "/agent")
+            .await
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["sessionId"] == SID)
+            .count();
+        let snap = Sse::open(&base).await.next().await.unwrap();
+        let shown = pane(&snap, &id).unwrap()["terminalId"].clone();
+        (terminals, listed, shown)
+    };
+    for _ in 0..100 {
+        let (terminals, listed, shown) = settled().await;
+        if terminals.len() == 1 && listed == 1 && shown == terminals[0].as_str() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (terminals, listed, shown) = settled().await;
+    assert_eq!(terminals.len(), 1, "one claude: {terminals:?}");
+    assert_eq!(listed, 1, "one session");
+    assert_eq!(shown, terminals[0].as_str(), "the pane shows it");
+    assert_eq!(alive_terminals(&base).await.len(), 1);
+    command(&base, json!({ "type": "closePane", "paneId": id })).await;
+    handle.stop().await;
+}
+
+#[tokio::test]
+async fn a_chat_socket_for_no_running_session_closes_with_4404() {
+    let _serial = serial().await;
+    let (handle, base) = serve(Managers::default()).await;
+    let url = format!(
+        "{}/agent/claude/5e5e5e5e-0000-4000-8000-0000000000ff/ws?token={TOKEN}",
+        base.replace("http://", "ws://")
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("a close within 5s");
+    let Some(Ok(Message::Close(Some(close)))) = frame else {
+        panic!("not a close frame: {frame:?}");
+    };
+    assert_eq!(u16::from(close.code), 4404);
+    handle.stop().await;
+}
+
+#[tokio::test]
+async fn a_normal_spawn_has_no_notice() {
+    let _serial = serial().await;
+    let (handle, base) = serve(Managers::default()).await;
+    let mut sse = Sse::open(&base).await;
+    let mut cmd = new_session("claude");
+    // Only Windows' shells refuse these.
+    cmd["prompt"] = "say \"hi\" for $5 %PATH% `x` !".into();
+    let id = command(&base, cmd).await["paneId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let snap = sse.until("running", |s| running(s, &id)).await;
+    let p = pane(&snap, &id).unwrap();
+    assert!(p.get("notice").is_some_and(Value::is_null), "{p}");
+    command(&base, json!({ "type": "closePane", "paneId": id })).await;
+    handle.stop().await;
 }
