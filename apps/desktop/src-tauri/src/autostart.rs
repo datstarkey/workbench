@@ -1,7 +1,7 @@
 //! Launch at login (macOS LaunchAgent, Windows HKCU Run key) over `auto-launch`.
 //! Never part of setup's error path: a broken registration must not stop the app.
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Env, Manager, Runtime};
 
 /// Passed by every login launch, so the app starts minimised.
 pub const ARG: &str = "--autostart";
@@ -166,6 +166,7 @@ pub fn on_startup(app: &AppHandle) {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.minimize();
         }
+        forget_login_launch(app);
     }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     if !cfg!(debug_assertions) {
@@ -178,9 +179,36 @@ pub fn on_startup(app: &AppHandle) {
     }
 }
 
+/// A restart (`process::restart`) and the Windows updater's relaunch (NSIS
+/// `/ARGS`, captured when the updater is built) reuse the managed `Env`'s args,
+/// so a login launch would come back minimised after an update.
+fn forget_login_launch<R: Runtime>(app: &AppHandle<R>) {
+    // Nothing keeps a `State<Env>`: `Manager::env` clones it.
+    #[allow(deprecated)]
+    let Some(mut env) = app.unmanage::<Env>() else {
+        return;
+    };
+    env.args_os.retain(|a| a != ARG);
+    app.manage(env);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_login_launch_restarts_without_the_login_flag() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let handle = app.handle();
+        #[allow(deprecated)]
+        let mut env = handle.unmanage::<Env>().expect("env");
+        env.args_os = vec!["workbench".into(), ARG.into(), "--x".into()];
+        handle.manage(env);
+        forget_login_launch(handle);
+        assert_eq!(handle.env().args_os, vec!["workbench", "--x"]);
+    }
 
     #[test]
     fn reads_a_plist_target_and_flag() {
