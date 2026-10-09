@@ -21,6 +21,7 @@ use crate::types::{
     HookScriptInfo, IntegrationStatus, PackageInfo, PluginInfo, ProjectConfig, SkillInfo,
     WorkbenchSettings, WorkspaceFile, WorktreeInfo,
 };
+use crate::worktrees;
 
 /// Read a file dropped onto a chat (image, PDF or text) so it can be attached to the message.
 #[tauri::command]
@@ -42,14 +43,8 @@ pub fn list_projects() -> Result<Vec<ProjectConfig>, String> {
 // Sync (main thread) on purpose, like the other saves: commands on the pool
 // could finish out of order and an older snapshot overwrite a newer one.
 #[tauri::command]
-pub fn save_projects(
-    projects: Vec<ProjectConfig>,
-    hook_bridge: State<'_, HookBridgeState>,
-) -> Result<bool, String> {
+pub fn save_projects(projects: Vec<ProjectConfig>) -> Result<bool, String> {
     config::save_projects(&projects).map_err(|e| e.to_string())?;
-    // Project roots are the sandbox's writable set, so a newly added project has
-    // to reach the srt settings file before its first Claude launch.
-    refresh_sandbox_runtime_settings(None, &hook_bridge);
     Ok(true)
 }
 
@@ -172,7 +167,7 @@ pub async fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
 
 #[tauri::command]
 pub async fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
-    crate::blocking(move || git::create_worktree(&request).map_err(|e| e.to_string())).await
+    crate::blocking(move || worktrees::create(request).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -180,10 +175,11 @@ pub async fn remove_worktree(
     repo_path: String,
     worktree_path: String,
     force: bool,
-) -> Result<bool, String> {
+    delete_branch: bool,
+) -> Result<worktrees::RemovedWorktree, String> {
     crate::blocking(move || {
-        git::remove_worktree(&repo_path, &worktree_path, force).map_err(|e| e.to_string())?;
-        Ok(true)
+        worktrees::remove(&repo_path, &worktree_path, force, delete_branch)
+            .map_err(|e| e.to_string())
     })
     .await
 }
@@ -211,10 +207,7 @@ pub fn load_workbench_settings() -> Result<WorkbenchSettings, String> {
 }
 
 #[tauri::command]
-pub fn save_workbench_settings(
-    mut settings: WorkbenchSettings,
-    hook_bridge: State<'_, HookBridgeState>,
-) -> Result<bool, String> {
+pub fn save_workbench_settings(mut settings: WorkbenchSettings) -> Result<bool, String> {
     // Each window holds its own settings store; one loaded before the LAN token
     // was generated must not wipe it (and lock paired phones out) on save.
     if settings.server_token.is_none() {
@@ -223,77 +216,19 @@ pub fn save_workbench_settings(
             .and_then(|s| s.server_token);
     }
     config::save_workbench_settings(&settings).map_err(|e| e.to_string())?;
-    refresh_sandbox_runtime_settings(Some(&settings), &hook_bridge);
     Ok(true)
 }
 
-/// Regenerate the `srt` settings file and return its absolute path.
-///
-/// Writes rather than just resolving the path, and fails loudly: the frontend
-/// wraps launch commands with whatever path this returns, so handing back a path
-/// to a file that does not exist would produce a `claude` command srt refuses to
-/// run. On `Err` the frontend launches unwrapped instead.
+/// Regenerate the `srt` settings file and return its absolute path, for the
+/// settings window's "active" badge. Launches regenerate it themselves.
 #[tauri::command]
-pub async fn sandbox_runtime_settings_path(
-    hook_bridge: State<'_, HookBridgeState>,
-) -> Result<String, String> {
-    let hook_bridge = hook_bridge.inner().clone();
-    crate::blocking(move || {
-        let _writing = lock(&SANDBOX_FILE);
-        let settings = config::load_workbench_settings().map_err(|e| e.to_string())?;
-        let projects = config::load_projects().map_err(|e| e.to_string())?;
-        let path = sandbox_runtime::write_settings(&settings, &projects, hook_bridge.address())
-            .map_err(|e| e.to_string())?;
-        Ok(path.to_string_lossy().to_string())
+pub async fn sandbox_runtime_settings_path() -> Result<String, String> {
+    crate::blocking(|| {
+        sandbox_runtime::refresh()
+            .map(|path| path.to_string_lossy().to_string())
+            .map_err(|e| e.to_string())
     })
     .await
-}
-
-/// One writer of the sandbox file at a time, each reading the settings and
-/// projects inside it: one on the blocking pool must not finish after a newer
-/// one from a save and put an old allowlist back.
-static SANDBOX_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn lock(m: &'static std::sync::Mutex<()>) -> std::sync::MutexGuard<'static, ()> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Regenerate `~/.workbench/sandbox-runtime.json` from the current settings,
-/// the registered projects, and the live hook-bridge port.
-///
-/// Pass `settings` when the caller already has them (a save that has not been
-/// re-read yet); otherwise they are loaded from disk. Failures are logged, not
-/// propagated — a stale sandbox file must not fail a settings save, and
-/// `sandbox_runtime_settings_path` is the path that gates actual wrapping.
-pub fn refresh_sandbox_runtime_settings(
-    settings: Option<&WorkbenchSettings>,
-    hook_bridge: &HookBridgeState,
-) {
-    let _writing = lock(&SANDBOX_FILE);
-    let loaded;
-    let settings = match settings {
-        Some(s) => s,
-        None => match config::load_workbench_settings() {
-            Ok(s) => {
-                loaded = s;
-                &loaded
-            }
-            Err(e) => {
-                log::warn!("[sandbox-runtime] Failed to load settings: {e}");
-                return;
-            }
-        },
-    };
-
-    let projects = config::load_projects().unwrap_or_else(|e| {
-        // Degrade to cwd-only writes rather than skipping the file entirely.
-        log::warn!("[sandbox-runtime] Failed to load projects: {e}");
-        Vec::new()
-    });
-
-    if let Err(e) = sandbox_runtime::write_settings(settings, &projects, hook_bridge.address()) {
-        log::warn!("[sandbox-runtime] Failed to write settings file: {e}");
-    }
 }
 
 // GitHub integration commands

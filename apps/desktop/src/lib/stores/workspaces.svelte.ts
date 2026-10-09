@@ -10,7 +10,6 @@ import {
 	type TerminalPaneState,
 	type TerminalTabState
 } from '$types/workbench';
-import { projectClaudeAccount } from '$types/accounts';
 import { invoke } from '$lib/transport';
 import {
 	codexCommand,
@@ -82,18 +81,6 @@ export class WorkspaceStore {
 	private gitStore = getGitStore();
 
 	private switchCallbacks: Array<(projectPath: string) => void> = [];
-
-	/** A project's config, for its default Claude account; `ProjectStore` (created later) sets it. */
-	projectLookup: (projectPath: string) => ProjectConfig | undefined = () => undefined;
-
-	/** The account a new Claude session in the project starts under. */
-	private claudeAccountFor(projectPath: string): string | undefined {
-		return projectClaudeAccount(
-			this.projectLookup(projectPath),
-			this.settingsStore.claudeAccounts,
-			this.settingsStore.activeClaudeAccountId
-		);
-	}
 
 	private get launchOptions(): LaunchOptions {
 		return this.settingsStore.launchOptions;
@@ -212,7 +199,7 @@ export class WorkspaceStore {
 					id: uid(),
 					type,
 					...pane,
-					...(type === 'claude' && claudeAccountId && { claudeAccountId })
+					...(type === 'claude' && claudeAccountId !== undefined && { claudeAccountId })
 				}
 			]
 		};
@@ -723,8 +710,7 @@ export class WorkspaceStore {
 								? codexCommandWithPrompt(prompt, this.launchOptions)
 								: codexCommand(this.launchOptions)
 						}
-					: { claudeSessionId: crypto.randomUUID(), ...(prompt && { claudePrompt: prompt }) },
-				this.claudeAccountFor(w.projectPath)
+					: { claudeSessionId: crypto.randomUUID(), ...(prompt && { claudePrompt: prompt }) }
 			);
 			// A plain new Claude tab can open straight into chat; an agent action's
 			// prompt goes to the terminal.
@@ -818,11 +804,15 @@ export class WorkspaceStore {
 		this.patchPane(paneId, patch);
 	}
 
-	/** A Claude pane's session moved to another account, so its restarts and resumes use that login. */
+	/**
+	 * The account a Claude pane's session runs under (the host picked it, or it
+	 * moved), so its restarts and resumes use that login. Stored as `''` for the
+	 * default login; an unset account is one the host has yet to pick.
+	 */
 	setPaneClaudeAccount(paneId: string, accountId: string | undefined): void {
+		const id = accountId ?? '';
 		const pane = this.findPane(paneId);
-		if (pane && pane.claudeAccountId !== accountId)
-			this.patchPane(paneId, { claudeAccountId: accountId });
+		if (pane && pane.claudeAccountId !== id) this.patchPane(paneId, { claudeAccountId: id });
 	}
 
 	private patchPane(paneId: string, patch: Partial<TerminalPaneState>): void {

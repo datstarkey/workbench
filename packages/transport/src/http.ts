@@ -96,6 +96,8 @@ function toRequest<K extends keyof ControlPlaneCommands>(
 		}
 		case 'load_workbench_settings':
 			return { method: 'GET', path: '/settings/workbench' };
+		case 'set_active_claude_account':
+			return { method: 'PUT', path: '/settings/active-claude-account', body: { id: a.id ?? null } };
 		case 'host_update_status':
 			return {
 				method: 'GET',

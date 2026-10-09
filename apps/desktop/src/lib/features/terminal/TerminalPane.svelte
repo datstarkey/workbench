@@ -566,6 +566,9 @@
 			} else {
 				await conn.connect(connectOpts, existingServerTerminalId);
 				if (conn.notice) toast.warning(conn.notice);
+				// The host picked the account; later launches of this pane keep it.
+				if (conn.claudeAccountId !== null)
+					workspaceStore.setPaneClaudeAccount(paneId, conn.claudeAccountId);
 			}
 
 			// Notify workspace store of the assigned server terminal ID.

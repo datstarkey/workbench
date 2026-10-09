@@ -1,19 +1,45 @@
-//! The directory a terminal, chat or git query may run in.
+//! The directory a terminal, chat, git query or worktree change may run in.
 
 use anyhow::{bail, Context, Result};
+
+/// A path outside the directories Workbench manages. The server answers it
+/// with 403, so a caller can tell a refusal from a failure.
+#[derive(Debug)]
+pub struct NotAllowed(pub String);
+
+impl std::fmt::Display for NotAllowed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NotAllowed {}
 
 /// Resolve a request's working directory, restricted to directories Workbench
 /// manages: a registered project, or a known worktree of one. This stops a
 /// caller from running a shell or session in an arbitrary directory on the host.
 pub fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> Result<String> {
-    let registered: Vec<String> = workbench_core::config::load_projects()?
-        .into_iter()
-        .map(|p| p.path)
-        .collect();
+    resolve_in(project_path, worktree_path, &registered()?)
+}
+
+/// [`resolve_cwd`] against projects the caller already loaded.
+pub fn resolve_cwd_in(
+    projects: &[crate::types::ProjectConfig],
+    project_path: &str,
+    worktree_path: Option<&str>,
+) -> Result<String> {
+    let registered: Vec<String> = projects.iter().map(|p| p.path.clone()).collect();
     resolve_in(project_path, worktree_path, &registered)
 }
 
-fn resolve_in(
+pub(crate) fn registered() -> Result<Vec<String>> {
+    Ok(crate::config::load_projects()?
+        .into_iter()
+        .map(|p| p.path)
+        .collect())
+}
+
+pub(crate) fn resolve_in(
     project_path: &str,
     worktree_path: Option<&str>,
     registered_projects: &[String],
@@ -21,18 +47,9 @@ fn resolve_in(
     // BOTH branches must resolve inside a registered Workbench project — a
     // worktree path is only trusted because its project is. Otherwise a caller
     // could run in any git repo's worktree on the host.
-    if !is_registered_project(project_path, registered_projects) {
-        bail!("project path is not a registered Workbench project: {project_path}");
-    }
+    ensure_registered(project_path, registered_projects)?;
     match worktree_path {
-        Some(wt) => {
-            let worktrees = workbench_core::git::list_worktrees(project_path)
-                .context("failed to list worktrees")?;
-            if !worktrees.iter().any(|w| w.path == wt) {
-                bail!("worktree path is not a known worktree of this project: {wt}");
-            }
-            Ok(wt.to_string())
-        }
+        Some(wt) => known_worktree(project_path, wt).map(|w| w.path),
         None => {
             if !std::path::Path::new(project_path).is_dir() {
                 bail!("project path does not exist: {project_path}");
@@ -40,6 +57,30 @@ fn resolve_in(
             Ok(project_path.to_string())
         }
     }
+}
+
+pub(crate) fn ensure_registered(project_path: &str, registered: &[String]) -> Result<()> {
+    if is_registered_project(project_path, registered) {
+        return Ok(());
+    }
+    Err(NotAllowed(format!(
+        "project path is not a registered Workbench project: {project_path}"
+    ))
+    .into())
+}
+
+/// `wt` as one of the project's worktrees, or refused.
+pub(crate) fn known_worktree(project_path: &str, wt: &str) -> Result<crate::types::WorktreeInfo> {
+    crate::git::list_worktrees(project_path)
+        .context("failed to list worktrees")?
+        .into_iter()
+        .find(|w| w.path == wt)
+        .ok_or_else(|| {
+            NotAllowed(format!(
+                "worktree path is not a known worktree of this project: {wt}"
+            ))
+            .into()
+        })
 }
 
 /// True if `path` is — or canonicalizes to — one of the registered project paths.
@@ -67,7 +108,8 @@ mod tests {
     #[test]
     fn rejects_unregistered_existing_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(resolve_in(dir.path().to_str().unwrap(), None, &[]).is_err());
+        let err = resolve_in(dir.path().to_str().unwrap(), None, &[]).unwrap_err();
+        assert!(err.downcast_ref::<NotAllowed>().is_some(), "{err}");
     }
 
     #[test]
@@ -87,7 +129,7 @@ mod tests {
     fn rejects_unknown_worktree() {
         let dir = tempfile::tempdir().unwrap();
         // A real repo, so the known-worktree guard runs rather than list_worktrees failing.
-        let ok = workbench_core::shell::command("git")
+        let ok = crate::shell::command("git")
             .args(["init", "-q"])
             .current_dir(dir.path())
             .status()
@@ -101,6 +143,7 @@ mod tests {
             &registered,
         )
         .unwrap_err();
+        assert!(err.downcast_ref::<NotAllowed>().is_some(), "{err}");
         assert!(err.to_string().contains("not a known worktree"), "{err}");
     }
 }

@@ -832,44 +832,39 @@ describe('MobileClient', () => {
 		expect(c.notice).toMatch(/Couldn't close/);
 	});
 
-	it('loads accounts and carries the selected account into new chats', async () => {
+	it("shows the host's account, switches it on the host, and lets the host pick a chat's", async () => {
+		let active: string | null = 'work';
+		const puts: unknown[] = [];
 		const c = await connected({
 			'/settings/workbench': () =>
 				jsonResponse({
 					claudeAccounts: [{ id: 'work', name: 'Work', configDir: '/account' }],
-					activeClaudeAccount: 'work'
-				})
-		});
-		await c.startClaude('/repo', undefined, 'repo');
-		expect(c.activeChat?.claudeAccountId).toBe('work');
-		c.setAccount('');
-		await c.startClaude('/repo', undefined, 'repo');
-		expect(c.activeChat?.claudeAccountId).toBeUndefined();
-	});
-
-	it("starts a project's chats under its own account, and follows a switch", async () => {
-		const c = await connected({
-			'/settings/workbench': () =>
-				jsonResponse({
-					claudeAccounts: [{ id: 'work', name: 'Work', configDir: '/account' }],
-					activeClaudeAccount: 'work'
+					activeClaudeAccount: active
 				}),
-			'/projects': () =>
-				jsonResponse([
-					{ name: 'home', path: '/home', claudeAccountId: '' },
-					{ name: 'repo', path: '/repo' }
-				])
+			'/settings/active-claude-account': (init) => {
+				const body = JSON.parse(String(init?.body));
+				puts.push(body);
+				active = body.id;
+				return new Response(null, { status: 204 });
+			}
 		});
-		await vi.waitFor(() => expect(c.store?.projects).toHaveLength(2));
-		await c.startClaude('/home', undefined, 'home');
-		expect(c.activeChat?.claudeAccountId).toBeUndefined();
+		await vi.waitFor(() => expect(c.accountId).toBe('work'));
+		// The host resolves a new chat's account (project default, then active).
 		await c.startClaude('/repo', undefined, 'repo');
-		expect(c.activeChat?.claudeAccountId).toBe('work');
+		expect(c.activeChat).not.toHaveProperty('claudeAccountId');
 
+		await c.setAccount('');
+		expect(puts).toEqual([{ id: null }]);
+		expect(c.accountId).toBeUndefined();
+		active = 'work';
+		c.refreshAll();
+		await vi.waitFor(() => expect(c.accountId).toBe('work'));
+
+		// The host names the chat's account: the ref follows without remounting.
 		const key = c.chatScreenKey;
-		c.updateChatAccount(undefined);
-		expect(c.activeChat?.claudeAccountId).toBeUndefined();
-		expect(c.chatScreenKey).toBe(key + 1);
+		c.updateChatAccount('work');
+		expect(c.activeChat?.claudeAccountId).toBe('work');
+		expect(c.chatScreenKey).toBe(key);
 	});
 
 	it('updates a new Codex id without remounting its screen', async () => {

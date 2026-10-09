@@ -114,3 +114,27 @@ export function usePlanUsage(
 	});
 	return held.usage;
 }
+
+/**
+ * {@link usePlanUsage} for whichever account the chat runs under now: the host
+ * names it once the chat starts and an account switch moves it, so the chips
+ * follow without remounting the chat. `server` keys the shared poller.
+ */
+export function useAccountPlanUsage(
+	server: string,
+	account: () => string | undefined,
+	load: (account: string | undefined, fresh: boolean) => Promise<UsageLimit[]>,
+	meta: () => TranscriptMeta | null,
+	options?: IsDocumentVisibleOptions
+): { readonly chips: PlanUsage['chips'] } {
+	let current = $state.raw<PlanUsage | null>(null);
+	// Each run's hold on a poller is released when the account changes or the chat unmounts.
+	watch.pre(account, (id) => {
+		current = usePlanUsage(`${server}|${id ?? ''}`, (fresh) => load(id, fresh), meta, options);
+	});
+	return {
+		get chips() {
+			return current?.chips ?? [];
+		}
+	};
+}

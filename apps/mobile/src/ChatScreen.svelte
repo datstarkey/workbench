@@ -20,7 +20,7 @@
 		followLatest,
 		metaUsageChips,
 		setChatPlatform,
-		usePlanUsage
+		useAccountPlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
@@ -79,9 +79,10 @@
 	// Claude's plan limits come from the server's `/usage` poller; Codex reports its own in the stream.
 	// svelte-ignore state_referenced_locally
 	const planUsage = isClaude
-		? usePlanUsage(
-				`${client.connection?.url ?? ''}|${ref.claudeAccountId ?? ''}`,
-				(fresh) => client.agents.usage(ref.claudeAccountId, fresh),
+		? useAccountPlanUsage(
+				client.connection?.url ?? '',
+				() => chat.accountId,
+				(account, fresh) => client.agents.usage(account, fresh),
 				() => chat.meta
 			)
 		: null;

@@ -2,7 +2,12 @@
 import { flushSync } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RateLimitInfo, TranscriptMeta, UsageLimit } from '@workbench/types';
-import { PLAN_USAGE_REFRESH_MS, PlanUsage, usePlanUsage } from './plan-usage.svelte';
+import {
+	PLAN_USAGE_REFRESH_MS,
+	PlanUsage,
+	useAccountPlanUsage,
+	usePlanUsage
+} from './plan-usage.svelte';
 
 const limits: UsageLimit[] = [{ label: 'session', percent: 42 }];
 
@@ -155,5 +160,34 @@ describe('PlanUsage', () => {
 		load.mockRejectedValueOnce(new Error('404'));
 		await usage.refresh();
 		expect(usage.chips).toHaveLength(1);
+	});
+
+	it("follows the chat's account to that login's poller, without a remount", async () => {
+		const load = vi.fn(async (account: string | undefined) =>
+			account === 'work' ? limits : [{ label: 'session', percent: 7 }]
+		);
+		let account = $state<string | undefined>(undefined);
+		let usage!: { readonly chips: PlanUsage['chips'] };
+		unmounts.push(
+			$effect.root(() => {
+				usage = useAccountPlanUsage(
+					key,
+					() => account,
+					load,
+					() => null,
+					{
+						document,
+						window: undefined
+					}
+				);
+			})
+		);
+		flushSync();
+		await vi.waitFor(() => expect(usage.chips[0]).toMatchObject({ percent: 7 }));
+
+		account = 'work';
+		flushSync();
+		await vi.waitFor(() => expect(usage.chips[0]).toMatchObject({ percent: 42 }));
+		expect(load).toHaveBeenLastCalledWith('work', false);
 	});
 });

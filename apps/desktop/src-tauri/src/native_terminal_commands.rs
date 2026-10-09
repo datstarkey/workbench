@@ -74,8 +74,22 @@ fn create(
     server: &ServerControl,
     app_handle: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
-    let claude_config_dir = crate::claude_accounts::resolve_saved(claude_account_id.as_deref())
-        .map_err(|e| e.to_string())?;
+    let settings = crate::config::load_workbench_settings().map_err(|e| e.to_string())?;
+    let projects = crate::config::load_projects().map_err(|e| e.to_string())?;
+    let claude_account_id = match claude_session.as_ref() {
+        Some(session) => crate::claude_accounts::for_launch(
+            &settings,
+            &projects,
+            claude_account_id.as_deref(),
+            project_root.as_deref().unwrap_or(&project_path),
+            Some(&session.id),
+        )
+        .map_err(|e| e.to_string())?,
+        None => claude_account_id,
+    };
+    let claude_config_dir =
+        crate::claude_accounts::config_dir(&settings, claude_account_id.as_deref())
+            .map_err(|e| e.to_string())?;
     // Decided and built here as a server terminal's is (`terminal::create_from_body`),
     // so the sandbox wrapper fails closed.
     if let Some(session) = claude_session.as_mut() {
@@ -87,9 +101,13 @@ fn create(
     let notice = claude_session
         .as_ref()
         .and_then(workbench_core::claude_launch::prompt_notice);
-    let startup_command =
-        workbench_core::claude_launch::startup_command(startup_command, claude_session.as_ref())
-            .map_err(|e| e.to_string())?;
+    let startup_command = workbench_core::claude_launch::startup_command(
+        startup_command,
+        claude_session.as_ref(),
+        &settings,
+        &projects,
+    )
+    .map_err(|e| e.to_string())?;
     let mod_env = server.grant_native_terminal(
         &session_id,
         project_root.as_deref().unwrap_or(&project_path),

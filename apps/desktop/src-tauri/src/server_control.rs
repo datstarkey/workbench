@@ -81,6 +81,19 @@ impl ServerControl {
         });
     }
 
+    /// Emits `settings:changed` when a route (the phone's account switcher) or
+    /// [`set_active_claude_account`] changes the saved settings, so every window reloads.
+    pub fn watch_settings(&self, app: tauri::AppHandle) {
+        let mut changes = self.managers.settings.subscribe();
+        tauri::async_runtime::spawn(async move {
+            while changes.changed().await.is_ok() {
+                if let Err(e) = app.emit("settings:changed", ()) {
+                    log::warn!("failed to emit settings:changed: {e}");
+                }
+            }
+        });
+    }
+
     /// Mirror a terminal Codex `notify` into the same cross-device feed.
     /// Chat completions are already published by the app-server driver.
     pub fn codex_notified(&self, pane_id: &str, session_id: &str, cwd: &str) {
@@ -334,6 +347,21 @@ pub async fn rotate_server_token(
         log::warn!("failed to emit settings:changed after token rotation: {e}");
     }
     Ok(token)
+}
+
+/// The desktop's account switcher: the same core change as the phone's
+/// `PUT /settings/active-claude-account`, announced the same way.
+#[tauri::command]
+pub async fn set_active_claude_account(
+    id: Option<String>,
+    state: tauri::State<'_, ServerControl>,
+) -> Result<(), String> {
+    crate::blocking(move || {
+        workbench_core::claude_accounts::set_active(id.as_deref()).map_err(|e| e.to_string())
+    })
+    .await?;
+    state.managers.settings.notify();
+    Ok(())
 }
 
 /// This machine's IPv4 addresses for the pairing QR code, Tailscale first. Off

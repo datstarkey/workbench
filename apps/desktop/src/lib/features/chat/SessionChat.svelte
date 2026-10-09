@@ -18,7 +18,7 @@
 		followLatest,
 		metaUsageChips,
 		setChatPlatform,
-		usePlanUsage
+		useAccountPlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { AgentKind, DiscoveredClaudeSession, ProjectConfig } from '$types/workbench';
@@ -80,7 +80,7 @@
 		...(sessionId ? { sessionId } : {}),
 		paneId,
 		// Launch defaults (permission mode, Codex policies) are resolved on the server.
-		...(agent === 'claude' && claudeAccountId ? { claudeAccountId } : {}),
+		...(agent === 'claude' && claudeAccountId !== undefined ? { claudeAccountId } : {}),
 		// Another device's chat, or this pane's own terminal `claude`: join its
 		// process, never start one behind its back.
 		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)
@@ -142,9 +142,10 @@
 	// svelte-ignore state_referenced_locally
 	const planLimits =
 		agent === 'claude'
-			? usePlanUsage(
-					`loopback|${claudeAccountId ?? ''}`,
-					(fresh) => planUsage(claudeAccountId, fresh),
+			? useAccountPlanUsage(
+					'loopback',
+					() => chat.accountId,
+					(account, fresh) => planUsage(account, fresh),
 					() => chat.meta
 				)
 			: null;

@@ -9,7 +9,7 @@ pub mod attention_feed;
 pub mod auth;
 pub mod changes;
 pub mod cli;
-pub mod cwd;
+pub use workbench_core::cwd;
 pub mod error;
 pub mod home_events;
 pub mod host;

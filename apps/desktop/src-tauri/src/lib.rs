@@ -4,7 +4,7 @@
 pub use workbench_core::{
     claude_accounts, claude_sessions, codex_config, codex_sessions, config, git, github, net,
     package_scripts, paths, sandbox_runtime, session_utils, settings, shell, shell_integration,
-    text, trello, trello_automation, types, workspace,
+    text, trello, trello_automation, types, workspace, worktrees,
 };
 
 // The e2e WebDriver server is unauthenticated control of the webview (and so of
@@ -147,6 +147,7 @@ macro_rules! build_invoke_handler {
             server_control::server_status,
             server_control::terminal_server_status,
             server_control::rotate_server_token,
+            server_control::set_active_claude_account,
             server_control::pairing_addresses,
             host_update::host_update_status,
             host_update::host_update_install,
@@ -204,9 +205,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             menu::build(&handle).expect("failed to build menu");
             let bridge = HookBridgeState::new(handle.clone());
-            // The sandbox-runtime settings file has to name the hook bridge's
-            // loopback port, which is ephemeral and only known once it is bound.
-            commands::refresh_sandbox_runtime_settings(None, &bridge);
+            // Each launch's sandbox-runtime file names the hook bridge's loopback
+            // port, which is ephemeral and only known once it is bound.
+            sandbox_runtime::set_hook_socket(bridge.address().map(String::from));
             app.manage(bridge);
             // Activity now comes from the `workbench` Claude Code plugin; drop the
             // hook script older versions registered so events aren't reported twice.
@@ -242,6 +243,7 @@ pub fn run() {
                 log::error!("failed to start loopback embedded server: {e}");
             }
             sc.watch_attention(app.handle().clone());
+            sc.watch_settings(app.handle().clone());
 
             Ok(())
         });

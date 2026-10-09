@@ -14,9 +14,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::claude_transcript::{model_options, ModelOption};
+use crate::claude_transcript::{find_transcript, model_options, ModelOption};
 use crate::paths;
-use crate::types::WorkbenchSettings;
+use crate::types::{ProjectConfig, WorkbenchSettings};
 
 pub const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 
@@ -39,11 +39,11 @@ pub fn saved_config_dirs() -> Vec<(Option<String>, PathBuf)> {
     config_dirs(&crate::config::load_workbench_settings().unwrap_or_default())
 }
 
-/// The `CLAUDE_CONFIG_DIR` for `account_id`, or `None` for the default account.
-/// An id that names no account is an error rather than a silent fallback, so a
-/// session never runs (and bills) under the wrong login.
+/// The `CLAUDE_CONFIG_DIR` for `account_id`, or `None` for the default account
+/// (`None` or `""`). An id that names no account is an error rather than a
+/// silent fallback, so a session never runs (and bills) under the wrong login.
 pub fn resolve(settings: &WorkbenchSettings, account_id: Option<&str>) -> Result<Option<PathBuf>> {
-    let Some(id) = account_id else {
+    let Some(id) = account_id.filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
     let account = settings
@@ -61,15 +61,99 @@ pub fn resolve(settings: &WorkbenchSettings, account_id: Option<&str>) -> Result
 /// [`resolve`] against the saved settings, creating the dir so a first launch
 /// (before `claude auth login`) has somewhere to write.
 pub fn resolve_saved(account_id: Option<&str>) -> Result<Option<PathBuf>> {
-    if account_id.is_none() {
+    if account_id.is_none_or(str::is_empty) {
         return Ok(None);
     }
-    let dir = resolve(&crate::config::load_workbench_settings()?, account_id)?;
+    config_dir(&crate::config::load_workbench_settings()?, account_id)
+}
+
+/// [`resolve`], creating the dir so a first launch (before `claude auth login`)
+/// has somewhere to write.
+pub fn config_dir(
+    settings: &WorkbenchSettings,
+    account_id: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    let dir = resolve(settings, account_id)?;
     if let Some(dir) = &dir {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating Claude config dir {}", dir.display()))?;
     }
     Ok(dir)
+}
+
+/// Make `id` (`None` or `""`: the default login) the account new sessions
+/// start under, from the desktop's switcher or the phone's. Only that field of
+/// the saved settings changes, so no unsaved edit elsewhere rides along.
+pub fn set_active(id: Option<&str>) -> Result<()> {
+    let mut settings = crate::config::load_workbench_settings()?;
+    let id = id.filter(|id| !id.is_empty());
+    resolve(&settings, id)?;
+    settings.active_claude_account = id.map(String::from);
+    crate::config::save_workbench_settings(&settings)
+}
+
+/// The account a launch in `project_path` runs under (`None`: the default
+/// login), decided here so every client gets the same one. An explicit pick
+/// wins (`""` names the default login; an unknown id is an error). A shell
+/// takes nothing else. A Claude session that already has a transcript stays
+/// with the login holding it, so a resume never opens an empty conversation
+/// elsewhere. Otherwise the project's own default, then the active account;
+/// one naming a removed account is skipped.
+pub fn for_launch(
+    settings: &WorkbenchSettings,
+    projects: &[ProjectConfig],
+    explicit: Option<&str>,
+    project_path: &str,
+    session_id: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(id) = explicit {
+        let id = Some(id).filter(|id| !id.is_empty());
+        resolve(settings, id)?;
+        return Ok(id.map(String::from));
+    }
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+    if let Some((owner, _)) = config_dirs(settings)
+        .into_iter()
+        .find(|(_, dir)| find_transcript(&dir.join("projects"), session_id).is_some())
+    {
+        return Ok(owner);
+    }
+    let known = |id: &&str| id.is_empty() || settings.claude_accounts.iter().any(|a| a.id == *id);
+    let project_default = projects
+        .iter()
+        .find(|p| same_path(&p.path, project_path))
+        .and_then(|p| p.claude_account_id.as_deref())
+        .filter(known);
+    let active = settings.active_claude_account.as_deref().filter(known);
+    Ok(project_default
+        .or(active)
+        .filter(|id| !id.is_empty())
+        .map(String::from))
+}
+
+/// [`for_launch`] against the saved settings and projects.
+pub fn for_launch_saved(
+    explicit: Option<&str>,
+    project_path: &str,
+    session_id: Option<&str>,
+) -> Result<Option<String>> {
+    for_launch(
+        &crate::config::load_workbench_settings()?,
+        &crate::config::load_projects()?,
+        explicit,
+        project_path,
+        session_id,
+    )
+}
+
+fn same_path(a: &str, b: &str) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,7 +371,10 @@ fn parse_usage(stdout: &str) -> Vec<UsageLimit> {
 /// one id under two accounts is found under either. A session with no JSONL
 /// yet has nothing to move.
 pub fn move_session(from: Option<&Path>, to: Option<&Path>, session_id: &str) -> Result<()> {
-    let root = |dir: Option<&Path>| dir.map(Path::to_path_buf).unwrap_or_else(paths::claude_user_dir);
+    let root = |dir: Option<&Path>| {
+        dir.map(Path::to_path_buf)
+            .unwrap_or_else(paths::claude_user_dir)
+    };
     let (from, to) = (root(from), root(to));
     if from == to {
         return Ok(());
@@ -304,8 +391,7 @@ pub fn move_session(from: Option<&Path>, to: Option<&Path>, session_id: &str) ->
         .and_then(Path::file_name)
         .context("session transcript outside a project folder")?;
     let dest = to.join("projects").join(project);
-    std::fs::create_dir_all(&dest)
-        .with_context(|| format!("creating {}", dest.display()))?;
+    std::fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
     let moved_jsonl = dest.join(format!("{session_id}.jsonl"));
     // Config dirs on different volumes can't rename across: copy, then remove.
     std::fs::rename(&jsonl, &moved_jsonl)
@@ -317,7 +403,10 @@ pub fn move_session(from: Option<&Path>, to: Option<&Path>, session_id: &str) ->
     // The transcript is what `--resume` needs; the rest only enriches it.
     let mut extras = vec![(jsonl.with_extension(""), dest.join(session_id))];
     for dir in ["file-history", "session-env"] {
-        extras.push((from.join(dir).join(session_id), to.join(dir).join(session_id)));
+        extras.push((
+            from.join(dir).join(session_id),
+            to.join(dir).join(session_id),
+        ));
     }
     // `todos/<session>-agent-<agent>.json`, one per agent of the session.
     if let Ok(entries) = std::fs::read_dir(from.join("todos")) {
@@ -383,14 +472,117 @@ mod tests {
             std::fs::write(dir.join(format!("projects/-repo/{id}.jsonl")), "{}\n").unwrap();
         }
         assert!(move_session(Some(a.path()), Some(b.path()), id).is_err());
-        assert!(a.path().join(format!("projects/-repo/{id}.jsonl")).is_file());
+        assert!(a
+            .path()
+            .join(format!("projects/-repo/{id}.jsonl"))
+            .is_file());
     }
 
     #[test]
     fn move_session_without_a_transcript_is_a_no_op() {
         let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        move_session(Some(a.path()), Some(b.path()), "0b5a3c1e-9d2f-4e7a-8c6b-1f2e3d4c5b6a")
-            .unwrap();
+        move_session(
+            Some(a.path()),
+            Some(b.path()),
+            "0b5a3c1e-9d2f-4e7a-8c6b-1f2e3d4c5b6a",
+        )
+        .unwrap();
+    }
+
+    fn launch_settings(work: &Path, active: Option<&str>) -> WorkbenchSettings {
+        WorkbenchSettings {
+            claude_accounts: vec![
+                ClaudeAccount {
+                    id: "work".into(),
+                    name: "Work".into(),
+                    config_dir: work.to_string_lossy().into(),
+                },
+                ClaudeAccount {
+                    id: "home".into(),
+                    name: "Home".into(),
+                    config_dir: "/nonexistent/home-account".into(),
+                },
+            ],
+            active_claude_account: active.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    fn launch_project(default: Option<&str>) -> Vec<ProjectConfig> {
+        vec![ProjectConfig {
+            name: "repo".into(),
+            path: "/repo".into(),
+            group: None,
+            shell: None,
+            startup_command: None,
+            tasks: Vec::new(),
+            claude_account_id: default.map(String::from),
+        }]
+    }
+
+    const NEW_SESSION: Option<&str> = Some("7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f");
+
+    #[test]
+    fn launch_account_resolution_order() {
+        let work = tempfile::tempdir().unwrap();
+        let s = launch_settings(work.path(), Some("home"));
+        let launch = |projects: &[ProjectConfig], explicit, session| {
+            for_launch(&s, projects, explicit, "/repo", session).unwrap()
+        };
+        // An explicit pick wins; "" is the default login.
+        let own = launch_project(Some("home"));
+        assert_eq!(
+            launch(&own, Some("work"), NEW_SESSION).as_deref(),
+            Some("work")
+        );
+        assert_eq!(launch(&own, Some(""), NEW_SESSION), None);
+        // Then the project's default ("" is the default login), then the active account.
+        assert_eq!(
+            launch(&launch_project(Some("work")), None, NEW_SESSION).as_deref(),
+            Some("work")
+        );
+        assert_eq!(launch(&launch_project(Some("")), None, NEW_SESSION), None);
+        assert_eq!(
+            launch(&launch_project(None), None, NEW_SESSION).as_deref(),
+            Some("home")
+        );
+        assert_eq!(launch(&[], None, NEW_SESSION).as_deref(), Some("home"));
+        // A default naming a removed account is skipped.
+        assert_eq!(
+            launch(&launch_project(Some("gone")), None, NEW_SESSION).as_deref(),
+            Some("home")
+        );
+        // A shell runs under no account it wasn't given.
+        assert_eq!(launch(&own, None, None), None);
+
+        let none_active = launch_settings(work.path(), Some("gone"));
+        assert_eq!(
+            for_launch(&none_active, &[], None, "/repo", NEW_SESSION).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_session_with_a_transcript_resumes_under_its_login() {
+        let work = tempfile::tempdir().unwrap();
+        let id = "0b5a3c1e-9d2f-4e7a-8c6b-1f2e3d4c5b6a";
+        std::fs::create_dir_all(work.path().join("projects/-repo")).unwrap();
+        std::fs::write(
+            work.path().join(format!("projects/-repo/{id}.jsonl")),
+            "{}\n",
+        )
+        .unwrap();
+        let s = launch_settings(work.path(), Some("home"));
+        let owner = for_launch(&s, &launch_project(Some("home")), None, "/repo", Some(id));
+        assert_eq!(owner.unwrap().as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn an_unknown_explicit_account_is_an_error() {
+        let work = tempfile::tempdir().unwrap();
+        let s = launch_settings(work.path(), None);
+        assert!(for_launch(&s, &[], Some("nope"), "/repo", NEW_SESSION).is_err());
+        assert!(for_launch(&s, &[], Some("nope"), "/repo", None).is_err());
     }
 
     #[test]

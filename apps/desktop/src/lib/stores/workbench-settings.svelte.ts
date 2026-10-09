@@ -260,11 +260,12 @@ export class WorkbenchSettingsStore {
 	/**
 	 * Account switches and edits save at once, outside the settings form's
 	 * save/discard flow (like `setApproval`), so they never ride along with
-	 * unsaved form edits or wait on them.
+	 * unsaved form edits or wait on them. A switch changes only that setting on
+	 * the host, as the phone's switcher does.
 	 */
 	async setActiveClaudeAccount(id: string | null) {
+		await invoke('set_active_claude_account', { id });
 		this.activeClaudeAccount = id;
-		await invoke('save_workbench_settings', { settings: this.toSettings() });
 	}
 
 	async addClaudeAccount(name: string, configDir: string): Promise<ClaudeAccount> {

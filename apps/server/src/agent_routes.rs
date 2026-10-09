@@ -57,7 +57,8 @@ pub struct StartBody {
     pub session_id: String,
     pub pane_id: Option<String>,
     pub hook_socket: Option<String>,
-    /// Claude account to run under; an id, never a path (see `claude_accounts`).
+    /// A picked Claude account (`""`: the default login); an id, never a path.
+    /// Absent, the server decides (`claude_accounts::for_launch`).
     pub claude_account_id: Option<String>,
     /// Join the running session only, never spawn one (a chat another device owns).
     #[serde(default)]
@@ -96,8 +97,12 @@ fn claude_start(
     if let Some(existing) = agents.get(&body.session_id) {
         return Ok(start_reply(&existing));
     }
-    let config_dir =
-        workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    let account = workbench_core::claude_accounts::for_launch_saved(
+        body.claude_account_id.as_deref(),
+        &body.project_path,
+        Some(&body.session_id),
+    )?;
+    let config_dir = workbench_core::claude_accounts::resolve_saved(account.as_deref())?;
     let resume = crate::agent::claude_history_exists(config_dir.as_deref(), &body.session_id);
     let cwd = body
         .worktree_path
@@ -119,7 +124,7 @@ fn claude_start(
         pane_id: body.pane_id,
         hook_socket: body.hook_socket,
         shell: None,
-        claude_account_id: body.claude_account_id,
+        claude_account_id: account,
     };
     // The chat asks instead; trusting starts it again with `trustFolder`.
     let started = agents.open_terminal(
