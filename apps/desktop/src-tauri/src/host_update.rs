@@ -3,8 +3,9 @@
 //! (`/host/update`) alike. The updater verifies each release's signature, so a
 //! token holder can only install a genuine Workbench release.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -16,6 +17,9 @@ use workbench_server::host::{BoxFuture, HostControl, Install};
 const FEED_TTL: Duration = Duration::from_secs(5 * 60);
 /// `update:progress` is sent at most this often, and once more when the download ends.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+/// Written in the config dir just before the installer runs, so the relaunch
+/// (which keeps a login launch's `--autostart`) isn't minimised like a login.
+const RESTART_MARKER: &str = "update-restart";
 
 /// `update:installing`.
 #[derive(Clone, Serialize)]
@@ -160,8 +164,44 @@ async fn install<R: Runtime>(app: &AppHandle<R>, update: Update) -> anyhow::Resu
     let _ = app.emit("update:progress", Progress { downloaded, total });
     crate::server_control::kill_all_sessions(&app.state::<crate::server_control::ServerControl>())
         .await;
-    tauri::async_runtime::spawn_blocking(move || update.install(bytes)).await??;
+    let dir = crate::paths::workbench_config_dir();
+    if let Err(e) = write_restart_marker(&dir) {
+        log::warn!("couldn't mark the update restart: {e:#}");
+    }
+    let installed = tauri::async_runtime::spawn_blocking(move || update.install(bytes)).await;
+    if !matches!(installed, Ok(Ok(()))) {
+        remove_restart_marker(&dir);
+    }
+    installed??;
     app.restart();
+}
+
+fn restart_marker(dir: &Path) -> PathBuf {
+    dir.join(RESTART_MARKER)
+}
+
+fn unix_now() -> Duration {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+}
+
+fn write_restart_marker(dir: &Path) -> anyhow::Result<()> {
+    let now = unix_now().as_secs().to_string();
+    crate::paths::atomic_write(&restart_marker(dir), &now)
+}
+
+/// How long ago an install wrote the marker; an unreadable one counts as stale.
+pub fn restart_marker_age(dir: &Path) -> Option<Duration> {
+    let text = std::fs::read_to_string(restart_marker(dir)).ok()?;
+    Some(match text.trim().parse::<u64>() {
+        Ok(at) => unix_now().saturating_sub(Duration::from_secs(at)),
+        Err(_) => Duration::MAX,
+    })
+}
+
+pub fn remove_restart_marker(dir: &Path) {
+    let _ = std::fs::remove_file(restart_marker(dir));
 }
 
 /// One install at a time, whichever side started it. Holds the version being
@@ -281,6 +321,22 @@ mod tests {
             Some(("9.9.9".to_string(), UpdateOrigin::Remote)),
             "joining doesn't claim or release the guard"
         );
+    }
+
+    #[test]
+    fn the_restart_marker_is_written_read_and_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(restart_marker_age(dir.path()), None);
+
+        write_restart_marker(dir.path()).expect("write");
+        let age = restart_marker_age(dir.path()).expect("marker");
+        assert!(age < Duration::from_secs(5));
+
+        std::fs::write(restart_marker(dir.path()), "garbage").expect("overwrite");
+        assert_eq!(restart_marker_age(dir.path()), Some(Duration::MAX));
+
+        remove_restart_marker(dir.path());
+        assert_eq!(restart_marker_age(dir.path()), None);
     }
 
     #[test]
