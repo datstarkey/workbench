@@ -124,13 +124,13 @@ describe('MobileClient with several machines', () => {
 		const c = await connectedTo('mac');
 		await connectedTo('pc', c);
 		const pcStore = c.store!;
-		c.openChat({ sessionId: 's', projectPath: '/repo', name: 'repo' });
+		c.openPane('pane');
 
 		await c.switchTo(idOf(c, 'mac'));
 
 		expect(c.store).not.toBe(pcStore);
 		expect(c.store).not.toBeNull();
-		expect(c.activeChat).toBeNull();
+		expect(c.openPaneId).toBeNull();
 		expect(c.connection).toEqual({ url: url('mac'), token: tokenOf('mac') });
 		expect(c.machine?.url).toBe(url('mac'));
 		expect(new MobileClient().machines.active?.url).toBe(url('mac'));
@@ -141,14 +141,13 @@ describe('MobileClient with several machines', () => {
 		const c = await connectedTo('mac');
 		await connectedTo('pc', c);
 		const store = c.store!;
-		const chat = { sessionId: 's', projectPath: '/repo', name: 'repo' };
-		c.openChat(chat);
+		c.openPane('pane');
 		delete hosts.mac;
 
 		await c.switchTo(idOf(c, 'mac'));
 
 		expect(c.store).toBe(store);
-		expect(c.activeChat).toEqual(chat);
+		expect(c.openPaneId).toBe('pane');
 		expect(c.machine?.url).toBe(url('pc'));
 		expect(c.machines.active?.url).toBe(url('pc'));
 		expect(c.notice).toMatch(/Couldn't switch to mac: .*fetch/i);
@@ -203,23 +202,19 @@ describe('MobileClient with several machines', () => {
 		const c = await connectedTo('mac');
 		await connectedTo('pc', c);
 		await c.switchTo(idOf(c, 'mac'));
-		const ref = { sessionId: 'mac-session', projectPath: '/repo', name: 'repo' };
-		c.openChat(ref);
-		const listing = gate();
-		hosts.mac.holds['GET /remote/terminals'] = listing.promise;
+		const creating = gate();
+		hosts.mac.holds['POST /remote/terminals'] = creating.promise;
 
-		const toTerminal = c.showAsTerminal(ref);
-		await Promise.resolve();
+		const opening = c.start('shell', { projectPath: '/repo' });
+		await vi.waitFor(() => expect(hosts.mac.calls).toContain('POST /remote/terminals'));
 		await c.switchTo(idOf(c, 'pc'));
 		const pcCalls = hosts.pc.calls.length;
-		listing.release();
-		await toTerminal;
+		creating.release();
+		await opening;
 
 		expect(hosts.pc.calls.slice(pcCalls)).toEqual([]);
-		expect(hosts.mac.calls).not.toContain('POST /remote/terminals');
-		expect(hosts.mac.calls).not.toContain('DELETE /agent/claude/mac-session');
-		expect(c.activeTerminalId).toBeNull();
-		expect(c.switching).toBe(false);
+		expect(c.openPaneId).toBeNull();
+		expect(c.panes).toEqual([]);
 		expect(c.notice).toBeNull();
 	});
 
@@ -230,14 +225,14 @@ describe('MobileClient with several machines', () => {
 		hosts.pc.terminals.push({ id: 'pc-late', cwd: '/repo', createdAt: 0, alive: true });
 		const late = gate();
 		hosts.pc.holds['GET /remote/terminals'] = late.promise;
-		const refreshing = c.refreshTerminals();
+		const refreshing = c.remote!.refresh();
 
 		await c.switchTo(idOf(c, 'mac'));
 		late.release();
 		await refreshing;
 
 		expect(c.machine?.url).toBe(url('mac'));
-		expect(c.terminals).toEqual([]);
+		expect(c.panes).toEqual([]);
 	});
 
 	it('a failed first connect leaves the saved machines and the active one alone', async () => {
@@ -313,11 +308,11 @@ describe('MobileClient with several machines', () => {
 
 		const mac = hosts.mac;
 		delete hosts.mac;
-		await c.refreshTerminals();
+		await c.remote!.refresh();
 		expect(c.online).toBe(false);
 
 		hosts.mac = mac;
-		await c.refreshTerminals();
+		await c.remote!.refresh();
 		expect(c.online).toBe(true);
 	});
 	it('does not restore an old terminal after switching during the post-create refresh', async () => {
@@ -327,13 +322,12 @@ describe('MobileClient with several machines', () => {
 		await c.switchTo(idOf(c, 'mac'));
 		const late = gate();
 		hosts.mac.holds['GET /remote/terminals'] = late.promise;
-		c.setDefaultView('terminal');
-		const opening = c.startClaude('/repo', undefined, 'repo');
-		await vi.waitFor(() => expect(c.activeTerminalId).toBe('mac-t1'));
+		const opening = c.start('shell', { projectPath: '/repo' });
+		await vi.waitFor(() => expect(hosts.mac.calls).toContain('GET /remote/terminals'));
 		await c.switchTo(idOf(c, 'pc'));
 		late.release();
 		await opening;
-		expect(c.terminals).toEqual([]);
-		expect(c.activeTerminalId).toBeNull();
+		expect(c.panes).toEqual([]);
+		expect(c.openPaneId).toBeNull();
 	});
 });

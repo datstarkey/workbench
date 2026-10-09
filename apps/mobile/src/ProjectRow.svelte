@@ -126,7 +126,7 @@
 				type="button"
 				class="h-9 shrink-0 rounded-lg bg-wb-accent px-3 text-[12.5px] font-semibold text-wb-accent-ink active:brightness-90"
 				aria-label="Start Claude in {name}"
-				onclick={() => client.startClaude(project.path, undefined, name)}
+				onclick={() => client.start('claude', { projectPath: project.path })}
 			>
 				Claude
 			</button>

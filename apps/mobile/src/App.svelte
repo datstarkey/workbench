@@ -3,10 +3,9 @@
 	import { watch } from 'runed';
 	import { Button } from '@workbench/ui/button';
 	import { Input } from '@workbench/ui/input';
-	import ChatScreen from './ChatScreen.svelte';
 	import Home from './Home.svelte';
 	import MachineList from './MachineList.svelte';
-	import Terminal from './Terminal.svelte';
+	import PaneScreen from './PaneScreen.svelte';
 	import ScanOverlay from './ScanOverlay.svelte';
 	import { MobileClient } from './client.svelte.ts';
 	import UpdateBanner from './UpdateBanner.svelte';
@@ -52,23 +51,10 @@
 
 {#if c.scanning}
 	<ScanOverlay onCancel={c.cancelScan} />
-{:else if c.activeChat && c.store}
-	{#key c.chatScreenKey}
-		<ChatScreen client={c} ref={c.activeChat} />
-	{/key}
-{:else if c.activeTerminal && c.store}
-	{@const terminalId = c.activeTerminal.id}
-	{#key terminalId}
-		<Terminal
-			serverUrl={c.connection?.url ?? ''}
-			token={c.connection?.token ?? ''}
-			id={terminalId}
-			name={c.activeTerminal.name ?? 'terminal'}
-			onClose={c.closeTerminal}
-			onShowChat={c.terminalChats[terminalId] ? () => c.showAsChat(terminalId) : undefined}
-			switching={c.switching}
-			notice={c.notice}
-		/>
+{:else if c.activePane && c.store}
+	<!-- The screen closes by itself when its pane leaves the host's model (an End anywhere). -->
+	{#key c.activePane.pane.id}
+		<PaneScreen client={c} entry={c.activePane} />
 	{/key}
 {:else if c.store}
 	<div class="flex h-full flex-col">

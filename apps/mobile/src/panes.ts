@@ -1,0 +1,41 @@
+import { baseName } from '@workbench/types';
+import type { Workspace, WorkspacePane, WorkspaceTab } from './workspace-stream.ts';
+
+/** A pane with the tab and workspace it sits in. */
+export interface PaneEntry {
+	workspace: Workspace;
+	tab: WorkspaceTab;
+	pane: WorkspacePane;
+}
+
+export function paneEntries(workspaces: Workspace[]): PaneEntry[] {
+	return workspaces.flatMap((workspace) =>
+		workspace.tabs.flatMap((tab) => tab.panes.map((pane) => ({ workspace, tab, pane })))
+	);
+}
+
+/** The pane running this conversation (also after `/clear` gave it a new id), or this terminal. */
+export function findPane(
+	entries: PaneEntry[],
+	by: { sessionId?: string | null; terminalId?: string | null }
+): PaneEntry | null {
+	const { sessionId, terminalId } = by;
+	return (
+		entries.find(
+			({ pane }) =>
+				(!!terminalId && pane.terminalId === terminalId) ||
+				(!!sessionId && (pane.sessionId === sessionId || !!pane.previousIds?.includes(sessionId)))
+		) ?? null
+	);
+}
+
+/** "project" or "project · branch". */
+export function workspaceLabel(ws: Workspace): string {
+	return ws.worktreePath
+		? `${ws.projectName} · ${ws.branch || baseName(ws.worktreePath)}`
+		: ws.projectName;
+}
+
+export function paneTitle({ tab, pane }: PaneEntry): string {
+	return pane.title || tab.label;
+}

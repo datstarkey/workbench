@@ -3,7 +3,10 @@
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 	import type { MobileClient } from './client.svelte.ts';
 
-	/** Start Claude, Codex or a terminal in a project folder; `wide` fills the row with labels. */
+	/**
+	 * Start Claude (in the phone's default view), Codex or a terminal in a project
+	 * folder: a new tab on the host. `wide` fills the row with labels.
+	 */
 	let {
 		client,
 		projectPath,
@@ -17,6 +20,7 @@
 		name: string;
 		wide?: boolean;
 	} = $props();
+	const folder = $derived({ projectPath, worktreePath });
 </script>
 
 <div class={['flex shrink-0 overflow-hidden rounded-lg', wide && 'w-full']}>
@@ -27,7 +31,7 @@
 			wide && 'flex-1'
 		]}
 		aria-label="Start Claude in {name}"
-		onclick={() => client.startClaude(projectPath, worktreePath, name)}
+		onclick={() => client.start('claude', folder)}
 	>
 		<AgentIcon agent="claude" class="size-4 text-current" />Claude
 	</button>
@@ -38,7 +42,7 @@
 			wide && 'flex-1'
 		]}
 		aria-label="Start a Codex chat in {name}"
-		onclick={() => client.startCodex(projectPath, worktreePath, name)}
+		onclick={() => client.start('codex', folder)}
 	>
 		<AgentIcon agent="codex" class="size-4" />Codex
 	</button>
@@ -49,7 +53,7 @@
 			wide ? 'flex-1' : 'w-9'
 		]}
 		aria-label="Open a terminal in {name}"
-		onclick={() => client.createTerminal(projectPath, worktreePath, name)}
+		onclick={() => client.start('shell', folder)}
 	>
 		<SquareTerminalIcon class="size-4" />
 		{#if wide}<span aria-hidden="true">Terminal</span>{/if}

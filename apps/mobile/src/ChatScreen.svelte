@@ -20,20 +20,23 @@
 		followLatest,
 		metaUsageChips,
 		setChatPlatform,
-		useAccountPlanUsage
+		usePlanUsage
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import { openExternal, type MobileClient } from './client.svelte.ts';
 	import { baseName } from './home-format.ts';
-	import type { ChatRef } from './types.ts';
+	import type { PaneEntry } from './panes.ts';
 	import Sheet from './Sheet.svelte';
 	import ViewSwitch from './ViewSwitch.svelte';
 	import { useBack } from './back-navigation';
 	import ProjectReviewSheet from './ProjectReviewSheet.svelte';
 	import { dictate, supportsDictation } from './dictation';
 
-	let { client, ref }: { client: MobileClient; ref: ChatRef } = $props();
+	/** Attaches to the pane's running session; starting, restarting and ending are commands. */
+	let { client, entry }: { client: MobileClient; entry: PaneEntry } = $props();
+	const ref = $derived(client.chatRef(entry));
+	const paneId = $derived(entry.pane.id);
 
 	setChatPlatform({
 		openLink: openExternal,
@@ -44,21 +47,21 @@
 	// svelte-ignore state_referenced_locally
 	const drafts = client.drafts;
 	// svelte-ignore state_referenced_locally
+	const opened = ref;
+	// svelte-ignore state_referenced_locally
 	const chat = new AgentChat(
 		{
-			...(ref.agent === 'codex' ? { agent: 'codex' as const } : {}),
-			projectPath: ref.projectPath,
-			...(ref.worktreePath ? { worktreePath: ref.worktreePath } : {}),
-			...(ref.sessionId ? { sessionId: ref.sessionId } : {}),
-			...(ref.attachOnly ? { attachOnly: true } : {}),
-			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
+			...(opened.agent === 'codex' ? { agent: 'codex' as const } : {}),
+			projectPath: opened.projectPath,
+			...(opened.worktreePath ? { worktreePath: opened.worktreePath } : {}),
+			sessionId: opened.sessionId,
+			attachOnly: true,
+			...(opened.claudeAccountId ? { claudeAccountId: opened.claudeAccountId } : {})
 		},
-		client.agents,
-		{ draft: drafts.get(ref), reconnectOnWake: true }
+		client.attachApi,
+		{ draft: drafts.get(opened), reconnectOnWake: true }
 	);
-	// Ended on another device (e.g. the desktop closed its tab): leave the screen.
-	chat.onEnded = () => client.chatEnded(chat.sessionId);
-	chat.onAccount = (accountId) => client.updateChatAccount(accountId);
+	chat.onAccount = (accountId) => client.updateChatAccount(paneId, accountId);
 	const draft = chat.draft;
 	const name = agentName(chat.agent);
 	const isClaude = chat.agent === 'claude';
@@ -79,10 +82,9 @@
 	// Claude's plan limits come from the server's `/usage` poller; Codex reports its own in the stream.
 	// svelte-ignore state_referenced_locally
 	const planUsage = isClaude
-		? useAccountPlanUsage(
-				client.connection?.url ?? '',
-				() => chat.accountId,
-				(account, fresh) => client.agents.usage(account, fresh),
+		? usePlanUsage(
+				`${client.connection?.url ?? ''}|${opened.claudeAccountId ?? ''}`,
+				(fresh) => client.agents.usage(opened.claudeAccountId, fresh),
 				() => chat.meta
 			)
 		: null;
@@ -94,28 +96,31 @@
 	let tasksOpen = $state(false);
 	let artifactsOpen = $state(false);
 	let reviewOpen = $state<'history' | 'changes' | null>(null);
-	useBack(() => client.closeChat());
+	useBack(() => client.closeScreen());
+	/** The draft's key follows the conversation's id across `/clear`. */
+	let draftRef = opened;
 	watch(
 		() => [draft.text, draft.images, draft.files],
-		() => drafts.save(ref, draft)
+		() => drafts.save(draftRef, draft)
 	);
 	watch(
 		() => chat.sessionId,
 		(id) => {
-			if (!id || id === ref.sessionId) return;
-			drafts.move(ref, { ...ref, sessionId: id }, draft);
-			client.updateChatId(id);
+			if (!id || id === draftRef.sessionId) return;
+			const next = { ...draftRef, sessionId: id };
+			drafts.move(draftRef, next, draft);
+			draftRef = next;
 		}
 	);
 
-	/** `/clear` may have moved the conversation to a new id since this screen opened. */
-	function showTerminal() {
-		void client.showAsTerminal({ ...ref, sessionId: chat.sessionId });
-	}
+	/** Same process, other view: phone-local presentation. */
+	const showTerminal = $derived(
+		isClaude && entry.pane.terminalId ? () => client.setView(paneId, 'terminal') : undefined
+	);
 
-	// The session keeps running on the server; leaving only detaches.
+	// The session keeps running on the host; leaving only detaches.
 	onDestroy(() => {
-		drafts.save(ref, draft);
+		drafts.save(draftRef, draft);
 		chat.dispose();
 	});
 </script>
@@ -132,7 +137,7 @@
 			type="button"
 			class="grid size-9 shrink-0 place-items-center rounded-lg text-wb-ink-mute active:bg-wb-panel2"
 			aria-label="Back"
-			onclick={client.closeChat}
+			onclick={client.closeScreen}
 		>
 			<ChevronLeftIcon class="size-5" />
 		</button>
@@ -152,8 +157,8 @@
 				{place}
 			</span>
 		</div>
-		{#if isClaude}
-			<ViewSwitch view="chat" disabled={client.switching || !chat.live} onSwitch={showTerminal} />
+		{#if showTerminal}
+			<ViewSwitch view="chat" onSwitch={showTerminal} />
 		{/if}
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
@@ -181,10 +186,10 @@
 					>Review changes</DropdownMenu.Item
 				>
 				<DropdownMenu.Item onSelect={() => chat.open()}>Reconnect</DropdownMenu.Item>
-				{#if isClaude}
-					<DropdownMenu.Item onSelect={() => chat.restart()}>Restart session</DropdownMenu.Item>
-				{/if}
-				<DropdownMenu.Item class="text-wb-err" onSelect={() => client.endChat(chat.sessionId)}>
+				<DropdownMenu.Item onSelect={() => client.restart(entry.tab.id)}
+					>Restart session</DropdownMenu.Item
+				>
+				<DropdownMenu.Item class="text-wb-err" onSelect={() => client.endPane(paneId)}>
 					End session
 				</DropdownMenu.Item>
 			</DropdownMenu.Content>
@@ -213,7 +218,7 @@
 			{chat}
 			{cwd}
 			projectName={place}
-			onShowTerminal={isClaude ? showTerminal : undefined}
+			onShowTerminal={showTerminal}
 			onStarter={(text) => (draft.text = text)}
 			inlineApprovals={false}
 			class="px-4 py-4"
@@ -273,19 +278,19 @@
 	>
 		<ChatDock
 			{chat}
-			id="chat-draft-{ref.sessionId}"
+			id="chat-draft-{paneId}"
 			notice={client.notice}
 			accounts={client.accounts}
 			defaultAccountName={client.defaultAccountName}
 			onResume={() => (reviewOpen = 'history')}
-			onThread={(sessionId, name) => client.openChat({ ...ref, sessionId, name, agent: 'codex' })}
+			onThread={(sessionId) => client.resume('codex', ref, sessionId)}
 		/>
 	</div>
 </div>
 
 {#if sheetOpen && waiting}
 	<Sheet label="{name} is waiting on you" onClose={() => (sheetHiddenFor = waiting.id)}>
-		<ChatAnswer item={waiting} {chat} {cwd} onShowTerminal={isClaude ? showTerminal : undefined} />
+		<ChatAnswer item={waiting} {chat} {cwd} onShowTerminal={showTerminal} />
 	</Sheet>
 {/if}
 

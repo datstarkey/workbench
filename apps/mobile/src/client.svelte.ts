@@ -1,36 +1,37 @@
-import { agentClient, agentName } from '@workbench/chat-ui';
+import { agentClient, agentName, type AgentApi } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
-import { createHttpTransport, DEFAULT_TIMEOUT_MS, withTimeout } from '@workbench/transport';
+import { createHttpTransport } from '@workbench/transport';
 import type {
-	AgentSummary,
+	AgentKind,
 	ApprovalDecision,
 	ClaudeAccount,
-	CreateServerTerminalBody,
-	ServerTerminalMeta as TerminalMeta,
 	WorkbenchSettings
 } from '@workbench/types';
-import { defaultAccountName } from '@workbench/types';
+import { defaultAccountName, projectClaudeAccount } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { watch as watchValue } from 'runed';
-import { HomeStream, type OpenEventSource } from './home-stream.ts';
 import { HostUpdate } from './host-update.svelte.ts';
-import { hostOf, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { LegacyRemote } from './legacy-remote.svelte.ts';
+import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { findPane, paneEntries, paneTitle, type PaneEntry } from './panes.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
+import { WorkspaceRemote, type PaneRemote } from './remote.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
-import { baseName } from './home-format.ts';
 import { ProjectPrefs } from './project-prefs.svelte.ts';
 import { Drafts } from './drafts.svelte';
 import { SessionNotifications, type NotificationSession } from './session-notifications.svelte';
 import { ProjectReview, type ReviewFolder } from './project-review.svelte';
 import type { ChatRef, ClaudeView } from './types.ts';
-
-/** Extras for a terminal that runs `claude` on a conversation (the server builds the command). */
-type ClaudeLaunch = Pick<CreateServerTerminalBody, 'claudeSession' | 'claudeAccountId'>;
+import type {
+	OpenEventSource,
+	PaneKind,
+	WorkspaceCommand,
+	WorkspacePane
+} from './workspace-stream.ts';
 
 const LS_VIEW = 'wb.claudeView';
-/** Home-screen refresh while the app is in front and the event stream is down. */
-const POLL_MS = 4000;
+/** While a host restarts into its update, check when it is back. */
+const UPDATE_CHECK_MS = 4000;
 
 function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
@@ -41,10 +42,12 @@ export function openExternal(url: string): void {
 	openUrl(url).catch((e) => console.warn('[mobile] open url', url, e));
 }
 
+export type Folder = Pick<ReviewFolder, 'projectPath' | 'worktreePath'>;
+
 /**
- * Phone-side connection + terminal state for the mobile app. Owns the
- * control-plane store (over HTTP) plus the persistent-terminal list and the
- * active terminal. Kept out of the component so it can be unit-tested.
+ * The phone is a remote for the connected machine's workspaces: it renders
+ * them from the host and sends commands; every process lives on the host. Kept
+ * out of the components so it can be unit-tested.
  */
 export class MobileClient {
 	readonly machines = new SavedMachines();
@@ -56,25 +59,69 @@ export class MobileClient {
 	/** The server every request goes to; null while disconnected. */
 	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
+	/** The connected machine's workspaces; null while disconnected. */
+	remote = $state.raw<PaneRemote | null>(null);
 	drafts = new Drafts('disconnected');
 	projectPrefs = $state.raw(new ProjectPrefs('disconnected'));
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
 	/** What the machine calls its default `~/.claude` account. */
 	defaultAccountName = $state(defaultAccountName(null));
-	/** The host's active account (absent: the default login); a project's own default still wins. */
 	accountId = $state<string | undefined>(undefined);
 	/** The connected host's version and update; null while disconnected. */
 	hostUpdate = $state.raw<HostUpdate | null>(null);
+	connecting = $state(false);
+	/** The saved machine a connect is in flight to (null for one not saved yet). */
+	connectingTo = $state<string | null>(null);
+	connectError = $state<string | null>(null);
+	/** The connected machine's id (null while disconnected). */
+	machineId = $state<string | null>(null);
+	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
+	/** Why the last action failed; shown on whichever screen is up. */
+	notice = $state<string | null>(null);
+	/** The pane whose screen is open. It closes when the pane leaves the host's model. */
+	openPaneId = $state<string | null>(null);
+	/** Chat or Terminal per Claude pane: this phone's presentation only. */
+	views = $state<Record<string, ClaudeView>>({});
+	/** Bumped to remount the chat screen (it moved to another Claude account). */
+	chatScreenKey = $state(0);
+	private chatAccounts: Record<string, string | undefined> = {};
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
 
-	/** Switch the host's active account, as the desktop's switcher does. */
-	async setAccount(id: string): Promise<void> {
-		try {
-			await this.controlPlane?.invoke('set_active_claude_account', { id: id || null });
-			this.accountId = id || undefined;
-		} catch (e) {
-			this.notice = `Couldn't switch the account: ${errorText(e)}`;
-		}
+	readonly agents = agentClient(() => ({
+		baseUrl: this.connection?.url ?? '',
+		token: this.connection?.token ?? ''
+	}));
+	/** Chat screens only ever attach: starting a process is a command. */
+	readonly attachApi: AgentApi = {
+		...this.agents,
+		start: (body) => this.agents.start({ ...body, attachOnly: true })
+	};
+
+	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
+	panes = $derived(paneEntries(this.remote?.workspaces ?? []));
+	activePane = $derived(this.panes.find((e) => e.pane.id === this.openPaneId) ?? null);
+	online = $derived(this.remote?.online ?? true);
+
+	private readonly pairing: PairingScan;
+	private readonly openEventSource?: OpenEventSource;
+	/** A URL that is already a complete origin (saved, or from a pairing code): never re-normalised. */
+	private exactUrl: string | null;
+	/** Bumped whenever the connection goes; a response for an older connection is dropped. */
+	private generation = 0;
+	/** Bumped on every connect attempt; a newer attempt, a disconnect or forgetting its machine supersedes it. */
+	private attempt = 0;
+	/** Whether the app is in front: the host's model is followed only then. */
+	private visible = !document.hidden;
+
+	constructor(scanner?: QrScanner, openEventSource?: OpenEventSource) {
+		this.pairing = new PairingScan(scanner);
+		this.openEventSource = openEventSource;
+		this.exactUrl = this.url || null;
+	}
+
+	setAccount(id: string): void {
+		this.accountId = id || undefined;
+		if (this.machineId) lsSet(machineKey('wb.account', this.machineId), id);
 	}
 
 	private async loadAccounts(): Promise<void> {
@@ -87,10 +134,9 @@ export class MobileClient {
 			if (!live()) return;
 			this.accounts = (settings?.claudeAccounts ?? []).map(({ id, name }) => ({ id, name }));
 			this.defaultAccountName = defaultAccountName(settings);
-			const active = settings?.activeClaudeAccount;
-			this.accountId = this.accounts.some((a) => a.id === active)
-				? (active ?? undefined)
-				: undefined;
+			const saved = this.machineId ? lsGet(machineKey('wb.account', this.machineId)) : null;
+			const selected = saved ?? settings?.activeClaudeAccount ?? '';
+			this.accountId = this.accounts.some((a) => a.id === selected) ? selected : undefined;
 		} catch {
 			/* Older servers still support the default account. */
 		}
@@ -100,125 +146,16 @@ export class MobileClient {
 		if (!this.controlPlane) throw new Error('Connect to a machine first');
 		return new ProjectReview(this.controlPlane, folder);
 	}
-	connecting = $state(false);
-	/** The saved machine a connect is in flight to (null for one not saved yet). */
-	connectingTo = $state<string | null>(null);
-	connectError = $state<string | null>(null);
-	/** The connected machine's id (null while disconnected). */
-	machineId = $state<string | null>(null);
-	/** Whether the connected machine answered the last terminal-list refresh. */
-	online = $state(true);
-	terminals = $state<TerminalMeta[]>([]);
-	activeTerminalId = $state<string | null>(null);
-
-	/** Chat sessions running on the server (any device's). */
-	chats = $state<AgentSummary[]>([]);
-	activeChat = $state<ChatRef | null>(null);
-	chatScreenKey = $state(0);
-	defaultView = $state<ClaudeView>(lsGet(LS_VIEW) === 'terminal' ? 'terminal' : 'chat');
-	/** A Claude view switch is finding and attaching to the existing session. */
-	switching = $state(false);
-	/** The chat this client is ending; not UI state. */
-	private ending: string | null = null;
-	/** Why the last action failed (switch, approve, open); shown on whichever screen is up. */
-	notice = $state<string | null>(null);
-
-	readonly agents = agentClient(() => ({
-		baseUrl: this.connection?.url ?? '',
-		token: this.connection?.token ?? ''
-	}));
-
-	machine = $derived(this.machines.list.find((m) => m.id === this.machineId) ?? null);
-	activeTerminal = $derived(this.terminals.find((t) => t.id === this.activeTerminalId) ?? null);
-	/**
-	 * Terminal id → the Claude conversation its `claude` runs, from the server:
-	 * every Claude terminal lists its session, and a chat its terminal.
-	 */
-	terminalChats = $derived.by(() => {
-		const links: Record<string, ChatRef> = {};
-		for (const t of this.terminals) {
-			if (t.claudeSessionId)
-				links[t.id] = {
-					sessionId: t.claudeSessionId,
-					projectPath: t.cwd,
-					name: t.name ?? baseName(t.cwd),
-					attachOnly: true
-				};
-		}
-		for (const chat of this.chats) {
-			if (!chat.exited && chat.terminalId) links[chat.terminalId] = this.chatRef(chat);
-		}
-		return links;
-	});
-	/** A Claude chat and its backing terminal are one entry on Home. */
-	standaloneTerminals = $derived.by(() => {
-		const backing = new Set(this.chats.filter((c) => !c.exited).map((c) => c.terminalId));
-		return this.terminals.filter((t) => !backing.has(t.id));
-	});
-
-	private readonly pairing: PairingScan;
-	/** A URL that is already a complete origin (saved, or from a pairing code): never re-normalised. */
-	private exactUrl: string | null;
-	/** Bumped whenever the connection goes; a response for an older connection is dropped. */
-	private generation = 0;
-	/** Bumped on every connect attempt; a newer attempt, a disconnect or forgetting its machine supersedes it. */
-	private attempt = 0;
-
-	/** Whether the app is in front; follows `visibilitychange` while watching. */
-	private visible = $state(!document.hidden);
-	/** The server whose home lists to stream: only on Home, in front. */
-	private homeServer = $derived(
-		this.visible && this.store && !this.activeChat && !this.activeTerminal ? this.connection : null
-	);
-	private readonly homeStream: HomeStream;
-	/** Bumped by every streamed list: a poll response sent before one is stale. */
-	private listsSeen = 0;
-
-	constructor(scanner?: QrScanner, openEventSource?: OpenEventSource) {
-		this.pairing = new PairingScan(scanner);
-		this.homeStream = new HomeStream(
-			{
-				agents: (list) => {
-					this.listsSeen++;
-					this.chats = list;
-				},
-				terminals: (list) => {
-					this.listsSeen++;
-					this.terminals = list;
-				},
-				status: (live) => {
-					if (live) this.online = true;
-				}
-			},
-			openEventSource
-		);
-		this.exactUrl = this.url || null;
-	}
 
 	/** Whether a machine was saved as active (auto-reconnect on launch). */
 	get hasSavedServer(): boolean {
 		return !!this.machines.active;
 	}
 
-	private authHeaders(): Record<string, string> {
-		return { authorization: `Bearer ${this.connection?.token ?? ''}` };
-	}
-
-	private get base(): string {
-		return this.connection?.url ?? '';
-	}
-
 	/** True while the connection it was taken on is still the current one. */
 	private live(): () => boolean {
 		const generation = this.generation;
 		return () => generation === this.generation;
-	}
-
-	/** Like `live`, and no list has been streamed since: a list fetched now is still the newest. */
-	private freshList(): () => boolean {
-		const live = this.live();
-		const seen = this.listsSeen;
-		return () => live() && seen === this.listsSeen;
 	}
 
 	/** Connect to the form's server; on success it is saved and active. */
@@ -256,7 +193,7 @@ export class MobileClient {
 			if (!base) throw new Error('enter a server address');
 			// Every Workbench server requires a token (see Settings → Server mode).
 			if (!token) throw new Error('enter the server token');
-			await verifyServer(base, token);
+			const health = await verifyServer(base, token);
 			if (superseded()) return;
 			const next = new ControlPlaneStore(createHttpTransport({ baseUrl: base, token }));
 			await next.refresh();
@@ -274,11 +211,16 @@ export class MobileClient {
 			this.projectPrefs = new ProjectPrefs(machine.id);
 			const controlPlane = createHttpTransport({ baseUrl: base, token });
 			this.controlPlane = controlPlane;
-			this.online = true;
 			this.store = next;
 			this.hostUpdate = new HostUpdate(controlPlane);
 			void this.hostUpdate.check();
-			await Promise.all([this.refreshTerminals(), this.refreshChats(), this.loadAccounts()]);
+			// OLD-HOST FALLBACK: a host without `workspaceApi` (Phase 5 deletes this branch).
+			const remote: PaneRemote = health.workspaceApi
+				? new WorkspaceRemote(this.connection, this.openEventSource)
+				: new LegacyRemote(this.connection, this.openEventSource);
+			this.remote = remote;
+			remote.follow(this.visible);
+			await Promise.all([remote instanceof LegacyRemote && remote.refresh(), this.loadAccounts()]);
 		} catch (e) {
 			if (superseded()) return;
 			if (this.store)
@@ -347,6 +289,8 @@ export class MobileClient {
 	/** Drop the connection: every screen of it goes, and late responses for it are dropped. */
 	private teardown(): void {
 		this.generation++;
+		this.remote?.dispose();
+		this.remote = null;
 		this.store = null;
 		this.connection = null;
 		this.controlPlane = null;
@@ -356,11 +300,9 @@ export class MobileClient {
 		this.accountId = undefined;
 		this.machineId = null;
 		this.projectPrefs = new ProjectPrefs('disconnected');
-		this.terminals = [];
-		this.chats = [];
-		this.activeTerminalId = null;
-		this.activeChat = null;
-		this.switching = false;
+		this.openPaneId = null;
+		this.views = {};
+		this.chatAccounts = {};
 		this.notice = null;
 	}
 
@@ -369,358 +311,189 @@ export class MobileClient {
 		lsSet(LS_VIEW, view);
 	}
 
-	async refreshChats(): Promise<void> {
-		if (!this.store) return;
-		const fresh = this.freshList();
-		try {
-			const chats = await this.agents.list();
-			if (fresh()) this.chats = chats;
-		} catch {
-			/* keep the last list */
-		}
-	}
-
 	/**
-	 * Keep the home screen current while the app is in front: streamed from
-	 * `/events/home`, polled while the stream is down (or the host predates it),
-	 * and caught up as soon as it comes back from the lock screen. Returns a
-	 * stop function.
+	 * Follow the host while the app is in front, and catch up as soon as it
+	 * comes back from the lock screen. Returns a stop function.
 	 */
 	watch(): () => void {
-		const stopStream = $effect.root(() => {
-			watchValue(
-				() => this.homeServer,
-				(server) => this.homeStream.follow(server)
-			);
-		});
-		let polling = false;
+		this.remote?.follow(this.visible);
 		const timer = setInterval(() => {
 			// The host is restarting into its update: its first answer ends "Updating host…".
 			if (!document.hidden && this.hostUpdate?.updating) void this.hostUpdate.check();
-			// One round at a time (each request times out): a stalled host must not pile requests up.
-			if (!this.homeServer || this.homeStream.live || polling) return;
-			polling = true;
-			void Promise.allSettled([this.refreshTerminals(), this.refreshChats()]).then(
-				() => (polling = false)
-			);
-		}, POLL_MS);
+		}, UPDATE_CHECK_MS);
 		const wake = () => {
 			this.visible = !document.hidden;
-			if (this.visible && this.store) this.refreshAll();
+			this.remote?.follow(this.visible);
+			if (this.visible) {
+				void this.store?.refresh();
+				void this.hostUpdate?.check();
+			}
 		};
 		document.addEventListener('visibilitychange', wake);
 		return () => {
 			clearInterval(timer);
 			document.removeEventListener('visibilitychange', wake);
-			stopStream();
-			this.homeStream.follow(null);
+			this.remote?.follow(false);
 		};
 	}
 
-	/** A new Claude conversation in the phone's default view; the host picks its account. */
-	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) =>
-		this.openClaude({ sessionId: crypto.randomUUID(), projectPath, worktreePath, name });
-
-	/** A Claude conversation, new or past (the server resumes one on disk), in the default view. */
-	async openClaude(ref: ChatRef): Promise<void> {
-		if (this.defaultView === 'chat') this.openChat(ref);
-		else await this.openClaudeTerminal(ref);
+	/** Send a command; a refusal or failure shows as a notice and resolves null. */
+	private async send(cmd: WorkspaceCommand, failure: string) {
+		const live = this.live();
+		const remote = this.remote;
+		if (!remote) return null;
+		this.notice = null;
+		try {
+			const result = await remote.command(cmd);
+			return live() ? result : null;
+		} catch (e) {
+			if (live()) this.notice = `${failure}: ${errorText(e)}`;
+			return null;
+		}
 	}
 
-	/** A new Codex conversation; always a chat (Codex has no terminal handoff here). */
-	startCodex = (projectPath: string, worktreePath: string | undefined, name: string): void => {
-		this.openChat({ sessionId: '', agent: 'codex', projectPath, worktreePath, name });
+	/** A new session in a folder; it opens here as a tab on the host, too. */
+	start = (kind: PaneKind, folder: Folder, view?: ClaudeView) =>
+		this.newSession(kind, folder, {}, view);
+
+	/** Continue a past conversation (the history sheet). A pane already running it is reused. */
+	resume(kind: AgentKind, folder: Folder, sessionId: string, accountId?: string): Promise<void> {
+		return this.newSession(kind, folder, { resume: sessionId, accountId });
+	}
+
+	private async newSession(
+		kind: PaneKind,
+		{ projectPath, worktreePath }: Folder,
+		opts: { resume?: string; accountId?: string },
+		view?: ClaudeView
+	): Promise<void> {
+		const project = this.store?.projects.find((p) => p.path === projectPath);
+		const branch = worktreePath
+			? this.store?.worktrees[projectPath]?.find((w) => w.path === worktreePath)?.branch
+			: undefined;
+		const accountId =
+			kind === 'claude'
+				? (opts.accountId ?? projectClaudeAccount(project, this.accounts, this.accountId))
+				: undefined;
+		const result = await this.send(
+			{
+				type: 'newSession',
+				projectPath,
+				...(worktreePath ? { worktreePath } : {}),
+				...(project ? { projectName: project.name } : {}),
+				...(branch ? { branch } : {}),
+				kind,
+				...(opts.resume ? { resume: opts.resume } : {}),
+				...(accountId ? { accountId } : {}),
+				...(kind === 'codex' ? { codexMode: 'appServer' as const } : {})
+			},
+			kind === 'shell' ? "Couldn't open a terminal" : `Couldn't start ${agentName(kind)}`
+		);
+		if (result?.paneId) this.openPane(result.paneId, view);
+	}
+
+	/** Show a pane's screen; `view` picks Chat or Terminal for a Claude pane. */
+	openPane(paneId: string, view?: ClaudeView): void {
+		this.notice = null;
+		const known = this.panes.map((e) => e.pane.id);
+		const views = Object.fromEntries(
+			Object.entries(this.views).filter(([id]) => known.includes(id))
+		);
+		this.views = view ? { ...views, [paneId]: view } : views;
+		this.openPaneId = paneId;
+	}
+
+	/** Back: navigation only. The session keeps running on the host. */
+	closeScreen = (): void => {
+		this.openPaneId = null;
 	};
 
-	chatRef(chat: NotificationSession): ChatRef {
+	/** What the phone shows for a pane: Claude per the phone's pick, Codex by its process. */
+	paneView(pane: WorkspacePane): ClaudeView {
+		if (pane.kind === 'shell') return 'terminal';
+		if (pane.kind === 'codex') return pane.codexMode === 'appServer' ? 'chat' : 'terminal';
+		return this.views[pane.id] ?? this.defaultView;
+	}
+
+	setView(paneId: string, view: ClaudeView): void {
+		this.notice = null;
+		this.views = { ...this.views, [paneId]: view };
+	}
+
+	/** End: the pane goes on every device, like the desktop's ×. */
+	async endPane(paneId: string): Promise<void> {
+		const result = await this.send({ type: 'closePane', paneId }, "Couldn't end the session");
+		if (result && this.openPaneId === paneId) this.openPaneId = null;
+	}
+
+	restart = (tabId: string) =>
+		this.send({ type: 'restart', tabId }, "Couldn't restart the session");
+
+	trustFolder = (paneId: string) =>
+		this.send({ type: 'trustFolder', paneId }, "Couldn't trust the folder");
+
+	chatRef(entry: PaneEntry): ChatRef {
+		const { workspace, pane } = entry;
+		const accountId = pane.id in this.chatAccounts ? this.chatAccounts[pane.id] : pane.accountId;
 		return {
-			sessionId: chat.sessionId,
-			attachOnly: true,
-			...(chat.agent === 'codex' ? { agent: 'codex' as const } : {}),
-			projectPath: chat.projectPath,
-			worktreePath: chat.worktreePath ?? undefined,
-			name: chat.title ?? baseName(chat.worktreePath ?? chat.projectPath),
-			...(chat.claudeAccountId ? { claudeAccountId: chat.claudeAccountId } : {})
+			sessionId: pane.sessionId ?? '',
+			...(pane.kind === 'codex' ? { agent: 'codex' as const } : {}),
+			projectPath: workspace.projectPath,
+			...(workspace.worktreePath ? { worktreePath: workspace.worktreePath } : {}),
+			name: paneTitle(entry),
+			...(accountId ? { claudeAccountId: accountId } : {})
 		};
 	}
 
-	/** A terminal notification attaches its existing process, never creates a Codex chat. */
+	/** The open chat moved to another Claude account: remount it for that login's usage. */
+	updateChatAccount(paneId: string, accountId: string | undefined): void {
+		this.chatAccounts[paneId] = accountId;
+		this.chatScreenKey++;
+	}
+
+	/** A notification opens the pane that runs its session; it never starts one. */
 	async openNotification(chat: NotificationSession): Promise<void> {
-		if (!chat.terminalOnly) {
-			this.openChat(this.chatRef(chat));
+		const live = this.live();
+		const remote = this.remote;
+		if (!remote) return;
+		const find = () =>
+			findPane(this.panes, {
+				sessionId: chat.sessionId,
+				terminalId: chat.terminalOnly ? chat.terminalId : null
+			});
+		// A just-switched machine may not have shown its workspaces yet.
+		if (!find()) {
+			await remote.refresh();
+			if (!live()) return;
+		}
+		const found = find();
+		if (!found) {
+			this.openPaneId = null;
+			this.notice = chat.terminalOnly
+				? 'This Codex terminal is available on the desktop.'
+				: 'That session is no longer running.';
 			return;
 		}
-		const live = this.live();
-		await this.refreshTerminals();
-		if (!live()) return;
-		if (chat.terminalId && this.terminals.some((t) => t.id === chat.terminalId && t.alive)) {
-			this.selectTerminal(chat.terminalId);
-		} else {
-			this.activeChat = null;
-			this.activeTerminalId = null;
-			this.notice = 'This Codex terminal is available on the desktop.';
-		}
+		this.openPane(found.pane.id, chat.terminalOnly ? 'terminal' : 'chat');
 	}
-
-	openChat(ref: ChatRef): void {
-		this.notice = null;
-		this.activeTerminalId = null;
-		this.chatScreenKey++;
-		this.activeChat = ref;
-	}
-
-	/** Update the screen's reference without remounting it when Codex starts or /clear re-keys. */
-	updateChatId(id: string): void {
-		if (this.activeChat && id) this.activeChat = { ...this.activeChat, sessionId: id };
-	}
-
-	/** The open chat runs under this Claude account (the host named it, or it switched); its usage follows by itself. */
-	updateChatAccount(accountId: string | undefined): void {
-		if (!this.activeChat || this.activeChat.claudeAccountId === accountId) return;
-		this.activeChat = { ...this.activeChat, claudeAccountId: accountId };
-	}
-
-	/** The open chat was ended on another device: leave it. An End from here leaves by itself. */
-	chatEnded = (sessionId: string): void => {
-		if (sessionId !== this.ending) this.closeChat();
-	};
-
-	/** Arrow field — the chat view's Back. The session keeps running on the server. */
-	closeChat = (): void => {
-		this.activeChat = null;
-		void this.refreshChats();
-	};
 
 	/** Answer an approval from the home screen, without opening the chat. */
 	async answer(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void> {
 		const live = this.live();
-		const agent = this.chats.find((c) => c.sessionId === sessionId)?.agent;
+		const kind = findPane(this.panes, { sessionId })?.pane.kind;
 		this.notice = null;
 		try {
 			await this.agents.send(sessionId, { t: 'approve', requestId, decision });
 		} catch (e) {
-			if (live()) this.notice = `Couldn't answer ${agentName(agent)}: ${errorText(e)}`;
-		}
-		if (live()) await this.refreshChats();
-	}
-
-	/** End a chat session's process and leave its screen; the conversation stays on disk. */
-	async endChat(sessionId: string): Promise<void> {
-		const live = this.live();
-		// A Codex chat that never got a thread id has nothing running to stop.
-		this.notice = null;
-		this.ending = sessionId;
-		try {
-			if (sessionId) await this.agents.stop(sessionId, { end: true });
-		} catch (e) {
-			if (live()) this.notice = `Couldn't end the session: ${errorText(e)}`;
-			return;
-		} finally {
-			this.ending = null;
-		}
-		if (!live()) return;
-		this.activeChat = null;
-		await Promise.all([this.refreshChats(), this.refreshTerminals()]);
-	}
-
-	/** Claude chat → terminal: show the PTY the same process already runs in. */
-	async showAsTerminal(ref: ChatRef): Promise<void> {
-		if (this.switching || ref.agent === 'codex') return;
-		const live = this.live();
-		const screenKey = this.chatScreenKey;
-		this.switching = true;
-		this.notice = null;
-		await Promise.all([this.refreshTerminals(), this.refreshChats()]);
-		if (!live()) return;
-		if (!this.activeChat || this.chatScreenKey !== screenKey) {
-			this.switching = false;
-			return;
-		}
-		const terminal = this.terminals.find((t) => {
-			const chat = this.terminalChats[t.id];
-			return (
-				t.alive &&
-				chat &&
-				(chat.sessionId === ref.sessionId ||
-					this.chats.some((c) => c.terminalId === t.id && c.previousIds.includes(ref.sessionId)))
-			);
-		});
-		if (terminal) this.selectTerminal(terminal.id);
-		else this.notice = 'This chat has no running terminal to show. Restart the session in Chat.';
-		this.switching = false;
-	}
-
-	/** Terminal → Claude chat: attach to its plugin, never launch a second Claude. */
-	async showAsChat(terminalId: string): Promise<void> {
-		if (this.switching) return;
-		const live = this.live();
-		const fromTerminal = this.activeTerminalId;
-		this.switching = true;
-		this.notice = null;
-		await this.refreshChats();
-		if (!live()) return;
-		if (this.activeTerminalId !== fromTerminal) {
-			this.switching = false;
-			return;
-		}
-		const ref = this.terminalChats[terminalId];
-		try {
-			if (!ref) throw new Error('This terminal has no Claude session to attach to.');
-			const sessionId = await this.agents.start({
-				projectPath: ref.projectPath,
-				worktreePath: ref.worktreePath,
-				sessionId: ref.sessionId,
-				claudeAccountId: ref.claudeAccountId,
-				attachOnly: true
-			});
-			if (!live()) return;
-			if (this.activeTerminalId !== fromTerminal) {
-				this.switching = false;
-				return;
-			}
-			this.openChat({ ...ref, sessionId, attachOnly: true });
-		} catch (e) {
-			if (!live()) return;
-			if (this.activeTerminalId !== fromTerminal) {
-				this.switching = false;
-				return;
-			}
-			this.notice =
-				(e as { status?: number }).status === 404
-					? 'Claude has not connected to Chat. Complete any login or trust prompt in its terminal, then try again.'
-					: `Couldn't open Chat: ${errorText(e)}`;
-		}
-		this.switching = false;
-	}
-
-	private async openClaudeTerminal(ref: ChatRef): Promise<void> {
-		await this.createTerminal(ref.projectPath, ref.worktreePath, ref.name, {
-			claudeSession: { id: ref.sessionId },
-			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
-		});
-	}
-
-	async refreshTerminals(): Promise<void> {
-		if (!this.store) return;
-		const current = this.live();
-		const fresh = this.freshList();
-		try {
-			const { ok, data } = await withTimeout(
-				'GET /remote/terminals',
-				DEFAULT_TIMEOUT_MS,
-				async (signal) => {
-					const res = await fetch(`${this.base}/remote/terminals`, {
-						headers: this.authHeaders(),
-						signal
-					});
-					return { ok: res.ok, data: res.ok ? await res.json() : null };
-				}
-			);
-			if (current()) this.online = ok;
-			if (ok) {
-				if (!fresh()) return;
-				// Guard the {#each terminals} render: a non-array body would throw.
-				this.terminals = Array.isArray(data) ? data : [];
-			}
-		} catch {
-			if (current()) this.online = false;
+			if (live())
+				this.notice = `Couldn't answer ${agentName(kind === 'codex' ? 'codex' : 'claude')}: ${errorText(e)}`;
 		}
 	}
 
-	/** Open a terminal and show it; resolves to its id, or null if it failed. */
-	createTerminal = async (
-		projectPath: string,
-		worktreePath: string | undefined,
-		name: string,
-		claude?: ClaudeLaunch
-	): Promise<string | null> => {
-		if (!this.store) return null;
-		this.notice = null;
-		const live = this.live();
-		try {
-			const res = await fetch(`${this.base}/remote/terminals`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json', ...this.authHeaders() },
-				body: JSON.stringify({ projectPath, worktreePath, name, ...claude, cols: 80, rows: 24 })
-			});
-			if (!res.ok) {
-				const reason = await res
-					.json()
-					.then((j: { error?: string }) => j.error)
-					.catch(() => undefined);
-				throw new Error(reason || `the server returned ${res.status}`);
-			}
-			const meta: TerminalMeta = await res.json();
-			if (!live()) return null;
-			// Show the new terminal immediately AND keep it after refreshTerminals()
-			// reconciles — otherwise the refresh overwrites `terminals` with a server
-			// list that hasn't surfaced the new id yet, the $derived activeTerminal goes
-			// null, and the view never opens.
-			const ensureVisible = () => {
-				if (!this.terminals.some((t) => t.id === meta.id)) {
-					this.terminals = [...this.terminals, meta];
-				}
-			};
-			ensureVisible();
-			this.activeChat = null;
-			this.activeTerminalId = meta.id;
-			await this.refreshTerminals();
-			if (!live()) return null;
-			ensureVisible();
-			return meta.id;
-		} catch (e) {
-			if (live()) this.notice = `Couldn't open a terminal: ${errorText(e)}`;
-			return null;
-		}
-	};
-
-	private async deleteTerminal(id: string): Promise<boolean> {
-		const live = this.live();
-		try {
-			const res = await fetch(`${this.base}/remote/terminals/${encodeURIComponent(id)}`, {
-				method: 'DELETE',
-				headers: this.authHeaders()
-			});
-			if (!res.ok) return false;
-		} catch {
-			return false;
-		}
-		if (!live()) return false;
-		if (this.activeTerminalId === id) this.activeTerminalId = null;
-		return true;
-	}
-
-	async killTerminal(id: string): Promise<void> {
-		const live = this.live();
-		this.notice = null;
-		const stopped = await this.deleteTerminal(id);
-		if (!live()) return;
-		if (!stopped) {
-			this.notice = "Couldn't close the terminal. It may still be running; try again.";
-			return;
-		}
-		if (this.activeTerminalId === id) this.activeTerminalId = null;
-		await this.refreshTerminals();
-	}
-
-	selectTerminal(id: string): void {
-		this.notice = null;
-		this.activeChat = null;
-		this.activeTerminalId = id;
-	}
-
-	/** Arrow field — passed as the Terminal view's onClose callback. */
-	closeTerminal = (): void => {
-		this.activeTerminalId = null;
-		void this.refreshTerminals();
-	};
-
-	/** Reload the control plane, the terminal list and the chat list. */
+	/** Reload the projects, the workspaces and the host's update. */
 	refreshAll(): void {
 		void this.store?.refresh();
-		void this.refreshTerminals();
-		void this.refreshChats();
-		void this.loadAccounts();
+		void this.remote?.refresh();
 		void this.hostUpdate?.check();
 	}
 }
