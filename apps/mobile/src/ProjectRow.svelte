@@ -7,7 +7,8 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import type { ProjectConfig } from '@workbench/types';
-	import { openExternal, type MobileClient } from './client.svelte.ts';
+	import type { MobileClient } from './client.svelte.ts';
+	import { openExternal } from './open-external.ts';
 	import { baseName, repoLabel, tildePath } from './home-format.ts';
 	import type { ReviewFolder } from './project-review.svelte';
 	import { matchParts } from './match-parts.ts';

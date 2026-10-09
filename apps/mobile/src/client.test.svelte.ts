@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MobileClient, openExternal } from './client.svelte.ts';
+import { MobileClient } from './client.svelte.ts';
+import { openExternal } from './open-external.ts';
 import { CAMERA_DENIED, NOT_A_PAIRING_CODE, type QrScanner } from './qr-scan.svelte.ts';
 import {
 	CONNECT_ROUTES,

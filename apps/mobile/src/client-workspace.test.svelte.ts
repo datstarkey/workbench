@@ -255,6 +255,34 @@ describe('MobileClient on a host with the workspace API', () => {
 		await expect(c.attachApi.start({ projectPath: '/repo', sessionId: 'x' })).rejects.toBe(gone);
 	});
 
+	it("shows the host's account, switches it on the host, and lets the host pick a new chat's", async () => {
+		let active: string | null = 'work';
+		const puts: unknown[] = [];
+		const { c } = await connected({
+			'/settings/workbench': () =>
+				jsonResponse({
+					claudeAccounts: [{ id: 'work', name: 'Work', configDir: '/account' }],
+					activeClaudeAccount: active
+				}),
+			'/settings/active-claude-account': (init) => {
+				const body = JSON.parse(String(init?.body));
+				puts.push(body);
+				active = body.id;
+				return new Response(null, { status: 204 });
+			}
+		});
+		await vi.waitFor(() => expect(c.accountId).toBe('work'));
+		await c.start('claude', { projectPath: '/repo' });
+		expect(commands[0]).not.toHaveProperty('accountId');
+
+		await c.setAccount('');
+		expect(puts).toEqual([{ id: null }]);
+		expect(c.accountId).toBeUndefined();
+		active = 'work';
+		c.refreshAll();
+		await vi.waitFor(() => expect(c.accountId).toBe('work'));
+	});
+
 	it("a chat's account is the pane's, from the host", async () => {
 		const { c } = await connected();
 		snapshot(1, workspace(pane('p1', { accountId: 'work' })));

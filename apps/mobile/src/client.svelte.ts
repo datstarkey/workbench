@@ -7,11 +7,10 @@ import type {
 	ClaudeAccount,
 	WorkbenchSettings
 } from '@workbench/types';
-import { defaultAccountName, projectClaudeAccount } from '@workbench/types';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { defaultAccountName } from '@workbench/types';
 import { HostUpdate } from './host-update.svelte.ts';
 import { LegacyRemote } from './legacy-remote.svelte.ts';
-import { hostOf, machineKey, normalizeUrl, SavedMachines } from './machines.svelte.ts';
+import { hostOf, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import {
 	attachThroughRelaunch,
 	findPane,
@@ -44,11 +43,6 @@ function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
 }
 
-/** Uses the system URL handler without the opener plugin's inAppBrowser mode. */
-export function openExternal(url: string): void {
-	openUrl(url).catch((e) => console.warn('[mobile] open url', url, e));
-}
-
 export type Folder = Pick<ReviewFolder, 'projectPath' | 'worktreePath'>;
 
 /**
@@ -73,6 +67,7 @@ export class MobileClient {
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
 	/** What the machine calls its default `~/.claude` account. */
 	defaultAccountName = $state(defaultAccountName(null));
+	/** The host's active account (absent: the default login); a project's own default still wins. */
 	accountId = $state<string | undefined>(undefined);
 	/** The connected host's version and update; null while disconnected. */
 	hostUpdate = $state.raw<HostUpdate | null>(null);
@@ -126,9 +121,14 @@ export class MobileClient {
 		this.exactUrl = this.url || null;
 	}
 
-	setAccount(id: string): void {
-		this.accountId = id || undefined;
-		if (this.machineId) lsSet(machineKey('wb.account', this.machineId), id);
+	/** Switch the host's active account, as the desktop's switcher does. */
+	async setAccount(id: string): Promise<void> {
+		try {
+			await this.controlPlane?.invoke('set_active_claude_account', { id: id || null });
+			this.accountId = id || undefined;
+		} catch (e) {
+			this.notice = `Couldn't switch the account: ${errorText(e)}`;
+		}
 	}
 
 	private async loadAccounts(): Promise<void> {
@@ -141,9 +141,10 @@ export class MobileClient {
 			if (!live()) return;
 			this.accounts = (settings?.claudeAccounts ?? []).map(({ id, name }) => ({ id, name }));
 			this.defaultAccountName = defaultAccountName(settings);
-			const saved = this.machineId ? lsGet(machineKey('wb.account', this.machineId)) : null;
-			const selected = saved ?? settings?.activeClaudeAccount ?? '';
-			this.accountId = this.accounts.some((a) => a.id === selected) ? selected : undefined;
+			const active = settings?.activeClaudeAccount;
+			this.accountId = this.accounts.some((a) => a.id === active)
+				? (active ?? undefined)
+				: undefined;
 		} catch {
 			/* Older servers still support the default account. */
 		}
@@ -382,10 +383,8 @@ export class MobileClient {
 		const branch = worktreePath
 			? this.store?.worktrees[projectPath]?.find((w) => w.path === worktreePath)?.branch
 			: undefined;
-		const accountId =
-			kind === 'claude'
-				? (opts.accountId ?? projectClaudeAccount(project, this.accounts, this.accountId))
-				: undefined;
+		// A new session's account is the host's to pick; a resume keeps its own.
+		const accountId = kind === 'claude' ? opts.accountId : undefined;
 		const result = await this.send(
 			{
 				type: 'newSession',
@@ -494,6 +493,7 @@ export class MobileClient {
 	refreshAll(): void {
 		void this.store?.refresh();
 		void this.remote?.refresh();
+		void this.loadAccounts();
 		void this.hostUpdate?.check();
 	}
 }

@@ -27,10 +27,7 @@
 		/>
 	{/key}
 {:else if view === 'chat' && chatReady}
-	<!-- Another Claude account is another login's usage: remount for it. -->
-	{#key pane.accountId}
-		<ChatScreen {client} {entry} />
-	{/key}
+	<ChatScreen {client} {entry} />
 {:else}
 	<PaneWaiting {client} {entry} />
 {/if}
