@@ -20,7 +20,6 @@
 //! Terminals live in the shared managers, so they survive LAN stop/start.
 //! Both listeners carry the [`HostControl`] that lets a phone update this app.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
@@ -51,9 +50,6 @@ pub struct ServerControl {
     loopback: Mutex<Option<Loopback>>,
     /// Async mutex held across start/stop, so concurrent commands serialize.
     lan: AsyncMutex<Option<Lan>>,
-    /// Mod tokens issued to native terminals, by pane id.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    native_grants: Mutex<HashMap<String, String>>,
 }
 
 impl ServerControl {
@@ -94,102 +90,9 @@ impl ServerControl {
         });
     }
 
-    /// Mirror a terminal Codex `notify` into the same cross-device feed.
-    /// Chat completions are already published by the app-server driver.
-    pub fn codex_notified(&self, pane_id: &str, session_id: &str, cwd: &str) {
-        if self.managers.agents.get(session_id).is_some() {
-            return;
-        }
-        let terminal = self.managers.terminals.terminal_for_pane(pane_id);
-        let title = terminal.as_ref().and_then(|t| t.name.clone());
-        self.managers
-            .agents
-            .attention
-            .publish(workbench_server::attention::Attention {
-                kind: workbench_server::attention::AttentionKind::TurnEnded,
-                agent: workbench_server::agent::AgentKind::Codex,
-                session_id: session_id.into(),
-                previous_ids: Vec::new(),
-                pane_id: Some(pane_id.into()),
-                terminal_id: terminal.map(|t| t.id),
-                project_path: cwd.into(),
-                worktree_path: None,
-                claude_account_id: None,
-                title,
-                waiting: None,
-                busy: false,
-                terminal_only: true,
-            });
-    }
-
-    /// The env that runs a native terminal's `claude` as a chat over the
-    /// loopback server, as a server terminal's is (`terminal::create_from_body`),
-    /// so its approvals and finished turns reach the desktop and the phone alike.
-    #[cfg(target_os = "macos")]
-    pub fn grant_native_terminal(
-        &self,
-        pane_id: &str,
-        project_path: &str,
-        cwd: &str,
-        claude_account_id: Option<String>,
-        hook_socket: Option<String>,
-    ) -> Vec<(&'static str, String)> {
-        let agents = &self.managers.agents;
-        let grant = workbench_server::agent::ModGrant {
-            pane_id: Some(pane_id.to_string()),
-            project_path: project_path.to_string(),
-            worktree_path: (cwd != project_path).then(|| cwd.to_string()),
-            claude_account_id,
-            cwd: cwd.to_string(),
-            hook_socket,
-            resume_at: None,
-            permission_mode: None,
-            terminal_id: None,
-            // A native shell runs whatever `claude` is typed into it.
-            session_ids: Vec::new(),
-        };
-        let (token, env) = match agents.mod_env(grant) {
-            Ok(Some(granted)) => granted,
-            Ok(None) => return Vec::new(),
-            Err(e) => {
-                log::warn!("could not issue a native terminal's chat token: {e:#}");
-                return Vec::new();
-            }
-        };
-        let old = self
-            .native_grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(pane_id.to_string(), token.clone());
-        if let Some(old) = old {
-            agents.revoke_grant(&old);
-        }
-        env
-    }
-
-    /// Withdraw a closed native terminal's chat token.
-    #[cfg(target_os = "macos")]
-    pub fn revoke_native_terminal(&self, pane_id: &str) {
-        let token = self
-            .native_grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(pane_id);
-        if let Some(token) = token {
-            self.managers.agents.revoke_grant(&token);
-        }
-    }
-
-    /// Withdraw `token` once its native terminal's shell exited, unless the
-    /// pane has since been issued another.
-    #[cfg(target_os = "macos")]
-    pub fn revoke_native_token(&self, pane_id: &str, token: &str) {
-        let mut grants = self.native_grants.lock().unwrap_or_else(|e| e.into_inner());
-        if grants.get(pane_id).map(String::as_str) == Some(token) {
-            grants.remove(pane_id);
-        }
-        drop(grants);
-        self.managers.agents.revoke_grant(token);
+    /// The hook bridge every terminal and chat on this machine reports to.
+    pub fn hooks(&self) -> workbench_server::hook_bridge::HookBridge {
+        self.managers.agents.hooks.clone()
     }
 }
 
@@ -224,8 +127,23 @@ async fn spawn_listener(
 }
 
 impl ServerControl {
+    /// Native views are offered to this machine's own webview. The workspace
+    /// model stays in memory and boots nothing until the desktop renders it
+    /// (Phase 3 switches to `WorkspaceService::persistent()`): saved panes
+    /// would otherwise respawn with no tab to show them.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            managers: Managers {
+                native_views: cfg!(target_os = "macos"),
+                ..Managers::default()
+            },
+            ..Self::default()
+        }
+    }
+
+    /// The shared managers: terminals (native views show these too) and chats.
+    pub fn managers(&self) -> Managers {
+        self.managers.clone()
     }
 
     pub fn set_host(&self, host: Arc<dyn HostControl>) {
@@ -446,23 +364,10 @@ mod tests {
 
     const LAN_TOKEN: &str = "lan-token-0123456789abcdef0123456789";
 
-    #[test]
-    fn codex_terminal_notify_reaches_the_shared_feed_without_starting_a_chat() {
-        let sc = ServerControl::new();
-        let feed = sc.managers.agents.attention.clone();
-        let cursor = feed.since(None).cursor;
-        sc.codex_notified("pane", "thread", "/project");
-        let batch = feed.since(Some(&cursor));
-        assert_eq!(batch.events.len(), 1);
-        assert!(batch.events[0].terminal_only);
-        assert_eq!(batch.events[0].session_id, "thread");
-        assert!(sc.managers.agents.summaries(None).is_empty());
-    }
-
     /// Build a headless mock Tauri app (no webview) holding the ServerControl state.
     fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
         mock_builder()
-            .manage(ServerControl::new())
+            .manage(ServerControl::default())
             .build(mock_context(noop_assets()))
             .expect("mock app should build")
     }
@@ -565,8 +470,8 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
                 &[],
+                false,
             )
             .expect("create terminal");
 
@@ -628,8 +533,8 @@ mod tests {
                     None,
                     None,
                     None,
-                    None,
                     &[],
+                    false,
                 )
                 .expect("create terminal");
         }

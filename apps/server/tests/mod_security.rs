@@ -110,10 +110,10 @@ async fn a_terminal_token_reaches_only_its_own_session() {
         "ours first, the parent's copy gone"
     );
     assert_eq!(link["WORKBENCH_PANE_ID"], Value::Null, "the parent's pane");
-    assert_eq!(
-        link["WORKBENCH_HOOK_SOCKET"],
-        Value::Null,
-        "the parent's bridge"
+    let hook = link["WORKBENCH_HOOK_SOCKET"].as_str().unwrap_or_default();
+    assert!(
+        hook.starts_with("127.0.0.1:") && hook.contains('#'),
+        "the server's own bridge, not the parent's: {hook}"
     );
 
     let mod_url = link["WORKBENCH_MOD_URL"].as_str().unwrap().to_string();

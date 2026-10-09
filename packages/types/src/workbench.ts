@@ -79,8 +79,8 @@ export interface ClaudeSessionLaunch {
 /**
  * Request body for POST /remote/terminals.
  *
- * Desktop xterm panes populate the optional desktop fields (paneId, hookSocket,
- * shell) so the Claude/Codex hook bridge and the project shell work. ZDOTDIR shell-integration is applied
+ * Desktop xterm panes populate the optional desktop fields (paneId, shell); the
+ * server stamps its own hook bridge on every terminal. ZDOTDIR shell-integration is applied
  * server-side (the resolver lives in workbench-core), so it is NOT a wire field.
  */
 export interface CreateServerTerminalBody {
@@ -97,8 +97,6 @@ export interface CreateServerTerminalBody {
 	rows: number;
 	/** Opaque pane ID forwarded as WORKBENCH_PANE_ID env (desktop only). */
 	paneId?: string;
-	/** Hook-bridge address forwarded as WORKBENCH_HOOK_SOCKET env (desktop only). */
-	hookSocket?: string;
 	/** Project-configured shell to launch; empty/absent falls back to $SHELL. */
 	shell?: string;
 }
@@ -116,6 +114,10 @@ export interface ServerTerminalMeta {
 	alive: boolean;
 	/** The Claude session its `claude` runs, listed before its plugin attaches. */
 	claudeSessionId?: string;
+	/** It printed something lately that wasn't the echo of typing (a TUI working). */
+	busy?: boolean;
+	/** Shown by the desktop's native view: not adopted as an xterm tab. */
+	native?: boolean;
 	/** On a create only: something to tell the person about how it started. */
 	notice?: string;
 	/** On a Claude create only: the account the host ran it under (`''`: the default login). */
@@ -977,7 +979,6 @@ export interface StartAgentBody {
 	codexApprovalPolicy?: Exclude<CodexApprovalPolicy, 'default'>;
 	codexSandboxMode?: Exclude<CodexSandboxMode, 'default'>;
 	paneId?: string;
-	hookSocket?: string;
 	/** The pane's Claude account (`''`: the default login); absent, the host picks one. */
 	claudeAccountId?: string;
 	/** Join the running session only (another device's chat); 404 instead of spawning. */

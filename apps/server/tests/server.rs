@@ -1168,8 +1168,9 @@ async fn terminal_ws_exit_frame_carries_code() {
     handle.stop().await;
 }
 
-/// Creating a terminal with `paneId` / `hookSocket` must forward those values
-/// as `WORKBENCH_PANE_ID` / `WORKBENCH_HOOK_SOCKET` env vars into the shell.
+/// A terminal's `paneId` reaches its shell as `WORKBENCH_PANE_ID`, and its
+/// `WORKBENCH_HOOK_SOCKET` is the server's own bridge: a client-sent
+/// `hookSocket` is ignored, so no token holder points a shell elsewhere.
 /// We verify by spawning a shell that echoes the env var values via an initial
 /// command and reading them back from the WS output stream.
 #[cfg(unix)]
@@ -1222,8 +1223,9 @@ async fn terminal_create_forwards_env() {
                 Message::Binary(bytes) => {
                     accumulated.push_str(&String::from_utf8_lossy(&bytes));
                     if accumulated.contains(&format!("PANE_ID={pane_id_val}"))
-                        && accumulated.contains(&format!("HOOK_SOCKET={hook_socket_val}"))
+                        && accumulated.contains("HOOK_SOCKET=127.0.0.1:")
                     {
+                        assert!(!accumulated.contains(&format!("HOOK_SOCKET={hook_socket_val}")));
                         return true;
                     }
                 }
@@ -1241,7 +1243,7 @@ async fn terminal_create_forwards_env() {
     assert!(result.is_ok(), "WS output collection must not time out");
     assert!(
         result.unwrap(),
-        "PTY output must contain PANE_ID and HOOK_SOCKET from env vars"
+        "PTY output must contain PANE_ID and the server's HOOK_SOCKET"
     );
 
     handle.stop().await;

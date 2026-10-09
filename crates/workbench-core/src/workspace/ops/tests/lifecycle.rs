@@ -294,3 +294,28 @@ fn attaching_a_session_another_pane_holds_is_refused() {
     )
     .is_ok());
 }
+
+#[test]
+fn boot_spawns_every_pane_resuming_its_session_and_sends_a_prompt_once() {
+    let mut m = Model::default();
+    let ws = open(&mut m, None);
+    let (_, shell, _) = new(&mut m, &ws, session(PaneKind::Shell));
+    let (_, claude, _) = new(&mut m, &ws, session(PaneKind::Claude));
+    let (_, codex, _) = new(&mut m, &ws, session(PaneKind::Codex));
+    let ws_idx = m.workspaces.iter().position(|w| w.id == ws).unwrap();
+    m.workspaces[ws_idx].tabs[2].panes[0].prompt = Some("go".into());
+    let effects = boot(&mut m);
+    assert!(matches!(&effects[0], Effect::SpawnShell { pane_id, .. } if *pane_id == shell));
+    assert!(
+        matches!(&effects[1], Effect::SpawnClaude { pane_id, resume: true, .. } if *pane_id == claude)
+    );
+    assert!(matches!(
+        &effects[2],
+        Effect::SpawnCodex { pane_id, prompt: Some(p), .. } if *pane_id == codex && p == "go"
+    ));
+    assert_eq!(effects.last(), Some(&Effect::Persist));
+    assert!(
+        !boot(&mut m).contains(&Effect::Persist),
+        "the prompt went with the first boot"
+    );
+}

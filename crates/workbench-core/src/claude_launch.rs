@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::claude_transcript::is_uuid;
+use crate::launch_prompt;
 use crate::types::{ProjectConfig, WorkbenchSettings};
 
 /// Modes the CLI accepts for `--permission-mode`.
@@ -108,12 +109,12 @@ pub fn terminal_command(
         // The `--` stops srt claiming claude's own flags.
         cmd.push_str(&format!(
             "npx --yes {SANDBOX_RUNTIME_PACKAGE} --settings {} -- ",
-            shell_quote(path)
+            launch_prompt::shell_quote(path)
         ));
     }
     // Tests point it at a fake (`WORKBENCH_CLAUDE_BIN`).
     match std::env::var("WORKBENCH_CLAUDE_BIN") {
-        Ok(bin) if !bin.is_empty() => cmd.push_str(&shell_quote(&bin)),
+        Ok(bin) if !bin.is_empty() => cmd.push_str(&launch_prompt::shell_quote(&bin)),
         _ => cmd.push_str("claude"),
     }
     if let Some(mode) = launch_mode(session.permission_mode.as_deref(), settings) {
@@ -136,7 +137,7 @@ pub fn terminal_command(
     }
     // `--` ends Claude's options, so a prompt like `--dangerously-skip-permissions`
     // is the prompt, never a flag (verified on Claude Code 2.1.292).
-    if let Some(arg) = new_prompt(session).as_deref().and_then(prompt_arg) {
+    if let Some(arg) = new_prompt(session).as_deref().and_then(launch_prompt::arg) {
         cmd.push_str(" -- ");
         cmd.push_str(&arg);
     }
@@ -146,35 +147,14 @@ pub fn terminal_command(
 /// Why a new session's prompt was left out of its command, to tell the person.
 pub fn prompt_notice(session: &ClaudeSessionLaunch) -> Option<String> {
     let prompt = new_prompt(session)?;
-    prompt_arg(&prompt).is_none().then(|| {
-        "Claude started without its prompt: on Windows a prompt can't contain \" % $ ` ! \
-         or line breaks. Paste it into Claude instead."
-            .to_string()
-    })
+    launch_prompt::arg(&prompt)
+        .is_none()
+        .then(|| launch_prompt::dropped_notice("Claude"))
 }
 
 /// The prompt a new session starts with; a resumed one has its conversation.
 fn new_prompt(session: &ClaudeSessionLaunch) -> Option<String> {
-    let prompt = session.prompt.as_deref().filter(|_| !session.resume)?;
-    let prompt = prompt.replace("\r\n", "\n").replace('\r', "\n");
-    let prompt = prompt.trim();
-    (!prompt.is_empty()).then(|| prompt.to_string())
-}
-
-/// A prompt as one argument for the terminal's shell, or None when it can't be.
-fn prompt_arg(prompt: &str) -> Option<String> {
-    if cfg!(windows) {
-        // cmd.exe and PowerShell share only double quotes, and neither honours
-        // the other's escapes inside them: leave out whatever could end the
-        // argument or expand rather than run something else.
-        return (!prompt.contains(['"', '%', '$', '`', '!', '\n']))
-            .then(|| format!("\"{prompt}\""));
-    }
-    Some(shell_quote(prompt))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r#"'"'"'"#))
+    launch_prompt::normalize(session.prompt.as_deref().filter(|_| !session.resume))
 }
 
 /// Keys that pick "Yes, I trust this folder" in Claude Code's trust dialog,
@@ -468,7 +448,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(cmd.contains(&shell_quote(file.to_str().unwrap())), "{cmd}");
+        assert!(cmd.contains(&launch_prompt::shell_quote(file.to_str().unwrap())), "{cmd}");
         let written = std::fs::read_to_string(&file).unwrap();
         let canonical = std::fs::canonicalize(&project_path).unwrap();
         assert!(written.contains(canonical.to_str().unwrap()), "{written}");

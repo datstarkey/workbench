@@ -56,7 +56,6 @@ pub struct StartBody {
     pub worktree_path: Option<String>,
     pub session_id: String,
     pub pane_id: Option<String>,
-    pub hook_socket: Option<String>,
     /// A picked Claude account (`""`: the default login); an id, never a path.
     /// Absent, the server decides (`claude_accounts::for_launch`).
     pub claude_account_id: Option<String>,
@@ -95,7 +94,7 @@ fn claude_start(
     let starting = agents.start_lock(&body.session_id);
     let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = agents.get(&body.session_id) {
-        return Ok(start_reply(&existing));
+        return Ok(start_reply(agents, &existing));
     }
     let account = workbench_core::claude_accounts::for_launch_saved(
         body.claude_account_id.as_deref(),
@@ -122,9 +121,10 @@ fn claude_start(
         cols: 120,
         rows: 40,
         pane_id: body.pane_id,
-        hook_socket: body.hook_socket,
         shell: None,
         claude_account_id: account,
+        codex_session: None,
+        native: false,
     };
     // The chat asks instead; trusting starts it again with `trustFolder`.
     let started = agents.open_terminal(
@@ -133,13 +133,14 @@ fn claude_start(
         crate::agent::trust_watch(terminals, trust_folder, cwd),
     )?;
     Ok(match started {
-        TerminalStart::Attached(session) => start_reply(&session),
+        TerminalStart::Attached(session) => start_reply(agents, &session),
         TerminalStart::Stopped(answer) => answer,
     })
 }
 
-fn start_reply(session: &AgentSession) -> Value {
-    let terminal = session.mod_link().and_then(|l| l.terminal_id.clone());
+/// A native pane's terminal isn't named: the desktop's view of it is that pane.
+fn start_reply(agents: &AgentManager, session: &AgentSession) -> Value {
+    let terminal = agents.own_terminal(session);
     json!({"sessionId": session.id(), "terminalId": terminal})
 }
 
@@ -156,7 +157,6 @@ pub struct CodexStartBody {
     #[serde(flatten)]
     pub options: workbench_core::codex_controls::LaunchOptions,
     pub pane_id: Option<String>,
-    pub hook_socket: Option<String>,
     #[serde(default)]
     pub attach_only: bool,
 }
@@ -193,7 +193,7 @@ pub async fn codex_start(
             project_path: body.project_path,
             worktree_path: body.worktree_path,
             pane_id: body.pane_id,
-            hook_socket: body.hook_socket,
+            hook_socket: None,
             claude_account_id: None,
             launch: Launch::Codex {
                 thread_id: body.session_id,
@@ -211,7 +211,7 @@ pub async fn codex_start(
 /// body's `ended` says someone ended it, vs it exited.
 fn attach_only(state: &AppState, id: &str) -> Response {
     match state.agents.get(id) {
-        Some(session) => Json(start_reply(&session)).into_response(),
+        Some(session) => Json(start_reply(&state.agents, &session)).into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -330,8 +330,14 @@ pub async fn agent_stop(
     Path(id): Path<String>,
     Query(q): Query<StopQuery>,
 ) -> ApiResult<StatusCode> {
-    let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop(&id, q.end))).await?;
+    let (agents, workspace) = (state.agents.clone(), state.workspace.clone());
+    crate::routes::blocking(move || {
+        if q.end {
+            workspace.close_pane(workspace.pane_for_session(&id));
+        }
+        Ok(agents.stop(&id, q.end))
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -589,7 +595,7 @@ fn handle(
         // A Claude terminal session restarts in the mode; Codex switches in
         // place. A desktop native terminal's `claude` can't be restarted from here.
         ClientMsg::Mode { mode } if session.kind == AgentKind::Claude => {
-            if session.mod_link().is_some_and(|l| l.terminal_id.is_some()) {
+            if state.agents.own_terminal(session).is_some() {
                 state.agents.mode_terminal(&state.terminals, session, &mode)
             } else {
                 anyhow::bail!("Switch it in the terminal with Shift+Tab.")
@@ -597,7 +603,7 @@ fn handle(
         }
         ClientMsg::Mode { mode } => session.set_mode(&mode),
         ClientMsg::Account { account_id } if session.kind == AgentKind::Claude => {
-            if session.mod_link().is_some_and(|l| l.terminal_id.is_some()) {
+            if state.agents.own_terminal(session).is_some() {
                 state
                     .agents
                     .account_terminal(&state.terminals, session, account_id)
@@ -792,7 +798,6 @@ mod tests {
                 worktree_path: None,
                 claude_account_id: None,
                 cwd: "/tmp".into(),
-                hook_socket: None,
                 resume_at: None,
                 permission_mode: None,
                 terminal_id: None,

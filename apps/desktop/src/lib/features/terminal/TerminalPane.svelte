@@ -23,7 +23,6 @@
 		getWorkbenchSettingsStore,
 		getWorkspaceStore
 	} from '$stores/context';
-	import { terminalHookSocket } from '$lib/server-mode';
 
 	let {
 		sessionId: paneId,
@@ -541,10 +540,6 @@
 				}
 			);
 
-			// Forward the hook-bridge socket so server-hosted claude/codex panes fire
-			// the hook bridge (activity/quiescence) exactly like local PTYs.
-			const hookSocket = (await terminalHookSocket()) ?? undefined;
-
 			const connectOpts = {
 				// projectPath MUST be the registered project — the server's
 				// resolve_cwd rejects an unregistered path; a worktree rides along in
@@ -557,7 +552,6 @@
 				rows: terminal.rows,
 				paneId,
 				shell: project.shell,
-				hookSocket,
 				claudeAccountId
 			};
 			if (existingServerTerminalId && workspaceStore.isAdoptedPane(paneId)) {

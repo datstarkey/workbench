@@ -3,6 +3,10 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Values Codex takes for `approval_policy` and `sandbox_mode` overrides.
+pub const APPROVAL_POLICIES: &[&str] = &["never", "on-request", "untrusted", "on-failure"];
+pub const SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOptions {
@@ -25,14 +29,14 @@ impl LaunchOptions {
         if self
             .codex_approval_policy
             .as_deref()
-            .is_some_and(|v| !["never", "on-request", "untrusted", "on-failure"].contains(&v))
+            .is_some_and(|v| !APPROVAL_POLICIES.contains(&v))
         {
             bail!("unknown Codex approval policy");
         }
         if self
             .codex_sandbox_mode
             .as_deref()
-            .is_some_and(|v| !["read-only", "workspace-write", "danger-full-access"].contains(&v))
+            .is_some_and(|v| !SANDBOX_MODES.contains(&v))
         {
             bail!("unknown Codex sandbox mode");
         }

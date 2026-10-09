@@ -184,8 +184,7 @@ pub fn settings_path() -> PathBuf {
     paths::workbench_config_dir().join(SETTINGS_FILE)
 }
 
-/// The hook bridge's `host:port`, which only the desktop runs for now; a
-/// standalone server has none, so its file carries no entry for it.
+/// The hook bridge's `host:port`, set by the server once its bridge is bound.
 static HOOK_SOCKET: Mutex<Option<String>> = Mutex::new(None);
 
 /// One writer of the file at a time, each reading the projects inside it, so

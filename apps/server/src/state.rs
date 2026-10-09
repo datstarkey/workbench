@@ -9,6 +9,7 @@ use crate::changes::Changes;
 use crate::host::HostControl;
 use crate::terminal::TerminalManager;
 use crate::usage::{ModelsCache, UsageCache};
+use crate::workspace::WorkspaceService;
 
 /// The long-lived session managers. Both are `Arc`-backed, so clones share the
 /// same terminals and chats — which is how the desktop's loopback and
@@ -24,6 +25,11 @@ pub struct Managers {
     /// Bumped when a route changes the saved Workbench settings, so the desktop
     /// reloads them.
     pub settings: Changes,
+    /// The workspace model every client renders, and the panes' processes.
+    pub workspace: WorkspaceService,
+    /// The embedding app shows native terminal views (the macOS desktop), to
+    /// its own loopback listener only.
+    pub native_views: bool,
 }
 
 impl Managers {
@@ -42,6 +48,8 @@ pub struct AppState {
     pub models: ModelsCache,
     pub host: Option<Arc<dyn HostControl>>,
     pub settings: Changes,
+    pub workspace: WorkspaceService,
+    pub native_views: bool,
     /// When `Some`, requests must present this as a bearer token. Only the
     /// standalone binary on a loopback bind (or with `--insecure-no-token`) runs
     /// with `None`; embedded listeners always carry one.
@@ -64,6 +72,8 @@ impl AppState {
             models: managers.models,
             host: managers.host,
             settings: managers.settings,
+            workspace: managers.workspace,
+            native_views: managers.native_views,
             token,
             revoked,
             local_port: None,
@@ -75,6 +85,8 @@ impl AppState {
         // Terminal plugins reach the first listener (the desktop's loopback one),
         // which outlives a LAN listener that server mode turns off.
         self.agents.bind_terminals(self.terminals.clone(), port);
+        self.workspace
+            .boot(self.terminals.clone(), self.agents.clone());
         self
     }
 }

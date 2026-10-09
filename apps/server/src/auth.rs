@@ -33,9 +33,14 @@ pub async fn require_bearer(
     // own API calls still carry the bearer token. WebSocket upgrades are also
     // exempt here because a browser WebSocket can't send an Authorization header —
     // each upgrade handler calls `authorize_ws` on its `?token=` query param.
-    // `/events/home` is an EventSource, which can't send headers either; its
-    // handler checks `?token=` (or the header) with `token_ok`.
-    if path == "/" || path == "/health" || path == crate::home_events::PATH || is_ws_path(path) {
+    // `/events/home` and `/events/workspace` are EventSources, which can't send
+    // headers either; their handlers check `?token=` (or the header) with `token_ok`.
+    if path == "/"
+        || path == "/health"
+        || path == crate::home_events::PATH
+        || path == crate::workspace::routes::EVENTS_PATH
+        || is_ws_path(path)
+    {
         return Ok(next.run(request).await);
     }
 
@@ -48,7 +53,7 @@ pub async fn require_bearer(
 }
 
 /// This listener is the one terminal plugins are pointed at.
-fn serves_mod(state: &AppState) -> bool {
+pub(crate) fn serves_mod(state: &AppState) -> bool {
     state.local_port.is_some() && state.local_port == state.agents.mod_port()
 }
 

@@ -106,7 +106,6 @@ macro_rules! build_invoke_handler {
             commands::apply_codex_integration,
             commands::get_hook_logs,
             commands::clear_hook_logs,
-            commands::terminal_hook_socket,
             commands::is_native_terminal_available,
             commands::get_package_info,
             git_commands::git_status,
@@ -204,10 +203,9 @@ pub fn run() {
             let handle = app.handle().clone();
             #[cfg(target_os = "macos")]
             menu::build(&handle).expect("failed to build menu");
-            let bridge = HookBridgeState::new(handle.clone());
-            // Each launch's sandbox-runtime file names the hook bridge's loopback
-            // port, which is ephemeral and only known once it is bound.
-            sandbox_runtime::set_hook_socket(bridge.address().map(String::from));
+            // The server owns the hook bridge (and names it to the sandbox file).
+            let hooks = app.state::<server_control::ServerControl>().hooks();
+            let bridge = HookBridgeState::new(handle.clone(), hooks);
             app.manage(bridge);
             // Activity now comes from the `workbench` Claude Code plugin; drop the
             // hook script older versions registered so events aren't reported twice.
