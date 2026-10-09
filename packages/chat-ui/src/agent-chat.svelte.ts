@@ -172,13 +172,15 @@ export class AgentChat {
 	private threadStart: Promise<string> | null = null;
 	/** Bumped by every connect; an older one still awaiting the server gives up. */
 	private generation = 0;
-	/** An `attachOnly` chat that ended was restarted here: this device now owns it. */
-	onTakeOver: (() => void) | null = null;
+	/**
+	 * The host restarts an ended session itself (the desktop sends its pane's
+	 * Restart to the server), then calls `attach()` once it runs again. Unset
+	 * (the phone), Restart starts the session from here.
+	 */
+	onRestart: (() => void) | null = null;
 	private echoedUsers = new Set<string>();
 	/** The session was ended (e.g. End on another device), so its view can close. */
 	onEnded: (() => void) | null = null;
-	/** The server terminal this Claude chat's `claude` runs in, once started. */
-	onTerminal: ((terminalId: string) => void) | null = null;
 	/** The Claude login the chat runs under (`undefined`: the default); follows the server's. */
 	accountId = $state<string | undefined>(undefined);
 	/** The chat moved to another Claude account (from here or another device). */
@@ -224,16 +226,22 @@ export class AgentChat {
 	};
 
 	/**
-	 * Start (or resume) the process, then attach. Also the "Restart" action: an
-	 * `attachOnly` chat re-attaches while it runs, and once ended it starts here.
+	 * The "Restart" action: an ended session restarts (`onRestart`, else from
+	 * here: an `attachOnly` chat stops being one); otherwise re-attach.
 	 */
 	open(): Promise<void> {
 		// Out of retries, a joined chat may still run on the other device: rejoin, don't take it.
 		const ended = this.status === 'failed' || (this.status === 'exited' && !this.lostConnection);
-		if (this.body.attachOnly && ended) {
-			this.body = { ...this.body, attachOnly: false };
-			this.onTakeOver?.();
+		if (ended && this.onRestart) {
+			this.onRestart();
+			return Promise.resolve();
 		}
+		if (this.body.attachOnly && ended) this.body = { ...this.body, attachOnly: false };
+		return this.attach();
+	}
+
+	/** Start (unless `attachOnly`) and attach afresh, e.g. once a restarted session runs. */
+	attach(): Promise<void> {
 		if (this.retryTimer) clearTimeout(this.retryTimer);
 		this.ws?.close(); // a Restart must not leave the old socket behind
 		this.ws = null;
@@ -289,8 +297,6 @@ export class AgentChat {
 				: await this.startThread();
 			if (stale()) return;
 			this.sessionId = sessionId;
-			const terminal = this.api.terminalId?.(sessionId);
-			if (terminal) this.onTerminal?.(terminal);
 			url = await this.api.socketUrl(sessionId);
 		} catch (e) {
 			if (stale()) return;
