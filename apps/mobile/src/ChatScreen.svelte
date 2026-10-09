@@ -63,7 +63,7 @@
 		{ draft: drafts.get(opened), reconnectOnWake: true }
 	);
 	// Restart / Try again on an ended chat restarts the pane on the host; the attach then waits for it.
-	chat.onTakeOver = () => void client.restart(entry.tab.id);
+	chat.onRestart = () => void client.restart(entry.tab.id);
 	const draft = chat.draft;
 	const name = agentName(chat.agent);
 	const isClaude = chat.agent === 'claude';

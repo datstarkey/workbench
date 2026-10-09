@@ -1,49 +1,22 @@
 /**
  * WS-backed terminal connection for xterm panes.
  *
- * Each xterm pane owns one `TerminalConnection`. It talks to the embedded
- * server's TerminalManager via the same wire protocol as the mobile client:
+ * Each xterm pane owns one `TerminalConnection`, attached to the server
+ * terminal its pane runs in (`pane.terminalId`). The server's workspace
+ * service starts and ends terminals; a pane never creates one. Wire protocol,
+ * shared with the mobile client:
  *   client → server  text JSON  {"t":"i","d":…} input
  *                               {"t":"r","c":…,"r":…} resize
- *   server → client  binary     raw PTY bytes
+ *   server → client  binary     raw PTY bytes (the first frame replays scrollback)
  *                    text JSON  {"t":"takeover"} or {"t":"exit","code":N|null}
  *
- * Boot sequence
- * ─────────────
- * 1. `connect()` calls `terminalServerStatus()` to get the always-on loopback
- *    address/token (NOT the opt-in LAN server).
- * 2. If a persisted server-terminal id is passed and still alive on the server,
- *    re-attach to it; otherwise POST /remote/terminals to create a fresh PTY.
- * 3. Open WebSocket ws://<addr>/remote/terminals/<id>/ws[?token=…].
- * 4. On WS `open` send an initial resize so the PTY starts at the correct size.
- *
- * Single-attach lease
- * ───────────────────
- * The server enforces single-attach: if a second client attaches, the first
- * receives a {"t":"takeover"} frame then its socket is closed. `onExit` is
- * fired with `{ reason: 'taken_over' }` in that case, and the pane stays
- * detached until the user calls `takeControl()` — never automatically, or two
- * devices would kick each other back and forth.
- *
- * PTY persistence
- * ───────────────
- * The PTY lives in the server process. Closing the WS (navigate away, webview
- * reload) just detaches — the shell keeps running and can be resumed by passing
- * the same server-terminal id back to `connect()`. Use `deleteServerTerminal()`
- * to actually kill the PTY when the user intentionally closes the pane.
+ * The server allows one attacher: a second one sends {"t":"takeover"} to the
+ * first, which stays detached until the person picks "Take control" — never
+ * automatically, or two devices would kick each other back and forth. Closing
+ * the socket only detaches; the terminal keeps running.
  */
 
-import { terminalServerStatus } from '$lib/server-mode';
-import {
-	DEFAULT_TIMEOUT_MS,
-	parseTerminalControlFrame,
-	terminalWsUrl,
-	withTimeout
-} from '@workbench/transport';
-import type {
-	CreateServerTerminalBody,
-	ServerTerminalMeta as TerminalMeta
-} from '$types/workbench';
+import { loopbackServer, parseTerminalControlFrame, terminalWsUrl } from '@workbench/transport';
 
 /** Payload delivered to the `onData` callback. */
 export type TerminalDataPayload = Uint8Array;
@@ -57,118 +30,11 @@ export interface TerminalExitInfo {
 	code?: number;
 }
 
-/** A fresh PTY's spec: the POST /remote/terminals body. */
-export type ConnectOptions = CreateServerTerminalBody;
-
-/** Resolved loopback server coordinates. */
-export interface ServerInfo {
-	baseUrl: string;
-	token?: string;
-}
-
-/**
- * Cached loopback server coordinates. The embedded server boots once at startup
- * and keeps its ephemeral port for the process lifetime, so every pane resolves
- * the same address — memoize it instead of doing one IPC round-trip per pane.
- * Cleared on failure so a probe before the server is up stays retryable.
- */
-let serverInfoCache: Promise<ServerInfo> | null = null;
-
-export function resolveServer(): Promise<ServerInfo> {
-	if (!serverInfoCache) {
-		serverInfoCache = (async () => {
-			const status = await terminalServerStatus();
-			if (!status.running || !status.address) {
-				throw new Error('embedded server is not running');
-			}
-			return { baseUrl: `http://${status.address}`, token: status.token ?? undefined };
-		})();
-		serverInfoCache.catch(() => {
-			serverInfoCache = null;
-		});
-	}
-	return serverInfoCache;
-}
-
-function authHeaders(token?: string): Record<string, string> {
-	return token ? { authorization: `Bearer ${token}` } : {};
-}
-
-/**
- * Server terminal ids this webview created, attached to or killed. Adoption
- * skips them: the loopback list is shared with other devices, and a pane's own
- * PTY is visible there before its id reaches the workspace store (or, after a
- * kill, until the DELETE lands).
- */
-const claimedIds = new Set<string>();
-/** Creates whose id isn't known yet — the server may already list it. */
-let pendingCreates = 0;
-
-export function isClaimedLocally(id: string): boolean {
-	return claimedIds.has(id);
-}
-
-/** A terminal something else kills (a chat's stop): never adopt it meanwhile. */
-export function claimServerTerminal(id: string): void {
-	claimedIds.add(id);
-}
-
-/** Test-only: drop the memoized server-info cache and claims so tests stay isolated. */
-export function __resetServerInfoCache(): void {
-	serverInfoCache = null;
-	claimedIds.clear();
-	pendingCreates = 0;
-}
-
-/**
- * List the loopback server's terminals (including ones opened from other
- * devices). Null when unavailable — including while a local create is in
- * flight, whose not-yet-claimed id would look like a foreign terminal.
- */
-export async function listServerTerminals(): Promise<TerminalMeta[] | null> {
-	try {
-		const { baseUrl, token } = await resolveServer();
-		// Only this poll has a deadline: a timeout just skips an adoption round. The
-		// create, delete and liveness requests act on what the server did, so they wait.
-		const list: unknown = await withTimeout(
-			'GET /remote/terminals',
-			DEFAULT_TIMEOUT_MS,
-			async (signal) => {
-				const resp = await fetch(`${baseUrl}/remote/terminals`, {
-					headers: authHeaders(token),
-					signal
-				});
-				return resp.ok ? resp.json() : null;
-			}
-		);
-		if (pendingCreates > 0 || !Array.isArray(list)) return null;
-		return list as TerminalMeta[];
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Manages a single WebSocket connection to an embedded-server terminal session.
- *
- * Lifecycle:
- *   1. Construct with `onData` / `onExit` / `onReset` callbacks.
- *   2. Call `connect(opts, existingId?)` — async, resolves once the WS is open
- *      and the initial resize frame has been sent.
- *   3. Use `write()` / `resize()` to drive the PTY.
- *   4. Call `dispose()` to detach (close the WS — PTY keeps running).
- */
+/** One xterm pane's attachment to its server terminal. */
 export class TerminalConnection {
-	/** Server-assigned terminal id, available after `connect()` resolves. */
-	terminalId: string | null = null;
-	/** What the server said about how the PTY it created started, if anything. */
-	notice: string | null = null;
-	/** The account the server ran a Claude create under (`''`: the default login). */
-	claudeAccountId: string | null = null;
+	readonly terminalId: string;
 
 	private ws: WebSocket | null = null;
-	/** Options from the last connect, reused by `takeControl()`. */
-	private lastOpts: ConnectOptions | null = null;
 	private readonly onData: (data: TerminalDataPayload) => void;
 	private readonly onExit: (info: TerminalExitInfo) => void;
 	private readonly onReset?: () => void;
@@ -185,133 +51,41 @@ export class TerminalConnection {
 	/**
 	 * @param onData  Called with raw PTY output bytes as they arrive.
 	 * @param onExit  Called exactly once when the session ends or is taken over.
-	 * @param onReset Called before scrollback replay (used to clear xterm's
-	 *                viewport so the replay doesn't double-print old output).
+	 * @param onReset Called before scrollback replay, so it isn't printed twice.
 	 */
 	constructor(
+		terminalId: string,
 		onData: (data: TerminalDataPayload) => void,
 		onExit: (info: TerminalExitInfo) => void,
 		onReset?: () => void
 	) {
+		this.terminalId = terminalId;
 		this.onData = onData;
 		this.onExit = onExit;
 		this.onReset = onReset;
 	}
 
-	/** Fire `onExit` at most once across the control-frame and onclose paths. */
 	private deliverExit(info: TerminalExitInfo): void {
 		if (this.exitDelivered) return;
 		this.exitDelivered = true;
 		this.onExit(info);
 	}
 
-	/**
-	 * Re-attach to a persisted PTY if it is still alive, else create a fresh one.
-	 *
-	 * @param opts        Spec for a freshly-created PTY.
-	 * @param existingId  Persisted server-terminal id to re-attach to (webview
-	 *                    reload survival). Ignored if the PTY no longer exists.
-	 *
-	 * Resolves once the socket is open and the initial resize frame is sent.
-	 */
-	async connect(opts: ConnectOptions, existingId?: string): Promise<void> {
-		this.lastOpts = opts;
-		const { baseUrl, token } = await resolveServer();
+	/** Attach at this size; resolves once the socket is open and sized. */
+	async connect(cols: number, rows: number): Promise<void> {
+		const { baseUrl, token } = await loopbackServer();
 		if (this.disposed) return;
-
-		// Re-attach to the surviving PTY (no POST, scrollback replayed) when the
-		// persisted id is still alive; otherwise create a fresh one.
-		const reattach = existingId ? await this.isAlive(baseUrl, token, existingId) : false;
-		if (this.disposed) return;
-		const id = reattach ? existingId! : await this.createTerminal(baseUrl, token, opts);
-		claimedIds.add(id);
-		this.terminalId = id;
-
-		// dispose() may have landed while we awaited create/isAlive — before this.ws
-		// existed, so its close() was a no-op. Kill the freshly-created PTY (a
-		// reattach leaves the existing one alone) and never open a socket.
-		if (this.disposed) {
-			if (!reattach) {
-				void deleteServerTerminal(id);
-				this.terminalId = null;
-			}
-			return;
-		}
-
-		await this.openSocket(terminalWsUrl(baseUrl, id, token), opts);
+		await this.openSocket(terminalWsUrl(baseUrl, this.terminalId, token), cols, rows);
 	}
 
-	/**
-	 * Remember an existing server terminal without attaching, so a device that
-	 * currently holds it isn't kicked. The pane attaches on `takeControl()`.
-	 */
-	connectDetached(opts: ConnectOptions, existingId: string): void {
-		this.lastOpts = opts;
-		this.terminalId = existingId;
-		claimedIds.add(existingId);
-	}
-
-	/**
-	 * Re-attach after a takeover (or a detached start), kicking whichever device
-	 * holds the terminal now. Falls back to a fresh PTY if it has since died, so
-	 * callers should re-read `terminalId` afterwards.
-	 */
+	/** Re-attach after a takeover, kicking whichever device holds the terminal now. */
 	async takeControl(cols: number, rows: number): Promise<void> {
-		if (!this.lastOpts) throw new Error('terminal was never connected');
 		this.detachSocket();
 		this.exitDelivered = false;
-		await this.connect({ ...this.lastOpts, cols, rows }, this.terminalId ?? undefined);
+		await this.connect(cols, rows);
 	}
 
-	/** Whether a server terminal with `id` still exists and is alive. */
-	private async isAlive(baseUrl: string, token: string | undefined, id: string): Promise<boolean> {
-		try {
-			const resp = await fetch(`${baseUrl}/remote/terminals`, { headers: authHeaders(token) });
-			if (!resp.ok) return false;
-			const list = (await resp.json()) as TerminalMeta[];
-			return Array.isArray(list) && list.some((t) => t.id === id && t.alive);
-		} catch {
-			return false;
-		}
-	}
-
-	/** Create a server-side PTY and return its id. */
-	private async createTerminal(
-		baseUrl: string,
-		token: string | undefined,
-		opts: ConnectOptions
-	): Promise<string> {
-		pendingCreates += 1;
-		try {
-			return await this.postTerminal(baseUrl, token, opts);
-		} finally {
-			pendingCreates -= 1;
-		}
-	}
-
-	private async postTerminal(
-		baseUrl: string,
-		token: string | undefined,
-		opts: ConnectOptions
-	): Promise<string> {
-		const resp = await fetch(`${baseUrl}/remote/terminals`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json', ...authHeaders(token) },
-			body: JSON.stringify({ ...opts, shell: opts.shell || undefined })
-		});
-		if (!resp.ok) {
-			throw new Error(`POST /remote/terminals failed: ${resp.status}`);
-		}
-		const meta: TerminalMeta = await resp.json();
-		claimedIds.add(meta.id);
-		this.notice = meta.notice ?? null;
-		this.claudeAccountId = meta.claudeAccountId ?? null;
-		return meta.id;
-	}
-
-	/** Open the attach WebSocket and wire up the message/close handlers. */
-	private openSocket(wsUrl: string, opts: ConnectOptions): Promise<void> {
-		// Disposed between connect()'s guard and here → don't open a socket.
+	private openSocket(wsUrl: string, cols: number, rows: number): Promise<void> {
 		if (this.disposed) return Promise.resolve();
 
 		// The first binary frame is scrollback replay — reset xterm before it so
@@ -324,7 +98,7 @@ export class TerminalConnection {
 
 		return new Promise<void>((resolve, reject) => {
 			ws.onopen = () => {
-				ws.send(JSON.stringify({ t: 'r', c: opts.cols, r: opts.rows }));
+				ws.send(JSON.stringify({ t: 'r', c: cols, r: rows }));
 				resolve();
 			};
 
@@ -354,8 +128,7 @@ export class TerminalConnection {
 
 			ws.onclose = () => {
 				// A clean exit/takeover already delivered its control frame; an
-				// intentional dispose() must stay silent. Only surface onExit for an
-				// unexpected drop (network, server gone) with no prior control frame.
+				// intentional dispose() must stay silent.
 				if (this.disposed) return;
 				this.deliverExit({ reason: 'ended' });
 			};
@@ -376,10 +149,7 @@ export class TerminalConnection {
 		}
 	}
 
-	/**
-	 * Detach (close the WebSocket). The PTY keeps running on the server so it can
-	 * be resumed. Does NOT fire `onExit` — this is an intentional teardown.
-	 */
+	/** Detach (close the WebSocket); the terminal keeps running on the server. */
 	dispose(): void {
 		this.disposed = true;
 		this.detachSocket();
@@ -388,29 +158,11 @@ export class TerminalConnection {
 	/** Close the socket with its handlers dropped, so the close can't fire onExit. */
 	private detachSocket(): void {
 		if (this.ws) {
-			// Drop handlers before close so the onclose path can't fire onExit.
 			this.ws.onmessage = null;
 			this.ws.onclose = null;
 			this.ws.onerror = null;
 			if (this.ws.readyState !== WebSocket.CLOSED) this.ws.close();
 		}
 		this.ws = null;
-	}
-}
-
-/**
- * Kill a server-side PTY (used when the user intentionally closes a pane/tab so
- * the PTY doesn't leak on the server, consuming the terminal cap). Best-effort.
- */
-export async function deleteServerTerminal(id: string): Promise<void> {
-	claimedIds.add(id);
-	try {
-		const { baseUrl, token } = await resolveServer();
-		await fetch(`${baseUrl}/remote/terminals/${id}`, {
-			method: 'DELETE',
-			headers: authHeaders(token)
-		});
-	} catch {
-		// Server may be gone / already killed — nothing to do.
 	}
 }

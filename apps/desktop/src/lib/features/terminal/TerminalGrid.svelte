@@ -4,35 +4,36 @@
 	import { toast } from 'svelte-sonner';
 	import { cn } from '@workbench/ui';
 	import SessionChat from '$features/chat/SessionChat.svelte';
-	import { paneAgent } from '$features/chat/pane-handoff';
+	import PaneState from '$features/terminal/PaneState.svelte';
 	import TerminalPane from '$features/terminal/TerminalPane.svelte';
-	import { claudeSessionLaunch } from '$lib/utils/claude';
+	import { attachable } from '$features/terminal/pane-status';
 	import { getWorkspaceStore } from '$stores/context';
 	import {
 		isAISessionType,
 		type PaneView,
 		type ProjectConfig,
-		type SplitDirection,
-		type TerminalPaneState
+		type TerminalTabState
 	} from '$types/workbench';
 
 	const workspaceStore = getWorkspaceStore();
 
 	let {
 		workspaceId,
-		panes,
-		split,
+		tab,
 		active,
 		project,
 		cwd
 	}: {
 		workspaceId: string;
-		panes: TerminalPaneState[];
-		split: SplitDirection;
+		tab: TerminalTabState;
 		active: boolean;
 		project: ProjectConfig;
+		/** The worktree, when the workspace is one. */
 		cwd?: string;
 	} = $props();
+
+	const panes = $derived(tab.panes);
+	const split = $derived(tab.split);
 
 	/** Panes mid-switch, and where they're going. */
 	const switching = new SvelteMap<string, PaneView>();
@@ -52,10 +53,12 @@
 
 <div class={`flex min-h-0 flex-1 ${split === 'vertical' ? 'flex-col' : 'flex-row'}`}>
 	{#each panes as pane, i (pane.id)}
-		{@const agent = isAISessionType(pane.type) ? paneAgent(pane) : null}
+		{@const agent = isAISessionType(pane.type) ? pane.type : null}
 		{@const chatSessionId = agent ? pane.claudeSessionId || undefined : undefined}
 		{@const canChat = agent === 'codex' || Boolean(chatSessionId)}
 		{@const inChat = canChat && pane.view === 'chat'}
+		{@const chatReady =
+			chatSessionId !== undefined && (pane.status === 'running' || pane.status === 'exited')}
 		{@const target = switching.get(pane.id)}
 		{#if i > 0}
 			<div
@@ -63,42 +66,31 @@
 			></div>
 		{/if}
 		<div class="relative min-h-0 min-w-0 flex-1">
-			{#if inChat && agent}
+			{#if inChat && agent && chatReady}
 				<!-- Only while visible: every grid stays mounted, and a hidden chat would keep streaming. -->
 				{#if active}
 					{#key chatSessionId}
 						<SessionChat
 							{agent}
 							paneId={pane.id}
+							tabId={tab.id}
 							sessionId={chatSessionId}
+							status={pane.status}
+							generation={pane.generation}
 							{project}
 							{cwd}
 							claudeAccountId={pane.claudeAccountId}
 							onShowTerminal={() => switchView(pane.id, 'terminal')}
-							onSessionIdChange={(id) => workspaceStore.updateAISessionByPaneId(pane.id, id, agent)}
 						/>
 					{/key}
 				{/if}
-			{/if}
-			<!-- A live terminal's chat is the same `claude`: keep its xterm attached underneath. -->
-			{#if !(inChat && agent) || pane.liveTerminal}
-				<div class={['h-full', inChat && 'hidden']}>
-					<!-- A rewind restarts a live chat's terminal: follow it to the new one. -->
-					{#key pane.liveTerminal ? workspaceStore.getServerTerminalId(pane.id) : pane.id}
-						<TerminalPane
-							sessionId={pane.id}
-							{project}
-							active={active && !inChat}
-							{cwd}
-							startupCommand={pane.startupCommand}
-							claudeSession={claudeSessionLaunch(pane)}
-							claudeAccountId={pane.claudeAccountId}
-							existingServerTerminalId={workspaceStore.getServerTerminalId(pane.id)}
-							onServerTerminalIdChange={(paneId, serverTerminalId) =>
-								workspaceStore.setServerTerminalId(paneId, serverTerminalId)}
-						/>
-					{/key}
-				</div>
+			{:else if !inChat && attachable(pane)}
+				<!-- A restart or rewind gives the pane a new terminal: follow it. -->
+				{#key pane.terminalId}
+					<TerminalPane paneId={pane.id} terminalId={pane.terminalId} {active} />
+				{/key}
+			{:else}
+				<PaneState {pane} tabId={tab.id} cwd={cwd ?? project.path} />
 			{/if}
 			{#if target}
 				<div

@@ -86,6 +86,20 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Vec<Effect>> {
                 cwd: ws.cwd().to_string(),
             }])
         }
+        Command::UpdateProject {
+            project_path,
+            new_path,
+            project_name,
+        } => Ok(lifecycle::update_project(
+            model,
+            &project_path,
+            &new_path,
+            &project_name,
+        )),
+        Command::AccountMoved {
+            pane_id,
+            account_id,
+        } => Ok(lifecycle::account_moved(model, &pane_id, account_id)),
         Command::SessionAttached {
             pane_id,
             session_id,

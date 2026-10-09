@@ -5,12 +5,11 @@
 	import AgentActionsMenu from '$features/agent-actions/AgentActionsMenu.svelte';
 	import RecentSessionList from '$features/workspaces/RecentSessionList.svelte';
 	import { effectivePath } from '$lib/utils/path';
-	import { getClaudeSessionStore, getProjectStore, getWorkspaceStore } from '$stores/context';
+	import { getClaudeSessionStore, getWorkspaceStore } from '$stores/context';
 	import type { ProjectWorkspace } from '$types/workbench';
 
 	const workspaceStore = getWorkspaceStore();
 	const claudeSessionStore = getClaudeSessionStore();
-	const projectStore = getProjectStore();
 
 	let {
 		workspace
@@ -18,7 +17,6 @@
 		workspace: ProjectWorkspace;
 	} = $props();
 
-	let wsProject = $derived(projectStore.getByPath(workspace.projectPath));
 	let wsCwd = $derived(effectivePath(workspace));
 
 	onMount(() => {
@@ -89,7 +87,7 @@
 			<button
 				type="button"
 				onclick={() => {
-					if (wsProject) workspaceStore.addTerminalTab(workspace.id, wsProject);
+					void workspaceStore.addTerminalTab(workspace.id);
 				}}
 				class="group flex w-full items-center gap-3 rounded-lg border border-wb-hair bg-wb-panel px-3 py-2.5 transition-colors hover:bg-wb-panel2"
 			>

@@ -69,8 +69,7 @@ macro_rules! build_invoke_handler {
             commands::read_chat_attachment,
             commands::save_projects,
             commands::open_in_vscode,
-            commands::load_workspaces,
-            commands::save_workspaces,
+            commands::watch_git_projects,
             commands::discover_claude_sessions,
             commands::claude_auth_status,
             commands::load_claude_settings,
@@ -251,10 +250,10 @@ pub fn run() {
         builder = builder
             .manage(native_terminal::NativeTerminalManager::new())
             .invoke_handler(build_invoke_handler!(
-                native_terminal_commands::create_native_terminal,
+                native_terminal_commands::attach_native_terminal,
                 native_terminal_commands::resize_native_terminal,
                 native_terminal_commands::set_native_terminal_visible,
-                native_terminal_commands::kill_native_terminal,
+                native_terminal_commands::detach_native_terminal,
                 native_terminal_commands::write_native_terminal,
                 native_notification_commands::is_native_notification_available,
                 native_notification_commands::send_native_notification,

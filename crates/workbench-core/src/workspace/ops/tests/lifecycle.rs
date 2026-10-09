@@ -319,3 +319,47 @@ fn boot_spawns_every_pane_resuming_its_session_and_sends_a_prompt_once() {
         "the prompt went with the first boot"
     );
 }
+
+#[test]
+fn a_moved_project_takes_its_workspaces_along_but_not_their_worktrees() {
+    let mut m = Model::default();
+    open(&mut m, None);
+    open(&mut m, Some(WORKTREE));
+    let update = |path: &str| Command::UpdateProject {
+        project_path: format!("{path}/"),
+        new_path: "/repo/renamed".into(),
+        project_name: "renamed".into(),
+    };
+    assert_eq!(apply(&mut m, update(PROJECT)).unwrap(), [Effect::Persist]);
+    for w in &m.workspaces {
+        assert_eq!(w.project_path, "/repo/renamed");
+        assert_eq!(w.project_name, "renamed");
+    }
+    assert_eq!(m.workspaces[1].worktree_path.as_deref(), Some(WORKTREE));
+    // Again, or another project: nothing changes.
+    assert!(apply(&mut m, update("/repo/renamed")).unwrap().is_empty());
+    assert!(apply(&mut m, update("/elsewhere")).unwrap().is_empty());
+}
+
+#[test]
+fn an_account_move_is_folded_into_a_claude_pane_and_restarts_use_it() {
+    let mut m = Model::default();
+    let ws = open(&mut m, None);
+    let (tab, claude, _) = new(&mut m, &ws, session(PaneKind::Claude));
+    let (_, shell, _) = new(&mut m, &ws, session(PaneKind::Shell));
+    let moved = |pane: &str| Command::AccountMoved {
+        pane_id: pane.into(),
+        account_id: "work".into(),
+    };
+    assert_eq!(apply(&mut m, moved(&claude)).unwrap(), [Effect::Persist]);
+    assert_eq!(m.pane(&claude).unwrap().account_id.as_deref(), Some("work"));
+    assert!(apply(&mut m, moved(&claude)).unwrap().is_empty());
+    assert!(apply(&mut m, moved(&shell)).unwrap().is_empty());
+    assert!(apply(&mut m, moved("gone")).unwrap().is_empty());
+
+    let effects = apply(&mut m, Command::Restart { tab_id: tab }).unwrap();
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::SpawnClaude { account_id: Some(a), .. } if a == "work"
+    )));
+}

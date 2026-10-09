@@ -134,6 +134,7 @@ impl WorkspaceService {
         let terminals = ctx.terminals.list();
         let summaries = ctx.agents.summaries(None);
         let mut moves = Vec::new();
+        let mut accounts = Vec::new();
         {
             let mut state = lock(&self.0.state);
             let panes: Vec<_> = state
@@ -172,6 +173,12 @@ impl WorkspaceService {
                         if pane.session_id.as_deref() != Some(s.session_id.as_str()) {
                             moves.push((pane.id.clone(), s.clone()));
                         }
+                        let account = s.claude_account_id.clone().unwrap_or_default();
+                        if pane.kind == PaneKind::Claude
+                            && pane.account_id.clone().unwrap_or_default() != account
+                        {
+                            accounts.push((pane.id.clone(), account));
+                        }
                     }
                     (PaneKind::Claude, None) => {
                         rt.title = None;
@@ -198,6 +205,13 @@ impl WorkspaceService {
             if changed {
                 state.gen += 1;
             }
+        }
+        // A chat's account switch: later spawns of its pane use the new login.
+        for (pane_id, account_id) in accounts {
+            let _ = self.fold_in(Command::AccountMoved {
+                pane_id,
+                account_id,
+            });
         }
         for (pane_id, s) in moves {
             if s.previous_ids.is_empty() {

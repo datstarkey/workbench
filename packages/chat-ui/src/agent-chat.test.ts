@@ -409,8 +409,6 @@ describe('AgentChat', () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const attach = { ...body, attachOnly: true };
 		const chat = new AgentChat(attach, fakeApi(start));
-		const onTakeOver = vi.fn();
-		chat.onTakeOver = onTakeOver;
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
 		FakeSocket.last!.emit({
 			t: 'snapshot',
@@ -424,12 +422,29 @@ describe('AgentChat', () => {
 
 		await chat.open();
 		expect(start).toHaveBeenLastCalledWith(attach);
-		expect(onTakeOver).not.toHaveBeenCalled();
 
 		FakeSocket.last!.emit({ t: 'exit', code: 0, message: null });
 		await chat.open();
-		expect(onTakeOver).toHaveBeenCalledOnce();
 		expect(start).toHaveBeenLastCalledWith({ ...body, attachOnly: false });
+		chat.dispose();
+	});
+
+	it('leaves restarting an ended session to its host, then re-attaches', async () => {
+		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
+		const attach = { ...body, attachOnly: true };
+		const chat = new AgentChat(attach, fakeApi(start));
+		const onRestart = vi.fn();
+		chat.onRestart = onRestart;
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		FakeSocket.last!.emit({ t: 'exit', code: 0, message: null });
+		const calls = start.mock.calls.length;
+
+		await chat.open();
+		expect(onRestart).toHaveBeenCalledOnce();
+		expect(start).toHaveBeenCalledTimes(calls);
+
+		await chat.attach();
+		expect(start).toHaveBeenLastCalledWith(attach);
 		chat.dispose();
 	});
 
@@ -571,14 +586,11 @@ describe('AgentChat', () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const attach = { ...body, attachOnly: true };
 		const { chat, ws } = await connected(fakeApi(start), attach);
-		const onTakeOver = vi.fn();
-		chat.onTakeOver = onTakeOver;
 		start.mockRejectedValueOnce(Object.assign(new Error('unauthorized'), { status: 401 }));
 		ws.onclose?.();
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(chat.status).toBe('exited');
 		await chat.open();
-		expect(onTakeOver).not.toHaveBeenCalled();
 		expect(start).toHaveBeenLastCalledWith(attach);
 		chat.dispose();
 	});
@@ -1001,8 +1013,6 @@ describe('AgentChat host lifecycle', () => {
 		const start = vi.fn<AgentApi['start']>().mockResolvedValue('sid');
 		const attach = { ...body, attachOnly: true };
 		const chat = new AgentChat(attach, fakeApi(start), { reconnectOnWake: true });
-		const onTakeOver = vi.fn();
-		chat.onTakeOver = onTakeOver;
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
 		const giveUp = async () => {
 			start.mockRejectedValue(new Error('Failed to fetch'));
@@ -1027,7 +1037,6 @@ describe('AgentChat host lifecycle', () => {
 		FakeSocket.last!.onclose?.();
 		await giveUp();
 		await chat.open();
-		expect(onTakeOver).not.toHaveBeenCalled();
 		expect(start).toHaveBeenLastCalledWith(attach);
 		chat.dispose();
 	});

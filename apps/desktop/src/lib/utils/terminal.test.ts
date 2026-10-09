@@ -7,7 +7,7 @@
  * in favour of direct WebSocket connections (see TerminalConnection).
  *
  * What remains testable here:
- *   - Native terminal IPC wrappers (createNativeTerminal, resizeNativeTerminal,
+ *   - Native terminal IPC wrappers (attachNativeTerminal, resizeNativeTerminal,
  *     etc.) — thin `invoke` shims whose correctness is worth a smoke test.
  *   - Integration-status helpers (checkCodexIntegration, applyCodexIntegration)
  *     which are unrelated to the xterm path.
@@ -24,56 +24,21 @@ beforeEach(() => {
 });
 
 describe('native terminal IPC wrappers', () => {
-	it('createNativeTerminal invokes create_native_terminal with the correct shape', async () => {
+	it("attachNativeTerminal shows the pane's server terminal", async () => {
 		invokeSpy.mockResolvedValueOnce(undefined);
-		const { createNativeTerminal } = await import('./terminal');
-
-		await createNativeTerminal({
-			sessionId: 'ses-1',
-			projectPath: '/projects/test',
-			shell: '/bin/zsh',
+		const { attachNativeTerminal } = await import('./terminal');
+		const request = {
+			terminalId: 'term-1',
 			x: 0,
 			y: 0,
 			width: 800,
 			height: 600,
-			fontSize: 14,
-			projectRoot: '/projects/test'
-		});
+			fontSize: 13
+		};
 
-		expect(invokeSpy).toHaveBeenCalledWith(
-			'create_native_terminal',
-			expect.objectContaining({
-				sessionId: 'ses-1',
-				projectPath: '/projects/test',
-				projectRoot: '/projects/test',
-				shell: '/bin/zsh',
-				fontSize: 14,
-				startupCommand: null
-			})
-		);
-	});
+		await attachNativeTerminal(request);
 
-	it('createNativeTerminal forwards a Claude session for Rust to build', async () => {
-		invokeSpy.mockResolvedValueOnce(undefined);
-		const { createNativeTerminal } = await import('./terminal');
-		const claudeSession = { id: '12345678-1234-1234-1234-123456789abc' };
-
-		await createNativeTerminal({
-			sessionId: 'ses-2',
-			projectPath: '/projects/test',
-			shell: '/bin/zsh',
-			x: 0,
-			y: 0,
-			width: 800,
-			height: 600,
-			fontSize: 14,
-			claudeSession
-		});
-
-		expect(invokeSpy).toHaveBeenCalledWith(
-			'create_native_terminal',
-			expect.objectContaining({ startupCommand: null, claudeSession })
-		);
+		expect(invokeSpy).toHaveBeenCalledWith('attach_native_terminal', request);
 	});
 
 	it('resizeNativeTerminal invokes resize_native_terminal', async () => {
@@ -91,13 +56,13 @@ describe('native terminal IPC wrappers', () => {
 		});
 	});
 
-	it('killNativeTerminal invokes kill_native_terminal', async () => {
+	it('detachNativeTerminal invokes detach_native_terminal', async () => {
 		invokeSpy.mockResolvedValueOnce(undefined);
-		const { killNativeTerminal } = await import('./terminal');
+		const { detachNativeTerminal } = await import('./terminal');
 
-		await killNativeTerminal('ses-1');
+		await detachNativeTerminal('ses-1');
 
-		expect(invokeSpy).toHaveBeenCalledWith('kill_native_terminal', { sessionId: 'ses-1' });
+		expect(invokeSpy).toHaveBeenCalledWith('detach_native_terminal', { sessionId: 'ses-1' });
 	});
 
 	it('setNativeTerminalVisible invokes set_native_terminal_visible', async () => {
