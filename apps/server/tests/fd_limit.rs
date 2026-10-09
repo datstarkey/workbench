@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::json;
 use workbench_server::{spawn_embedded, Managers};
 
 const TOKEN: &str = "e2e-token-0123456789abcdef0123456789";
@@ -96,10 +96,6 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
         .expect("server should bind");
     let addr = handle.addr();
     let base = format!("http://{addr}");
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
 
     // Each step may fail once descriptors run out; the probe says whether
     // the API still answers.
@@ -107,18 +103,7 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
     let mut chats = 0;
     for i in 0..CHATS {
         let sid = format!("5e5e5e5e-0000-4000-8000-0000000001{i:02}");
-        let Ok(res) = http
-            .post(format!("{base}/agent/claude"))
-            .bearer_auth(TOKEN)
-            .json(&json!({ "projectPath": project, "sessionId": sid }))
-            .send()
-            .await
-        else {
-            break;
-        };
-        let Ok(started) = res.json::<Value>().await else {
-            break;
-        };
+        let (_, started) = support::start_claude(&base, &project, &sid).await;
         let Some(terminal) = started["terminalId"].as_str() else {
             break;
         };
@@ -136,23 +121,7 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
     }
     let mut terminals = 0;
     for _ in 0..TERMINALS {
-        let Ok(res) = http
-            .post(format!("{base}/remote/terminals"))
-            .bearer_auth(TOKEN)
-            .json(&json!({ "projectPath": project }))
-            .send()
-            .await
-        else {
-            break;
-        };
-        let Some(id) = res
-            .json::<Value>()
-            .await
-            .ok()
-            .and_then(|m| m["id"].as_str().map(String::from))
-        else {
-            break;
-        };
+        let (_, id) = support::start_shell(&base, &project, None).await;
         match tokio_tungstenite::connect_async(format!(
             "ws://{addr}/remote/terminals/{id}/ws?token={TOKEN}"
         ))
@@ -172,7 +141,7 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
     drop(spare);
     // At the limit an accept can still win a descriptor something else just
     // let go of, a second or more apart: every request must be quick.
-    for path in ["/health", "/agent/claude"].repeat(3) {
+    for path in ["/health", "/agent"].repeat(3) {
         let (status, took) = tokio::task::block_in_place(|| probe(addr, path));
         assert!(
             status == "HTTP/1.1 200" && took < Duration::from_millis(500),
@@ -181,14 +150,6 @@ async fn the_api_answers_with_many_sessions_open_under_launchds_file_limit() {
     }
     assert_eq!((chats, terminals), (CHATS, TERMINALS));
 
-    let agents: Vec<Value> = http
-        .get(format!("{base}/agent/claude"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(agents.len(), CHATS);
+    let agents = support::get(&base, "/agent").await;
+    assert_eq!(agents.as_array().unwrap().len(), CHATS);
 }

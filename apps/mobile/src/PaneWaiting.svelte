@@ -5,7 +5,7 @@
 	import { useBack } from './back-navigation';
 	import type { PaneEntry } from './panes.ts';
 	import { paneTitle } from './panes.ts';
-	import type { PaneKind } from './workspace-stream.ts';
+	import type { PaneKind } from '@workbench/types';
 
 	/**
 	 * A pane whose chat or terminal isn't up: starting, asking for trust, or

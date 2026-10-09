@@ -9,7 +9,7 @@ class FakeSocket {
 	readyState = FakeSocket.OPEN;
 	sent: Record<string, unknown>[] = [];
 	onmessage: ((e: { data: string }) => void) | null = null;
-	onclose: (() => void) | null = null;
+	onclose: ((e?: { code?: number }) => void) | null = null;
 	constructor(readonly url: string) {
 		FakeSocket.all.push(this);
 	}
@@ -46,7 +46,6 @@ const items: TranscriptItem[] = [
 ];
 
 const api: AgentApi = {
-	start: async (b) => b.sessionId ?? 'new',
 	socketUrl: async (id) => `ws://test/agent/claude/${id}/ws`
 };
 

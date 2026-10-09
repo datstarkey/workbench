@@ -51,19 +51,7 @@ async fn an_answer_whose_reply_was_lost_is_answered_again() {
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     let client = reqwest::Client::new();
-    let res = client
-        .post(format!("{base}/agent/claude"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project, "sessionId": SID }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
 
     let mut link = Value::Null;
     for _ in 0..50 {
@@ -131,7 +119,7 @@ async fn an_answer_whose_reply_was_lost_is_answered_again() {
         .unwrap();
     assert_eq!(&again["answer"]["response"]["response"], answered);
     let agents: Value = client
-        .get(format!("{base}/agent/claude"))
+        .get(format!("{base}/agent"))
         .bearer_auth(TOKEN)
         .send()
         .await
@@ -180,7 +168,7 @@ async fn an_answer_whose_reply_was_lost_is_answered_again() {
     assert_eq!(fell, json!({"fallback": true}));
     let waiting = || async {
         let agents: Value = client
-            .get(format!("{base}/agent/claude"))
+            .get(format!("{base}/agent"))
             .bearer_auth(TOKEN)
             .send()
             .await
@@ -244,12 +232,6 @@ async fn an_answer_whose_reply_was_lost_is_answered_again() {
     );
     held.abort();
 
-    let res = client
-        .delete(format!("{base}/agent/claude/{SID}"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success());
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }

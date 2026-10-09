@@ -1,7 +1,7 @@
 use super::*;
 
-/// A `workspaces.json` as the desktop writes it today (`types::WorkspaceFile`
-/// plus `serverTerminalIds`), with real paths replaced.
+/// A legacy v1 `workspaces.json`, as desktops before the server-owned model
+/// wrote it (with `serverTerminalIds`), real paths replaced.
 const V1: &str = r#"{
   "workspaces": [
     {

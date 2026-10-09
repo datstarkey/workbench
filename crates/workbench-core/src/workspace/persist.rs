@@ -94,7 +94,7 @@ pub fn parse(content: &str) -> Result<WorkspacesFile> {
     }
 }
 
-// The desktop snapshot before the model (`types::WorkspaceFile`, plus what the
+// The legacy v1 desktop snapshot (`workspaces.json` before the model, plus what the
 // webview sends that older Rust dropped: `renderer`, per-pane `serverTerminalId`).
 
 #[derive(Deserialize)]

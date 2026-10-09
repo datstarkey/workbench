@@ -24,9 +24,18 @@ export interface WorkspacePane {
 	status: PaneStatus;
 	title: string | null;
 	busy: boolean;
+	/** Unix ms: the current turn's start, the last turn's end. */
+	busySince?: number | null;
+	turnEndedAt?: number | null;
+	/** The tool call the turn is running. */
+	running?: AgentSummary['running'];
 	waiting: AgentSummary['waiting'];
+	/** Unix ms the pane started waiting on `waiting`. */
+	waitingSince?: number | null;
 	/** Why the last spawn failed. */
 	error: string | null;
+	/** Something to tell the person about how this spawn started; show it once. */
+	notice?: string | null;
 	/** Bumped by every spawn (start, restart, mode switch). */
 	generation: number;
 }
@@ -92,6 +101,8 @@ export type WorkspaceCommand =
 	| ({
 			type: 'newSession';
 			kind: PaneKind;
+			/** Makes a retry of this command apply once (the transport sets it). */
+			requestId?: string;
 			resume?: string;
 			prompt?: string;
 			accountId?: string;
@@ -117,4 +128,15 @@ export interface WorkspaceCommandResult {
 	workspaceId?: string | null;
 	tabId?: string | null;
 	paneId?: string | null;
+}
+
+/** Each pane's spawn notice, keyed by pane and spawn so a host shows each one once. */
+export function paneNotices(workspaces: ServerWorkspace[]): { key: string; notice: string }[] {
+	return workspaces.flatMap((w) =>
+		w.tabs.flatMap((t) =>
+			t.panes.flatMap((p) =>
+				p.notice ? [{ key: `${p.id}:${p.generation}`, notice: p.notice }] : []
+			)
+		)
+	);
 }

@@ -1,13 +1,5 @@
-import {
-	createWorkspaceTransport,
-	type CommandResult,
-	type OpenEventSource,
-	type Workspace,
-	type WorkspaceCommand,
-	type WorkspacePane,
-	type WorkspaceServer,
-	type WorkspaceTransport
-} from './workspace-stream.ts';
+import type { ControlPlaneTransport, Unsubscribe } from '@workbench/transport';
+import type { ServerWorkspace, WorkspaceCommand, WorkspaceCommandResult } from '@workbench/types';
 
 /** How long a refresh waits for the new connection's snapshot. */
 const REFRESH_WAIT_MS = 5000;
@@ -16,58 +8,44 @@ const REFRESH_WAIT_MS = 5000;
  * The connected machine's workspaces and the one way to change them. The phone
  * only renders `workspaces` and sends commands; the host does the rest.
  */
-export interface PaneRemote {
-	readonly workspaces: Workspace[];
+export class WorkspaceRemote {
+	workspaces = $state.raw<ServerWorkspace[]>([]);
 	/** Whether the host answered lately. */
-	readonly online: boolean;
-	/** Called after every change to `workspaces`. */
-	onChange: (() => void) | null;
-	/** Keep `workspaces` current (true while the app is in front). */
-	follow(on: boolean): void;
-	/** A refusal resolves with `error`; a host that can't be reached rejects. */
-	command(cmd: WorkspaceCommand): Promise<CommandResult>;
-	/** Catch up now (back from the lock screen, Refresh). */
-	refresh(): Promise<void>;
-	/** Whether a `restart` of this pane can do anything here. */
-	canRestart(pane: WorkspacePane): boolean;
-	dispose(): void;
-}
-
-/** A host with `workspaceApi`: the stream and the command route. */
-export class WorkspaceRemote implements PaneRemote {
-	workspaces = $state.raw<Workspace[]>([]);
 	online = $state(true);
+	/** Called after every change to `workspaces`. */
 	onChange: (() => void) | null = null;
-	private readonly transport: WorkspaceTransport;
-	private unsubscribe: (() => void) | null = null;
+	private unsubscribe: Unsubscribe | null = null;
 	/** Refreshes waiting for the next snapshot. */
 	private waiters: (() => void)[] = [];
+	private readonly transport: ControlPlaneTransport;
 
-	constructor(server: WorkspaceServer, openEventSource?: OpenEventSource) {
-		this.transport = createWorkspaceTransport(server, openEventSource);
+	constructor(transport: ControlPlaneTransport) {
+		this.transport = transport;
 	}
 
+	/** Keep `workspaces` current (true while the app is in front). */
 	follow(on: boolean): void {
 		if (!on) {
 			this.unsubscribe?.();
 			this.unsubscribe = null;
 		} else if (!this.unsubscribe) {
-			this.unsubscribe = this.transport.subscribeWorkspace(
-				(s) => {
+			this.unsubscribe = this.transport.subscribeWorkspace({
+				snapshot: (s) => {
 					this.workspaces = s.workspaces;
 					for (const done of this.waiters.splice(0)) done();
 					this.onChange?.();
 				},
-				(live) => (this.online = live)
-			);
+				status: (live) => (this.online = live)
+			});
 		}
 	}
 
-	command(cmd: WorkspaceCommand): Promise<CommandResult> {
+	/** Rejects with the host's reason when it refuses, or when it can't be reached. */
+	command(cmd: WorkspaceCommand): Promise<WorkspaceCommandResult> {
 		return this.transport.workspaceCommand(cmd);
 	}
 
-	/** A new connection starts with a full snapshot; resolves once it is here (or gives up). */
+	/** Catch up now (back from the lock screen, Refresh): a new connection starts with a full snapshot. */
 	async refresh(): Promise<void> {
 		if (!this.unsubscribe) return;
 		const next = new Promise<void>((resolve) => {
@@ -77,10 +55,6 @@ export class WorkspaceRemote implements PaneRemote {
 		this.follow(false);
 		this.follow(true);
 		await next;
-	}
-
-	canRestart(pane: WorkspacePane): boolean {
-		return pane.kind !== 'shell';
 	}
 
 	dispose(): void {

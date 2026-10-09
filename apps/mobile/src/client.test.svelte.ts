@@ -52,14 +52,12 @@ describe('MobileClient', () => {
 		expect(c.hostUpdate).toBeNull();
 	});
 
-	it('connect() normalizes the url, sets the store, and loads the workspaces', async () => {
-		const c = await connected({
-			'/remote/terminals': () => jsonResponse([{ id: 't1', cwd: '/p', createdAt: 0, alive: true }])
-		});
+	it('connect() normalizes the url and sets the store and the workspace remote', async () => {
+		const c = await connected();
 		expect(c.connectError).toBeNull();
 		expect(c.store).not.toBeNull();
+		expect(c.remote).not.toBeNull();
 		expect(c.url).toBe('http://box:4317');
-		expect(c.panes).toHaveLength(1);
 	});
 
 	it('connect() refuses to connect without a token', async () => {

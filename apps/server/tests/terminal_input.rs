@@ -4,10 +4,12 @@
 //! Its own test binary because it runs the server on a one-worker runtime.
 #![cfg(unix)]
 
+mod support;
+
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
 use workbench_server::{spawn_embedded, Managers};
 
@@ -78,17 +80,8 @@ async fn paste_and_check(addr: &str) {
     let command = format!(
         "stty raw -echo; printf 'RE%sDY' A; sleep 5; head -c {PASTE} > pasted; printf 'DO%sE' N"
     );
-    let meta: Value = http
-        .post(format!("http://{addr}/remote/terminals"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project.path(), "command": command }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+    let base = format!("http://{addr}");
+    let (_, id) = support::start_shell(&base, project.path(), Some(&command)).await;
 
     let (ws, _) = tokio_tungstenite::connect_async(format!(
         "ws://{addr}/remote/terminals/{id}/ws?token={TOKEN}"

@@ -4,6 +4,8 @@
 //! Its own test binary because it sets process-global env.
 #![cfg(unix)]
 
+mod support;
+
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -52,19 +54,7 @@ async fn link_lines_are_delivered_until_acknowledged_and_folded_once() {
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     let client = reqwest::Client::new();
-    let res = client
-        .post(format!("{base}/agent/claude"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project, "sessionId": SID }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
     let mut link = Value::Null;
     for _ in 0..50 {
         if let Ok(read) =
@@ -136,7 +126,7 @@ async fn link_lines_are_delivered_until_acknowledged_and_folded_once() {
     };
     let title = || async {
         let agents: Value = client
-            .get(format!("{base}/agent/claude"))
+            .get(format!("{base}/agent"))
             .bearer_auth(TOKEN)
             .send()
             .await
@@ -163,12 +153,6 @@ async fn link_lines_are_delivered_until_acknowledged_and_folded_once() {
     assert!(posted(out("w1", 3, &["Old"]).await));
     assert_eq!(title().await, "Third");
 
-    let res = client
-        .delete(format!("{base}/agent/claude/{SID}"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success());
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }

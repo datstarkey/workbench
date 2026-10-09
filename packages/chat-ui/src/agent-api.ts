@@ -1,39 +1,16 @@
 import { agentWsUrl, DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from '@workbench/transport';
-import type {
-	AgentClientMsg,
-	AgentSummary,
-	StartAgentBody,
-	TaskTranscript,
-	UsageLimit
-} from '@workbench/types';
-
-/** Claude Code asks to trust the chat's folder before it starts; `path` is that folder. */
-export class NeedsTrustError extends Error {
-	constructor(readonly path: string) {
-		super(`Claude Code needs you to trust ${path} first`);
-	}
-}
+import type { AgentClientMsg, ChatTarget, TaskTranscript, UsageLimit } from '@workbench/types';
 
 /** What an {@link AgentChat} needs from the server; injectable for tests. */
 export interface AgentApi {
-	/**
-	 * Resolves to the session's id: a new Codex thread only gets one here.
-	 * Rejects with {@link NeedsTrustError} while Claude Code waits on its folder trust dialog.
-	 */
-	start(body: StartAgentBody): Promise<string>;
+	/** The session's socket (any of its ids); starting one is a workspace command. */
 	socketUrl(sessionId: string): Promise<string>;
 	/** The chat cwd's files for `@` mentions; absent leaves the menu out. */
-	files?(where: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]>;
+	files?(where: Pick<ChatTarget, 'projectPath' | 'worktreePath'>): Promise<string[]>;
 	/** A subagent's own conversation; null until the CLI writes it. */
 	taskTranscript?(sessionId: string, taskId: string): Promise<TaskTranscript | null>;
 }
 
-/**
- * A start waits for the session to come up: Claude's plugin to attach (up to
- * 30s, after a trust dialog or behind another start of the same id), or a
- * Codex thread's id (up to 30s).
- */
-const START_TIMEOUT_MS = 90_000;
 /** A plan-usage check can wait on a `claude -p /usage` run. */
 const USAGE_TIMEOUT_MS = 60_000;
 /** Listing a big repo's files for the `@` menu. */
@@ -69,12 +46,10 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 			if (!resp.ok) {
 				const err = await resp
 					.json()
-					.then((j: { error?: string; ended?: boolean }) => j)
+					.then((j: { error?: string }) => j)
 					.catch(() => undefined);
-				// `ended`: an attach-only start on a chat someone ended.
 				throw Object.assign(new Error(err?.error || `${resp.status} ${resp.statusText}`), {
-					status: resp.status,
-					ended: err?.ended === true
+					status: resp.status
 				});
 			}
 			return resp.status === 204 ? null : ((await resp.json()) as T);
@@ -83,15 +58,6 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 	const path = (id: string) => `/agent/claude/${encodeURIComponent(id)}`;
 
 	return {
-		async start(body: StartAgentBody): Promise<string> {
-			const res = await call<{
-				sessionId: string;
-				needsTrust?: string;
-			}>('POST', `/agent/${body.agent ?? 'claude'}`, body, START_TIMEOUT_MS);
-			if (res?.needsTrust) throw new NeedsTrustError(res.needsTrust);
-			if (!res?.sessionId) throw new Error('The server did not return a session id');
-			return res.sessionId;
-		},
 		async socketUrl(sessionId: string): Promise<string> {
 			const { baseUrl, token } = await server();
 			return agentWsUrl(baseUrl, sessionId, token ?? undefined);
@@ -99,7 +65,7 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 		async files({
 			projectPath,
 			worktreePath
-		}: Pick<StartAgentBody, 'projectPath' | 'worktreePath'>): Promise<string[]> {
+		}: Pick<ChatTarget, 'projectPath' | 'worktreePath'>): Promise<string[]> {
 			const query = new URLSearchParams({
 				projectPath,
 				...(worktreePath ? { worktreePath } : {})
@@ -113,37 +79,6 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 				'GET',
 				`${path(sessionId)}/tasks/${encodeURIComponent(taskId)}/transcript`
 			);
-		},
-		/**
-		 * Stop a session's process, e.g. before a terminal takes it over. `end`:
-		 * the person ended the chat, so other devices close it too.
-		 */
-		async stop(sessionId: string, opts?: { end?: boolean }): Promise<void> {
-			await call(
-				'DELETE',
-				`${path(sessionId)}${opts?.end ? '?end=true' : ''}`,
-				undefined,
-				SLOW_TIMEOUT_MS
-			);
-		},
-		/** Stop whatever chat session a pane owned; `end` as for `stop`. */
-		async stopPane(paneId: string, opts?: { end?: boolean }): Promise<void> {
-			await call(
-				'DELETE',
-				`/agent/claude?paneId=${encodeURIComponent(paneId)}${opts?.end ? '&end=true' : ''}`,
-				undefined,
-				SLOW_TIMEOUT_MS
-			);
-		},
-		/** Every live session, Claude and Codex. Servers older than Codex chat list Claude only. */
-		async list(): Promise<AgentSummary[]> {
-			try {
-				return (await call<AgentSummary[]>('GET', '/agent')) ?? [];
-			} catch (e) {
-				if ((e as { status?: number }).status !== 404) throw e;
-				const claude = (await call<AgentSummary[]>('GET', '/agent/claude')) ?? [];
-				return claude.map((s) => ({ ...s, agent: 'claude' as const }));
-			}
 		},
 		/**
 		 * The account's plan limits; empty without a plan. Cached a minute

@@ -11,7 +11,7 @@ import { UI_KEY } from './workspace-ui';
 import { releaseChat } from '$features/chat/chat-registry';
 
 vi.mock('$features/chat/chat-registry', () => ({ releaseChat: vi.fn() }));
-vi.mock('svelte-sonner', () => ({ toast: { error: vi.fn() } }));
+vi.mock('svelte-sonner', () => ({ toast: { error: vi.fn(), info: vi.fn() } }));
 
 const mockGitStore = {
 	branchByProject: {} as Record<string, string>,
@@ -102,6 +102,18 @@ describe('WorkspaceStore', () => {
 	}
 
 	describe('snapshots', () => {
+		it("shows a spawn's notice once, and again for the next spawn's", async () => {
+			const { toast } = await import('svelte-sonner');
+			const noted = (rev: number, generation: number) =>
+				snap(rev, [ws('w1', [tab('t1', [pane('p1', { notice: 'Prompt left out', generation })])])]);
+			await loaded(noted(1, 1));
+			transport.emitWorkspace(noted(2, 1));
+			expect(toast.info).toHaveBeenCalledTimes(1);
+			transport.emitWorkspace(noted(3, 2));
+			expect(toast.info).toHaveBeenCalledTimes(2);
+			expect(toast.info).toHaveBeenLastCalledWith('Prompt left out');
+		});
+
 		it('renders workspaces → tabs → panes from the snapshot', async () => {
 			await loaded(
 				snap(1, [

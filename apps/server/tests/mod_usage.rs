@@ -66,19 +66,7 @@ async fn plugin_usage_answers_plan_usage_and_a_model_pick_is_resolved() {
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     let client = reqwest::Client::new();
-    let res = client
-        .post(format!("{base}/agent/claude"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project, "sessionId": SID }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
 
     let mut usage = Value::Null;
     for _ in 0..50 {
@@ -128,12 +116,6 @@ async fn plugin_usage_answers_plan_usage_and_a_model_pick_is_resolved() {
                 "resolvedModel": "claude-sonnet-5-5", "effortLevels": []}))
     );
 
-    let res = client
-        .delete(format!("{base}/agent/claude/{SID}"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success());
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }

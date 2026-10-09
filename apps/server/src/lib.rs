@@ -11,7 +11,6 @@ pub mod changes;
 pub mod cli;
 pub use workbench_core::cwd;
 pub mod error;
-pub mod home_events;
 pub mod hook_bridge;
 pub mod host;
 pub mod mod_routes;

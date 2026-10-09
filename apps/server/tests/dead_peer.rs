@@ -13,7 +13,7 @@ use std::os::fd::FromRawFd;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use workbench_server::{spawn_embedded, Managers};
@@ -91,36 +91,13 @@ async fn a_client_that_vanishes_without_closing_is_dropped() {
         .await
         .expect("server should bind");
     let addr = handle.addr();
-    let http = reqwest::Client::new();
-
-    let terminal: Value = http
-        .post(format!("http://{addr}/remote/terminals"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = terminal["id"].as_str().unwrap();
+    let base = format!("http://{addr}");
+    let (_, id) = support::start_shell(&base, &project, None).await;
     vanishes(format!(
         "ws://{addr}/remote/terminals/{id}/ws?token={TOKEN}"
     ))
     .await;
 
-    let res = http
-        .post(format!("http://{addr}/agent/claude"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project, "sessionId": SID }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
+    support::start_claude(&base, &project, SID).await;
     vanishes(format!("ws://{addr}/agent/claude/{SID}/ws?token={TOKEN}")).await;
 }

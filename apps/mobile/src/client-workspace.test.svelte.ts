@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MobileClient } from './client.svelte.ts';
-import { LegacyRemote } from './legacy-remote.svelte.ts';
 import { WorkspaceRemote } from './remote.svelte.ts';
 import {
 	CONNECT_ROUTES,
@@ -11,7 +10,7 @@ import {
 	TOKEN,
 	type Route
 } from './test-helpers.ts';
-import type { Workspace, WorkspacePane } from './workspace-stream.ts';
+import type { ServerWorkspace as Workspace, WorkspacePane } from '@workbench/types';
 
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 
@@ -30,6 +29,7 @@ function pane(id: string, extra: Partial<WorkspacePane> = {}): WorkspacePane {
 		waiting: null,
 		waitingSince: null,
 		error: null,
+		generation: 1,
 		...extra
 	};
 }
@@ -39,7 +39,14 @@ function workspace(...panes: WorkspacePane[]): Workspace {
 		id: 'w1',
 		projectPath: '/repo',
 		projectName: 'repo',
-		tabs: panes.map((p) => ({ id: `tab-${p.id}`, label: 'Claude 1', kind: p.kind, panes: [p] }))
+		renderer: 'xterm',
+		tabs: panes.map((p) => ({
+			id: `tab-${p.id}`,
+			label: 'Claude 1',
+			kind: p.kind,
+			split: 'horizontal',
+			panes: [p]
+		}))
 	};
 }
 
@@ -67,13 +74,14 @@ describe('MobileClient on a host with the workspace API', () => {
 	async function connected(routes: Record<string, Route> = {}) {
 		const fetchSpy = routeFetch({
 			...CONNECT_ROUTES,
-			'/health': () => jsonResponse({ ok: true, workspaceApi: 1 }),
 			'/remote/terminals': () => jsonResponse([]),
 			'/projects': () => jsonResponse([{ name: 'repo', path: '/repo' }]),
 			'/projects/worktrees': () =>
 				jsonResponse([{ path: '/repo-wt', branch: 'feat/x', isMain: false }]),
 			'/workspace/commands': (init) => {
-				const cmd = JSON.parse(String(init?.body));
+				// A newSession's requestId is random: the transport's own tests cover it.
+				const { requestId, ...cmd } = JSON.parse(String(init?.body));
+				if (cmd.type === 'newSession') expect(requestId).toMatch(/^[0-9a-f]{32}$/);
 				commands.push(cmd);
 				return reply(cmd);
 			},
@@ -223,36 +231,11 @@ describe('MobileClient on a host with the workspace API', () => {
 		});
 		const starting = c.start('shell', { projectPath: '/repo' });
 		c.closeScreen();
+		await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
 		answer();
 		await starting;
 		snapshot(1, workspace(pane('p1', { kind: 'shell' })));
 		expect(c.activePane).toBeNull();
-	});
-
-	it('a chat re-attaches while its pane relaunches, instead of failing', async () => {
-		const { c } = await connected();
-		snapshot(1, workspace(pane('p1', { sessionId: 's' })));
-		const gone = Object.assign(new Error('no chat session'), { status: 404, ended: false });
-		const start = vi
-			.spyOn(c.agents, 'start')
-			.mockRejectedValueOnce(gone)
-			.mockResolvedValueOnce('s');
-		const attaching = c.attachApi.start({ projectPath: '/repo', sessionId: 's' });
-		await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
-		snapshot(2, workspace(pane('p1', { sessionId: 's', status: 'running' })));
-		await expect(attaching).resolves.toBe('s');
-		expect(start).toHaveBeenLastCalledWith({
-			projectPath: '/repo',
-			sessionId: 's',
-			attachOnly: true
-		});
-	});
-
-	it('an attach to a session no pane holds fails at once', async () => {
-		const { c } = await connected();
-		const gone = Object.assign(new Error('no chat session'), { status: 404, ended: false });
-		vi.spyOn(c.agents, 'start').mockRejectedValue(gone);
-		await expect(c.attachApi.start({ projectPath: '/repo', sessionId: 'x' })).rejects.toBe(gone);
 	});
 
 	it("shows the host's account, switches it on the host, and lets the host pick a new chat's", async () => {
@@ -281,6 +264,17 @@ describe('MobileClient on a host with the workspace API', () => {
 		active = 'work';
 		c.refreshAll();
 		await vi.waitFor(() => expect(c.accountId).toBe('work'));
+	});
+
+	it("shows a spawn's notice once", async () => {
+		const { c } = await connected();
+		snapshot(1, workspace(pane('p1', { notice: 'Prompt left out' })));
+		expect(c.notice).toBe('Prompt left out');
+		c.notice = null;
+		snapshot(2, workspace(pane('p1', { notice: 'Prompt left out', busy: true })));
+		expect(c.notice).toBeNull();
+		snapshot(3, workspace(pane('p1', { notice: 'Prompt left out', generation: 2 })));
+		expect(c.notice).toBe('Prompt left out');
 	});
 
 	it("a chat's account is the pane's, from the host", async () => {
@@ -347,50 +341,19 @@ describe('MobileClient on a host with the workspace API', () => {
 		expect(c.screens.openPaneId).toBe('p1');
 		expect(c.paneView(c.activePane!.pane)).toBe('chat');
 	});
-
-	it('chat screens only attach: the start a chat makes is attach-only', async () => {
-		const { c } = await connected();
-		const start = vi.spyOn(c.agents, 'start').mockResolvedValue('s');
-		await c.attachApi.start({ projectPath: '/repo', sessionId: 's' });
-		expect(start).toHaveBeenCalledWith({ projectPath: '/repo', sessionId: 's', attachOnly: true });
-	});
 });
 
 describe('MobileClient on an older host', () => {
-	beforeEach(() => {
-		stubLocalStorage();
-		vi.stubGlobal('EventSource', FakeEventSource);
-	});
-	afterEach(() => {
-		vi.restoreAllMocks();
-		vi.unstubAllGlobals();
-	});
+	beforeEach(() => stubLocalStorage());
+	afterEach(() => vi.unstubAllGlobals());
 
-	it('falls back to the old routes when /health has no workspaceApi', async () => {
-		const opened: string[] = [];
-		const fetchSpy = routeFetch({
-			...CONNECT_ROUTES,
-			'/remote/terminals': (init) =>
-				jsonResponse(
-					init?.method === 'POST' ? { id: 't9', cwd: '/repo', createdAt: 0, alive: true } : []
-				)
-		});
-		const c = new MobileClient(undefined, (url) => {
-			opened.push(url);
-			return new FakeEventSource(url) as unknown as EventSource;
-		});
+	it('asks for an update when /health has no workspaceApi', async () => {
+		routeFetch({ ...CONNECT_ROUTES, '/health': () => jsonResponse({ ok: true }) });
+		const c = new MobileClient();
 		c.url = 'box:4317';
 		c.token = TOKEN;
 		await c.connect();
-
-		expect(c.remote).toBeInstanceOf(LegacyRemote);
-		expect(opened).toEqual([`http://box:4317/events/home?token=${TOKEN}`]);
-		await c.start('shell', { projectPath: '/repo' });
-		const paths = fetchSpy.mock.calls.map(
-			([url, init]) => `${init?.method ?? 'GET'} ${new URL(url).pathname}`
-		);
-		expect(paths).toContain('POST /remote/terminals');
-		expect(paths).not.toContain('POST /workspace/commands');
-		expect(c.activePane?.pane.terminalId).toBe('t9');
+		expect(c.remote).toBeNull();
+		expect(c.connectError).toMatch(/^Update Workbench on your computer/);
 	});
 });

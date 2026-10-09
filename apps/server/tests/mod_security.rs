@@ -84,20 +84,9 @@ async fn a_terminal_token_reaches_only_its_own_session() {
         .expect("second listener should bind");
     let base = format!("http://{}", handle.addr());
     let client = reqwest::Client::new();
+    let mut panes = Vec::new();
     for sid in [SID_A, SID_B] {
-        let res = client
-            .post(format!("{base}/agent/claude"))
-            .bearer_auth(TOKEN)
-            .json(&json!({ "projectPath": project, "sessionId": sid }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            200,
-            "{}",
-            res.text().await.unwrap_or_default()
-        );
+        panes.push(support::start_claude(&base, &project, sid).await.0);
     }
 
     let link = read_link(&links, SID_A).await;
@@ -109,7 +98,11 @@ async fn a_terminal_token_reaches_only_its_own_session() {
         [ours, "/mine".into()],
         "ours first, the parent's copy gone"
     );
-    assert_eq!(link["WORKBENCH_PANE_ID"], Value::Null, "the parent's pane");
+    assert_eq!(
+        link["WORKBENCH_PANE_ID"],
+        panes[0].as_str(),
+        "its own pane, not the parent's"
+    );
     let hook = link["WORKBENCH_HOOK_SOCKET"].as_str().unwrap_or_default();
     assert!(
         hook.starts_with("127.0.0.1:") && hook.contains('#'),
@@ -134,7 +127,7 @@ async fn a_terminal_token_reaches_only_its_own_session() {
     };
     let summaries = || async {
         let list: Value = client
-            .get(format!("{base}/agent/claude"))
+            .get(format!("{base}/agent"))
             .bearer_auth(TOKEN)
             .send()
             .await
@@ -241,24 +234,9 @@ async fn a_terminal_token_reaches_only_its_own_session() {
         .iter()
         .all(|s| s["sessionId"] != "../../etc"));
 
-    // Both chats let go of their terminals, which keep polling until killed.
-    let terminals: Value = client
-        .get(format!("{base}/remote/terminals"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    for terminal in terminals.as_array().unwrap() {
-        let id = terminal["id"].as_str().unwrap();
-        client
-            .delete(format!("{base}/remote/terminals/{id}"))
-            .bearer_auth(TOKEN)
-            .send()
-            .await
-            .unwrap();
+    // Both chats let go of their terminals, which keep polling until closed.
+    for pane in &panes {
+        support::close_pane(&base, pane).await;
     }
     lan.stop().await;
     handle.stop().await;

@@ -132,7 +132,7 @@ impl WorkspaceService {
             return;
         };
         let terminals = ctx.terminals.list();
-        let summaries = ctx.agents.summaries(None);
+        let summaries = ctx.agents.summaries();
         let mut moves = Vec::new();
         let mut accounts = Vec::new();
         {

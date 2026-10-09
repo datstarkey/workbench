@@ -6,13 +6,15 @@ import type {
 	Unsubscribe
 } from './transport.ts';
 import { DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
-import { workspaceMethods } from './workspace.ts';
+import { workspaceMethods, type OpenEventSource } from './workspace.ts';
 
 export interface HttpTransportOptions {
 	/** Base URL of the workbench-server, e.g. `http://my-box:4317`. */
 	baseUrl: string;
 	/** Optional bearer token if the server was started with `--token`. */
 	token?: string;
+	/** Opens the workspace stream's EventSource (tests inject a fake). */
+	openEventSource?: OpenEventSource;
 }
 
 type Req = {
@@ -186,7 +188,7 @@ export function createHttpTransport(opts: HttpTransportOptions): ControlPlaneTra
 
 	return {
 		capabilities,
-		...workspaceMethods(async () => ({ baseUrl: base, token: opts.token })),
+		...workspaceMethods(async () => ({ baseUrl: base, token: opts.token }), opts.openEventSource),
 
 		async invoke(name, args) {
 			const req = toRequest(name, args);

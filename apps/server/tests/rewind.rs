@@ -119,23 +119,7 @@ async fn rewind_restarts_before_the_prompt_and_says_files_stay() {
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     let ws_url = format!("ws://{}/agent/claude/{SID}/ws?token={TOKEN}", handle.addr());
-    let start = || async {
-        let res = reqwest::Client::new()
-            .post(format!("{base}/agent/claude"))
-            .bearer_auth(TOKEN)
-            .json(&json!({ "projectPath": project, "sessionId": SID }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            200,
-            "{}",
-            res.text().await.unwrap_or_default()
-        );
-    };
-
-    start().await;
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     let snapshot = next_json(&mut ws).await;
     assert_eq!(prompts(&snapshot), ["first", "second"]);
@@ -163,7 +147,7 @@ async fn rewind_restarts_before_the_prompt_and_says_files_stay() {
 
     // Re-attaching (as clients do on `replaced`) finds the conversation cut
     // before the prompt, under the same id.
-    start().await;
+    assert_eq!(support::start_claude(&base, &project, SID).await.0, pane);
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     let snapshot = next_json(&mut ws).await;
     assert_eq!(snapshot["sessionId"], SID);
@@ -197,21 +181,12 @@ async fn rewind_restarts_before_the_prompt_and_says_files_stay() {
     assert_eq!(snapshot["sessionId"], OTHER);
     assert_eq!(prompts(&snapshot), ["from the other session"]);
     // Another conversation, not a continuation: the old id is free again.
-    let old = reqwest::Client::new()
-        .post(format!("{base}/agent/claude"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project, "sessionId": SID, "attachOnly": true }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(old.status(), 404);
+    let listed = support::get(&base, "/agent").await;
+    assert!(
+        !listed.to_string().contains(SID),
+        "the old id is no session's: {listed}"
+    );
 
-    let res = reqwest::Client::new()
-        .delete(format!("{base}/agent/claude/{OTHER}"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success());
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }

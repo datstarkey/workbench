@@ -10,7 +10,12 @@ import type {
 	TerminalPaneState,
 	TerminalTabState
 } from '$types/workbench';
-import type { WorkspaceCommand, WorkspaceCommandResult, WorkspaceSnapshot } from '$types/workspace';
+import {
+	paneNotices,
+	type WorkspaceCommand,
+	type WorkspaceCommandResult,
+	type WorkspaceSnapshot
+} from '$types/workspace';
 import { transport } from '$lib/transport';
 import { effectivePath } from '$lib/utils/path';
 import { releaseChat } from '$features/chat/chat-registry';
@@ -49,6 +54,8 @@ export class WorkspaceStore {
 	private seed = !hasSavedUi();
 	/** Ids a command made, kept from pruning until a snapshot at that rev arrives. */
 	private pending: Record<string, number> = {};
+	/** Spawn notices already shown, by pane and spawn. */
+	private shownNotices: Record<string, true> = {};
 	private unsubscribe: (() => void) | null = null;
 	private settingsStore = getWorkbenchSettingsStore();
 	private gitStore = getGitStore();
@@ -124,6 +131,11 @@ export class WorkspaceStore {
 		const pruned = pruneUi(this.ui, next.workspaces, Object.keys(this.pending));
 		if (pruned) this.setUi(pruned);
 		this.notifySwitch(prevProject);
+		for (const { key, notice } of paneNotices(next.workspaces)) {
+			if (key in this.shownNotices) continue;
+			this.shownNotices[key] = true;
+			toast.info(notice);
+		}
 	}
 
 	private setUi(ui: WorkspaceUi): void {

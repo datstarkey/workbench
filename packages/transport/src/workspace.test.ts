@@ -142,4 +142,45 @@ describe('workspace commands', () => {
 			)
 		).rejects.toThrow("Native terminals can't be split");
 	});
+
+	it('sends a newSession once more with the same requestId when the first got no answer', async () => {
+		const bodies: Record<string, unknown>[] = [];
+		const fetchSpy = vi.fn(async (_url: string, init: RequestInit) => {
+			bodies.push(JSON.parse(String(init.body)));
+			if (bodies.length === 1) throw new TypeError('Failed to fetch');
+			return new Response(JSON.stringify({ rev: 1, paneId: 'p1' }));
+		});
+		vi.stubGlobal('fetch', fetchSpy);
+		const result = await sendWorkspaceCommand(
+			{ baseUrl: 'http://h' },
+			{ type: 'newSession', projectPath: '/repo', kind: 'claude' }
+		);
+		expect(result.paneId).toBe('p1');
+		expect(bodies).toHaveLength(2);
+		expect(bodies[0].requestId).toMatch(/^[0-9a-f]{32}$/);
+		expect(bodies[1].requestId).toBe(bodies[0].requestId);
+	});
+
+	it('never resends a refused newSession or another command', async () => {
+		const fetchSpy = vi.fn(async (): Promise<Response> => {
+			throw new TypeError('Failed to fetch');
+		});
+		vi.stubGlobal('fetch', fetchSpy);
+		await expect(
+			sendWorkspaceCommand({ baseUrl: 'http://h' }, { type: 'closePane', paneId: 'p1' })
+		).rejects.toThrow();
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+		fetchSpy.mockImplementation(
+			async () =>
+				new Response(JSON.stringify({ rev: 2, error: 'no such project' }), { status: 400 })
+		);
+		await expect(
+			sendWorkspaceCommand(
+				{ baseUrl: 'http://h' },
+				{ type: 'newSession', projectPath: '/x', kind: 'shell' }
+			)
+		).rejects.toThrow('no such project');
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+	});
 });

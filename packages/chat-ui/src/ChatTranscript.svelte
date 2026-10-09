@@ -101,29 +101,12 @@
 >
 	{#if chat.status === 'failed'}
 		<div class="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 text-center">
-			<p class="font-medium">{name} couldn't start</p>
-			<p class="text-xs text-wb-ink-mute">{chat.error}</p>
+			<p class="font-medium">This session isn't running</p>
+			{#if chat.error}
+				<p class="text-xs text-wb-ink-mute">{chat.error}</p>
+			{/if}
 			<div class="flex gap-2">
-				<button type="button" class="chat-btn primary" onclick={() => chat.open()}>
-					Try again
-				</button>
-				{#if onShowTerminal}
-					<button type="button" class="chat-btn" onclick={onShowTerminal}>Use the terminal</button>
-				{/if}
-			</div>
-		</div>
-	{:else if chat.status === 'trust'}
-		<div class="mx-auto mt-10 flex max-w-md flex-col items-center gap-3 text-center">
-			<p class="font-medium">Trust this folder?</p>
-			<p class="text-xs text-wb-ink-mute">
-				Claude Code asks once before working in a new folder. {name} will be able to read, edit and run
-				files in
-				<span class="font-mono break-all text-wb-ink">{chat.trustPath}</span>.
-			</p>
-			<div class="flex gap-2">
-				<button type="button" class="chat-btn primary" onclick={() => chat.trustFolder()}>
-					Trust folder
-				</button>
+				<button type="button" class="chat-btn primary" onclick={() => chat.open()}>Restart</button>
 				{#if onShowTerminal}
 					<button type="button" class="chat-btn" onclick={onShowTerminal}>Use the terminal</button>
 				{/if}
