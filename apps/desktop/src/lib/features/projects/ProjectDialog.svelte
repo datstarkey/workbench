@@ -26,10 +26,10 @@
 	const settings = getWorkbenchSettingsStore();
 	/** Follows the active account; the other options are `accountChoices` keys. */
 	const ACTIVE = 'active';
-	const choices = $derived(accountChoices(settings.claudeAccounts));
+	const choices = $derived(accountChoices(settings.claudeAccounts, settings.defaultAccountName));
 	const accountOptions = $derived([
 		{ key: ACTIVE, label: 'Active account' },
-		...choices.map((c) => ({ key: c.key, label: c.id ? c.name : 'Default (~/.claude)' }))
+		...choices.map((c) => ({ key: c.key, label: c.id ? c.name : `${c.name} (~/.claude)` }))
 	]);
 	// `''` saves the default login; a removed account's id behaves as (and shows) the active one.
 	const accountKey = $derived(

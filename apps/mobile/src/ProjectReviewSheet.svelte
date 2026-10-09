@@ -106,9 +106,8 @@
 							bind:value={account}
 							onchange={refresh}
 						>
-							<option value="">Default</option>{#each client.accounts as a (a.id)}<option
-									value={a.id}>{a.name}</option
-								>{/each}
+							<option value="">{client.defaultAccountName}</option
+							>{#each client.accounts as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
 						</select>
 					</label>
 				{/if}

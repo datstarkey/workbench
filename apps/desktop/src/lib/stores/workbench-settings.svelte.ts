@@ -16,6 +16,7 @@ import type {
 	WorktreeStartPoint,
 	WorktreeStrategy
 } from '$types/workbench';
+import { defaultAccountName } from '$types/accounts';
 import { invoke } from '$lib/transport';
 // Desktop-local, like terminal IO: the srt settings file lives on this machine,
 // so this one call must never be routed to a remote instance's control plane.
@@ -32,7 +33,11 @@ import { rotateServerToken } from '$lib/server-mode';
 /** Fields on WorkbenchSettingsStore that can be updated via the generic `set()` method. */
 type SettableField = keyof Omit<
 	WorkbenchSettings,
-	'agentActions' | 'codexConfigApproved' | 'claudeAccounts' | 'activeClaudeAccount'
+	| 'agentActions'
+	| 'codexConfigApproved'
+	| 'claudeAccounts'
+	| 'activeClaudeAccount'
+	| 'defaultClaudeAccountName'
 >;
 
 /** `CLAUDE_CONFIG_DIR` must be absolute; Claude Code rejects a relative one. */
@@ -73,6 +78,7 @@ export class WorkbenchSettingsStore {
 	settingsWindowBounds: SettingsWindowBounds | null = $state(null);
 	claudeAccounts: ClaudeAccount[] = $state([]);
 	activeClaudeAccount: string | null = $state(null);
+	defaultClaudeAccountName: string | null = $state(null);
 	loaded = $state(false);
 	saving = $state(false);
 	dirty = $state(false);
@@ -99,6 +105,11 @@ export class WorkbenchSettingsStore {
 	/** Account id new Claude sessions launch with; undefined is the default `~/.claude`. */
 	readonly activeClaudeAccountId = $derived(
 		this.claudeAccounts.find((a) => a.id === this.activeClaudeAccount)?.id
+	);
+
+	/** What the default `~/.claude` account is called. */
+	readonly defaultAccountName = $derived(
+		defaultAccountName({ defaultClaudeAccountName: this.defaultClaudeAccountName })
 	);
 
 	readonly runnableActions = $derived.by(() =>
@@ -145,6 +156,7 @@ export class WorkbenchSettingsStore {
 		this.settingsWindowBounds = settings.settingsWindowBounds ?? null;
 		this.claudeAccounts = Array.isArray(settings.claudeAccounts) ? settings.claudeAccounts : [];
 		this.activeClaudeAccount = settings.activeClaudeAccount ?? null;
+		this.defaultClaudeAccountName = settings.defaultClaudeAccountName ?? null;
 		this.loaded = true;
 		this.dirty = false;
 
@@ -269,6 +281,28 @@ export class WorkbenchSettingsStore {
 		return account;
 	}
 
+	/** Rename an account; no id is the default `~/.claude` one. */
+	async renameClaudeAccount(id: string | undefined, name: string) {
+		const trimmed = name.trim();
+		if (!trimmed) throw new Error('Account name is required');
+		if (id !== undefined && !this.claudeAccounts.some((a) => a.id === id)) {
+			throw new Error('That account was removed');
+		}
+		const names = [
+			...(id === undefined ? [] : [this.defaultAccountName]),
+			...this.claudeAccounts.filter((a) => a.id !== id).map((a) => a.name)
+		];
+		if (names.some((n) => n.toLowerCase() === trimmed.toLowerCase())) {
+			throw new Error('Another account already has that name');
+		}
+		if (id === undefined) this.defaultClaudeAccountName = trimmed;
+		else
+			this.claudeAccounts = this.claudeAccounts.map((a) =>
+				a.id === id ? { ...a, name: trimmed } : a
+			);
+		await invoke('save_workbench_settings', { settings: this.toSettings() });
+	}
+
 	/** Forget an account. Its config folder (login, transcripts) is left on disk. */
 	async removeClaudeAccount(id: string) {
 		this.claudeAccounts = this.claudeAccounts.filter((a) => a.id !== id);
@@ -302,7 +336,8 @@ export class WorkbenchSettingsStore {
 			serverToken: this.serverToken,
 			settingsWindowBounds: this.settingsWindowBounds,
 			claudeAccounts: this.claudeAccounts,
-			activeClaudeAccount: this.activeClaudeAccount
+			activeClaudeAccount: this.activeClaudeAccount,
+			defaultClaudeAccountName: this.defaultClaudeAccountName
 		};
 	}
 
