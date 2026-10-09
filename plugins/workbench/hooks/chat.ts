@@ -2,10 +2,12 @@ import type { PermissionRequestDecision, Register, TurnStepInput } from 'claude-
 import * as server from './link';
 import { PendingAsks } from './asks';
 import { notifiedJob, startJob, stoppedJobs } from './jobs';
+import { Titles, TITLE_SYSTEM } from './titles';
 import {
 	askLine,
 	attachedFiles,
 	commandRowOutput,
+	KEEPALIVE_PROMPT,
 	midTurn,
 	modelOption,
 	promptText,
@@ -52,6 +54,9 @@ let modelPick: { id: string; choice: string; effortLevels?: string[]; base?: str
 let commandList = '';
 // The session title the chat was last sent.
 let title: string | undefined;
+const titles = new Titles();
+// The running turn answers the server's cache keep-alive: its reply names nothing.
+let keepAliveTurn = false;
 // The running main-thread turn, for an interrupt from chat.
 let runningTurn: string | undefined;
 // The live model's context window, from the latest measurement.
@@ -277,6 +282,16 @@ export function noteTitle(next: string | undefined) {
 	emit({ type: 'custom-title', customTitle: trimmed });
 }
 
+/**
+ * The title for a prompt's `sessionTitle`: one generated since the last prompt
+ * (shown in chat at once, made the engine's own here), else the engine's.
+ */
+export function promptTitle(current: string | undefined): string | undefined {
+	const generated = titles.takePending();
+	noteTitle(generated ?? current);
+	return generated;
+}
+
 function commandsLine(commands: readonly { name: string; description: string }[]) {
 	const list = commands.map((c) => ({ name: c.name, description: c.description }));
 	const text = JSON.stringify(list);
@@ -330,6 +345,11 @@ export const register: Register = (on) => {
 						if (!server.current()) return;
 						await server.rekey(() => $.session.id());
 						commandRan(slash.command, slash.args, result.text, await $.agent.list(), before);
+						if (slash.command === 'rename' && slash.args.trim())
+							await titles.nameByPerson({
+								get: (k) => $.store.get(k),
+								set: (k, v) => $.store.set(k, v)
+							});
 						// Notes for the model may start a turn a moment later (`/goal`),
 						// whose `result` ends the command; a `/rename`'s start none.
 						for (let i = 0; result.context?.length && i < 4; i++) {
@@ -494,6 +514,7 @@ export const register: Register = (on) => {
 		const link = server.current();
 		if (link && (e.reason === 'clear' || e.reason === 'resume')) {
 			server.expectRekey(e.reason);
+			titles.reset();
 			for (const task of [...taskAgents.keys()]) unlinkTask(task);
 			stoppedAgents.clear();
 			endedByStop.clear();
@@ -678,16 +699,20 @@ export const register: Register = (on) => {
 			// A prompt typed in the terminal while a turn ran, folded into that
 			// turn. Only a prompt is framed so (history shows only those too).
 			const text = promptText(m.content);
-			if (text.startsWith(QUEUED_PREFIX))
+			if (text.startsWith(QUEUED_PREFIX)) {
 				emit({
 					type: 'user',
 					uuid: e.uuid,
 					session_id: sessionId,
 					message: { role: 'user', content: text }
 				});
+				await titles.use(sessionId, (k) => $.store.get(k));
+				titles.notePrompt(text.slice(QUEUED_PREFIX.length));
+			}
 		} else if (m.isMeta) {
 			return next(e);
 		} else if (m.type === 'assistant' && e.door === 'response') {
+			if (!keepAliveTurn) titles.noteReply(promptText(m.content));
 			emit({
 				type: 'assistant',
 				uuid: e.uuid,
@@ -695,7 +720,13 @@ export const register: Register = (on) => {
 				message: { ...m, id: currentMessage || `wbmod-${e.uuid}`, model }
 			});
 		} else if (m.type === 'user' && e.door === 'prompt') {
-			if (echoed.delete(promptText(m.content))) return next(e);
+			const text = promptText(m.content);
+			keepAliveTurn = text === KEEPALIVE_PROMPT;
+			if (!keepAliveTurn && text !== QUEUED_NUDGE) {
+				await titles.use(sessionId, (k) => $.store.get(k));
+				titles.notePrompt(text);
+			}
+			if (echoed.delete(text)) return next(e);
 			emit({ type: 'user', uuid: e.uuid, session_id: sessionId, message: m });
 		} else if (m.type === 'user' && e.door === 'tool-result') {
 			const row: Line = { type: 'user', uuid: e.uuid, session_id: sessionId, message: m };
@@ -763,6 +794,32 @@ export const register: Register = (on) => {
 			} else {
 				emit({ type: 'result', subtype: 'success', is_error: false, modelUsage });
 			}
+			keepAliveTurn = false;
+			// Not awaited: the title follows the turn, nothing waits on it.
+			if (e.reason === 'answer')
+				void titles
+					.retitle(
+						title,
+						(prompt) =>
+							$.model
+								.complete({
+									model: 'haiku',
+									system: TITLE_SYSTEM,
+									prompt,
+									maxTokens: 40,
+									effort: 'low',
+									timeoutMs: 20_000
+								})
+								.then((r) => (r.isAnswered ? r.text : undefined)),
+						{
+							get: (k) => $.store.get(k),
+							set: (k, v) => $.store.set(k, v),
+							keys: () => $.store.keys(),
+							delete: (k) => $.store.delete(k)
+						}
+					)
+					.then((generated) => generated && noteTitle(generated))
+					.catch(() => {});
 			const unread = injected.length > 0;
 			injected = [];
 			// Entries live one turn at most, so a stale one can't hide a later prompt.
@@ -866,6 +923,12 @@ export const register: Register = (on) => {
 		if (!server.current()) return result;
 		await server.rekey(() => $.session.id());
 		commandRan(e.command, e.args, result.text, await $.agent.list(), before);
+		// A bare `/rename` asks the engine for a name: not a person's.
+		if (e.command === 'rename' && e.args.trim()) {
+			const id = server.current()?.sessionId;
+			if (id) await titles.use(id, (k) => $.store.get(k));
+			await titles.nameByPerson({ get: (k) => $.store.get(k), set: (k, v) => $.store.set(k, v) });
+		}
 		return result;
 	});
 

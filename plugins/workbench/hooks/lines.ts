@@ -19,6 +19,8 @@ export type Answer = {
  * finds them in the conversation already. Core's `QUEUED_NUDGE` hides it.
  */
 export const QUEUED_NUDGE = 'Please answer the message I sent while you were working.';
+/** The server's prompt-cache ping; core's `KEEPALIVE_PROMPT`. */
+export const KEEPALIVE_PROMPT = 'Workbench cache keep-alive. Reply with only "ok".';
 /** How the CLI frames a prompt typed while a turn runs; core's `QUEUED_PROMPT_PREFIX`. */
 export const QUEUED_PREFIX = 'The user sent a new message while you were working:\n';
 const ATTACHED_FILES = '\n\nAttached files (read each with the Read tool):\n';
