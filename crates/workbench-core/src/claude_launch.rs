@@ -448,7 +448,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert!(cmd.contains(&shell_quote(file.to_str().unwrap())), "{cmd}");
+        assert!(cmd.contains(&launch_prompt::shell_quote(file.to_str().unwrap())), "{cmd}");
         let written = std::fs::read_to_string(&file).unwrap();
         let canonical = std::fs::canonicalize(&project_path).unwrap();
         assert!(written.contains(canonical.to_str().unwrap()), "{written}");
