@@ -23,11 +23,7 @@
 		<div class="relative min-h-0 min-w-0 flex-1">
 			{#if attachable(primaryPane)}
 				{#key primaryPane.terminalId}
-					<NativeTerminalPane
-						sessionId={primaryPane.id}
-						terminalId={primaryPane.terminalId}
-						{active}
-					/>
+					<NativeTerminalPane terminalId={primaryPane.terminalId} {active} />
 				{/key}
 			{:else}
 				<PaneState pane={primaryPane} tabId={tab.id} {cwd} />

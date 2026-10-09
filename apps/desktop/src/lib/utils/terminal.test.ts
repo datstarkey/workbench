@@ -28,7 +28,6 @@ describe('native terminal IPC wrappers', () => {
 		invokeSpy.mockResolvedValueOnce(undefined);
 		const { attachNativeTerminal } = await import('./terminal');
 		const request = {
-			sessionId: 'pane-1',
 			terminalId: 'term-1',
 			x: 0,
 			y: 0,

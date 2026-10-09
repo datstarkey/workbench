@@ -15,11 +15,12 @@ use crate::server_control::ServerControl;
 use tauri::Manager;
 
 /// Show server terminal `terminal_id` (a native pane's, started by the
-/// workspace service) in a SwiftTerm view keyed by the pane id.
-#[allow(clippy::too_many_arguments)]
+/// workspace service) in a SwiftTerm view. The view is keyed by the terminal,
+/// not the pane: a restart's new view and the old one's detach, run on the
+/// blocking pool in any order, then never touch each other, and every later
+/// call and event (resize, detach, `terminal:exit`) names the terminal.
 #[tauri::command]
 pub async fn attach_native_terminal(
-    session_id: String,
     terminal_id: String,
     x: f64,
     y: f64,
@@ -36,7 +37,7 @@ pub async fn attach_native_terminal(
         app_handle
             .state::<NativeTerminalManager>()
             .attach(
-                session_id,
+                terminal_id.clone(),
                 terminal_id,
                 terminals,
                 (x, y, width, height, font_size),

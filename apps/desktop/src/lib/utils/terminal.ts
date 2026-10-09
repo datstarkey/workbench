@@ -58,9 +58,11 @@ export async function applyCodexIntegration(): Promise<boolean> {
 
 function ignoreSessionGone(): void {}
 
-/** Show the pane's server terminal in a SwiftTerm view. */
+/**
+ * Show a server terminal in a SwiftTerm view. The view is keyed by the
+ * terminal id: pass it as `sessionId` to every other native call.
+ */
 export async function attachNativeTerminal(request: {
-	sessionId: string;
 	terminalId: string;
 	x: number;
 	y: number;

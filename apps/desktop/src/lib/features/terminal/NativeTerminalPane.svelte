@@ -11,13 +11,10 @@
 	} from '$lib/utils/terminal';
 
 	let {
-		sessionId,
 		terminalId,
 		active
 	}: {
-		/** The pane id, which keys its view. */
-		sessionId: string;
-		/** The server terminal it shows; fixed for this component's life (the parent re-keys). */
+		/** The server terminal it shows, which keys its view; fixed for this component's life (the parent re-keys). */
 		terminalId: string;
 		active: boolean;
 	} = $props();
@@ -57,7 +54,7 @@
 			const rect = container.getBoundingClientRect();
 			if (rect.width <= 0 || rect.height <= 0) return;
 			const nsRect = domToNSView(rect);
-			void resizeNativeTerminal(sessionId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
+			void resizeNativeTerminal(terminalId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
 		}, 100);
 	}
 
@@ -69,13 +66,13 @@
 		() => {
 			if (!created || exited) return;
 			const shouldBeVisible = active && !overlayOpen;
-			void setNativeTerminalVisible(sessionId, shouldBeVisible);
+			void setNativeTerminalVisible(terminalId, shouldBeVisible);
 			if (active && container) {
 				requestAnimationFrame(() => {
 					const rect = container.getBoundingClientRect();
 					if (rect.width > 0 && rect.height > 0) {
 						const nsRect = domToNSView(rect);
-						void resizeNativeTerminal(sessionId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
+						void resizeNativeTerminal(terminalId, nsRect.x, nsRect.y, nsRect.width, nsRect.height);
 					}
 				});
 			}
@@ -88,7 +85,6 @@
 			const nsRect = domToNSView(rect);
 
 			await attachNativeTerminal({
-				sessionId,
 				terminalId,
 				x: nsRect.x,
 				y: nsRect.y,
@@ -101,10 +97,10 @@
 
 			// Set initial visibility
 			if (!active) {
-				await setNativeTerminalVisible(sessionId, false);
+				await setNativeTerminalVisible(terminalId, false);
 			}
 
-			unlistenExit = await onSessionTerminalExit(sessionId, () => {
+			unlistenExit = await onSessionTerminalExit(terminalId, () => {
 				exited = true;
 			});
 
@@ -138,7 +134,7 @@
 		mutationObserver?.disconnect();
 		// Only the view goes: the terminal is the server's, and ends when its pane closes.
 		if (created && !exited) {
-			void detachNativeTerminal(sessionId);
+			void detachNativeTerminal(terminalId);
 		}
 	});
 </script>
