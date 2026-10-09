@@ -25,9 +25,18 @@ where
     E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
+        let err = err.into();
+        let status = if err
+            .downcast_ref::<workbench_core::cwd::NotAllowed>()
+            .is_some()
+        {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
         Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err.into().to_string(),
+            status,
+            message: err.to_string(),
         }
     }
 }
@@ -49,6 +58,13 @@ mod tests {
         let err: ApiError = anyhow::anyhow!("boom").into();
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message, "boom");
+    }
+
+    #[test]
+    fn a_path_outside_the_allowlist_maps_to_403() {
+        let refused = workbench_core::cwd::NotAllowed("not registered".into());
+        let err: ApiError = anyhow::Error::new(refused).context("creating").into();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
     }
 
     #[test]

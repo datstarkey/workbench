@@ -146,7 +146,7 @@ async fn list_worktrees(Query(q): Query<PathQuery>) -> ApiResult<Json<Value>> {
 async fn create_worktree(Json(req): Json<CreateWorktreeRequest>) -> ApiResult<Json<String>> {
     // Returns the bare worktree path string to match the Tauri command and the
     // ControlPlaneCommands.create_worktree result type.
-    let path = blocking(move || workbench_core::git::create_worktree(&req)).await?;
+    let path = blocking(move || workbench_core::worktrees::create(req)).await?;
     Ok(Json(path))
 }
 
@@ -157,11 +157,18 @@ struct RemoveWorktreeBody {
     worktree_path: String,
     #[serde(default)]
     force: bool,
+    #[serde(default)]
+    delete_branch: bool,
 }
 
 async fn remove_worktree(Json(body): Json<RemoveWorktreeBody>) -> ApiResult<StatusCode> {
     blocking(move || {
-        workbench_core::git::remove_worktree(&body.repo_path, &body.worktree_path, body.force)
+        workbench_core::worktrees::remove(
+            &body.repo_path,
+            &body.worktree_path,
+            body.force,
+            body.delete_branch,
+        )
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)

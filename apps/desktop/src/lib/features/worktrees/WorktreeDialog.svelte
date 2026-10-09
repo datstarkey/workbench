@@ -26,12 +26,7 @@
 		error: string;
 		pending?: boolean;
 		suggestedBranch?: string;
-		onSave: (
-			branch: string,
-			newBranch: boolean,
-			path: string,
-			copyOptions: WorktreeCopyOptions
-		) => void;
+		onSave: (branch: string, newBranch: boolean, copyOptions: WorktreeCopyOptions) => void;
 	} = $props();
 
 	let mode: 'new' | 'existing' = $state('new');
@@ -49,6 +44,7 @@
 	});
 	let projectDirName = $derived(baseName(projectPath));
 	let sep = $derived(projectPath.includes('\\') ? '\\' : '/');
+	/** A preview of where the host's layout puts it; the host decides. */
 	let worktreePath = $derived.by(() => {
 		if (!branchName) return '';
 		if (workbenchSettings.worktreeStrategy === 'inside') {
@@ -61,7 +57,7 @@
 
 	function handleSave() {
 		if (!branchName || pending) return;
-		onSave(branchName, mode === 'new', worktreePath, {
+		onSave(branchName, mode === 'new', {
 			aiConfig: copyAiConfig,
 			envFiles: copyEnvFiles
 		});

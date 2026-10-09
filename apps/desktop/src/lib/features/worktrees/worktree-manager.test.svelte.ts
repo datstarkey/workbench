@@ -4,7 +4,6 @@ import { WorktreeManagerStore } from './worktree-manager.svelte';
 import type { GitHubStore } from '$stores/github.svelte';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
-import type { WorkbenchSettingsStore } from '$stores/workbench-settings.svelte';
 import type { WorkspaceStore } from '$stores/workspaces.svelte';
 import type { BranchInfo, ProjectConfig, ProjectWorkspace } from '$types/workbench';
 
@@ -31,11 +30,7 @@ function createMocks() {
 		prsByProject: {}
 	} as unknown as GitHubStore;
 
-	const workbenchSettings = {
-		worktreeStrategy: 'sibling'
-	} as unknown as WorkbenchSettingsStore;
-
-	return { projectStore, workspaceStore, gitStore, githubStore, workbenchSettings };
+	return { projectStore, workspaceStore, gitStore, githubStore };
 }
 
 describe('WorktreeManagerStore', () => {
@@ -48,8 +43,7 @@ describe('WorktreeManagerStore', () => {
 			mocks.projectStore,
 			mocks.workspaceStore,
 			mocks.gitStore,
-			mocks.githubStore,
-			mocks.workbenchSettings
+			mocks.githubStore
 		);
 	});
 
@@ -99,7 +93,7 @@ describe('WorktreeManagerStore', () => {
 	});
 
 	describe('create', () => {
-		it('invokes create_worktree, refreshes git, and opens workspace', async () => {
+		it('sends only the picked fields, refreshes git, and opens workspace', async () => {
 			const project = makeProject({ name: 'Repo', path: '/projects/repo' });
 			vi.mocked(mocks.projectStore.getByPath).mockReturnValue(project);
 			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
@@ -108,19 +102,18 @@ describe('WorktreeManagerStore', () => {
 			manager.dialogProjectPath = '/projects/repo';
 			manager.dialogOpen = true;
 
-			await manager.create('feature', true, '/projects/repo-wt', {
+			await manager.create('feature', true, {
 				aiConfig: true,
 				envFiles: false
 			});
 
+			// Layout, start point and fetch come from the host's settings.
 			expect(invokeSpy).toHaveBeenCalledWith('create_worktree', {
 				request: {
 					repoPath: '/projects/repo',
 					branch: 'feature',
 					newBranch: true,
-					path: '/projects/repo-wt',
-					copyOptions: { aiConfig: true, envFiles: false },
-					strategy: 'sibling'
+					copyOptions: { aiConfig: true, envFiles: false }
 				}
 			});
 			expect(manager.dialogOpen).toBe(false);
@@ -140,7 +133,7 @@ describe('WorktreeManagerStore', () => {
 			manager.dialogProjectPath = '/projects/repo';
 			manager.dialogOpen = true;
 
-			await manager.create('feature', false, '/projects/repo-wt', {
+			await manager.create('feature', false, {
 				aiConfig: false,
 				envFiles: false
 			});
@@ -157,10 +150,10 @@ describe('WorktreeManagerStore', () => {
 			manager.dialogOpen = true;
 			const opts = { aiConfig: false, envFiles: false };
 
-			const first = manager.create('feature', true, '/projects/repo-wt', opts);
+			const first = manager.create('feature', true, opts);
 			expect(manager.creating).toBe(true);
 
-			await manager.create('feature', true, '/projects/repo-wt', opts);
+			await manager.create('feature', true, opts);
 			manager.dialogOpen = false;
 			await manager.add('/projects/other');
 			expect(invokeSpy.mock.calls.filter(([cmd]) => cmd === 'create_worktree')).toHaveLength(1);
@@ -178,7 +171,7 @@ describe('WorktreeManagerStore', () => {
 			manager.dialogProjectPath = '/projects/repo';
 			manager.dialogOpen = true;
 
-			await manager.create('feature', true, '/projects/repo-wt', {
+			await manager.create('feature', true, {
 				aiConfig: false,
 				envFiles: false
 			});
@@ -195,7 +188,7 @@ describe('WorktreeManagerStore', () => {
 
 			manager.dialogProjectPath = '/projects/repo';
 
-			await manager.create('feature', true, '/projects/repo-wt', {
+			await manager.create('feature', true, {
 				aiConfig: false,
 				envFiles: false
 			});
@@ -272,7 +265,8 @@ describe('WorktreeManagerStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('remove_worktree', {
 				repoPath: '/projects/repo',
 				worktreePath: '/projects/repo-wt',
-				force: false
+				force: false,
+				deleteBranch: false
 			});
 			expect(mocks.workspaceStore.getByWorktreePath).toHaveBeenCalledWith('/projects/repo-wt');
 			expect(mocks.workspaceStore.close).toHaveBeenCalledWith('ws-1');
@@ -280,19 +274,19 @@ describe('WorktreeManagerStore', () => {
 			expect(manager.removal.open).toBe(false);
 		});
 
-		it('confirmRemove() also deletes branch when deleteBranchOnRemove is true', async () => {
+		it('confirmRemove() asks the host to delete the branch when deleteBranchOnRemove is true', async () => {
 			vi.mocked(mocks.workspaceStore.getByWorktreePath).mockReturnValue(undefined);
 			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
-			mockInvoke('delete_branch', () => true);
 
 			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
 			manager.deleteBranchOnRemove = true;
 			await manager.confirmRemove();
 
-			expect(invokeSpy).toHaveBeenCalledWith('delete_branch', {
+			expect(invokeSpy).toHaveBeenCalledWith('remove_worktree', {
 				repoPath: '/projects/repo',
-				branch: 'feature',
-				force: false
+				worktreePath: '/projects/repo-wt',
+				force: false,
+				deleteBranch: true
 			});
 		});
 
@@ -304,7 +298,10 @@ describe('WorktreeManagerStore', () => {
 			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
 			await manager.confirmRemove();
 
-			expect(invokeSpy).not.toHaveBeenCalledWith('delete_branch', expect.anything());
+			expect(invokeSpy).toHaveBeenCalledWith(
+				'remove_worktree',
+				expect.objectContaining({ deleteBranch: false })
+			);
 		});
 
 		it('confirmRemove() skips workspace close if no matching workspace', async () => {
@@ -317,7 +314,8 @@ describe('WorktreeManagerStore', () => {
 			expect(invokeSpy).toHaveBeenCalledWith('remove_worktree', {
 				repoPath: '/projects/repo',
 				worktreePath: '/projects/repo-wt',
-				force: false
+				force: false,
+				deleteBranch: false
 			});
 			expect(mocks.workspaceStore.close).not.toHaveBeenCalled();
 		});

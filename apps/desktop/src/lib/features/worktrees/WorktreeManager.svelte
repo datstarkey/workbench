@@ -16,8 +16,7 @@
 	error={manager.dialogError}
 	pending={manager.creating}
 	suggestedBranch={manager._suggestedBranch}
-	onSave={(branch, newBranch, path, copyOptions) =>
-		manager.create(branch, newBranch, path, copyOptions)}
+	onSave={(branch, newBranch, copyOptions) => manager.create(branch, newBranch, copyOptions)}
 />
 
 <ConfirmDialog

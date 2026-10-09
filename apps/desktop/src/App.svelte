@@ -77,15 +77,7 @@
 	setClaudeSettingsStore(new ClaudeSettingsStore());
 	setUpdaterStore(new UpdaterStore());
 	setProjectManager(new ProjectManagerStore(projectStore, workspaceStore, gitStore));
-	setWorktreeManager(
-		new WorktreeManagerStore(
-			projectStore,
-			workspaceStore,
-			gitStore,
-			githubStore,
-			workbenchSettingsStore
-		)
-	);
+	setWorktreeManager(new WorktreeManagerStore(projectStore, workspaceStore, gitStore, githubStore));
 	const trelloStore = setTrelloStore(new TrelloStore());
 	setSidebarStore(new SidebarStore());
 	const instancesStore = setInstancesStore(new InstancesStore());

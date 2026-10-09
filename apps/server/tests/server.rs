@@ -271,8 +271,9 @@ async fn agent_files_lists_a_registered_cwd_only() {
     assert_eq!(files, [".gitignore", "main.rs"]);
 
     let res = client().get(url(other.path())).send().await.unwrap();
-    assert!(
-        res.status().is_server_error(),
+    assert_eq!(
+        res.status(),
+        403,
         "an unregistered directory must be refused"
     );
 
@@ -282,8 +283,9 @@ async fn agent_files_lists_a_registered_cwd_only() {
         .send()
         .await
         .unwrap();
-    assert!(
-        res.status().is_server_error(),
+    assert_eq!(
+        res.status(),
+        403,
         "a worktree path must be one of the project's worktrees"
     );
 
@@ -309,7 +311,7 @@ async fn terminal_create_rejects_unknown_worktree() {
         .send()
         .await
         .unwrap();
-    assert!(res.status().is_server_error());
+    assert_eq!(res.status(), 403);
     let body: Value = res.json().await.unwrap();
     assert!(
         body["error"]
@@ -318,6 +320,93 @@ async fn terminal_create_rejects_unknown_worktree() {
             .contains("not a known worktree"),
         "{body}"
     );
+
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn worktrees_outside_registered_projects_are_refused() {
+    let env = env_guard();
+    let registered = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    git_init(other.path());
+    let _cfg = register_project(&env, registered.path());
+
+    let (handle, base) = start().await;
+    let created = client()
+        .post(format!("{base}/projects/worktrees"))
+        .json(&json!({ "repoPath": other.path(), "branch": "evil", "newBranch": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 403);
+    let removed = client()
+        .delete(format!("{base}/projects/worktrees"))
+        .json(&json!({ "repoPath": other.path(), "worktreePath": other.path(), "force": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(removed.status(), 403);
+
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn worktree_create_follows_the_hosts_settings() {
+    let env = env_guard();
+    let repo = tempfile::tempdir().unwrap();
+    git_init(repo.path());
+    let ok = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit"])
+        .args(["-q", "--allow-empty", "-m", "init"])
+        .current_dir(repo.path())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git commit should succeed");
+    let cfg = register_project(&env, repo.path());
+    std::fs::write(
+        cfg.path().join("settings.json"),
+        json!({ "worktreeStrategy": "inside", "worktreeFetchBeforeCreate": false }).to_string(),
+    )
+    .unwrap();
+
+    let (handle, base) = start().await;
+    // What a phone sends: no layout, start point or fetch.
+    let res = client()
+        .post(format!("{base}/projects/worktrees"))
+        .json(&json!({ "repoPath": repo.path(), "branch": "feature", "newBranch": true }))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status();
+    let body = res.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    let path: String = serde_json::from_str(&body).unwrap();
+    let inside = std::fs::canonicalize(repo.path().join(".worktrees/feature")).unwrap();
+    assert_eq!(std::fs::canonicalize(&path).unwrap(), inside);
+
+    let res = client()
+        .delete(format!("{base}/projects/worktrees"))
+        .json(&json!({
+            "repoPath": repo.path(),
+            "worktreePath": path,
+            "force": true,
+            "deleteBranch": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(!inside.exists());
+    let branches = std::process::Command::new("git")
+        .args(["branch", "--list", "feature"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(branches.stdout.is_empty(), "the branch is deleted too");
 
     handle.stop().await;
 }

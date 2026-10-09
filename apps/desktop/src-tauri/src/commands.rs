@@ -21,6 +21,7 @@ use crate::types::{
     HookScriptInfo, IntegrationStatus, PackageInfo, PluginInfo, ProjectConfig, SkillInfo,
     WorkbenchSettings, WorkspaceFile, WorktreeInfo,
 };
+use crate::worktrees;
 
 /// Read a file dropped onto a chat (image, PDF or text) so it can be attached to the message.
 #[tauri::command]
@@ -172,7 +173,7 @@ pub async fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
 
 #[tauri::command]
 pub async fn create_worktree(request: CreateWorktreeRequest) -> Result<String, String> {
-    crate::blocking(move || git::create_worktree(&request).map_err(|e| e.to_string())).await
+    crate::blocking(move || worktrees::create(request).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -180,9 +181,11 @@ pub async fn remove_worktree(
     repo_path: String,
     worktree_path: String,
     force: bool,
+    delete_branch: bool,
 ) -> Result<bool, String> {
     crate::blocking(move || {
-        git::remove_worktree(&repo_path, &worktree_path, force).map_err(|e| e.to_string())?;
+        worktrees::remove(&repo_path, &worktree_path, force, delete_branch)
+            .map_err(|e| e.to_string())?;
         Ok(true)
     })
     .await

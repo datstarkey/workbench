@@ -36,7 +36,7 @@ export interface ControlPlaneCommands {
 	list_worktrees: { args: { path: string }; result: WorktreeInfo[] };
 	create_worktree: { args: { request: unknown }; result: string };
 	remove_worktree: {
-		args: { repoPath: string; worktreePath: string; force: boolean };
+		args: { repoPath: string; worktreePath: string; force: boolean; deleteBranch: boolean };
 		result: void;
 	};
 	list_branches: { args: { path: string }; result: BranchInfo[] };
