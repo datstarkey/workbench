@@ -196,6 +196,9 @@ jobs:
           AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
           AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
+          # Uploads the frontend's source maps to Sentry (apps/desktop/vite.config.ts). The JS
+          # bundle is the same on every OS, so only the macOS build uploads it.
+          SENTRY_AUTH_TOKEN: ${{ runner.os == 'macOS' && secrets.SENTRY_AUTH_TOKEN || '' }}
         with:
           projectPath: apps/desktop
           tagName: v__VERSION__
@@ -343,6 +346,10 @@ jobs:
 
       - name: Build signed APK
         working-directory: apps/mobile
+        env:
+          # Uploads the webview's source maps to Sentry (apps/mobile/vite.config.ts); the
+          # dispatch dry run skips it, so only tagged releases create a Sentry release.
+          SENTRY_AUTH_TOKEN: ${{ github.event_name == 'push' && secrets.SENTRY_AUTH_TOKEN || '' }}
         run: bun run tauri android build --apk --target aarch64
 
       # The signed output is app-universal-release.apk; without a signing config Gradle
@@ -383,3 +390,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit ${{ github.ref_name }} --draft=false --repo ${{ github.repository }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A PR that fixes a Sentry issue says `Fixes WORKBENCH-X` in its body, which Kodiak's
+      # squash puts in the commit. Once the release is out, resolve every issue named since
+      # the previous tag; one that recurs comes back as a regression. Best effort: the
+      # release is already published, so a Sentry failure only warns.
+      - name: Resolve fixed Sentry issues
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          api=https://sentry.starkeydigital.com/api/0/organizations/starkey-digital
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          ids=$(git log ${prev:+"$prev.."}"$GITHUB_REF_NAME" --format=%B \
+            | grep -oiE '\b(fix(es|ed)?|close[sd]?|resolve[sd]?):? +WORKBENCH-[0-9A-Z]+' \
+            | tr '[:lower:]' '[:upper:]' | grep -oE 'WORKBENCH-[0-9A-Z]+' | sort -u || true)
+          [ -n "$ids" ] || { echo "No Sentry issues named since ${prev:-the first commit}"; exit 0; }
+          for id in $ids; do
+            group=$(curl -fsS -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" "$api/shortids/$id/" | jq -r .groupId) \
+              && curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $SENTRY_AUTH_TOKEN" \
+                   -H 'Content-Type: application/json' -d '{"status":"resolved"}' "$api/issues/$group/" \
+              && echo "Resolved $id" \
+              || echo "::warning::could not resolve $id in Sentry (the token needs event:write)"
+          done
