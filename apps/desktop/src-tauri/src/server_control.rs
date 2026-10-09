@@ -405,11 +405,9 @@ pub fn terminal_server_status(state: tauri::State<'_, ServerControl>) -> ServerS
 /// Kill every terminal and chat process and wait for them to exit.
 /// The updater calls this before installing: children outliving the old process
 /// keep its macOS Dock tile alive and leave stray console windows on Windows.
-#[tauri::command]
-pub async fn kill_all_sessions(state: tauri::State<'_, ServerControl>) -> Result<(), String> {
-    let managers = state.managers.clone();
+pub async fn kill_all_sessions(sc: &ServerControl) {
+    let managers = sc.managers.clone();
     crate::blocking(move || managers.kill_all()).await;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -609,7 +607,7 @@ mod tests {
         }
         assert_eq!(sc.managers.terminals.list().len(), 2);
 
-        kill_all_sessions(app.state()).await.expect("kill all");
+        kill_all_sessions(&sc).await;
         assert!(sc.managers.terminals.list().is_empty());
     }
 

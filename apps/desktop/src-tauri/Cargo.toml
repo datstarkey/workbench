@@ -27,7 +27,6 @@ anyhow = "1"
 notify = "7"
 notify-debouncer-mini = "0.5"
 tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 chrono = "0.4"
 sentry = { version = "0.48", features = ["log"] }

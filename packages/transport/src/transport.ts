@@ -53,9 +53,9 @@ export interface ControlPlaneCommands {
 	load_claude_settings: { args: { scope: string; projectPath?: string }; result: unknown };
 	load_workbench_settings: { args: void; result: unknown };
 	/** Server only: the app hosting it (the desktop). 501 from a standalone server. */
-	host_update_status: { args: void; result: HostUpdateStatus };
-	/** Server only: install the host's update; it restarts. 501 from a standalone server. */
-	host_update_install: { args: void; result: HostUpdateStarted };
+	host_update_status: { args: { fresh?: boolean } | void; result: HostUpdateStatus };
+	/** Server only: install the reviewed `version`; the host restarts. 501 from a standalone server. */
+	host_update_install: { args: { version?: string } | void; result: HostUpdateStarted };
 }
 
 /** Control-plane events streamed from the backend (NOT `terminal:data/exit`). */

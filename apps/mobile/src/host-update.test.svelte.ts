@@ -64,6 +64,7 @@ describe('HostUpdate', () => {
 	it('is updating from the 202 until the host answers on another version', async () => {
 		const { update, state, spy } = await installing();
 		expect(spy.mock.lastCall?.[1]?.method).toBe('POST');
+		expect(spy.mock.lastCall?.[1]?.body).toBe(JSON.stringify({ version: '1.1.0' }));
 		expect(update.updating).toBe(true);
 		expect(update.target).toBe('1.1.0');
 
