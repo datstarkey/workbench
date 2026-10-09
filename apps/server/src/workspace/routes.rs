@@ -34,7 +34,9 @@ pub async fn command(State(state): State<AppState>, Json(cmd): Json<Command>) ->
     // Fold-ins report what a process did: only the server sees that.
     if matches!(
         cmd,
-        Command::SessionAttached { .. } | Command::SessionRekeyed { .. }
+        Command::SessionAttached { .. }
+            | Command::SessionRekeyed { .. }
+            | Command::AccountMoved { .. }
     ) {
         return refused(rev(), "Only the server reports what a session did".into());
     }
