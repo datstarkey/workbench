@@ -5,7 +5,7 @@ export type {
 	ControlPlaneTransport,
 	Unsubscribe
 } from './transport.ts';
-export { createTauriTransport } from './tauri.ts';
+export { createTauriTransport, loopbackServer, resetLoopbackServer } from './tauri.ts';
 export { createHttpTransport, type HttpTransportOptions } from './http.ts';
 export { DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
 export { createMockTransport, type MockTransport } from './mock.ts';

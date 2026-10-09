@@ -1,7 +1,7 @@
 import { agentClient, type AgentApi } from '@workbench/chat-ui';
-import { resolveServer } from '$features/terminal/terminal-connection';
+import { loopbackServer } from '@workbench/transport';
 
-const loopback = agentClient(resolveServer);
+const loopback = agentClient(loopbackServer);
 
 /** Chat sessions on the loopback server. */
 export const loopbackAgentApi: AgentApi = loopback;

@@ -15,6 +15,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { invokeSpy, clearInvokeMocks } from '../../../test/tauri-mocks';
+import { resetLoopbackServer } from '@workbench/transport';
 
 // ── Fake WebSocket ────────────────────────────────────────────────────────────
 
@@ -103,10 +104,9 @@ beforeEach(async () => {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	(globalThis as any).WebSocket = FakeWebSocket;
 	FakeWebSocket._last = null;
-	// resolveServer() memoizes the server info at module scope; reset it so each
-	// test re-resolves against its own mockServerRunning() stub.
-	const { __resetServerInfoCache } = await import('./terminal-connection');
-	__resetServerInfoCache();
+	// The loopback address is memoized at module scope; reset it so each test
+	// re-resolves against its own mockServerRunning() stub.
+	resetLoopbackServer();
 });
 
 afterEach(() => {

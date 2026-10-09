@@ -5,13 +5,14 @@ const { invoke, listen } = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn() 
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 
-import { createTauriTransport } from './tauri.ts';
+import { createTauriTransport, resetLoopbackServer } from './tauri.ts';
 
 describe('TauriTransport', () => {
 	afterEach(() => {
 		invoke.mockReset();
 		listen.mockReset();
 		vi.unstubAllGlobals();
+		resetLoopbackServer();
 	});
 
 	it('sends workspace commands to the loopback listener, looked up once', async () => {

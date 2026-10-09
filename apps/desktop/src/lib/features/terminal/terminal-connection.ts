@@ -16,8 +16,7 @@
  * the socket only detaches; the terminal keeps running.
  */
 
-import { terminalServerStatus } from '$lib/server-mode';
-import { parseTerminalControlFrame, terminalWsUrl } from '@workbench/transport';
+import { loopbackServer, parseTerminalControlFrame, terminalWsUrl } from '@workbench/transport';
 
 /** Payload delivered to the `onData` callback. */
 export type TerminalDataPayload = Uint8Array;
@@ -29,41 +28,6 @@ export interface TerminalExitInfo {
 	reason: ExitReason;
 	/** Exit code from the shell; present only when `reason === 'ended'`. */
 	code?: number;
-}
-
-/** Resolved loopback server coordinates. */
-export interface ServerInfo {
-	baseUrl: string;
-	token?: string;
-}
-
-/**
- * Cached loopback server coordinates. The embedded server boots once at startup
- * and keeps its ephemeral port for the process lifetime, so every pane resolves
- * the same address — memoize it instead of doing one IPC round-trip per pane.
- * Cleared on failure so a probe before the server is up stays retryable.
- */
-let serverInfoCache: Promise<ServerInfo> | null = null;
-
-export function resolveServer(): Promise<ServerInfo> {
-	if (!serverInfoCache) {
-		serverInfoCache = (async () => {
-			const status = await terminalServerStatus();
-			if (!status.running || !status.address) {
-				throw new Error('embedded server is not running');
-			}
-			return { baseUrl: `http://${status.address}`, token: status.token ?? undefined };
-		})();
-		serverInfoCache.catch(() => {
-			serverInfoCache = null;
-		});
-	}
-	return serverInfoCache;
-}
-
-/** Test-only: drop the memoized server-info cache so tests stay isolated. */
-export function __resetServerInfoCache(): void {
-	serverInfoCache = null;
 }
 
 /** One xterm pane's attachment to its server terminal. */
@@ -109,7 +73,7 @@ export class TerminalConnection {
 
 	/** Attach at this size; resolves once the socket is open and sized. */
 	async connect(cols: number, rows: number): Promise<void> {
-		const { baseUrl, token } = await resolveServer();
+		const { baseUrl, token } = await loopbackServer();
 		if (this.disposed) return;
 		await this.openSocket(terminalWsUrl(baseUrl, this.terminalId, token), cols, rows);
 	}
