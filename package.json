@@ -13,6 +13,7 @@
 	],
 	"catalog": {
 		"@lucide/svelte": "^1.17.0",
+		"@sentry/vite-plugin": "5.4.1",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/vite": "^4.3.0",
 		"@tauri-apps/api": "^2.11.0",
