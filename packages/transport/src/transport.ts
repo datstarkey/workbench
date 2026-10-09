@@ -24,15 +24,16 @@ import type {
 	HostUpdateStatus,
 	ProjectConfig,
 	ProjectRefreshRequestedEvent,
+	WorkspaceCommand,
+	WorkspaceCommandResult,
 	WorktreeInfo
 } from '@workbench/types';
+import type { WorkspaceStreamHandlers } from './workspace.ts';
 
 /** A control-plane command name and its argument/result shapes. */
 export interface ControlPlaneCommands {
 	list_projects: { args: void; result: ProjectConfig[] };
 	save_projects: { args: { projects: ProjectConfig[] }; result: void };
-	load_workspaces: { args: void; result: unknown };
-	save_workspaces: { args: { file: unknown }; result: void };
 	list_worktrees: { args: { path: string }; result: WorktreeInfo[] };
 	create_worktree: { args: { request: unknown }; result: string };
 	remove_worktree: {
@@ -86,6 +87,12 @@ export interface ControlPlaneTransport {
 		event: E,
 		cb: (payload: ControlPlaneEvents[E]) => void
 	): Promise<Unsubscribe>;
+
+	/** One command to the server's workspace model (`POST /workspace/commands`). */
+	workspaceCommand(cmd: WorkspaceCommand): Promise<WorkspaceCommandResult>;
+
+	/** Follow the workspace model's snapshots (`GET /events/workspace`), reconnecting on failure. */
+	subscribeWorkspace(handlers: WorkspaceStreamHandlers): Unsubscribe;
 
 	readonly capabilities: Capabilities;
 }

@@ -9,6 +9,14 @@ export { createTauriTransport } from './tauri.ts';
 export { createHttpTransport, type HttpTransportOptions } from './http.ts';
 export { DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from './fetch-timeout.ts';
 export { createMockTransport, type MockTransport } from './mock.ts';
+export {
+	WorkspaceStream,
+	sendWorkspaceCommand,
+	workspaceMethods,
+	type OpenEventSource,
+	type ServerAddress,
+	type WorkspaceStreamHandlers
+} from './workspace.ts';
 export { parseTerminalControlFrame, type TerminalControlFrame } from './terminal-frames.ts';
 export { buildPairingUri, isStrongToken, parsePairingUri, type PairingInfo } from './pairing.ts';
 
