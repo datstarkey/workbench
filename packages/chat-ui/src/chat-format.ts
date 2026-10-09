@@ -621,14 +621,27 @@ export function insertCommand(
 	return replaceToken(draft, slash.start, caret, `/${name} `);
 }
 
-/** Commands for the `/` menu: name prefix matches, then name, then description matches. */
-export function matchCommands(commands: SlashCommand[], query: string): SlashCommand[] {
+/**
+ * Commands for the `/` menu: name prefix matches, then the prefix of a plugin
+ * command's own name (`ns:name`), of a word of the name, anywhere in it, then
+ * description matches.
+ */
+export function matchCommands(all: SlashCommand[], query: string): SlashCommand[] {
+	// The menu is keyed by name, and a duplicate key stops Svelte rendering the
+	// rest of the chat. Which copy Claude Code runs is unknown: the first stays.
+	const seen = new Set<string>();
+	const commands = all.filter((c) => !seen.has(c.name) && seen.add(c.name));
 	if (!query) return commands;
 	const rank = (c: SlashCommand) => {
 		const name = c.name.toLowerCase();
-		if (name.startsWith(query)) return 0;
-		if (name.includes(query)) return 1;
-		return c.description.toLowerCase().includes(query) ? 2 : -1;
+		const tiers = [
+			name.startsWith(query),
+			name.slice(name.indexOf(':') + 1).startsWith(query),
+			name.split(/[:\-_]/).some((word) => word.startsWith(query)),
+			name.includes(query),
+			c.description.toLowerCase().includes(query)
+		];
+		return tiers.indexOf(true);
 	};
 	return commands
 		.map((c) => ({ c, r: rank(c) }))
