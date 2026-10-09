@@ -124,7 +124,9 @@ export interface ServerTerminalMeta {
 export interface HostUpdateStatus {
 	current: string;
 	available: string | null;
-	/** An install started by `POST /host/update` is still running. */
+	/** The available release's notes. */
+	body?: string | null;
+	/** An install is still running, whichever device started it. */
 	installing: boolean;
 }
 

@@ -1,7 +1,6 @@
-import { check, type Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { HostUpdateStarted, HostUpdateStatus } from '$types/workbench';
 
 export type UpdateStatus =
 	| 'idle'
@@ -13,6 +12,13 @@ export type UpdateStatus =
 	| 'up-to-date'
 	| 'error';
 
+/** `update:progress`, sent by Rust's one install path whoever started it. */
+interface UpdateProgress {
+	downloaded: number;
+	total: number | null;
+}
+
+/** UI state for Rust's `host_update_*` commands, which install the same way a phone's `/host/update` does. */
 export class UpdaterStore {
 	status = $state<UpdateStatus>('idle');
 	progress = $state(0);
@@ -21,8 +27,6 @@ export class UpdaterStore {
 	version = $state<string | null>(null);
 	body = $state<string | null>(null);
 	dialogOpen = $state(false);
-
-	private update: Update | null = null;
 
 	/** Installing: the dialog can't be dismissed. */
 	get busy(): boolean {
@@ -33,14 +37,22 @@ export class UpdaterStore {
 		listen('menu:check-for-updates', () => {
 			this.manualCheck();
 		});
-		listen<string>('update:remote', ({ payload }) => {
+		listen<string>('update:installing', ({ payload }) => {
 			this.version = payload;
-			this.status = 'remote';
+			// Ours already shows as downloading; any other install is another device's.
+			if (this.status !== 'downloading') this.status = 'remote';
 			this.dialogOpen = true;
 		});
-		listen<string>('update:remote-failed', ({ payload }) => {
+		listen<UpdateProgress>('update:progress', ({ payload }) => {
+			this.progress = payload.downloaded;
+			this.contentLength = payload.total ?? 0;
+		});
+		listen<string>('update:failed', ({ payload }) => {
+			this.error =
+				this.status === 'remote'
+					? `The update started from another device failed: ${payload}`
+					: payload;
 			this.status = 'error';
-			this.error = `The update started from another device failed: ${payload}`;
 			this.dialogOpen = true;
 		});
 
@@ -62,15 +74,16 @@ export class UpdaterStore {
 		this.contentLength = 0;
 
 		try {
-			const update = await check();
-			if (update) {
-				this.update = update;
-				this.version = update.version;
+			const update = await invoke<HostUpdateStatus>('host_update_status');
+			if (update.installing) {
+				this.status = 'remote';
+				this.dialogOpen = true;
+			} else if (update.available) {
+				this.version = update.available;
 				this.body = update.body ?? null;
 				this.status = 'available';
 				this.dialogOpen = true;
 			} else {
-				this.update = null;
 				this.status = 'up-to-date';
 			}
 		} catch (e) {
@@ -79,36 +92,18 @@ export class UpdaterStore {
 		}
 	}
 
+	/** Rust downloads, ends every session, installs and restarts; progress and failure come as events. */
 	async downloadAndInstall() {
-		if (!this.update) return;
+		if (this.status !== 'available') return;
 
 		this.status = 'downloading';
 		this.progress = 0;
+		this.contentLength = 0;
 
 		try {
-			// One install at a time: a phone may have started this one already.
-			await invoke('begin_update', { version: this.update.version });
+			const started = await invoke<HostUpdateStarted>('host_update_install');
+			this.version = started.version;
 		} catch (e) {
-			this.status = 'error';
-			this.error = e instanceof Error ? e.message : String(e);
-			return;
-		}
-		try {
-			await this.update.download((event) => {
-				if (event.event === 'Started') {
-					this.contentLength = event.data.contentLength ?? 0;
-				} else if (event.event === 'Progress') {
-					this.progress += event.data.chunkLength;
-				}
-			});
-
-			// Before install: on Windows it exits the app, and any shell left running
-			// keeps the old instance's Dock tile (macOS) or console window (Windows).
-			await invoke('kill_all_sessions');
-			await this.update.install();
-			await relaunch();
-		} catch (e) {
-			void invoke('end_update');
 			this.status = 'error';
 			this.error = e instanceof Error ? e.message : String(e);
 		}

@@ -689,7 +689,10 @@ pub struct GitHubBranchRuns {
 pub struct HostUpdateStatus {
     pub current: String,
     pub available: Option<String>,
-    /// An install started by `POST /host/update` is still running.
+    /// The available release's notes.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// An install is still running, whichever device started it.
     pub installing: bool,
 }
 

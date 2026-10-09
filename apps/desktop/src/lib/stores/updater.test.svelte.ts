@@ -6,46 +6,60 @@ import {
 	clearListeners,
 	emitMockEvent
 } from '../../test/tauri-mocks';
-
-const calls: string[] = [];
-const update = {
-	version: '9.9.9',
-	body: null,
-	download: vi.fn(async () => {
-		calls.push('download');
-	}),
-	install: vi.fn(async () => {
-		calls.push('install');
-	})
-};
-
-vi.mock('@tauri-apps/plugin-updater', () => ({ check: vi.fn(async () => update) }));
-vi.mock('@tauri-apps/plugin-process', () => ({
-	relaunch: vi.fn(async () => {
-		calls.push('relaunch');
-	})
-}));
-
-import { check } from '@tauri-apps/plugin-updater';
+import type { HostUpdateStatus } from '$types/workbench';
 import { UpdaterStore } from './updater.svelte';
 
-describe('UpdaterStore.manualCheck', () => {
-	afterEach(() => {
-		vi.useRealTimers();
-		vi.clearAllMocks();
-		clearListeners();
+const AVAILABLE: HostUpdateStatus = {
+	current: '1.0.0',
+	available: '9.9.9',
+	body: 'Notes',
+	installing: false
+};
+
+afterEach(() => {
+	vi.useRealTimers();
+	clearInvokeMocks();
+	clearListeners();
+});
+
+describe('UpdaterStore.checkForUpdates', () => {
+	it('opens the dialog on an available update with its notes', async () => {
+		mockInvoke('host_update_status', () => AVAILABLE);
+		const store = new UpdaterStore();
+		await store.checkForUpdates();
+		expect(store.status).toBe('available');
+		expect(store.version).toBe('9.9.9');
+		expect(store.body).toBe('Notes');
+		expect(store.dialogOpen).toBe(true);
+	});
+
+	it('shows a failed check', async () => {
+		mockInvoke('host_update_status', () => Promise.reject('feed unreachable'));
+		const store = new UpdaterStore();
+		await store.manualCheck();
+		expect(store.status).toBe('error');
+		expect(store.error).toBe('feed unreachable');
+	});
+
+	it('shows an install already running as busy', async () => {
+		mockInvoke('host_update_status', () => ({ ...AVAILABLE, available: null, installing: true }));
+		const store = new UpdaterStore();
+		await store.checkForUpdates();
+		expect(store.status).toBe('remote');
+		expect(store.busy).toBe(true);
 	});
 
 	it('keeps the dialog open when a silent check finishes during a manual one', async () => {
 		vi.useFakeTimers();
 		let finish!: () => void;
-		vi.mocked(check).mockImplementationOnce(
-			() => new Promise((resolve) => (finish = () => resolve(null)))
+		mockInvoke(
+			'host_update_status',
+			() => new Promise((resolve) => (finish = () => resolve({ ...AVAILABLE, available: null })))
 		);
 		const store = new UpdaterStore();
 		await vi.advanceTimersByTimeAsync(3000); // the startup check starts and hangs
 		await store.manualCheck(); // already checking: opens the dialog, no second check
-		expect(check).toHaveBeenCalledTimes(1);
+		expect(invokeSpy).toHaveBeenCalledTimes(1);
 		finish();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(store.dialogOpen).toBe(true);
@@ -57,62 +71,60 @@ describe('UpdaterStore.downloadAndInstall', () => {
 	let store: UpdaterStore;
 
 	beforeEach(async () => {
-		vi.useFakeTimers();
-		calls.length = 0;
-		mockInvoke('begin_update', () => calls.push('begin_update'));
-		mockInvoke('end_update', () => calls.push('end_update'));
-		mockInvoke('kill_all_sessions', () => calls.push('kill_all_sessions'));
+		mockInvoke('host_update_status', () => AVAILABLE);
+		mockInvoke('host_update_install', () => {
+			emitMockEvent('update:installing', '9.9.9');
+			return { version: '9.9.9' };
+		});
 		store = new UpdaterStore();
 		await store.checkForUpdates();
 	});
 
-	afterEach(() => {
-		vi.useRealTimers();
-		vi.clearAllMocks();
-		clearInvokeMocks();
-		clearListeners();
+	it('hands the install to Rust and shows its progress', async () => {
+		await store.downloadAndInstall();
+		expect(invokeSpy).toHaveBeenCalledWith('host_update_install');
+		expect(store.status).toBe('downloading');
+		expect(store.busy).toBe(true);
+
+		emitMockEvent('update:progress', { downloaded: 50, total: 200 });
+		expect(store.progress).toBe(50);
+		expect(store.contentLength).toBe(200);
+		emitMockEvent('update:progress', { downloaded: 200, total: 200 });
+		expect(store.progress).toBe(200);
 	});
 
-	it('kills every session after downloading and before installing', async () => {
+	it('shows a failed install', async () => {
 		await store.downloadAndInstall();
-
-		expect(calls).toEqual(['begin_update', 'download', 'kill_all_sessions', 'install', 'relaunch']);
-		expect(invokeSpy).toHaveBeenCalledWith('begin_update', { version: '9.9.9' });
-	});
-
-	it("doesn't download while another device's install holds the host", async () => {
-		mockInvoke('begin_update', () => {
-			throw new Error('Workbench 9.9.9 is already being installed from another device');
-		});
-
-		await store.downloadAndInstall();
-
-		expect(update.download).not.toHaveBeenCalled();
-		expect(invokeSpy).not.toHaveBeenCalledWith('end_update');
+		emitMockEvent('update:failed', 'offline');
 		expect(store.status).toBe('error');
-		expect(store.error).toMatch(/another device/);
+		expect(store.error).toBe('offline');
+		expect(store.dialogOpen).toBe(true);
+	});
+
+	it('shows a refused install', async () => {
+		mockInvoke('host_update_install', () => Promise.reject('no update available'));
+		await store.downloadAndInstall();
+		expect(store.status).toBe('error');
+		expect(store.error).toBe('no update available');
+	});
+
+	it('refuses a second install while one runs', async () => {
+		await store.downloadAndInstall();
+		await store.downloadAndInstall();
+		expect(invokeSpy.mock.calls.filter(([cmd]) => cmd === 'host_update_install')).toHaveLength(1);
 	});
 
 	it('shows an install started from another device until it fails', async () => {
-		emitMockEvent('update:remote', '9.9.9');
+		emitMockEvent('update:installing', '9.9.9');
 		expect(store.status).toBe('remote');
 		expect(store.busy).toBe(true);
 		expect(store.dialogOpen).toBe(true);
 
-		emitMockEvent('update:remote-failed', 'offline');
+		await store.downloadAndInstall();
+		expect(invokeSpy).not.toHaveBeenCalledWith('host_update_install');
+
+		emitMockEvent('update:failed', 'offline');
 		expect(store.status).toBe('error');
 		expect(store.error).toMatch(/another device failed: offline/);
-	});
-
-	it('leaves sessions running when the download fails', async () => {
-		update.download.mockRejectedValueOnce(new Error('offline'));
-
-		await store.downloadAndInstall();
-
-		expect(invokeSpy).not.toHaveBeenCalledWith('kill_all_sessions');
-		expect(invokeSpy).toHaveBeenCalledWith('end_update');
-		expect(update.install).not.toHaveBeenCalled();
-		expect(store.status).toBe('error');
-		expect(store.error).toBe('offline');
 	});
 });

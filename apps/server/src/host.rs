@@ -61,6 +61,7 @@ mod tests {
                 Ok(HostUpdateStatus {
                     current: "1.0.0".into(),
                     available: self.available.clone(),
+                    body: None,
                     installing: self.installed.load(Ordering::SeqCst),
                 })
             })
