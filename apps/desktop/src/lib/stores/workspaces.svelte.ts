@@ -10,18 +10,13 @@ import type {
 	TerminalPaneState,
 	TerminalTabState
 } from '$types/workbench';
-import type {
-	ServerWorkspace,
-	WorkspaceCommand,
-	WorkspaceCommandResult,
-	WorkspacePane,
-	WorkspaceSnapshot
-} from '$types/workspace';
+import type { WorkspaceCommand, WorkspaceCommandResult, WorkspaceSnapshot } from '$types/workspace';
 import { transport } from '$lib/transport';
 import { effectivePath } from '$lib/utils/path';
 import { releaseChat } from '$features/chat/chat-registry';
 import { getGitStore, getWorkbenchSettingsStore } from './context';
 import { loadUi, pruneUi, saveUi, type WorkspaceUi } from './workspace-ui';
+import { workspaceView } from './workspace-view';
 
 export type WorkspaceApi = Pick<ControlPlaneTransport, 'workspaceCommand' | 'subscribeWorkspace'>;
 
@@ -64,7 +59,7 @@ export class WorkspaceStore {
 	}
 
 	readonly workspaces: ProjectWorkspace[] = $derived.by(() =>
-		this.snapshot.workspaces.map((w) => this.toView(w))
+		this.snapshot.workspaces.map((w) => workspaceView(w, this.ui))
 	);
 
 	private readonly paneIndex: Record<string, PaneAt> = $derived(
@@ -116,56 +111,6 @@ export class WorkspaceStore {
 	private setUi(ui: WorkspaceUi): void {
 		this.ui = ui;
 		saveUi(ui);
-	}
-
-	private toView(w: ServerWorkspace): ProjectWorkspace {
-		const tabs = w.tabs.map(
-			(t): TerminalTabState => ({
-				id: t.id,
-				// An AI tab shows its session's title once it has one.
-				label: (t.kind !== 'shell' && t.panes[0]?.title) || t.label,
-				split: t.split,
-				type: t.kind,
-				panes: t.panes.map((p) => this.paneView(p))
-			})
-		);
-		const active = this.ui.activeTabs[w.id];
-		return {
-			id: w.id,
-			projectPath: w.projectPath,
-			projectName: w.projectName,
-			terminalTabs: tabs,
-			activeTerminalTabId: tabs.some((t) => t.id === active) ? active : (tabs[0]?.id ?? ''),
-			renderer: w.renderer,
-			...(w.worktreePath && { worktreePath: w.worktreePath }),
-			...(w.branch && { branch: w.branch }),
-			...(w.splitView && { splitView: w.splitView })
-		};
-	}
-
-	private paneView(p: WorkspacePane): TerminalPaneState {
-		const view: PaneView | undefined =
-			p.kind === 'codex'
-				? p.codexMode === 'appServer'
-					? 'chat'
-					: 'terminal'
-				: p.kind === 'claude' && this.ui.chatPanes.includes(p.id)
-					? 'chat'
-					: undefined;
-		return {
-			id: p.id,
-			type: p.kind,
-			...(p.sessionId && { claudeSessionId: p.sessionId }),
-			...(p.previousIds?.length && { previousIds: p.previousIds }),
-			...(p.accountId && { claudeAccountId: p.accountId }),
-			...(view && { view }),
-			terminalId: p.terminalId,
-			status: p.status,
-			title: p.title,
-			busy: p.busy,
-			waiting: p.waiting,
-			error: p.error
-		};
 	}
 
 	/** Send one command; a refusal is shown, never thrown. */
