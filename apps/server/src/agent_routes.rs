@@ -4,7 +4,8 @@
 //! - `GET /agent` lists every live session ([`AgentSummary`], with `agent`),
 //!   newest change first.
 //! - `GET /agent/attention?cursor=` long-polls shared notification events.
-//! - `WS /agent/:kind/:id/ws` streams `snapshot` then `update`/`exit` frames and
+//! - `WS /agent/:kind/:id/ws` (any of the session's ids; one that isn't running
+//!   is closed at once with code 4404) streams `snapshot` then `update`/`exit` frames and
 //!   takes `prompt` / `approve` / `elicit` / `interrupt` / `mode` messages. Any number of
 //!   clients may attach; the first answer to an approval wins.
 //! - `POST /agent/:kind/:id/message` applies one of those messages without a
@@ -163,7 +164,18 @@ pub async fn agent_attach(
     State(state): State<AppState>,
 ) -> Result<Response, ApiError> {
     crate::auth::authorize_ws(&headers, auth.token.as_deref(), &state)?;
-    let session = find(&state, &id)?;
+    // A browser socket can't read an HTTP status: say "not running" in the close.
+    let Ok(session) = find(&state, &id) else {
+        return Ok(ws.on_upgrade(|socket| {
+            ws_close(
+                socket,
+                Some(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    code: SESSION_GONE,
+                    reason: "not running".into(),
+                }))),
+            )
+        }));
+    };
     let revoked = state.revoked.clone();
     let every_meta = opts.meta.as_deref() != Some("changed");
     // A prompt can carry 10 images of up to ~6.7 MB base64 each and 5 PDFs of
@@ -176,6 +188,8 @@ pub async fn agent_attach(
 }
 
 const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
+/// The close code of a socket opened on a session that isn't running.
+pub const SESSION_GONE: u16 = 4404;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]

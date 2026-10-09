@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatTarget, TranscriptMeta } from '@workbench/types';
 import type { AgentApi } from './agent-api';
-import { AgentChat } from './agent-chat.svelte';
+import { AgentChat, type PaneProcess } from './agent-chat.svelte';
 import { ChatDraft } from './chat-draft.svelte';
 
 class FakeSocket {
@@ -10,7 +10,7 @@ class FakeSocket {
 	readyState = FakeSocket.OPEN;
 	sent: unknown[] = [];
 	onmessage: ((e: { data: string }) => void) | null = null;
-	onclose: (() => void) | null = null;
+	onclose: ((e?: { code?: number }) => void) | null = null;
 	constructor(readonly url: string) {
 		FakeSocket.last = this;
 	}
@@ -23,7 +23,14 @@ class FakeSocket {
 	emit(msg: unknown) {
 		this.onmessage?.({ data: JSON.stringify(msg) });
 	}
+	/** The server closing the socket; `GONE` when the session isn't running. */
+	drop(code?: number) {
+		this.readyState = 3;
+		this.onclose?.(code === undefined ? {} : { code });
+	}
 }
+
+const GONE = 4404;
 
 const meta = (busy = false): TranscriptMeta => ({
 	title: 'Fix keyboard',
@@ -41,26 +48,28 @@ const meta = (busy = false): TranscriptMeta => ({
 
 const body: ChatTarget = { projectPath: '/repo', sessionId: 'sid', paneId: 'p1' };
 
-const gone = () => Object.assign(new Error('The session is not running.'), { status: 404 });
+const url = (id: string) => `ws://test/agent/claude/${id}/ws`;
+const spyUrl = () => vi.fn<AgentApi['socketUrl']>(async (id) => url(id));
 
-/** Like the server: the session is running under the id it's asked for. */
-function fakeApi(attach = vi.fn<AgentApi['attach']>(async (id) => id)): AgentApi {
-	return { attach, socketUrl: async (id) => `ws://test/agent/claude/${id}/ws` };
+function fakeApi(socketUrl = spyUrl()): AgentApi {
+	return { socketUrl };
 }
+
+const snapshot = (sessionId = 'sid') => ({
+	t: 'snapshot',
+	sessionId,
+	start: 0,
+	items: [],
+	meta: meta(),
+	commands: [],
+	exited: false
+});
 
 async function connected(api = fakeApi(), startBody = body) {
 	const chat = new AgentChat(startBody, api);
 	await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
 	const ws = FakeSocket.last!;
-	ws.emit({
-		t: 'snapshot',
-		sessionId: 'sid',
-		start: 0,
-		items: [],
-		meta: meta(),
-		commands: [],
-		exited: false
-	});
+	ws.emit(snapshot());
 	return { chat, ws };
 }
 
@@ -75,10 +84,10 @@ describe('AgentChat', () => {
 		vi.unstubAllGlobals();
 	});
 
-	it('attaches to the session, then streams updates into the chat', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		expect(attach).toHaveBeenCalledWith('sid');
+	it('opens the session socket, then streams updates into the chat', async () => {
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
+		expect(socketUrl).toHaveBeenCalledWith('sid');
 		expect(ws.url).toBe('ws://test/agent/claude/sid/ws');
 		expect(chat.status).toBe('live');
 
@@ -364,25 +373,32 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
-	it('fails at once when the session is not running, and can try again', async () => {
-		const attach = vi
-			.fn<AgentApi['attach']>()
-			.mockRejectedValueOnce(gone())
-			.mockResolvedValue('sid');
-		const chat = new AgentChat(body, fakeApi(attach));
-		await vi.waitFor(() => expect(chat.status).toBe('failed'));
-		expect(chat.error).toBe('The session is not running.');
+	it('fails at once when the session is not running, without retrying', async () => {
+		const socketUrl = spyUrl();
+		const chat = new AgentChat(body, fakeApi(socketUrl));
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		FakeSocket.last!.drop(GONE);
+		expect(chat.status).toBe('failed');
+		expect(chat.error).toBeNull();
 		await vi.advanceTimersByTimeAsync(60_000);
-		expect(attach).toHaveBeenCalledTimes(1);
+		expect(socketUrl).toHaveBeenCalledTimes(1);
 
 		await chat.open();
-		expect(attach).toHaveBeenCalledTimes(2);
-		expect(FakeSocket.last).not.toBeNull();
+		expect(socketUrl).toHaveBeenCalledTimes(2);
+		chat.dispose();
+	});
+	it('fails with the reason when the first socket URL is refused', async () => {
+		const socketUrl = spyUrl().mockRejectedValueOnce(new Error('no server'));
+		const chat = new AgentChat(body, fakeApi(socketUrl));
+		await vi.waitFor(() => expect(chat.status).toBe('failed'));
+		expect(chat.error).toBe('no server');
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(socketUrl).toHaveBeenCalledTimes(1);
 		chat.dispose();
 	});
 	it('leaves restarting an ended session to its host, then re-attaches', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const chat = new AgentChat(body, fakeApi(attach));
+		const socketUrl = spyUrl();
+		const chat = new AgentChat(body, fakeApi(socketUrl));
 		const onRestart = vi.fn();
 		chat.onRestart = onRestart;
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
@@ -390,22 +406,23 @@ describe('AgentChat', () => {
 
 		await chat.open();
 		expect(onRestart).toHaveBeenCalledOnce();
-		expect(attach).toHaveBeenCalledTimes(1);
+		expect(socketUrl).toHaveBeenCalledTimes(1);
 
 		await chat.attach();
-		expect(attach).toHaveBeenCalledTimes(2);
+		expect(socketUrl).toHaveBeenCalledTimes(2);
 		chat.dispose();
 	});
 
 	it('leaves restarting a session that was not running to its host', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockRejectedValue(gone());
-		const chat = new AgentChat(body, fakeApi(attach));
+		const socketUrl = spyUrl();
+		const chat = new AgentChat(body, fakeApi(socketUrl));
 		const onRestart = vi.fn();
 		chat.onRestart = onRestart;
-		await vi.waitFor(() => expect(chat.status).toBe('failed'));
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		FakeSocket.last!.drop(GONE);
 		await chat.open();
 		expect(onRestart).toHaveBeenCalledOnce();
-		expect(attach).toHaveBeenCalledTimes(1);
+		expect(socketUrl).toHaveBeenCalledTimes(1);
 		chat.dispose();
 	});
 	it('marks the session ended on exit and refuses to send', async () => {
@@ -420,194 +437,221 @@ describe('AgentChat', () => {
 	});
 
 	it('re-attaches after a dropped socket', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		ws.onclose?.();
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
+		ws.drop();
 		expect(chat.status).toBe('reconnecting');
 		await vi.advanceTimersByTimeAsync(1500);
-		expect(attach).toHaveBeenCalledTimes(2);
-		expect(attach).toHaveBeenLastCalledWith('sid');
+		expect(socketUrl).toHaveBeenCalledTimes(2);
+		expect(socketUrl).toHaveBeenLastCalledWith('sid');
 		expect(FakeSocket.last).not.toBe(ws);
 		chat.dispose();
 	});
 	it('backs off between failed reconnects, then gives up until Restart re-attaches', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
 		const onRestart = vi.fn();
 		chat.onRestart = onRestart;
-		attach.mockRejectedValue(new Error('Failed to fetch'));
-		ws.onclose?.();
+		socketUrl.mockRejectedValue(new Error('Failed to fetch'));
+		ws.drop();
 		const delays = [1500, 3000, 6000, 12000, 24000, 30000, 30000, 30000];
 		for (const [i, delay] of delays.entries()) {
 			expect(chat.status).toBe('reconnecting');
 			await vi.advanceTimersByTimeAsync(delay - 1);
-			expect(attach).toHaveBeenCalledTimes(i + 1);
+			expect(socketUrl).toHaveBeenCalledTimes(i + 1);
 			await vi.advanceTimersByTimeAsync(1);
-			expect(attach).toHaveBeenCalledTimes(i + 2);
-			expect(attach).toHaveBeenLastCalledWith('sid');
+			expect(socketUrl).toHaveBeenCalledTimes(i + 2);
+			expect(socketUrl).toHaveBeenLastCalledWith('sid');
 		}
 		expect(chat.status).toBe('exited');
 		expect(chat.error).toContain('Lost the connection');
 		await vi.advanceTimersByTimeAsync(120_000);
-		expect(attach).toHaveBeenCalledTimes(delays.length + 1);
+		expect(socketUrl).toHaveBeenCalledTimes(delays.length + 1);
 
 		// Out of retries is not an ended session: Restart re-attaches, not restarts.
-		attach.mockResolvedValue('sid');
+		socketUrl.mockImplementation(async (id) => url(id));
 		await chat.open();
 		expect(onRestart).not.toHaveBeenCalled();
-		expect(attach).toHaveBeenCalledTimes(delays.length + 2);
+		expect(socketUrl).toHaveBeenCalledTimes(delays.length + 2);
 		expect(FakeSocket.last).not.toBe(ws);
 		chat.dispose();
 	});
-	it('resets the backoff once a reconnect gets its snapshot', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		ws.onclose?.();
+	it('backs off on abnormal closes (1006) like any other drop', async () => {
+		const { chat, ws } = await connected();
+		ws.drop(1006);
+		expect(chat.status).toBe('reconnecting');
 		await vi.advanceTimersByTimeAsync(1500);
 		const second = FakeSocket.last!;
-		second.onclose?.(); // closed before a snapshot: the next wait doubles
+		expect(second).not.toBe(ws);
+		second.drop(1006);
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(FakeSocket.last).toBe(second);
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(FakeSocket.last).not.toBe(second);
+		chat.dispose();
+	});
+	it('resets the backoff once a reconnect gets its snapshot', async () => {
+		const { chat, ws } = await connected();
+		ws.drop();
+		await vi.advanceTimersByTimeAsync(1500);
+		const second = FakeSocket.last!;
+		second.drop(); // closed before a snapshot: the next wait doubles
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(FakeSocket.last).toBe(second);
 		await vi.advanceTimersByTimeAsync(1500);
 		const third = FakeSocket.last!;
 		expect(third).not.toBe(second);
-		third.emit({
-			t: 'snapshot',
-			sessionId: 'sid',
-			start: 0,
-			items: [],
-			meta: meta(),
-			commands: [],
-			exited: false
-		});
-		third.onclose?.();
+		third.emit(snapshot());
+		third.drop();
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(FakeSocket.last).not.toBe(third);
 		chat.dispose();
 	});
 
-	it('ends a chat whose session stays gone past a relaunch, not retrying', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		attach.mockRejectedValue(gone());
-		ws.onclose?.();
-		// A relaunch unlists the session for up to 30s, so it's looked for a while first.
+	it('ends a reconnecting chat whose session is gone, not retrying', async () => {
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
+		ws.drop();
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(chat.status).toBe('reconnecting');
-		await vi.advanceTimersByTimeAsync(45_000);
+		FakeSocket.last!.drop(GONE);
 		expect(chat.status).toBe('exited');
-		expect(chat.error).toBe('The session is not running.');
-		const tries = attach.mock.calls.length;
-		expect(tries).toBe(6); // the attach, then five looks
+		expect(chat.error).toBeNull();
 		await vi.advanceTimersByTimeAsync(120_000);
-		expect(attach).toHaveBeenCalledTimes(tries);
+		expect(socketUrl).toHaveBeenCalledTimes(2);
 		chat.dispose();
 	});
-	it('rejoins a relaunched session whose replaced frame never arrived', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		attach.mockRejectedValueOnce(gone());
-		ws.onclose?.();
-		await vi.advanceTimersByTimeAsync(1500);
-		expect(chat.status).toBe('reconnecting');
-		await vi.advanceTimersByTimeAsync(3000);
-		expect(FakeSocket.last).not.toBe(ws);
-		expect(attach).toHaveBeenLastCalledWith('sid');
-		chat.dispose();
-	});
-	it('a chat refused on reconnect re-attaches on Restart, not restarts', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		const onRestart = vi.fn();
-		chat.onRestart = onRestart;
-		attach.mockRejectedValueOnce(Object.assign(new Error('unauthorized'), { status: 401 }));
-		ws.onclose?.();
-		await vi.advanceTimersByTimeAsync(1500);
-		expect(chat.status).toBe('exited');
-		await chat.open();
-		expect(onRestart).not.toHaveBeenCalled();
-		expect(attach).toHaveBeenCalledTimes(3);
-		chat.dispose();
-	});
-	it('gives up at once on a refusal that will not change, like a revoked token', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		attach.mockRejectedValue(Object.assign(new Error('unauthorized'), { status: 401 }));
-		ws.onclose?.();
-		await vi.advanceTimersByTimeAsync(1500);
-		expect(chat.status).toBe('exited');
-		expect(chat.error).toBe('unauthorized');
-		chat.dispose();
-	});
-
-	it('re-attaches on replaced, retrying while the relaunched session is not listed yet', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		attach.mockRejectedValueOnce(gone()).mockRejectedValueOnce(gone());
+	it('re-attaches on replaced, retrying while the relaunched session is not running yet', async () => {
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
 		ws.emit({ t: 'replaced' });
 		expect(chat.status).toBe('reconnecting');
 		expect(ws.readyState).toBe(3);
-		await vi.advanceTimersByTimeAsync(0);
-		expect(attach).toHaveBeenCalledTimes(2);
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
+		expect(socketUrl).toHaveBeenCalledTimes(2);
+		FakeSocket.last!.drop(GONE);
 		expect(chat.status).toBe('reconnecting');
 		await vi.advanceTimersByTimeAsync(1500);
-		expect(attach).toHaveBeenCalledTimes(3);
-		expect(FakeSocket.last).toBe(ws);
+		expect(socketUrl).toHaveBeenCalledTimes(3);
+		FakeSocket.last!.drop(GONE);
 		await vi.advanceTimersByTimeAsync(3000);
-		expect(attach).toHaveBeenCalledTimes(4);
-		expect(attach).toHaveBeenLastCalledWith('sid');
-		expect(FakeSocket.last).not.toBe(ws);
+		expect(socketUrl).toHaveBeenCalledTimes(4);
+		expect(socketUrl).toHaveBeenLastCalledWith('sid');
+		FakeSocket.last!.emit(snapshot());
+		expect(chat.status).toBe('live');
+
+		// The snapshot ends the relaunch: a later 4404 ends the chat.
+		FakeSocket.last!.drop(GONE);
+		expect(chat.status).toBe('failed');
 		chat.dispose();
 	});
+	it('gives a relaunch only so many retries', async () => {
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
+		ws.emit({ t: 'replaced' });
+		for (let i = 0; i < 6; i++) {
+			await vi.waitFor(() => expect(socketUrl).toHaveBeenCalledTimes(i + 2));
+			await vi.advanceTimersByTimeAsync(0);
+			FakeSocket.last!.drop(GONE);
+			if (i < 5) {
+				expect(chat.status).toBe('reconnecting');
+				await vi.advanceTimersByTimeAsync(30_000);
+			}
+		}
+		expect(chat.status).toBe('exited');
+		expect(chat.error).toBeNull();
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(socketUrl).toHaveBeenCalledTimes(7); // the attach, the re-attach, five retries
+		chat.dispose();
+	});
+	it("waits for a relaunch the host's pane reports, when the replaced frame never arrived", async () => {
+		const socketUrl = spyUrl();
+		let pane: PaneProcess = { status: 'running', generation: 1 };
+		const chat = new AgentChat(body, fakeApi(socketUrl), { pane: () => pane });
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		FakeSocket.last!.emit(snapshot());
+		pane = { status: 'running', generation: 2 };
+		FakeSocket.last!.drop(GONE);
+		expect(chat.status).toBe('reconnecting');
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(socketUrl).toHaveBeenCalledTimes(2);
+		FakeSocket.last!.emit(snapshot());
+		expect(chat.status).toBe('live');
+		chat.dispose();
+	});
+	it('waits for any running pane before the first snapshot', async () => {
+		const chat = new AgentChat(body, fakeApi(), {
+			pane: () => ({ status: 'starting', generation: 0 })
+		});
+		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+		FakeSocket.last!.drop(GONE);
+		expect(chat.status).toBe('reconnecting');
+		chat.dispose();
+	});
+	it('ends at once when the pane runs the spawn it attached to, or has exited', async () => {
+		const laters: PaneProcess[] = [
+			{ status: 'running', generation: 1 },
+			{ status: 'exited', generation: 2 }
+		];
+		for (const later of laters) {
+			let pane: PaneProcess = { status: 'running', generation: 1 };
+			const chat = new AgentChat(body, fakeApi(), { pane: () => pane });
+			await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
+			const ws = FakeSocket.last!;
+			ws.emit(snapshot());
+			ws.drop(); // a drop first: the 4404 then comes while reconnecting
+			await vi.advanceTimersByTimeAsync(1500);
+			pane = later;
+			FakeSocket.last!.drop(GONE);
+			expect(chat.status).toBe('exited');
+			expect(chat.error).toBeNull();
+			chat.dispose();
+			FakeSocket.last = null;
+		}
+	});
 	it('keeps retrying while the network is still down after a phone wakes', async () => {
-		const attach = vi
-			.fn<AgentApi['attach']>()
-			.mockResolvedValueOnce('sid')
-			.mockRejectedValueOnce(new Error('Failed to fetch'))
-			.mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
+		socketUrl.mockRejectedValueOnce(new Error('Failed to fetch'));
 		chat.reconnect();
-		await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(socketUrl).toHaveBeenCalledTimes(2));
 		expect(chat.status).toBe('reconnecting');
 
 		await vi.advanceTimersByTimeAsync(1500);
 		const retry = FakeSocket.last!;
 		expect(retry).not.toBe(ws);
-		retry.onclose?.(); // the socket couldn't open either: the next try waits twice as long
+		retry.drop(); // the socket couldn't open either: the next try waits twice as long
 		expect(chat.status).toBe('reconnecting');
 		await vi.advanceTimersByTimeAsync(1500);
-		expect(attach).toHaveBeenCalledTimes(3);
+		expect(socketUrl).toHaveBeenCalledTimes(3);
 		await vi.advanceTimersByTimeAsync(1500);
-		expect(attach).toHaveBeenCalledTimes(4);
+		expect(socketUrl).toHaveBeenCalledTimes(4);
 		expect(FakeSocket.last).not.toBe(retry);
 		chat.dispose();
 	});
 
 	it('re-attaches at once on reconnect(), dropping the old socket quietly', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
 		chat.reconnect();
 		expect(chat.status).toBe('reconnecting');
 		expect(ws.readyState).toBe(3);
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
-		expect(attach).toHaveBeenCalledTimes(2);
+		expect(socketUrl).toHaveBeenCalledTimes(2);
 		chat.dispose();
 	});
 
 	it('abandons a connect still waiting on the server when reconnect() starts another', async () => {
-		let release!: (id: string) => void;
-		const attach = vi
-			.fn<AgentApi['attach']>()
-			.mockResolvedValueOnce('sid')
-			.mockImplementationOnce(() => new Promise((r) => (release = r)))
-			.mockResolvedValue('sid');
-		const { chat, ws } = await connected(fakeApi(attach));
-		ws.onclose?.(); // dropped: the retry timer fires and its start hangs
+		let release!: (u: string) => void;
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
+		socketUrl.mockImplementationOnce(() => new Promise((r) => (release = r)));
+		ws.drop(); // dropped: the retry timer fires and its lookup hangs
 		await vi.advanceTimersByTimeAsync(1500);
 		chat.reconnect();
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(ws));
 		const current = FakeSocket.last;
-		release('sid');
+		release(url('sid'));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(FakeSocket.last).toBe(current); // the stale connect opened no socket
 		chat.dispose();
@@ -700,8 +744,8 @@ describe('AgentChat', () => {
 	});
 
 	it('follows /clear to the new session id, and re-attaches under it', async () => {
-		const attach = vi.fn<AgentApi['attach']>(async (id) => id);
-		const { chat, ws } = await connected(fakeApi(attach));
+		const socketUrl = spyUrl();
+		const { chat, ws } = await connected(fakeApi(socketUrl));
 		ws.emit({
 			t: 'snapshot',
 			sessionId: 'new-id',
@@ -711,20 +755,21 @@ describe('AgentChat', () => {
 			exited: false
 		});
 		expect(chat.sessionId).toBe('new-id');
-		ws.onclose?.();
+		ws.drop();
 		await vi.advanceTimersByTimeAsync(1500);
-		expect(attach).toHaveBeenLastCalledWith('new-id');
+		expect(socketUrl).toHaveBeenLastCalledWith('new-id');
 		expect(FakeSocket.last!.url).toBe('ws://test/agent/claude/new-id/ws');
 		chat.dispose();
 	});
 
-	it('connects to the id the server resolves, for a session a /clear moved while away', async () => {
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('new-id');
-		const chat = new AgentChat(body, fakeApi(attach));
+	it('takes the id the server reports, for a session a /clear moved while away', async () => {
+		const socketUrl = spyUrl();
+		const chat = new AgentChat(body, fakeApi(socketUrl));
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
-		expect(attach).toHaveBeenCalledWith('sid');
+		expect(socketUrl).toHaveBeenCalledWith('sid');
+		expect(FakeSocket.last!.url).toBe(url('sid'));
+		FakeSocket.last!.emit(snapshot('new-id'));
 		expect(chat.sessionId).toBe('new-id');
-		expect(FakeSocket.last!.url).toBe('ws://test/agent/claude/new-id/ws');
 		chat.dispose();
 	});
 	it('names Codex when a Codex chat cannot send', async () => {
@@ -932,36 +977,36 @@ describe('AgentChat host lifecycle', () => {
 	it('retries on wake after running out of retries, and Restart then re-attaches', async () => {
 		const doc = Object.assign(new EventTarget(), { hidden: false });
 		vi.stubGlobal('document', doc);
-		const attach = vi.fn<AgentApi['attach']>().mockResolvedValue('sid');
-		const chat = new AgentChat(body, fakeApi(attach), { reconnectOnWake: true });
+		const socketUrl = spyUrl();
+		const chat = new AgentChat(body, fakeApi(socketUrl), { reconnectOnWake: true });
 		const onRestart = vi.fn();
 		chat.onRestart = onRestart;
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBeNull());
 		const giveUp = async () => {
-			attach.mockRejectedValue(new Error('Failed to fetch'));
+			socketUrl.mockRejectedValue(new Error('Failed to fetch'));
 			await vi.advanceTimersByTimeAsync(200_000);
 			expect(chat.status).toBe('exited');
-			attach.mockResolvedValue('sid');
+			socketUrl.mockImplementation(async (id) => url(id));
 		};
 		doc.hidden = true;
 		doc.dispatchEvent(new Event('visibilitychange'));
-		FakeSocket.last!.onclose?.();
+		FakeSocket.last!.drop();
 		await giveUp();
 
-		const calls = attach.mock.calls.length;
+		const calls = socketUrl.mock.calls.length;
 		const before = FakeSocket.last;
 		doc.hidden = false;
 		doc.dispatchEvent(new Event('visibilitychange'));
 		expect(chat.status).toBe('reconnecting');
 		await vi.waitFor(() => expect(FakeSocket.last).not.toBe(before));
-		expect(attach).toHaveBeenCalledTimes(calls + 1);
-		expect(attach).toHaveBeenLastCalledWith('sid');
+		expect(socketUrl).toHaveBeenCalledTimes(calls + 1);
+		expect(socketUrl).toHaveBeenLastCalledWith('sid');
 
-		FakeSocket.last!.onclose?.();
+		FakeSocket.last!.drop();
 		await giveUp();
 		await chat.open();
 		expect(onRestart).not.toHaveBeenCalled();
-		expect(attach).toHaveBeenLastCalledWith('sid');
+		expect(socketUrl).toHaveBeenLastCalledWith('sid');
 		chat.dispose();
 	});
 	it('counts sends, so the transcript can scroll back down', async () => {

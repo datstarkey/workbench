@@ -58,10 +58,14 @@
 			sessionId: opened.sessionId,
 			...(opened.claudeAccountId ? { claudeAccountId: opened.claudeAccountId } : {})
 		},
-		client.attachApi,
-		{ draft: drafts.get(opened), reconnectOnWake: true }
+		client.agents,
+		{
+			draft: drafts.get(opened),
+			reconnectOnWake: true,
+			pane: () => client.panes.find((e) => e.pane.id === paneId)?.pane
+		}
 	);
-	// Restart / Try again on an ended chat restarts the pane on the host; the attach then waits for it.
+	// Restart on an ended chat restarts the pane on the host; the chat re-attaches to the new spawn.
 	chat.onRestart = () => void client.restart(entry.tab.id);
 	const draft = chat.draft;
 	const name = agentName(chat.agent);

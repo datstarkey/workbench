@@ -43,29 +43,3 @@ export function workspaceLabel(ws: Workspace): string {
 export function paneTitle({ tab, pane }: PaneEntry): string {
 	return pane.title || tab.label;
 }
-
-/** How long a chat keeps re-attaching while its pane's process relaunches. */
-const RELAUNCH_WAIT_MS = 30_000;
-
-/**
- * Attach to a pane's session. A restart, rewind or mode switch relaunches the
- * process, and an attach meanwhile finds nothing (404): try again at each
- * change to the host's model while the pane is still there.
- */
-export async function attachThroughRelaunch(
-	attach: () => Promise<string>,
-	paneThere: () => boolean,
-	nextChange: (ms: number) => Promise<void>
-): Promise<string> {
-	const deadline = Date.now() + RELAUNCH_WAIT_MS;
-	for (;;) {
-		try {
-			return await attach();
-		} catch (e) {
-			const { status } = e as { status?: number };
-			const left = deadline - Date.now();
-			if (status !== 404 || left <= 0 || !paneThere()) throw e;
-			await nextChange(left);
-		}
-	}
-}

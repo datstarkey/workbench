@@ -20,7 +20,6 @@ export class PaneScreens {
 	/** The open pane has been in the model, so its absence means it left. */
 	private shown = false;
 	private timer: ReturnType<typeof setTimeout> | null = null;
-	private waiters: (() => void)[] = [];
 
 	constructor(panes: () => PaneEntry[], onTimeout: () => void) {
 		this.panes = panes;
@@ -67,14 +66,6 @@ export class PaneScreens {
 		this.views = { ...this.views, [paneId]: view };
 	}
 
-	/** Resolves at the next change to the host's model, or after `ms`. */
-	nextChange(ms: number): Promise<void> {
-		return new Promise((resolve) => {
-			this.waiters.push(resolve);
-			setTimeout(resolve, ms);
-		});
-	}
-
 	reconcile(): void {
 		const id = this.openPaneId;
 		if (id) {
@@ -83,7 +74,6 @@ export class PaneScreens {
 				this.endStart();
 			} else if (this.shown) this.openPaneId = null;
 		}
-		for (const done of this.waiters.splice(0)) done();
 	}
 
 	private show(paneId: string, view?: ClaudeView): void {

@@ -1,19 +1,9 @@
 import { agentWsUrl, DEFAULT_TIMEOUT_MS, SLOW_TIMEOUT_MS, withTimeout } from '@workbench/transport';
-import type {
-	AgentClientMsg,
-	AgentSummary,
-	ChatTarget,
-	TaskTranscript,
-	UsageLimit
-} from '@workbench/types';
+import type { AgentClientMsg, ChatTarget, TaskTranscript, UsageLimit } from '@workbench/types';
 
 /** What an {@link AgentChat} needs from the server; injectable for tests. */
 export interface AgentApi {
-	/**
-	 * The running session's current id (it follows a `/clear`). Rejects with
-	 * `status: 404` while none runs: starting one is a workspace command.
-	 */
-	attach(sessionId: string): Promise<string>;
+	/** The session's socket (any of its ids); starting one is a workspace command. */
 	socketUrl(sessionId: string): Promise<string>;
 	/** The chat cwd's files for `@` mentions; absent leaves the menu out. */
 	files?(where: Pick<ChatTarget, 'projectPath' | 'worktreePath'>): Promise<string[]>;
@@ -67,18 +57,7 @@ export function agentClient(server: () => AgentServer | Promise<AgentServer>) {
 	}
 	const path = (id: string) => `/agent/claude/${encodeURIComponent(id)}`;
 
-	async function list(): Promise<AgentSummary[]> {
-		return (await call<AgentSummary[]>('GET', '/agent')) ?? [];
-	}
-
 	return {
-		async attach(sessionId: string): Promise<string> {
-			const running = (await list()).find(
-				(s) => s.sessionId === sessionId || s.previousIds?.includes(sessionId)
-			);
-			if (!running) throw Object.assign(new Error('The session is not running.'), { status: 404 });
-			return running.sessionId;
-		},
 		async socketUrl(sessionId: string): Promise<string> {
 			const { baseUrl, token } = await server();
 			return agentWsUrl(baseUrl, sessionId, token ?? undefined);

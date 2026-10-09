@@ -13,15 +13,12 @@ describe('agentClient', () => {
 	afterEach(() => vi.unstubAllGlobals());
 	const api = agentClient(() => ({ baseUrl: 'http://box', token: 't' }));
 
-	it('attaches to a running session by its id or one a /clear replaced', async () => {
-		const fetch = stubFetch([
-			{ sessionId: 'other' },
-			{ sessionId: 'new-id', previousIds: ['sid'] }
-		]);
-		await expect(api.attach('new-id')).resolves.toBe('new-id');
-		await expect(api.attach('sid')).resolves.toBe('new-id');
-		expect(fetch.mock.calls.map((c) => c[0])).toEqual(['http://box/agent', 'http://box/agent']);
-		await expect(api.attach('gone')).rejects.toMatchObject({ status: 404 });
+	it("builds the session's socket URL without a lookup", async () => {
+		const fetch = stubFetch(null);
+		await expect(api.socketUrl('a b')).resolves.toBe(
+			'ws://box/agent/claude/a%20b/ws?token=t&meta=changed'
+		);
+		expect(fetch).not.toHaveBeenCalled();
 	});
 
 	it('reads a subagent transcript, null before it exists', async () => {
@@ -66,9 +63,10 @@ describe('agentClient timeouts', () => {
 	}
 
 	it('rejects a stalled request with a clear timeout error', async () => {
-		await expect(budget(() => api.attach('sid'))).resolves.toEqual({
+		await expect(budget(() => api.taskTranscript('sid', 't1'))).resolves.toEqual({
 			waited: 10_000,
-			message: 'GET /agent timed out after 10s: the server is not responding'
+			message:
+				'GET /agent/claude/sid/tasks/t1/transcript timed out after 10s: the server is not responding'
 		});
 	});
 });

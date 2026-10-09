@@ -1,4 +1,4 @@
-export { AgentChat, type TaskOutput } from './agent-chat.svelte.ts';
+export { AgentChat, type PaneProcess, type TaskOutput } from './agent-chat.svelte.ts';
 export { ChatDraft } from './chat-draft.svelte.ts';
 export { agentClient, type AgentApi, type AgentClient } from './agent-api.ts';
 export { useAccountPlanUsage } from './plan-usage.svelte.ts';

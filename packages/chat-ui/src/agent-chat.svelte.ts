@@ -17,7 +17,8 @@ import type {
 	SlashCommand,
 	TaskTranscript,
 	TranscriptItem,
-	TranscriptMeta
+	TranscriptMeta,
+	WorkspacePane
 } from '@workbench/types';
 import type { AgentApi } from './agent-api';
 import {
@@ -39,7 +40,7 @@ import { ChatDraft } from './chat-draft.svelte';
  * - `live`: attached; prompts go straight to the agent.
  * - `reconnecting`: the socket dropped; the agent keeps running server-side.
  * - `exited`: the process ended (crash, `/exit`, server stopped).
- * - `failed`: the session could not be attached (not running).
+ * - `failed`: the session isn't running, so there was nothing to attach to.
  */
 export type ChatStatus = 'starting' | 'live' | 'reconnecting' | 'exited' | 'failed';
 
@@ -62,8 +63,13 @@ const RECONNECT_MS = 1500;
 const MAX_RECONNECT_MS = 30_000;
 /** Retries before giving up (about 2.5 min), leaving Restart to the person. */
 const MAX_RECONNECT_ATTEMPTS = 8;
-/** Retries (about 45s) a session missing on reconnect gets: a relaunch (rewind, mode) attaches within 30s. */
+/** Retries (about 45s) a relaunching session gets: its new process attaches within 30s. */
 const RELAUNCH_ATTEMPTS = 5;
+/** How the server closes a socket opened on a session that isn't running. */
+const SESSION_GONE = 4404;
+
+/** The pane's process as the host's workspace snapshot shows it. */
+export type PaneProcess = Pick<WorkspacePane, 'status' | 'generation'>;
 /** Hidden this long (a sleeping phone or laptop), the socket may be dead while it still reads open. */
 const WAKE_RECONNECT_MS = 10_000;
 /** How long the `@` menu's file list is reused before it's fetched again. */
@@ -185,17 +191,30 @@ export class AgentChat {
 	readonly draft: ChatDraft;
 	private hiddenAt = 0;
 	private readonly reconnectOnWake: boolean;
+	private readonly pane: () => PaneProcess | null | undefined;
+	/** The pane's spawn the last snapshot came from; a newer one is a relaunch to wait for. */
+	private attachedGeneration: number | undefined;
+	/** The server said `replaced`: the session comes back under a new process. */
+	private relaunched = false;
 
 	/**
 	 * `draft`: hosts that keep the composer beyond this chat pass their own.
 	 * `reconnectOnWake`: re-attach when the page shows again after a long sleep
 	 * (a phone), since the socket can read open after the server let it go.
+	 * `pane`: the pane's process from the host's snapshot. A session that isn't
+	 * running is waited for only while the pane runs a newer spawn than the one
+	 * attached to (a restart from any device); otherwise the chat ends at once.
 	 */
 	constructor(
 		body: ChatTarget,
 		api: AgentApi,
-		opts: { draft?: ChatDraft; reconnectOnWake?: boolean } = {}
+		opts: {
+			draft?: ChatDraft;
+			reconnectOnWake?: boolean;
+			pane?: () => PaneProcess | null | undefined;
+		} = {}
 	) {
+		this.pane = opts.pane ?? (() => null);
 		this.body = body;
 		this.api = api;
 		this.agent = body.agent ?? 'claude';
@@ -240,29 +259,20 @@ export class AgentChat {
 		return this.connect();
 	}
 
-	/** Attach to the running session; starting and ending it is the host's (its workspace commands). */
+	/**
+	 * Open the session's socket by id (the server follows `/clear`'s old ids);
+	 * starting and ending it is the host's (its workspace commands).
+	 */
 	private async connect(): Promise<void> {
 		const generation = ++this.generation;
 		const stale = () => this.disposed || generation !== this.generation;
 		let url: string;
 		try {
-			const sessionId = await this.api.attach(this.sessionId);
-			if (stale()) return;
-			this.sessionId = sessionId;
-			url = await this.api.socketUrl(sessionId);
+			url = await this.api.socketUrl(this.sessionId);
 		} catch (e) {
 			if (stale()) return;
-			// Waking phones lose the network for a moment, and a stalled server times
-			// out: retry those with backoff. Not a refusal that won't change (a revoked token).
-			const { status } = e as { status?: number };
-			const gone = status === 404;
-			// A relaunch (rewind, mode) unlists the session until its new process attaches.
-			const relaunching = gone && this.reconnectAttempts < RELAUNCH_ATTEMPTS;
-			const reconnecting = this.status === 'reconnecting';
-			if (reconnecting && ((!gone && retryable(status)) || relaunching))
-				return this.scheduleReconnect();
-			this.lostConnection = reconnecting && !gone;
-			this.status = reconnecting ? 'exited' : 'failed';
+			if (this.status === 'reconnecting') return this.scheduleReconnect();
+			this.status = 'failed';
 			this.error = e instanceof Error ? e.message : String(e);
 			return;
 		}
@@ -277,13 +287,29 @@ export class AgentChat {
 				console.warn('[AgentChat] bad frame', e);
 			}
 		};
-		ws.onclose = () => {
+		ws.onclose = (event?: CloseEvent) => {
 			if (this.ws !== ws) return; // replaced by a Restart
 			this.ws = null;
 			this.rejectControls('Connection lost');
 			this.settleRewinds();
-			if (this.status !== 'exited' && this.status !== 'failed') this.scheduleReconnect();
+			if (this.status === 'exited' || this.status === 'failed') return;
+			if (event?.code === SESSION_GONE) this.notRunning();
+			// Waking phones lose the network for a moment, and a stalled server
+			// times out: retry with backoff.
+			else this.scheduleReconnect();
 		};
+	}
+
+	/** The server has no such session: wait for a relaunch, else it ended. */
+	private notRunning(): void {
+		const pane = this.pane();
+		const newer =
+			(pane?.status === 'starting' || pane?.status === 'running') &&
+			pane.generation > (this.attachedGeneration ?? -1);
+		if ((this.relaunched || newer) && this.reconnectAttempts < RELAUNCH_ATTEMPTS)
+			return this.scheduleReconnect();
+		this.status = this.status === 'reconnecting' ? 'exited' : 'failed';
+		this.error = null;
 	}
 
 	private scheduleReconnect(): void {
@@ -339,6 +365,8 @@ export class AgentChat {
 				this.setMeta(msg.meta);
 				this.status = msg.exited ? 'exited' : 'live';
 				this.reconnectAttempts = 0;
+				this.relaunched = false;
+				this.attachedGeneration = this.pane()?.generation;
 				this.settlePending();
 				break;
 			case 'update':
@@ -388,7 +416,8 @@ export class AgentChat {
 				break;
 			case 'replaced':
 				// A rewind, mode switch or restart relaunches the process under the same id.
-				// Mid-relaunch the session isn't listed: re-attaching retries until it is.
+				// Mid-relaunch the session isn't running: re-attaching retries until it is.
+				this.relaunched = true;
 				this.reattach();
 				break;
 			case 'revoked':
@@ -844,11 +873,6 @@ export class AgentChat {
 		this.ws?.close();
 		this.ws = null;
 	}
-}
-
-/** No status: the network or a timeout. Server errors and throttling may pass too. */
-function retryable(status: number | undefined): boolean {
-	return status === undefined || status >= 500 || status === 408 || status === 429;
 }
 
 /** Two requests for the same id share one reply; both callers get it. */
