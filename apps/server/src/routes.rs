@@ -1,7 +1,7 @@
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::Html;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::Value;
@@ -39,17 +39,10 @@ pub fn router(state: AppState) -> Router {
             "/host/update",
             get(crate::host::update_status).post(crate::host::update_install),
         )
-        .route(
-            "/remote/terminals",
-            get(crate::terminal::terminal_list).post(crate::terminal::terminal_create),
-        )
+        .route("/remote/terminals", get(crate::terminal::terminal_list))
         .route(
             "/remote/terminals/:id/ws",
             get(crate::terminal::terminal_attach),
-        )
-        .route(
-            "/remote/terminals/:id",
-            delete(crate::terminal::terminal_kill),
         )
         .route(
             "/workspace/commands",
@@ -58,10 +51,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             crate::workspace::routes::EVENTS_PATH,
             get(crate::workspace::routes::events),
-        )
-        .route(
-            crate::home_events::PATH,
-            get(crate::home_events::home_events),
         )
         .route("/mod/hello", post(crate::mod_routes::hello))
         .route("/mod/out", post(crate::mod_routes::out))
@@ -73,18 +62,6 @@ pub fn router(state: AppState) -> Router {
             "/agent/attention",
             get(crate::agent_routes::agent_attention),
         )
-        .route(
-            "/agent/claude",
-            get(crate::agent_routes::claude_list)
-                .post(crate::agent_routes::agent_start)
-                .delete(crate::agent_routes::agent_stop_pane),
-        )
-        .route(
-            "/agent/codex",
-            get(crate::agent_routes::codex_list)
-                .post(crate::agent_routes::codex_start)
-                .delete(crate::agent_routes::agent_stop_pane),
-        )
         .route("/agent/usage", get(crate::agent_routes::agent_usage))
         .route("/agent/files", get(crate::agent_routes::agent_files))
         .route(
@@ -95,7 +72,6 @@ pub fn router(state: AppState) -> Router {
             "/agent/claude/:id/tasks/:task_id/transcript",
             get(crate::agent_routes::agent_task_transcript),
         )
-        .route("/agent/claude/:id", delete(crate::agent_routes::agent_stop))
         .route(
             "/agent/claude/:id/ws",
             get(crate::agent_routes::agent_attach),
@@ -104,7 +80,6 @@ pub fn router(state: AppState) -> Router {
             "/agent/codex/:id/message",
             post(crate::agent_routes::agent_message),
         )
-        .route("/agent/codex/:id", delete(crate::agent_routes::agent_stop))
         .route(
             "/agent/codex/:id/ws",
             get(crate::agent_routes::agent_attach),
@@ -113,12 +88,12 @@ pub fn router(state: AppState) -> Router {
 }
 
 /// `workspaceApi`: the version of `/workspace/commands` + `/events/workspace`
-/// this server speaks; a phone without it falls back to the older routes.
+/// this server speaks; the phone asks for an update without it.
 async fn health() -> Json<Value> {
     Json(serde_json::json!({ "ok": true, "workspaceApi": 1 }))
 }
 
-/// Minimal mobile-friendly web client (spawn sessions / manage worktrees from a
+/// Minimal mobile-friendly web client (list projects, manage worktrees from a
 /// phone browser over the private network). Complements the native mobile app.
 async fn index() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))

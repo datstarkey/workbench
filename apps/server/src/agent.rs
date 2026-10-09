@@ -7,7 +7,7 @@
 //! attaching and messaging work by id whatever runs behind it. What differs
 //! per CLI lives in a driver (`claude`, `codex`); the plumbing in `session`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -27,7 +27,6 @@ mod session;
 
 pub use attachment::{PromptFile, PromptImage, MAX_FILES, MAX_IMAGES};
 pub use cache::CachePolicy;
-pub(crate) use claude::validate as validate_claude_session_id;
 pub use frames::Frame;
 pub use modlink::{ModGrant, ModLink};
 pub use session::AgentSession;
@@ -135,28 +134,15 @@ pub struct AgentSummary {
     pub terminal_id: Option<String>,
 }
 
-/// What came of [`AgentManager::open_terminal`].
-pub enum TerminalStart {
-    /// The plugin attached the session.
-    Attached(Arc<AgentSession>),
-    /// The watch stopped the wait with this answer.
-    Stopped(serde_json::Value),
-}
-
 /// Between Claude Code's trust dialog appearing and it reading keys.
 const TRUST_SETTLE: Duration = Duration::from_secs(1);
 /// After answering the trust dialog, how long before answering once more.
 const TRUST_RETRY: Duration = Duration::from_secs(5);
 
-/// An [`AgentManager::open_terminal`] watch for Claude Code's folder trust
-/// dialog, which comes before any plugin loads: with `trust` it answers it
-/// (again once if `claude` still hasn't attached), else it kills the terminal
-/// and stops the wait with `{needsTrust: cwd}`.
-pub fn trust_watch<'a>(
-    terminals: &'a crate::terminal::TerminalManager,
-    trust: bool,
-    cwd: String,
-) -> impl FnMut(&str) -> Option<serde_json::Value> + 'a {
+/// An [`AgentManager::open_terminal`] watch that answers Claude Code's folder
+/// trust dialog, which comes before any plugin loads (again once if `claude`
+/// still hasn't attached).
+fn trust_watch(terminals: &crate::terminal::TerminalManager) -> impl FnMut(&str) + '_ {
     let mut answers: Vec<Instant> = Vec::new();
     move |terminal| {
         let answer_again = answers.len() == 1 && answers[0].elapsed() > TRUST_RETRY;
@@ -165,11 +151,7 @@ pub fn trust_watch<'a>(
                 .recent_output(terminal)
                 .is_some_and(|out| workbench_core::claude_launch::shows_trust_prompt(&out));
         if !asks {
-            return None;
-        }
-        if !trust {
-            terminals.kill(terminal);
-            return Some(serde_json::json!({ "needsTrust": cwd }));
+            return;
         }
         // Keys typed as the dialog first draws are lost.
         std::thread::sleep(TRUST_SETTLE);
@@ -178,7 +160,6 @@ pub fn trust_watch<'a>(
             std::thread::sleep(Duration::from_millis(300));
         }
         answers.push(Instant::now());
-        None
     }
 }
 
@@ -239,9 +220,6 @@ pub struct AgentManager {
     /// The terminals grants are issued for (to drop a dead one's grant) and
     /// the loopback port their plugins reach: set by the first listener.
     terminals: Arc<Terminals>,
-    /// Ids of sessions the person ended lately, newest last: an attach-only
-    /// start on one is told it was ended, not that it's merely gone (a crash).
-    ended: Arc<Mutex<VecDeque<String>>>,
     /// The `set_model` and effort a chat last sent each Claude session, by id,
     /// and the ones a restart (rewind, mode) owes its new `claude`, which starts
     /// on the defaults: the picks are session-only, so the plugin forgets them
@@ -251,8 +229,6 @@ pub struct AgentManager {
     restart_picks: Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>,
 }
 
-/// How many ended ids are remembered.
-const ENDED_KEPT: usize = 64;
 /// How long a stopped process may take to be reaped after its grace ran out.
 const EXIT_REAP: Duration = Duration::from_secs(2);
 /// How long a start waits for a stop of the same id: its grace and reap,
@@ -362,12 +338,7 @@ impl AgentManager {
                     }
                     let launch =
                         codex::launch(&req, thread_id.as_deref(), mode.as_deref(), options.clone());
-                    let session = self.spawn(req, launch)?;
-                    // A new thread's id is new; a resumed one runs again.
-                    if let Some(id) = &known_id {
-                        self.unmark_ended(id);
-                    }
-                    session
+                    self.spawn(req, launch)?
                 }
             }
         };
@@ -394,9 +365,9 @@ impl AgentManager {
             Err(e) => {
                 {
                     let _lifecycle = lock(&self.lifecycle);
-                    self.halt(&session, false);
+                    self.halt(&session);
                 }
-                self.stop_halted(&[session], false);
+                self.stop_halted(&[session]);
                 Err(e)
             }
         }
@@ -639,7 +610,6 @@ impl AgentManager {
                 let owed = lock(&self.restart_picks).remove(session_id);
                 self.send_picks(&session, owed.unwrap_or_default())?;
                 lock(&self.inner).insert(session_id.to_string(), session.clone());
-                self.unmark_ended(session_id);
                 Ok(session)
             });
             (attached, stale)
@@ -794,8 +764,7 @@ impl AgentManager {
         else {
             bail!("only Claude terminal sessions restart");
         };
-        // Clients re-attach on `replaced` by starting the session: they wait here
-        // for this restart rather than open a second `claude` beside it.
+        // Two restarts of one session never open two `claude`s beside each other.
         let starting = self.start_lock(&session_id);
         let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
         // A second pick sent while the first restarted waits on its socket, then
@@ -854,17 +823,13 @@ impl AgentManager {
             self.open_terminal(
                 terminals,
                 open(req.claude_account_id.clone(), config_dir.as_deref()),
-                |_| None,
+                |_| {},
             )?;
             return Ok(());
         };
         // The new login resumes the session once its files are in its config
         // dir. This folder ran under the old login, so its trust dialog (kept
         // per config dir) is answered rather than asked again.
-        let cwd = req
-            .worktree_path
-            .clone()
-            .unwrap_or_else(|| req.project_path.clone());
         let switched = workbench_core::claude_accounts::move_session(
             config_dir.as_deref(),
             to_dir.as_deref(),
@@ -873,7 +838,7 @@ impl AgentManager {
         .context("the session's files couldn't move to that account")
         .and_then(|()| {
             let body = open(to_id, to_dir.as_deref());
-            self.open_terminal(terminals, body, trust_watch(terminals, true, cwd))
+            self.open_terminal(terminals, body, trust_watch(terminals))
         });
         let Err(e) = switched else {
             return Ok(());
@@ -890,20 +855,20 @@ impl AgentManager {
         self.open_terminal(
             terminals,
             open(req.claude_account_id.clone(), config_dir.as_deref()),
-            |_| None,
+            |_| {},
         )?;
         Err(e.context("Couldn't switch the account; the chat carries on where it was"))
     }
 
     /// Open a server terminal running `claude` on its `claude_session` and
     /// wait for the plugin to attach it. `watch` runs on each poll with the
-    /// terminal's id; an answer from it stops the wait. Blocking.
-    pub fn open_terminal(
+    /// terminal's id. Blocking.
+    fn open_terminal(
         &self,
         terminals: &crate::terminal::TerminalManager,
         body: crate::terminal::CreateTerminalBody,
-        mut watch: impl FnMut(&str) -> Option<serde_json::Value>,
-    ) -> Result<TerminalStart> {
+        mut watch: impl FnMut(&str),
+    ) -> Result<Arc<AgentSession>> {
         let session_id = body
             .claude_session
             .as_ref()
@@ -913,11 +878,9 @@ impl AgentManager {
         let deadline = Instant::now() + TERMINAL_START;
         while Instant::now() < deadline {
             if let Some(session) = self.get(&session_id) {
-                return Ok(TerminalStart::Attached(session));
+                return Ok(session);
             }
-            if let Some(answer) = watch(&terminal.id) {
-                return Ok(TerminalStart::Stopped(answer));
-            }
+            watch(&terminal.id);
             std::thread::sleep(Duration::from_millis(100));
         }
         // Not attached: one left running would be a second `claude` on the session.
@@ -1089,24 +1052,6 @@ impl AgentManager {
         });
     }
 
-    /// Stop a session's process (any of its ids); a Claude chat's process is
-    /// its terminal's `claude`, so that terminal goes too. `end`: the person
-    /// ended the chat, so other viewers close it, vs a handoff to a terminal.
-    /// Blocking (waits out the grace period).
-    pub fn stop(&self, session_id: &str, end: bool) -> bool {
-        let session = {
-            let _lifecycle = lock(&self.lifecycle);
-            let Some(session) = self.get(session_id) else {
-                return false;
-            };
-            self.halt(&session, end);
-            session
-        };
-        self.stop_halted(std::slice::from_ref(&session), end);
-        self.kill_terminal(&session);
-        true
-    }
-
     /// The terminal's `claude` left (it exited, or `/exit`): drop its chat and
     /// keep the terminal, which is the person's shell again.
     pub fn detach(&self, session: &Arc<AgentSession>) {
@@ -1119,45 +1064,37 @@ impl AgentManager {
             {
                 return;
             }
-            self.halt(session, false);
+            self.halt(session);
         }
-        self.stop_halted(std::slice::from_ref(session), false);
+        self.stop_halted(std::slice::from_ref(session));
     }
 
-    /// Stop whatever chat sessions (either kind) a closed pane owned; `end` as
-    /// for [`Self::stop`]. Blocking.
-    pub fn stop_pane(&self, pane_id: &str, end: bool) -> usize {
-        let owned = self.halt_matching(|s| s.pane_id.as_deref() == Some(pane_id), end);
-        self.stop_halted(&owned, end);
+    /// Stop whatever chat sessions (either kind) a pane owns; a Claude chat's
+    /// process is its terminal's `claude`, so that terminal goes too. Blocking.
+    pub fn stop_pane(&self, pane_id: &str) -> usize {
+        let owned = self.halt_matching(|s| s.pane_id.as_deref() == Some(pane_id));
+        self.stop_halted(&owned);
         for session in &owned {
             self.kill_terminal(session);
         }
         owned.len()
     }
 
-    /// A terminal is being closed on purpose: End the chats it hosts first, so
-    /// every device sees an End, not an exit. Blocking.
+    /// A terminal is being closed: stop the chats it hosts first. Blocking.
     pub fn end_terminal(&self, terminal_id: &str) {
-        let hosted = self.halt_matching(
-            |s| {
-                s.mod_link()
-                    .is_some_and(|l| l.terminal_id.as_deref() == Some(terminal_id))
-            },
-            true,
-        );
-        self.stop_halted(&hosted, true);
+        let hosted = self.halt_matching(|s| {
+            s.mod_link()
+                .is_some_and(|l| l.terminal_id.as_deref() == Some(terminal_id))
+        });
+        self.stop_halted(&hosted);
     }
 
     /// [`Self::halt`] every session matching `keep`, under the lifecycle lock.
-    fn halt_matching(
-        &self,
-        keep: impl Fn(&AgentSession) -> bool,
-        end: bool,
-    ) -> Vec<Arc<AgentSession>> {
+    fn halt_matching(&self, keep: impl Fn(&AgentSession) -> bool) -> Vec<Arc<AgentSession>> {
         let _lifecycle = lock(&self.lifecycle);
         let found = self.sessions(keep);
         for session in &found {
-            self.halt(session, end);
+            self.halt(session);
         }
         found
     }
@@ -1184,18 +1121,18 @@ impl AgentManager {
 
     /// Stop every session (the app is quitting or installing an update). Blocking.
     pub fn kill_all(&self) {
-        let all = self.halt_matching(|_| true, false);
+        let all = self.halt_matching(|_| true);
         lock(&self.inner).clear();
         self.attention.sessions_changed();
-        self.stop_halted(&all, false);
+        self.stop_halted(&all);
     }
 
-    /// Every live session of `kind` (or of both), most recently changed first.
-    pub fn summaries(&self, kind: Option<AgentKind>) -> Vec<AgentSummary> {
+    /// Every live session, most recently changed first.
+    pub fn summaries(&self) -> Vec<AgentSummary> {
         let mut grouped: Vec<(Arc<AgentSession>, Vec<String>)> = Vec::new();
         for (id, session) in lock(&self.inner).iter() {
             // A new Codex thread is listed once it has an id to attach to.
-            if kind.is_some_and(|k| k != session.kind) || session::is_pending(id) {
+            if session::is_pending(id) {
                 continue;
             }
             match grouped.iter_mut().find(|(s, _)| Arc::ptr_eq(s, session)) {
@@ -1230,9 +1167,8 @@ impl AgentManager {
     }
 
     /// Unregister a session, held as exiting under its ids until
-    /// [`Self::stop_halted`] has stopped it; an `end` is remembered by its ids.
-    /// Under the lifecycle lock.
-    fn halt(&self, session: &Arc<AgentSession>, end: bool) {
+    /// [`Self::stop_halted`] has stopped it. Under the lifecycle lock.
+    fn halt(&self, session: &Arc<AgentSession>) {
         let mut ids: Vec<String> = lock(&self.inner)
             .iter()
             .filter(|(_, s)| Arc::ptr_eq(s, session))
@@ -1242,25 +1178,15 @@ impl AgentManager {
         if !id.is_empty() && !ids.contains(&id) {
             ids.push(id);
         }
-        if end {
-            let mut ended = lock(&self.ended);
-            ended.extend(ids.iter().filter(|id| !session::is_pending(id)).cloned());
-            let excess = ended.len().saturating_sub(ENDED_KEPT);
-            ended.drain(..excess);
-        }
         self.forget(session);
         lock(&self.exiting).push((ids, session.clone()));
     }
 
     /// Stop sessions [`Self::halt`] unregistered, all at once and outside the
     /// lifecycle lock: each process gets a grace period to exit.
-    fn stop_halted(&self, sessions: &[Arc<AgentSession>], end: bool) {
+    fn stop_halted(&self, sessions: &[Arc<AgentSession>]) {
         let stop = |session: &Arc<AgentSession>| {
-            if end {
-                session.end();
-            } else {
-                session.shutdown();
-            }
+            session.shutdown();
             // A process killed at the end of its grace is reaped just after.
             session.wait_exited(EXIT_REAP);
             lock(&self.exiting).retain(|(_, s)| !Arc::ptr_eq(s, session));
@@ -1298,15 +1224,6 @@ impl AgentManager {
         Ok(())
     }
 
-    /// The session under this id was ended by the person and not started since.
-    pub fn was_ended(&self, session_id: &str) -> bool {
-        lock(&self.ended).iter().any(|id| id == session_id)
-    }
-
-    fn unmark_ended(&self, session_id: &str) {
-        lock(&self.ended).retain(|id| id != session_id);
-    }
-
     /// Drop every id (aliases included) that points at this session.
     fn forget(&self, session: &Arc<AgentSession>) {
         lock(&self.inner).retain(|_, s| !Arc::ptr_eq(s, session));
@@ -1332,7 +1249,7 @@ mod tests {
         assert_eq!(batch.events.len(), 1);
         assert!(batch.events[0].terminal_only);
         assert_eq!(batch.events[0].session_id, "thread");
-        assert!(agents.summaries(None).is_empty());
+        assert!(agents.summaries().is_empty());
     }
 
     #[test]

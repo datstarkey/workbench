@@ -5,12 +5,10 @@
 //! disconnects**: closing the mobile terminal view detaches but leaves the shell
 //! running, so it can be resumed (with scrollback replayed from a ring buffer).
 //!
-//! REST + WS:
+//! Terminals are made and closed only by the workspace service (a pane's
+//! process); clients list and attach:
 //!   - `GET  /remote/terminals`        → list sessions
-//!   - `POST /remote/terminals`        → create a session, returns its metadata
 //!   - `GET  /remote/terminals/:id/ws` → attach (replays buffer, then streams)
-//!   - `DELETE /remote/terminals/:id`  → kill a session (`?wait=true`: respond
-//!     only once its processes are gone)
 //!
 //! WS wire protocol (same as before): client→server JSON text
 //! (`{"t":"i","d":..}` input, `{"t":"r","c":..,"r":..}` resize); server→client
@@ -43,7 +41,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     response::Response,
     Json,
 };
@@ -79,13 +77,6 @@ fn max_terminals() -> usize {
         .unwrap_or(64)
 }
 
-fn default_cols() -> u16 {
-    80
-}
-fn default_rows() -> u16 {
-    24
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalMeta {
@@ -95,8 +86,8 @@ pub struct TerminalMeta {
     /// Unix epoch milliseconds.
     pub created_at: u64,
     pub alive: bool,
-    /// The Claude session this terminal's `claude` runs: a chat's terminal,
-    /// listed before its plugin attaches, so clients adopt it as the chat.
+    /// The Claude session this terminal's `claude` runs, listed before its
+    /// plugin attaches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_session_id: Option<String>,
     /// It printed something lately that wasn't the echo of what was typed:
@@ -105,13 +96,6 @@ pub struct TerminalMeta {
     /// Rendered by the desktop's native view; other devices can still attach.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub native: bool,
-    /// On a create only: something the person should know about how it started.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notice: Option<String>,
-    /// On a Claude create only: the account the host ran it under (`""`: the
-    /// default login), so the pane relaunches under the same one.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub claude_account_id: Option<String>,
 }
 
 struct TerminalSession {
@@ -274,8 +258,6 @@ impl TerminalManager {
             claude_session_id,
             busy: false,
             native,
-            notice: None,
-            claude_account_id: None,
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
         let (done_tx, _done_rx) = watch::channel(false);
@@ -471,8 +453,8 @@ impl TerminalManager {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// A pane's terminal, as the workspace service starts it.
+#[derive(Debug)]
 pub struct CreateTerminalBody {
     pub project_path: String,
     pub worktree_path: Option<String>,
@@ -483,11 +465,8 @@ pub struct CreateTerminalBody {
     /// command so the sandbox wrapper and permission mode can't be skipped.
     pub claude_session: Option<ClaudeSessionLaunch>,
     /// Run the Codex TUI on this thread (or a new one), built from the saved settings.
-    #[serde(default)]
     pub codex_session: Option<CodexSessionLaunch>,
-    #[serde(default = "default_cols")]
     pub cols: u16,
-    #[serde(default = "default_rows")]
     pub rows: u16,
     /// Forwarded as `WORKBENCH_PANE_ID` env var into the shell so hook scripts
     /// can identify which terminal pane they belong to.
@@ -496,124 +475,23 @@ pub struct CreateTerminalBody {
     /// absent falls back to the platform default (`workbench_core::shell`).
     pub shell: Option<String>,
     /// Saved Claude account whose config dir becomes the shell's
-    /// `CLAUDE_CONFIG_DIR`. An id, never a path, so clients can't point it anywhere.
-    /// A create sends only a pick (`""`: the default login); absent, the route
-    /// decides (`claude_accounts::for_launch`).
+    /// `CLAUDE_CONFIG_DIR`. An id, never a path (`""`: the default login).
     pub claude_account_id: Option<String>,
     /// Shown by a renderer in this process (the desktop's native view), never
     /// another device's xterm: a restart can't move it to a new terminal.
-    #[serde(skip)]
     pub native: bool,
 }
 
 pub use workbench_core::claude_launch::ClaudeSessionLaunch;
 pub use workbench_core::codex_launch::CodexSessionLaunch;
 
-#[derive(Debug, Deserialize)]
-pub struct KillQuery {
-    #[serde(default)]
-    wait: bool,
-}
-
 pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<TerminalMeta>>> {
     Ok(Json(state.terminals.list()))
 }
 
-pub async fn terminal_create(
-    State(state): State<AppState>,
-    Json(body): Json<CreateTerminalBody>,
-) -> ApiResult<Json<TerminalMeta>> {
-    let launches = [
-        body.command.is_some(),
-        body.claude_session.is_some(),
-        body.codex_session.is_some(),
-    ];
-    if launches.into_iter().filter(|l| *l).count() > 1 {
-        return Err(ApiError::bad_request(
-            "send one of command, claudeSession or codexSession",
-        ));
-    }
-    let terminals = state.terminals.clone();
-    let agents = state.agents.clone();
-    // openpty + fork/exec and the project-allowlist load are blocking — run them off
-    // the async executor so a slow spawn doesn't stall a tokio worker thread.
-    crate::routes::blocking(move || create_or_join(&terminals, &agents, body))
-        .await
-        .map(Json)
-}
-
-/// Create a terminal, unless its Claude session already runs as a chat in a
-/// live server terminal for the same cwd and account: then that terminal,
-/// since a second `claude` would write the same session file. A Claude
-/// session's account is picked here (`claude_accounts::for_launch`), before
-/// the join compares it to the running session's. Blocking.
-fn create_or_join(
-    terminals: &TerminalManager,
-    agents: &crate::agent::AgentManager,
-    mut body: CreateTerminalBody,
-) -> anyhow::Result<TerminalMeta> {
-    let settings = workbench_core::config::load_workbench_settings()?;
-    let projects = workbench_core::config::load_projects()?;
-    let cwd =
-        crate::cwd::resolve_cwd_in(&projects, &body.project_path, body.worktree_path.as_deref())?;
-    let Some(session_id) = body.claude_session.as_ref().map(|s| s.id.clone()) else {
-        return create(terminals, agents, body, cwd, &settings, &projects);
-    };
-    crate::agent::validate_claude_session_id(&session_id)?;
-    body.claude_account_id = workbench_core::claude_accounts::for_launch(
-        &settings,
-        &projects,
-        body.claude_account_id.as_deref(),
-        &body.project_path,
-        Some(&session_id),
-    )?;
-    // Decided under the start lock, so an in-flight chat start is seen; created outside it.
-    let running = {
-        let starting = agents.start_lock(&session_id);
-        let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
-        running_terminal(
-            terminals,
-            agents,
-            &session_id,
-            &cwd,
-            &body.claude_account_id,
-        )
-    };
-    match running {
-        Some(meta) => Ok(TerminalMeta {
-            claude_account_id: Some(body.claude_account_id.unwrap_or_default()),
-            ..meta
-        }),
-        None => create(terminals, agents, body, cwd, &settings, &projects),
-    }
-}
-
-/// The live server terminal a chat session runs in, when the session's current
-/// id (not one it had before a `/clear`) is `session_id` and it runs in `cwd`
-/// under `account_id`.
-fn running_terminal(
-    terminals: &TerminalManager,
-    agents: &crate::agent::AgentManager,
-    session_id: &str,
-    cwd: &str,
-    account_id: &Option<String>,
-) -> Option<TerminalMeta> {
-    let session = agents.get(session_id).filter(|s| {
-        !s.has_exited()
-            && s.id() == session_id
-            && s.cwd() == std::path::Path::new(cwd)
-            && &s.claude_account_id() == account_id
-    })?;
-    let terminal_id = session.mod_link()?.terminal_id.clone()?;
-    terminals
-        .list()
-        .into_iter()
-        .find(|t| t.id == terminal_id && t.alive)
-}
-
-/// Create a terminal as `POST /remote/terminals` does (also how a Claude chat
-/// starts: its terminal runs `claude` and the plugin makes it the chat), its
-/// `claude_account_id` already decided (a chat start, a restart). Blocking.
+/// Create a pane's terminal (a Claude chat's too: its terminal runs `claude`
+/// and the plugin makes it the chat), its `claude_account_id` already decided
+/// (`claude_accounts::for_launch`). Blocking.
 pub fn create_from_body(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
@@ -649,11 +527,6 @@ fn create(
             .take()
             .filter(|id| workbench_core::codex_launch::thread_exists(id));
     }
-    let notice = match (&body.claude_session, &body.codex_session) {
-        (Some(claude), _) => workbench_core::claude_launch::prompt_notice(claude),
-        (None, Some(codex)) => workbench_core::codex_launch::prompt_notice(codex),
-        (None, None) => None,
-    };
     let command = match body.codex_session.take() {
         Some(codex) => Some(workbench_core::codex_launch::terminal_command(
             &codex,
@@ -724,36 +597,7 @@ fn create(
         (Err(_), Some(token)) => agents.revoke_grant(token),
         _ => {}
     }
-    let claude_account_id = body
-        .claude_session
-        .is_some()
-        .then(|| body.claude_account_id.clone().unwrap_or_default());
-    created.map(|meta| TerminalMeta {
-        notice,
-        claude_account_id,
-        ..meta
-    })
-}
-
-pub async fn terminal_kill(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Query(q): Query<KillQuery>,
-) -> ApiResult<StatusCode> {
-    let (agents, terminals) = (state.agents.clone(), state.terminals.clone());
-    let workspace = state.workspace.clone();
-    crate::routes::blocking(move || {
-        workspace.close_pane(workspace.pane_for_terminal(&id));
-        agents.end_terminal(&id);
-        if q.wait {
-            terminals.kill_and_wait(&id);
-        } else {
-            terminals.kill(&id);
-        }
-        Ok(())
-    })
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
+    created
 }
 
 #[derive(Debug, Deserialize)]

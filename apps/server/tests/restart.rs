@@ -73,24 +73,9 @@ async fn a_restart_relaunches_under_the_same_id_and_mode() {
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     let ws_url = format!("ws://{}/agent/claude/{SID}/ws?token={TOKEN}", handle.addr());
-    let start = || async {
-        let res = reqwest::Client::new()
-            .post(format!("{base}/agent/claude"))
-            .bearer_auth(TOKEN)
-            .json(&json!({ "projectPath": project, "sessionId": SID }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            200,
-            "{}",
-            res.text().await.unwrap_or_default()
-        );
-    };
 
     // Into plan mode first: a restart must keep it.
-    start().await;
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     assert_eq!(next_json(&mut ws).await["t"], "snapshot");
     ws.send(Message::Text(
@@ -101,7 +86,7 @@ async fn a_restart_relaunches_under_the_same_id_and_mode() {
     assert_eq!(next_json(&mut ws).await["t"], "replaced");
 
     // Re-attach, as clients do on `replaced`, then restart.
-    start().await;
+    assert_eq!(support::start_claude(&base, &project, SID).await.0, pane);
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     assert_eq!(next_json(&mut ws).await["t"], "snapshot");
     ws.send(Message::Text(json!({"t": "restart"}).to_string()))
@@ -117,14 +102,8 @@ async fn a_restart_relaunches_under_the_same_id_and_mode() {
         "{launched:?}"
     );
     // Not an End: the session is still there to attach to.
-    start().await;
+    assert_eq!(support::start_claude(&base, &project, SID).await.0, pane);
 
-    let res = reqwest::Client::new()
-        .delete(format!("{base}/agent/claude/{SID}"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success());
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde_json::{json, Value};
+use support::{command, find_pane as pane, Sse};
 use tokio_tungstenite::tungstenite::Message;
 use workbench_server::workspace::WorkspaceService;
 use workbench_server::{spawn_embedded, Managers, ServerHandle};
@@ -80,86 +81,8 @@ async fn serve(managers: Managers) -> (ServerHandle, String) {
     (handle, base)
 }
 
-async fn command(base: &str, cmd: Value) -> Value {
-    let res = reqwest::Client::new()
-        .post(format!("{base}/workspace/commands"))
-        .bearer_auth(TOKEN)
-        .json(&cmd)
-        .send()
-        .await
-        .unwrap();
-    let status = res.status();
-    let body: Value = res.json().await.unwrap();
-    assert_eq!(status, 200, "{cmd} → {body}");
-    body
-}
-
 fn new_session(kind: &str) -> Value {
     json!({ "type": "newSession", "projectPath": env().project, "kind": kind })
-}
-
-struct Sse {
-    res: reqwest::Response,
-    buf: String,
-}
-
-impl Sse {
-    async fn open(base: &str) -> Self {
-        let res = reqwest::get(format!("{base}/events/workspace?token={TOKEN}"))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 200);
-        Self {
-            res,
-            buf: String::new(),
-        }
-    }
-
-    /// The next snapshot, or `None` once the stream has ended.
-    async fn next(&mut self) -> Option<Value> {
-        loop {
-            if let Some(end) = self.buf.find("\n\n") {
-                let block: String = self.buf.drain(..end + 2).collect();
-                let field = |name: &str| {
-                    block
-                        .lines()
-                        .find_map(|l| l.strip_prefix(name))
-                        .map(|v| v.trim_start().to_string())
-                };
-                if field("event:").as_deref() != Some("snapshot") {
-                    continue;
-                }
-                return Some(serde_json::from_str(&field("data:")?).unwrap());
-            }
-            let chunk = tokio::time::timeout(Duration::from_secs(20), self.res.chunk())
-                .await
-                .expect("an event within 20s")
-                .ok()??;
-            self.buf.push_str(std::str::from_utf8(&chunk).unwrap());
-        }
-    }
-
-    /// The first snapshot `pred` accepts.
-    async fn until(&mut self, what: &str, pred: impl Fn(&Value) -> bool) -> Value {
-        loop {
-            let snap = self
-                .next()
-                .await
-                .unwrap_or_else(|| panic!("ended waiting for {what}"));
-            if pred(&snap) {
-                return snap;
-            }
-        }
-    }
-}
-
-fn pane<'a>(snap: &'a Value, id: &str) -> Option<&'a Value> {
-    snap["workspaces"]
-        .as_array()?
-        .iter()
-        .flat_map(|w| w["tabs"].as_array().into_iter().flatten())
-        .flat_map(|t| t["panes"].as_array().into_iter().flatten())
-        .find(|p| p["id"] == id)
 }
 
 fn running(snap: &Value, id: &str) -> bool {
@@ -251,12 +174,12 @@ async fn closing_a_pane_ends_its_process_everywhere() {
 
     command(&base, json!({ "type": "closePane", "paneId": id })).await;
     sse.until("the pane gone", |s| pane(s, &id).is_none()).await;
-    let exit = tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(Ok(msg)) = chat.next().await {
             if let Message::Text(text) = msg {
                 let frame: Value = serde_json::from_str(&text).unwrap();
                 if frame["t"] == "exit" {
-                    return frame;
+                    return;
                 }
             }
         }
@@ -264,7 +187,6 @@ async fn closing_a_pane_ends_its_process_everywhere() {
     })
     .await
     .expect("an exit frame");
-    assert_eq!(exit["ended"], true, "{exit}");
     for _ in 0..50 {
         if !alive_terminals(&base).await.contains(&terminal) {
             break;
@@ -299,32 +221,6 @@ async fn resuming_a_live_session_returns_its_pane() {
         "no second process"
     );
     command(&base, json!({ "type": "closePane", "paneId": id })).await;
-    handle.stop().await;
-}
-
-#[tokio::test]
-async fn deleting_a_panes_terminal_removes_the_pane() {
-    let _serial = serial().await;
-    let (handle, base) = serve(Managers::default()).await;
-    let mut sse = Sse::open(&base).await;
-    let id = command(&base, new_session("shell")).await["paneId"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let snap = sse.until("running", |s| running(s, &id)).await;
-    let terminal = pane(&snap, &id).unwrap()["terminalId"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let res = reqwest::Client::new()
-        .delete(format!("{base}/remote/terminals/{terminal}"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
-    sse.until("the pane gone", |s| pane(s, &id).is_none()).await;
     handle.stop().await;
 }
 
@@ -553,13 +449,11 @@ async fn stopping_a_native_panes_chat_leaves_its_shell() {
     assert_eq!(mode.status(), 400);
     assert!(mode.text().await.unwrap().contains("Shift+Tab"));
 
-    let stop = client
-        .delete(format!("{base}/agent/claude/{sid}?end=true"))
-        .bearer_auth(TOKEN)
-        .send()
+    let agents = managers.agents.clone();
+    let stopped = tokio::task::spawn_blocking(move || agents.stop_pane("native-pane"))
         .await
         .unwrap();
-    assert_eq!(stop.status(), 204);
+    assert_eq!(stopped, 1);
     assert!(
         alive_terminals(&base).await.contains(&terminal),
         "the person's shell stays"

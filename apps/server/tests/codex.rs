@@ -4,6 +4,8 @@
 //! sets process-global env.
 #![cfg(unix)]
 
+mod support;
+
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -137,6 +139,12 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     std::env::set_var("WORKBENCH_CODEX_BIN", &fake);
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
     std::env::set_var("FAKE_CODEX_LOG", &log);
+    // A thread resumes only when codex has it on disk (under its start day).
+    let codex_home = tmp.path().join("codex");
+    let day = codex_home.join("sessions/2026/10/01");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(day.join(format!("rollout-x-{OLD_THREAD}.jsonl")), "").unwrap();
+    std::env::set_var("CODEX_HOME", &codex_home);
 
     let managers = Managers::default();
     let desktop_feed = managers.agents.attention.clone();
@@ -145,11 +153,13 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     let ws_url = |id: &str| format!("ws://{}/agent/codex/{id}/ws?token={TOKEN}", handle.addr());
-    let start = |body: Value| {
-        client()
-            .post(format!("{base}/agent/codex"))
-            .json(&body)
-            .send()
+    let start = |extra: Value| {
+        let mut fields = json!({ "codexMode": "appServer" });
+        fields
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        support::new_session(&base, &project, "codex", fields)
     };
     let list = |path: &'static str| {
         let url = format!("{base}{path}");
@@ -182,44 +192,16 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         401
     );
 
-    // A new thread: the start answers with codex's thread id.
-    let res = start(json!({ "projectPath": project, "paneId": "pane-1" }))
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
-    assert_eq!(res.json::<Value>().await.unwrap()["sessionId"], NEW_THREAD);
+    // A new thread: listed under codex's thread id once it opened.
+    let pane_1 = start(json!({})).await;
+    support::wait_for_agent(&base, NEW_THREAD).await;
 
     let all = list("/agent").await;
     assert_eq!(all.len(), 1);
     assert_eq!(all[0]["agent"], "codex");
     assert_eq!(all[0]["sessionId"], NEW_THREAD);
-    assert_eq!(all[0]["paneId"], "pane-1");
+    assert_eq!(all[0]["paneId"], pane_1.as_str());
     assert_eq!(all[0]["turnEndedAt"], Value::Null);
-    assert!(
-        list("/agent/claude").await.is_empty(),
-        "older phones see Claude only"
-    );
-    assert_eq!(list("/agent/codex").await.len(), 1);
-
-    let res =
-        start(json!({ "projectPath": "/nowhere", "sessionId": OLD_THREAD, "attachOnly": true }))
-            .await
-            .unwrap();
-    assert_eq!(res.status(), 404, "attach-only never spawns");
-    let res =
-        start(json!({ "projectPath": "/nowhere", "sessionId": NEW_THREAD, "attachOnly": true }))
-            .await
-            .unwrap();
-    assert_eq!(res.status(), 200);
-    let res = start(json!({ "projectPath": project, "codexMode": "yolo" }))
-        .await
-        .unwrap();
-    assert!(!res.status().is_success(), "an unknown mode is refused");
 
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(NEW_THREAD))
         .await
@@ -378,7 +360,7 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
             break;
         }
     }
-    assert_eq!(list("/agent/codex").await[0]["sessionId"], NEW_THREAD);
+    assert_eq!(list("/agent").await[0]["sessionId"], NEW_THREAD);
 
     let received = std::fs::read_to_string(&log).unwrap();
     let sent: Vec<Value> = received
@@ -430,20 +412,10 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
     );
 
     // Resume: history arrives in the snapshot, oldest first; a second start
-    // for the same thread joins the running process.
-    for _ in 0..2 {
-        let res =
-            start(json!({ "projectPath": project, "sessionId": OLD_THREAD, "paneId": "pane-2", "codexMode": "full-access" }))
-                .await
-                .unwrap();
-        assert_eq!(
-            res.status(),
-            200,
-            "{}",
-            res.text().await.unwrap_or_default()
-        );
-        assert_eq!(res.json::<Value>().await.unwrap()["sessionId"], OLD_THREAD);
-    }
+    // for the same thread returns its pane, not a second process.
+    let pane_2 = start(json!({ "resume": OLD_THREAD })).await;
+    support::wait_for_agent(&base, OLD_THREAD).await;
+    assert_eq!(start(json!({ "resume": OLD_THREAD })).await, pane_2);
     let received = std::fs::read_to_string(&log).unwrap();
     assert_eq!(received.matches(r#""method":"thread/resume""#).count(), 1);
     let resume: Value = received
@@ -452,10 +424,10 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         .find(|v| v["method"] == "thread/resume")
         .unwrap();
     assert_eq!(
-        resume["params"]["approvalPolicy"], "never",
-        "an explicit mode overrides the saved read-only default"
+        resume["params"]["approvalPolicy"], "on-request",
+        "the saved launch preset"
     );
-    assert_eq!(resume["params"]["sandbox"], "danger-full-access");
+    assert_eq!(resume["params"]["sandbox"], "read-only");
     let (mut old_ws, _) = tokio_tungstenite::connect_async(ws_url(OLD_THREAD))
         .await
         .unwrap();
@@ -468,46 +440,16 @@ async fn codex_chat_starts_streams_approves_resumes_and_stops() {
         .collect();
     assert_eq!(texts, ["earlier question", "earlier answer"]);
     assert_eq!(snapshot["meta"]["title"], "Old chat");
-    assert_eq!(snapshot["meta"]["permissionMode"], "full-access");
-    assert_eq!(list("/agent/codex").await.len(), 2);
+    assert_eq!(list("/agent").await.len(), 2);
 
-    // Closing a pane stops its chat whatever the kind, via either route.
-    let res = client()
-        .delete(format!("{base}/agent/claude?paneId=pane-1"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
-    loop {
-        let frame = next_json(&mut ws).await;
-        if frame["t"] == "exit" {
-            // Only an End tells other viewers to close the chat.
-            assert_eq!(frame["ended"], false);
-            break;
-        }
+    // Closing a pane stops its chat.
+    for (pane, socket) in [(&pane_1, &mut ws), (&pane_2, &mut old_ws)] {
+        support::close_pane(&base, pane).await;
+        while next_json(socket).await["t"] != "exit" {}
     }
-    let res = client()
-        .delete(format!("{base}/agent/codex/{OLD_THREAD}?end=true"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
-    loop {
-        let frame = next_json(&mut old_ws).await;
-        if frame["t"] == "exit" {
-            assert_eq!(frame["ended"], true);
-            break;
-        }
-    }
+    support::wait_agent_gone(&base, NEW_THREAD).await;
+    support::wait_agent_gone(&base, OLD_THREAD).await;
     assert!(list("/agent").await.is_empty());
-    // A joiner learns an ended chat was ended, not merely that it exited.
-    for (id, ended) in [(OLD_THREAD, true), (NEW_THREAD, false)] {
-        let res = start(json!({ "projectPath": "/nowhere", "sessionId": id, "attachOnly": true }))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 404, "{id}");
-        assert_eq!(res.json::<Value>().await.unwrap()["ended"], ended, "{id}");
-    }
     assert!(
         !attachment_dir.exists(),
         "stopping Codex removes its uploads"
@@ -531,13 +473,8 @@ while IFS= read -r line; do
 done
 "#;
     std::fs::write(&fake, stalled).unwrap();
-    let res = start(json!({"projectPath":project})).await.unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
+    start(json!({})).await;
+    support::wait_for_agent(&base, NEW_THREAD).await;
     let (mut stalled_ws, _) = tokio_tungstenite::connect_async(ws_url(NEW_THREAD))
         .await
         .unwrap();

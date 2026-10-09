@@ -85,7 +85,7 @@ fn stopping_codex_sessions_waits_one_grace_and_holds_up_nothing_else() {
         let agents = agents.clone();
         std::thread::spawn(move || {
             let started = Instant::now();
-            assert_eq!(agents.stop_pane("closing", true), 3);
+            assert_eq!(agents.stop_pane("closing"), 3);
             started.elapsed()
         })
     };
@@ -99,7 +99,7 @@ fn stopping_codex_sessions_waits_one_grace_and_holds_up_nothing_else() {
         "a start waited on the stops: {:?}",
         started.elapsed()
     );
-    assert_eq!(agents.summaries(None).len(), 1, "only the new one is live");
+    assert_eq!(agents.summaries().len(), 1, "only the new one is live");
 
     let took = stopper.join().unwrap();
     eprintln!("3 lingering sessions stopped in {took:?}");
@@ -112,14 +112,15 @@ fn stopping_codex_sessions_waits_one_grace_and_holds_up_nothing_else() {
         "stopped in parallel, not one grace each: {took:?}"
     );
     assert!(sessions.iter().all(|s| s.has_exited()));
-    assert!(agents.stop(&other.id(), true));
+    assert_eq!(other.pane_id.as_deref(), Some("other"));
+    assert_eq!(agents.stop_pane("other"), 1);
 
     // A start of an id still stopping waits for its process to go: one
     // process per session file.
     let resumed = start(&agents, codex(tmp.path(), "resume", Some(RESUMED)));
     let stopper = {
         let agents = agents.clone();
-        std::thread::spawn(move || agents.stop(RESUMED, false))
+        std::thread::spawn(move || agents.stop_pane("resume"))
     };
     std::thread::sleep(Duration::from_millis(300));
     let started = Instant::now();
@@ -130,7 +131,7 @@ fn stopping_codex_sessions_waits_one_grace_and_holds_up_nothing_else() {
     );
     assert!(started.elapsed() >= GRACE - Duration::from_millis(500));
     assert!(!Arc::ptr_eq(&resumed, &again));
-    assert!(stopper.join().unwrap());
+    assert_eq!(stopper.join().unwrap(), 1);
     agents.kill_all();
 }
 

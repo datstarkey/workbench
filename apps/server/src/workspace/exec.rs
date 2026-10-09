@@ -159,14 +159,14 @@ fn run(service: &WorkspaceService, effect: Effect, pane: PaneCtx) {
             if let Some(id) = &pane.terminal_id {
                 terminals.kill_and_wait(id);
             }
-            agents.stop_pane(&pane_id, false);
+            agents.stop_pane(&pane_id);
         }
         Effect::End { pane_id, .. } => {
             if let Some(id) = &pane.terminal_id {
                 agents.end_terminal(id);
                 terminals.kill(id);
             }
-            agents.stop_pane(&pane_id, true);
+            agents.stop_pane(&pane_id);
         }
         Effect::TrustFolder { .. } => {
             let Some(id) = &pane.terminal_id else {

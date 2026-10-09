@@ -105,8 +105,6 @@ pub struct AgentSession {
     relaunch: StartAgent,
     /// Stopped to make way for a relaunch: clients re-attach, not end.
     replaced: AtomicBool,
-    /// Ended on purpose (End session), not by a crash, `/exit` or a handoff.
-    ended: AtomicBool,
     cache_policy: Mutex<CachePolicy>,
     /// Where policies are saved, by session id.
     cache_policies: Arc<PolicyStore>,
@@ -346,7 +344,6 @@ impl AgentSession {
             ready_cv: Condvar::new(),
             relaunch,
             replaced: AtomicBool::new(false),
-            ended: AtomicBool::new(false),
             cache_policy: Mutex::new(cache_policy),
             cache_policies: cache_policies.clone(),
             upkept_for: Mutex::new(None),
@@ -888,12 +885,6 @@ impl AgentSession {
         self.shutdown();
     }
 
-    /// Stop the process because the person ended the chat; its exit frame says so.
-    pub(super) fn end(&self) {
-        self.ended.store(true, Ordering::SeqCst);
-        self.shutdown();
-    }
-
     /// The end of a background task's live output and its total size. The
     /// file's path is cached once found. Claude only.
     pub fn task_output(&self, task_id: &str) -> Option<(String, u64)> {
@@ -1152,8 +1143,7 @@ impl AgentSession {
             json!({"t": "replaced"})
         } else {
             let message = (code != Some(0) && !tail.is_empty()).then_some(tail);
-            let ended = self.ended.load(Ordering::SeqCst);
-            json!({"t": "exit", "code": code, "message": message, "ended": ended})
+            json!({"t": "exit", "code": code, "message": message})
         };
         // The reply's last changes go out before its end.
         self.flush();

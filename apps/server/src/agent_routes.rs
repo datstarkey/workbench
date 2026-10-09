@@ -1,15 +1,9 @@
-//! HTTP + WebSocket surface for chat sessions (`:kind` is `claude` or `codex`):
+//! HTTP + WebSocket surface for chat sessions (`:kind` is `claude` or `codex`).
+//! Sessions are started and ended only by the workspace service (a pane's
+//! process); these routes list them and carry their IO.
 //! - `GET /agent` lists every live session ([`AgentSummary`], with `agent`),
-//!   newest change first; `GET /agent/:kind` only that kind's (older phone
-//!   builds read `/agent/claude`).
+//!   newest change first.
 //! - `GET /agent/attention?cursor=` long-polls shared notification events.
-//! - `POST /agent/claude` starts (or returns) the session for a Claude session
-//!   id: a server terminal running `claude`, answered once the plugin attaches
-//!   (`{sessionId, terminalId}`); `POST /agent/codex` starts a new Codex thread (no `sessionId`) or
-//!   resumes one, and answers once codex has its id. With `attachOnly` either
-//!   only returns a running session (404 otherwise).
-//! - `DELETE /agent/:kind/:id` stops it; `DELETE /agent/:kind?paneId=` stops
-//!   whatever a closed pane owned.
 //! - `WS /agent/:kind/:id/ws` streams `snapshot` then `update`/`exit` frames and
 //!   takes `prompt` / `approve` / `elicit` / `interrupt` / `mode` messages. Any number of
 //!   clients may attach; the first answer to an approval wins.
@@ -19,7 +13,7 @@
 //! - `GET /agent/claude/:id/tasks/:taskId/transcript` is a subagent's own
 //!   conversation as chat items, from the CLI's `subagents/` transcript.
 //!
-//! Ids are global, so the stop/message/WS routes of either kind reach any session.
+//! Ids are global, so the message/WS routes of either kind reach any session.
 //! - `GET /agent/usage?claudeAccountId=[&fresh=true]` is the account's plan
 //!   usage (a live session's reading, else `claude -p /usage`), from
 //!   [`crate::usage::UsageCache`].
@@ -41,202 +35,21 @@ use workbench_core::claude_accounts::{self, UsageLimit};
 use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
-    AgentKind, AgentManager, AgentSession, AgentSummary, CachePolicy, Launch, PromptFile,
-    PromptImage, StartAgent, TerminalStart, MAX_FILES, MAX_IMAGES,
+    AgentKind, AgentSession, AgentSummary, CachePolicy, PromptFile, PromptImage, MAX_FILES,
+    MAX_IMAGES,
 };
 use crate::cwd::resolve_cwd;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{wait_revoked, ws_close, ws_send, AppState};
 use crate::terminal::WsAuthQuery;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartBody {
-    pub project_path: String,
-    pub worktree_path: Option<String>,
-    pub session_id: String,
-    pub pane_id: Option<String>,
-    /// A picked Claude account (`""`: the default login); an id, never a path.
-    /// Absent, the server decides (`claude_accounts::for_launch`).
-    pub claude_account_id: Option<String>,
-    /// Join the running session only, never spawn one (a chat another device owns).
-    #[serde(default)]
-    pub attach_only: bool,
-    /// The person trusted the folder in chat: answer Claude Code's trust dialog.
-    #[serde(default)]
-    pub trust_folder: bool,
-}
-
-pub async fn agent_start(
-    State(state): State<AppState>,
-    Json(body): Json<StartBody>,
-) -> ApiResult<Response> {
-    if body.attach_only {
-        // Spawns nothing, so neither the sandbox nor the cwd checks apply.
-        return Ok(attach_only(&state, &body.session_id));
-    }
-    let agents = state.agents.clone();
-    let terminals = state.terminals.clone();
-    crate::routes::blocking(move || claude_start(&agents, &terminals, body))
-        .await
-        .map(|v| Json(v).into_response())
-}
-
-/// A Claude chat is always an interactive `claude` in a server terminal, run
-/// as a chat by the Workbench plugin (`mod_routes`): the terminal and the chat
-/// are one process. Blocking: waits for the plugin to attach.
-fn claude_start(
-    agents: &AgentManager,
-    terminals: &crate::terminal::TerminalManager,
-    body: StartBody,
-) -> anyhow::Result<Value> {
-    crate::agent::validate_claude_session_id(&body.session_id)?;
-    let starting = agents.start_lock(&body.session_id);
-    let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = agents.get(&body.session_id) {
-        return Ok(start_reply(agents, &existing));
-    }
-    let account = workbench_core::claude_accounts::for_launch_saved(
-        body.claude_account_id.as_deref(),
-        &body.project_path,
-        Some(&body.session_id),
-    )?;
-    let config_dir = workbench_core::claude_accounts::resolve_saved(account.as_deref())?;
-    let resume = crate::agent::claude_history_exists(config_dir.as_deref(), &body.session_id);
-    let cwd = body
-        .worktree_path
-        .clone()
-        .unwrap_or_else(|| body.project_path.clone());
-    let trust_folder = body.trust_folder;
-    let launch = crate::terminal::CreateTerminalBody {
-        project_path: body.project_path,
-        worktree_path: body.worktree_path,
-        name: None,
-        command: None,
-        claude_session: Some(crate::terminal::ClaudeSessionLaunch {
-            id: body.session_id,
-            resume,
-            ..Default::default()
-        }),
-        cols: 120,
-        rows: 40,
-        pane_id: body.pane_id,
-        shell: None,
-        claude_account_id: account,
-        codex_session: None,
-        native: false,
-    };
-    // The chat asks instead; trusting starts it again with `trustFolder`.
-    let started = agents.open_terminal(
-        terminals,
-        launch,
-        crate::agent::trust_watch(terminals, trust_folder, cwd),
-    )?;
-    Ok(match started {
-        TerminalStart::Attached(session) => start_reply(agents, &session),
-        TerminalStart::Stopped(answer) => answer,
-    })
-}
-
-/// A native pane's terminal isn't named: the desktop's view of it is that pane.
-fn start_reply(agents: &AgentManager, session: &AgentSession) -> Value {
-    let terminal = agents.own_terminal(session);
-    json!({"sessionId": session.id(), "terminalId": terminal})
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexStartBody {
-    pub project_path: String,
-    pub worktree_path: Option<String>,
-    /// The thread to resume; absent starts a new one.
-    pub session_id: Option<String>,
-    /// `read-only` | `auto` | `full-access`; absent uses the saved Workbench
-    /// launch preset, or inherits Codex config when no preset matches.
-    pub codex_mode: Option<String>,
-    #[serde(flatten)]
-    pub options: workbench_core::codex_controls::LaunchOptions,
-    pub pane_id: Option<String>,
-    #[serde(default)]
-    pub attach_only: bool,
-}
-
-/// Codex never runs under the sandbox runtime (srt only wraps Claude), so
-/// unlike Claude chat it isn't refused while that's on.
-pub async fn codex_start(
-    State(state): State<AppState>,
-    Json(body): Json<CodexStartBody>,
-) -> ApiResult<Response> {
-    if body.attach_only {
-        let id = body
-            .session_id
-            .ok_or_else(|| ApiError::bad_request("attachOnly needs a sessionId"))?;
-        return Ok(attach_only(&state, &id));
-    }
-    let agents = state.agents.clone();
-    crate::routes::blocking(move || {
-        let cwd = resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
-        let mode = body.codex_mode;
-        // A preset is an explicit pick. Otherwise fill missing independent
-        // overrides from the same saved settings for desktop and Android.
-        let options = if mode.is_none() {
-            let settings = workbench_core::config::load_workbench_settings()?;
-            body.options.with_defaults(
-                &settings.codex_approval_policy,
-                &settings.codex_sandbox_mode,
-            )
-        } else {
-            body.options
-        };
-        let session = agents.start(StartAgent {
-            cwd,
-            project_path: body.project_path,
-            worktree_path: body.worktree_path,
-            pane_id: body.pane_id,
-            hook_socket: None,
-            claude_account_id: None,
-            launch: Launch::Codex {
-                thread_id: body.session_id,
-                mode,
-                options,
-            },
-        })?;
-        Ok(json!({"sessionId": session.id()}))
-    })
-    .await
-    .map(|v| Json(v).into_response())
-}
-
-/// The running session for `id`, or 404: a chat another device owns. The
-/// body's `ended` says someone ended it, vs it exited.
-fn attach_only(state: &AppState, id: &str) -> Response {
-    match state.agents.get(id) {
-        Some(session) => Json(start_reply(&state.agents, &session)).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "This chat ended on the other device.",
-                "ended": state.agents.was_ended(id),
-            })),
-        )
-            .into_response(),
-    }
-}
-
 /// Off the async workers: a summary takes each session's driver lock, which a
 /// busy session may hold for a while (a snapshot, a long line).
-async fn summaries(
-    state: &AppState,
-    kind: Option<AgentKind>,
-) -> ApiResult<Json<Vec<AgentSummary>>> {
+pub async fn agent_list(State(state): State<AppState>) -> ApiResult<Json<Vec<AgentSummary>>> {
     let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.summaries(kind)))
+    crate::routes::blocking(move || Ok(agents.summaries()))
         .await
         .map(Json)
-}
-
-pub async fn agent_list(State(state): State<AppState>) -> ApiResult<Json<Vec<AgentSummary>>> {
-    summaries(&state, None).await
 }
 
 #[derive(Deserialize)]
@@ -270,14 +83,6 @@ pub async fn agent_attention(
             _ = tokio::time::sleep_until(until) => {},
         }
     }
-}
-
-pub async fn claude_list(State(state): State<AppState>) -> ApiResult<Json<Vec<AgentSummary>>> {
-    summaries(&state, Some(AgentKind::Claude)).await
-}
-
-pub async fn codex_list(State(state): State<AppState>) -> ApiResult<Json<Vec<AgentSummary>>> {
-    summaries(&state, Some(AgentKind::Codex)).await
 }
 
 pub async fn agent_message(
@@ -317,45 +122,6 @@ fn find(state: &AppState, id: &str) -> Result<Arc<AgentSession>, ApiError> {
         status: StatusCode::NOT_FOUND,
         message: format!("no chat session {id}"),
     })
-}
-
-#[derive(Debug, Deserialize)]
-pub struct StopQuery {
-    #[serde(default)]
-    end: bool,
-}
-
-pub async fn agent_stop(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Query(q): Query<StopQuery>,
-) -> ApiResult<StatusCode> {
-    let (agents, workspace) = (state.agents.clone(), state.workspace.clone());
-    crate::routes::blocking(move || {
-        if q.end {
-            workspace.close_pane(workspace.pane_for_session(&id));
-        }
-        Ok(agents.stop(&id, q.end))
-    })
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PaneQuery {
-    pane_id: String,
-    #[serde(default)]
-    end: bool,
-}
-
-pub async fn agent_stop_pane(
-    State(state): State<AppState>,
-    Query(q): Query<PaneQuery>,
-) -> ApiResult<StatusCode> {
-    let agents = state.agents.clone();
-    crate::routes::blocking(move || Ok(agents.stop_pane(&q.pane_id, q.end))).await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize)]

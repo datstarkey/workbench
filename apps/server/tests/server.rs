@@ -213,6 +213,41 @@ async fn auth_gate() {
     handle.stop().await;
 }
 
+/// The workspace service is the only way to start or end a session: the old
+/// lifecycle routes are gone, even with a valid token.
+#[tokio::test]
+async fn the_old_lifecycle_routes_are_gone() {
+    let (handle, base) = start().await;
+    for (method, path) in [
+        ("POST", "/remote/terminals"),
+        ("DELETE", "/remote/terminals/x"),
+        ("POST", "/agent/claude"),
+        ("POST", "/agent/codex"),
+        ("GET", "/agent/claude"),
+        ("GET", "/agent/codex"),
+        ("DELETE", "/agent/claude?paneId=p"),
+        (
+            "DELETE",
+            "/agent/claude/4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5",
+        ),
+        ("DELETE", "/agent/codex/x"),
+        ("GET", "/events/home"),
+    ] {
+        let res = client()
+            .request(method.parse().unwrap(), format!("{base}{path}"))
+            .json(&json!({ "projectPath": "/x" }))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            matches!(res.status().as_u16(), 404 | 405),
+            "{method} {path} answered {}",
+            res.status()
+        );
+    }
+    handle.stop().await;
+}
+
 #[tokio::test]
 async fn embedded_server_refuses_a_weak_token() {
     for token in ["", "   ", "secret"] {
@@ -303,24 +338,14 @@ async fn terminal_create_rejects_unknown_worktree() {
     let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start().await;
-    let res = client()
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({
-            "projectPath": tmp.path(),
-            "worktreePath": "/nonexistent/worktree"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 403);
-    let body: Value = res.json().await.unwrap();
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap()
-            .contains("not a known worktree"),
-        "{body}"
-    );
+    let error = support::refused_session(
+        &base,
+        tmp.path(),
+        "shell",
+        json!({ "worktreePath": "/nonexistent/worktree" }),
+    )
+    .await;
+    assert!(error.contains("not a known worktree"), "{error}");
 
     handle.stop().await;
 }
@@ -460,18 +485,9 @@ async fn the_phone_switches_the_hosts_active_claude_account() {
     handle.stop().await;
 }
 
-/// Create a terminal in `project` over REST and return its id.
-async fn create_terminal(http: &reqwest::Client, base: &str, project: &std::path::Path) -> String {
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({ "projectPath": project }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    meta["id"].as_str().expect("terminal id").to_string()
+/// A shell pane's terminal in `project`.
+async fn create_terminal(base: &str, project: &std::path::Path) -> String {
+    support::start_shell(base, project, None).await.1
 }
 
 #[cfg(unix)]
@@ -483,7 +499,7 @@ async fn terminal_ws_requires_token() {
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let id = create_terminal(&client(), &base, tmp.path()).await;
+    let id = create_terminal(&base, tmp.path()).await;
 
     // A browser WebSocket can't send Authorization; without ?token= the upgrade 401s.
     let no_token =
@@ -523,7 +539,7 @@ async fn terminal_ws_rejects_a_foreign_origin() {
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let id = create_terminal(&client(), &base, tmp.path()).await;
+    let id = create_terminal(&base, tmp.path()).await;
 
     let with_origin = |origin: &str| {
         let mut req = ws_url(&addr, &id).into_client_request().unwrap();
@@ -564,7 +580,7 @@ async fn listeners_sharing_managers_see_the_same_terminals() {
     let (lan, lan_base) = start_with(managers, LAN_TOKEN).await;
     let lan_http = client_with(LAN_TOKEN);
 
-    let id = create_terminal(&client(), &loopback_base, tmp.path()).await;
+    let id = create_terminal(&loopback_base, tmp.path()).await;
 
     let listed: Value = lan_http
         .get(format!("{lan_base}/remote/terminals"))
@@ -625,7 +641,7 @@ async fn stopping_a_listener_disconnects_its_attached_sockets() {
     let (loopback, loopback_base) = start_with(managers.clone(), TOKEN).await;
     let (lan, _) = start_with(managers, LAN_TOKEN).await;
     let lan_addr = lan.addr().to_string();
-    let id = create_terminal(&client(), &loopback_base, tmp.path()).await;
+    let id = create_terminal(&loopback_base, tmp.path()).await;
 
     let (mut lan_ws, _) = tokio_tungstenite::connect_async(format!(
         "ws://{lan_addr}/remote/terminals/{id}/ws?token={LAN_TOKEN}"
@@ -690,28 +706,14 @@ async fn terminal_ws_closes_when_killed() {
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = client();
-
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({ "projectPath": tmp.path() }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+    let (pane, id) = support::start_shell(&base, tmp.path(), None).await;
 
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
         .await
         .expect("WS should connect");
 
-    // Kill the terminal; the attached socket must close rather than hang forever.
-    http.delete(format!("{base}/remote/terminals/{id}"))
-        .send()
-        .await
-        .unwrap();
+    // Close its pane; the attached socket must close rather than hang forever.
+    support::close_pane(&base, &pane).await;
 
     let ended = tokio::time::timeout(Duration::from_secs(5), async {
         while let Some(Ok(msg)) = ws.next().await {
@@ -731,88 +733,18 @@ async fn terminal_ws_closes_when_killed() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn terminal_kill_can_wait_for_its_processes() {
-    let env = env_guard();
-    let tmp = tempfile::tempdir().unwrap();
-    let _cfg = register_project(&env, tmp.path());
-    let (handle, base) = start().await;
-    let http = client();
-
-    // A foreground job that takes a while to exit, like Claude flushing its session.
-    let pid_file = tmp.path().join("pid");
-    let command = format!(
-        "sh -c 'echo $$ > {}; trap \"sleep 0.5; exit\" HUP TERM; while :; do sleep 0.1; done'",
-        pid_file.display()
-    );
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({ "projectPath": tmp.path(), "command": command }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id");
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let pid = loop {
-        if let Some(pid) = std::fs::read_to_string(&pid_file)
-            .ok()
-            .filter(|p| p.ends_with('\n'))
-        {
-            break pid.trim().to_string();
-        }
-        assert!(tokio::time::Instant::now() < deadline, "job never started");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-
-    let res = http
-        .delete(format!("{base}/remote/terminals/{id}?wait=true"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
-    let alive = std::process::Command::new("kill")
-        .args(["-0", &pid])
-        .status()
-        .unwrap()
-        .success();
-    assert!(!alive, "the job must be gone once a waiting kill returns");
-
-    handle.stop().await;
-}
-
-#[cfg(unix)]
-#[tokio::test]
 async fn terminal_claude_session_is_built_by_the_server() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
     let cfg = register_project(&env, tmp.path());
     let (handle, base) = start().await;
-    let http = client();
-    let create = |body: Value| {
-        http.post(format!("{base}/remote/terminals"))
-            .json(&body)
-            .send()
-    };
     let sid = "4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
     let project = tmp.path();
 
-    let res = create(json!({
-        "projectPath": project, "command": "claude",
-        "claudeSession": {"id": sid, "resume": true},
-    }))
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 400, "command and claudeSession are exclusive");
-
-    let res = create(json!({
-        "projectPath": project, "claudeSession": {"id": "x; rm -rf ~", "resume": true},
-    }))
-    .await
-    .unwrap();
-    assert!(res.status().is_server_error(), "a non-UUID id is refused");
+    let error =
+        support::refused_session(&base, project, "claude", json!({ "resume": "x; rm -rf ~" }))
+            .await;
+    assert!(!error.is_empty(), "a non-UUID id is refused");
 
     // The fake `claude` records its arguments, one per line.
     let args_file = tmp.path().join("args");
@@ -827,23 +759,17 @@ async fn terminal_claude_session_is_built_by_the_server() {
     .unwrap();
     std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     env.set("WORKBENCH_CLAUDE_BIN", &fake);
-    let meta: Value = create(json!({
-        "projectPath": project,
-        "claudeSession": {"id": sid, "resume": true, "prompt": "review it's $(state)"},
-    }))
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_eq!(
-        meta["claudeSessionId"], sid,
-        "a Claude terminal is listed as its session: {meta}"
-    );
-    assert_eq!(
-        meta["claudeAccountId"], "",
-        "the create names the login the host picked (the default): {meta}"
-    );
+    // A prompt starts a new session: a resumed one already had its prompt.
+    let pane = support::new_session(
+        &base,
+        project,
+        "claude",
+        json!({ "prompt": "review it's $(state)" }),
+    )
+    .await;
+    let fresh =
+        support::wait_for_pane(&base, &pane, "its session", |p| p["sessionId"].is_string()).await;
+    let fresh = fresh["sessionId"].as_str().unwrap().to_string();
     let args = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match std::fs::read_to_string(&args_file) {
@@ -854,19 +780,22 @@ async fn terminal_claude_session_is_built_by_the_server() {
     })
     .await
     .expect("the terminal runs claude");
-    // A session with no transcript starts, whatever `resume` said; `--` keeps
+    // A session with no transcript starts; `--` keeps
     // the prompt from ever being read as a flag.
     assert_eq!(
         args,
-        format!("--session-id\n{sid}\n--\nreview it's $(state)\n")
+        format!("--session-id\n{fresh}\n--\nreview it's $(state)\n")
     );
-    http.delete(format!(
-        "{base}/remote/terminals/{}",
-        meta["id"].as_str().unwrap()
-    ))
-    .send()
-    .await
-    .unwrap();
+    let listed = support::get(&base, "/remote/terminals").await;
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["claudeSessionId"] == fresh.as_str()),
+        "a Claude terminal is listed as its session: {listed}"
+    );
+    support::close_pane(&base, &pane).await;
 
     std::fs::write(
         cfg.path().join("settings.json"),
@@ -876,37 +805,20 @@ async fn terminal_claude_session_is_built_by_the_server() {
     // Make the write fail: the launch is refused rather than run unwrapped.
     let sandbox_file = cfg.path().join("sandbox-runtime.json");
     std::fs::create_dir(&sandbox_file).unwrap();
-    let res = create(json!({
-        "projectPath": project, "claudeSession": {"id": sid, "resume": false},
-    }))
-    .await
-    .unwrap();
-    let body: Value = res.json().await.unwrap();
+    let error = support::refused_session(&base, project, "claude", json!({ "resume": sid })).await;
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap()
-            .contains("couldn't write the sandbox settings file"),
-        "the sandbox fails closed: {body}"
+        error.contains("couldn't write the sandbox settings file"),
+        "the sandbox fails closed: {error}"
     );
     std::fs::remove_dir(&sandbox_file).unwrap();
 
     // No desktop needed: the launch writes the file itself.
-    let meta: Value = create(json!({
-        "projectPath": project, "claudeSession": {"id": sid, "resume": false},
-    }))
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    http.delete(format!(
-        "{base}/remote/terminals/{}",
-        meta["id"].as_str().unwrap()
-    ))
-    .send()
-    .await
-    .unwrap();
+    let pane = support::new_session(&base, project, "claude", json!({ "resume": sid })).await;
+    support::wait_for_pane(&base, &pane, "the launch", |p| {
+        p["terminalId"].is_string() || p["error"].is_string()
+    })
+    .await;
+    support::close_pane(&base, &pane).await;
     let written = std::fs::read_to_string(&sandbox_file).unwrap();
     assert!(written.contains("allowWrite"), "{written}");
 
@@ -924,18 +836,7 @@ async fn terminal_ws_closes_on_shell_exit() {
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = client();
-
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({ "projectPath": tmp.path() }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+    let id = create_terminal(&base, tmp.path()).await;
 
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
         .await
@@ -970,24 +871,10 @@ async fn terminal_respects_cap() {
     let _cfg = register_project(&env, tmp.path());
 
     let (handle, base) = start().await;
-    let http = client();
-
-    let create = |c: &reqwest::Client| {
-        c.post(format!("{base}/remote/terminals"))
-            .json(&json!({ "projectPath": tmp.path() }))
-            .send()
-    };
-
-    let first = create(&http).await.unwrap();
-    assert_eq!(
-        first.status(),
-        200,
-        "first terminal under the cap should succeed"
-    );
-
-    let second = create(&http).await.unwrap();
+    support::start_shell(&base, tmp.path(), None).await;
+    let error = support::refused_session(&base, tmp.path(), "shell", json!({})).await;
     assert!(
-        second.status().is_server_error(),
+        !error.is_empty(),
         "creating a terminal past the cap should be rejected"
     );
 
@@ -1010,19 +897,7 @@ async fn terminal_single_attacher_kick() {
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = client();
-
-    // Create a terminal.
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({ "projectPath": tmp.path() }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+    let id = create_terminal(&base, tmp.path()).await;
 
     // Attacher A connects first.
     let (mut ws_a, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
@@ -1110,18 +985,7 @@ async fn terminal_ws_exit_frame_carries_code() {
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = client();
-
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({ "projectPath": tmp.path() }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+    let id = create_terminal(&base, tmp.path()).await;
 
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
         .await
@@ -1169,7 +1033,7 @@ async fn terminal_ws_exit_frame_carries_code() {
     handle.stop().await;
 }
 
-/// A terminal's `paneId` reaches its shell as `WORKBENCH_PANE_ID`, and its
+/// A pane's id reaches its shell as `WORKBENCH_PANE_ID`, and its
 /// `WORKBENCH_HOOK_SOCKET` is the server's own bridge: a client-sent
 /// `hookSocket` is ignored, so no token holder points a shell elsewhere.
 /// We verify by spawning a shell that echoes the env var values via an initial
@@ -1184,33 +1048,28 @@ async fn terminal_create_forwards_env() {
     let tmp = tempfile::tempdir().unwrap();
     let _cfg = register_project(&env, tmp.path());
 
-    let pane_id_val = "test-pane-42";
     let hook_socket_val = "/tmp/workbench-hook.sock";
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = client();
 
-    // Create a terminal with paneId + hookSocket + an initial command that
-    // immediately prints both env vars so we can capture them in the stream.
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({
-            "projectPath": tmp.path(),
-            "paneId": pane_id_val,
+    // A client-sent hookSocket, and an initial command that immediately
+    // prints both env vars so we can capture them in the stream.
+    let pane_id_val = support::new_session(
+        &base,
+        tmp.path(),
+        "shell",
+        json!({
             "hookSocket": hook_socket_val,
-            // Print both env vars as a unique marker the test can scan for.
-            "command": format!(
-                "printf 'PANE_ID=%s HOOK_SOCKET=%s\\n' \"$WORKBENCH_PANE_ID\" \"$WORKBENCH_HOOK_SOCKET\""
-            )
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+            "command": "printf 'PANE_ID=%s HOOK_SOCKET=%s\\n' \"$WORKBENCH_PANE_ID\" \"$WORKBENCH_HOOK_SOCKET\""
+        }),
+    )
+    .await;
+    let pane = support::wait_for_pane(&base, &pane_id_val, "a terminal", |p| {
+        p["terminalId"].is_string()
+    })
+    .await;
+    let id = pane["terminalId"].as_str().unwrap().to_string();
 
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(&addr, &id))
         .await
@@ -1271,33 +1130,23 @@ async fn terminal_create_sets_claude_config_dir_for_a_saved_account() {
 
     let (handle, base) = start().await;
     let addr = handle.addr().to_string();
-    let http = client();
+    let error =
+        support::refused_session(&base, tmp.path(), "shell", json!({ "accountId": "nope" })).await;
+    assert!(!error.is_empty(), "unknown account must be refused");
 
-    let unknown = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({ "projectPath": tmp.path(), "claudeAccountId": "nope" }))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        !unknown.status().is_success(),
-        "unknown account must be refused"
-    );
-
-    let meta: Value = http
-        .post(format!("{base}/remote/terminals"))
-        .json(&json!({
-            "projectPath": tmp.path(),
-            "claudeAccountId": "work",
+    let pane = support::new_session(
+        &base,
+        tmp.path(),
+        "shell",
+        json!({
+            "accountId": "work",
             "command": "printf 'CFG=%s\\n' \"$CLAUDE_CONFIG_DIR\""
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = meta["id"].as_str().expect("terminal id").to_string();
+        }),
+    )
+    .await;
+    let pane =
+        support::wait_for_pane(&base, &pane, "a terminal", |p| p["terminalId"].is_string()).await;
+    let id = pane["terminalId"].as_str().unwrap().to_string();
     assert!(
         account_dir.is_dir(),
         "config dir is created for a first login"
@@ -1386,28 +1235,17 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
     let id = "0d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
     let ws_url = |token: &str| format!("ws://{addr}/agent/claude/{id}/ws?token={token}");
 
-    let res = client()
-        .post(format!("{base}/agent/claude"))
-        .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "paneId": "pane-1" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
+    let (pane, _) = support::start_claude(&base, tmp.path(), id).await;
 
     // An unknown Claude account is an error, never a silent fall-back to the default login.
-    let res = client()
-        .post(format!("{base}/agent/claude"))
-        .json(&json!({ "projectPath": tmp.path(),
-            "sessionId": "1d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5", "claudeAccountId": "nope" }))
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_server_error() || res.status().is_client_error());
+    let error = support::refused_session(
+        &base,
+        tmp.path(),
+        "claude",
+        json!({ "resume": "1d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5", "accountId": "nope" }),
+    )
+    .await;
+    assert!(!error.is_empty());
 
     match tokio_tungstenite::connect_async(ws_url("wrong")).await {
         Err(Error::Http(resp)) => assert_eq!(resp.status(), 401),
@@ -1533,8 +1371,8 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         "approval relayed: {received}"
     );
 
-    // /clear moves the conversation to a new id. Starting either id afterwards
-    // must reach the same process — the race that once spawned a second claude.
+    // /clear moves the conversation to a new id. Resuming either id afterwards
+    // must reach the same pane and process — the race that once spawned a second claude.
     ws.send(Message::Text(
         json!({"t":"prompt","text":"/clear"}).to_string(),
     ))
@@ -1548,18 +1386,12 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
             break;
         }
     }
+    // The model follows the re-key a moment after the chat does.
+    support::wait_for_pane(&base, &pane, "the new id", |p| p["sessionId"] == new_id).await;
     for sid in [new_id, id] {
-        let res = client()
-            .post(format!("{base}/agent/claude"))
-            .json(&json!({ "projectPath": tmp.path(), "sessionId": sid, "paneId": "pane-1" }))
-            .send()
-            .await
-            .unwrap();
-        let body: Value = res.json().await.unwrap();
-        assert_eq!(
-            body["sessionId"], new_id,
-            "{sid} resolves to the running session"
-        );
+        let again =
+            support::new_session(&base, tmp.path(), "claude", json!({ "resume": sid })).await;
+        assert_eq!(again, pane, "{sid} resolves to the running session's pane");
     }
     let received = std::fs::read_to_string(&log).unwrap();
     assert_eq!(
@@ -1570,7 +1402,7 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
 
     // Another device holding the old id follows the re-key from the list.
     let list: Vec<Value> = client()
-        .get(format!("{base}/agent/claude"))
+        .get(format!("{base}/agent"))
         .send()
         .await
         .unwrap()
@@ -1581,22 +1413,7 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
     assert_eq!(list[0]["sessionId"], new_id);
     assert_eq!(list[0]["previousIds"], json!([id]));
 
-    let attach = || {
-        client()
-            .post(format!("{base}/agent/claude"))
-            .json(&json!({ "projectPath": "/not/registered", "sessionId": id, "attachOnly": true }))
-            .send()
-    };
-    let res = attach().await.unwrap();
-    assert_eq!(res.status(), 200, "attaching skips the cwd checks");
-    assert_eq!(res.json::<Value>().await.unwrap()["sessionId"], new_id);
-
-    let res = client()
-        .delete(format!("{base}/agent/claude?paneId=pane-1"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
+    support::close_pane(&base, &pane).await;
     loop {
         if next_json(&mut ws).await["t"] == "exit" {
             break; // closing the pane stops claude
@@ -1611,9 +1428,8 @@ async fn chat_session_streams_a_turn_and_relays_an_approval() {
         "socket closes after exit, got {closed:?}"
     );
 
-    // Attaching to an ended session must not bring it back.
-    let res = attach().await.unwrap();
-    assert_eq!(res.status(), 404);
+    // An ended session is gone, and nothing brought it back.
+    support::wait_agent_gone(&base, new_id).await;
     let received = std::fs::read_to_string(&log).unwrap();
     assert_eq!(received.matches(r#""subtype":"initialize""#).count(), 1);
 
@@ -1636,16 +1452,21 @@ async fn concurrent_chat_starts_share_one_process() {
 
     let (handle, base) = start().await;
     let id = "3d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
-    let start_chat = || {
-        client()
-            .post(format!("{base}/agent/claude"))
-            .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "paneId": "pane-race" }))
-            .send()
-    };
+    let start_chat = || support::new_session(&base, tmp.path(), "claude", json!({ "resume": id }));
     // Desktop and phone (or a remount and a reconnect) asking at once.
     let (a, b) = tokio::join!(start_chat(), start_chat());
-    assert_eq!(a.unwrap().status(), 200);
-    assert_eq!(b.unwrap().status(), 200);
+    assert_eq!(a, b, "one pane for the session");
+    let terminal = support::wait_for_agent(&base, id).await["terminalId"].clone();
+    let alive: Vec<Value> = support::get(&base, "/remote/terminals")
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["alive"] == true)
+        .cloned()
+        .collect();
+    assert_eq!(alive.len(), 1, "one terminal: {alive:?}");
+    assert_eq!(alive[0]["id"], terminal);
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     let received = std::fs::read_to_string(&log).unwrap_or_default();
@@ -1655,160 +1476,7 @@ async fn concurrent_chat_starts_share_one_process() {
         "two starts must not spawn two claude processes"
     );
 
-    let res = client()
-        .delete(format!("{base}/agent/claude/{id}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
-    handle.stop().await;
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn a_terminal_for_a_running_claude_session_is_that_sessions_terminal() {
-    let env = env_guard();
-    let tmp = tempfile::tempdir().unwrap();
-    let _cfg = register_project(&env, tmp.path());
-    env.set(
-        "WORKBENCH_FAKE_CLAUDE",
-        write_fake_stream_claude(tmp.path()),
-    );
-    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
-    let log = tmp.path().join("received.jsonl");
-    env.set("FAKE_CLAUDE_LOG", &log);
-
-    let (handle, base) = start().await;
-    let id = "5d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
-    let create = || async {
-        let res = client()
-            .post(format!("{base}/remote/terminals"))
-            .json(
-                &json!({ "projectPath": tmp.path(), "claudeSession": {"id": id, "resume": true} }),
-            )
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 200);
-        res.json::<Value>().await.unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    let res = client()
-        .post(format!("{base}/agent/claude"))
-        .json(&json!({ "projectPath": tmp.path(), "sessionId": id }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let a = res.json::<Value>().await.unwrap()["terminalId"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    // A reloaded desktop pane and the phone's history pick, at once.
-    let (b, c) = tokio::join!(create(), create());
-    assert_eq!((b.as_str(), c.as_str()), (a.as_str(), a.as_str()));
-
-    let terminals: Vec<Value> = client()
-        .get(format!("{base}/remote/terminals"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(terminals.len(), 1, "one terminal: {terminals:?}");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let received = std::fs::read_to_string(&log).unwrap_or_default();
-    assert_eq!(
-        received.matches(r#""subtype":"initialize""#).count(),
-        1,
-        "one claude process for the session"
-    );
-
-    // After a `/clear` the old id is only an alias: resuming that conversation
-    // is not the running one.
-    let res = client()
-        .post(format!("{base}/agent/claude/{id}/message"))
-        .json(&json!({"t":"prompt","text":"/clear"}))
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success(), "{}", res.status());
-    let new_id = "2d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let list: Vec<Value> = client()
-                .get(format!("{base}/agent/claude"))
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-            if list.iter().any(|s| s["sessionId"] == new_id) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the session moved to its new id");
-    let old = create().await;
-    assert_ne!(old, a, "a pre-clear id doesn't join the running session");
-
-    for t in [&a, &old] {
-        let res = client()
-            .delete(format!("{base}/remote/terminals/{t}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 204);
-    }
-    handle.stop().await;
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn closing_a_chats_terminal_ends_the_chat_everywhere() {
-    let env = env_guard();
-    let tmp = tempfile::tempdir().unwrap();
-    let _cfg = register_project(&env, tmp.path());
-    env.set(
-        "WORKBENCH_FAKE_CLAUDE",
-        write_fake_stream_claude(tmp.path()),
-    );
-    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
-    env.set("FAKE_CLAUDE_LOG", tmp.path().join("received.jsonl"));
-
-    let (handle, base) = start().await;
-    let id = "4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
-    let res = client()
-        .post(format!("{base}/agent/claude"))
-        .json(&json!({ "projectPath": tmp.path(), "sessionId": id }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    let body: Value = res.json().await.unwrap();
-    let terminal = body["terminalId"].as_str().unwrap().to_string();
-
-    // Whichever device started it, closing its terminal is an End, not an exit.
-    let res = client()
-        .delete(format!("{base}/remote/terminals/{terminal}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
-    let res = client()
-        .post(format!("{base}/agent/claude"))
-        .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "attachOnly": true }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 404);
-    assert_eq!(res.json::<Value>().await.unwrap()["ended"], true);
+    support::close_pane(&base, &a).await;
     handle.stop().await;
 }
 
@@ -1854,13 +1522,14 @@ async fn chat_resume_lists_the_title_before_a_client_opens_the_chat() {
             history.push_str(&format!("\n{entry}"));
         }
         std::fs::write(&path, &history).unwrap();
-        let res = client()
-            .post(format!("{base}/agent/claude"))
-            .json(&json!({"projectPath":tmp.path(),"sessionId":id,"claudeAccountId":"work"}))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+        let pane = support::new_session(
+            &base,
+            tmp.path(),
+            "claude",
+            json!({ "resume": id, "accountId": "work" }),
+        )
+        .await;
+        support::wait_for_agent(&base, id).await;
 
         // The mobile home screen only polls the list; no websocket has attached.
         let summaries: Vec<Value> = client()
@@ -1892,12 +1561,8 @@ async fn chat_resume_lists_the_title_before_a_client_opens_the_chat() {
         let snapshot: Value = serde_json::from_str(&frame).unwrap();
         assert_eq!(snapshot["t"], "snapshot");
         assert_eq!(snapshot["meta"]["title"], expected);
-        let res = client()
-            .delete(format!("{base}/agent/claude/{id}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 204);
+        support::close_pane(&base, &pane).await;
+        support::wait_agent_gone(&base, id).await;
     }
     handle.stop().await;
 }
@@ -1917,23 +1582,13 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
 
     let (handle, base) = start().await;
     let id = "4d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
-    let res = client()
-        .post(format!("{base}/agent/claude"))
-        .json(&json!({ "projectPath": tmp.path(), "sessionId": id, "paneId": "pane-list" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+    let (pane, _) = support::start_claude(&base, tmp.path(), id).await;
 
-    let res = reqwest::get(format!("{base}/agent/claude")).await.unwrap();
+    let res = reqwest::get(format!("{base}/agent")).await.unwrap();
     assert_eq!(res.status(), 401, "listing needs the token");
 
     let list = || async {
-        let res = client()
-            .get(format!("{base}/agent/claude"))
-            .send()
-            .await
-            .unwrap();
+        let res = client().get(format!("{base}/agent")).send().await.unwrap();
         assert_eq!(res.status(), 200);
         let all: Vec<Value> = res.json().await.unwrap();
         assert_eq!(all.len(), 1, "one entry per session: {all:?}");
@@ -1964,7 +1619,7 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
     assert_eq!(summary["sessionId"], id);
     assert_eq!(summary["projectPath"], json!(tmp.path()));
     assert_eq!(summary["worktreePath"], Value::Null);
-    assert_eq!(summary["paneId"], "pane-list");
+    assert_eq!(summary["paneId"], pane.as_str());
     assert_eq!(summary["claudeAccountId"], Value::Null);
     assert_eq!(summary["busy"], false);
     assert_eq!(summary["busySince"], Value::Null);
@@ -2023,12 +1678,7 @@ async fn chat_sessions_are_listed_and_take_messages_over_http() {
         .unwrap();
     assert_eq!(res.status(), 404);
 
-    let res = client()
-        .delete(format!("{base}/agent/claude/{id}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 204);
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }
 

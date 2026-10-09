@@ -352,34 +352,6 @@ impl WorkspaceService {
         self.0.dirty.notify_one();
     }
 
-    /// An End that came by an older route (a terminal or a chat closed by
-    /// id): the pane goes too, so every client sees it close. Blocking.
-    pub fn close_pane(&self, pane_id: Option<String>) {
-        if let Some(pane_id) = pane_id {
-            if let Err(e) = self.command(Command::ClosePane { pane_id }) {
-                tracing::warn!("closing a pane: {e:#}");
-            }
-        }
-    }
-
-    /// The pane running in terminal `id`, if any.
-    pub fn pane_for_terminal(&self, id: &str) -> Option<String> {
-        lock(&self.0.state)
-            .runtime
-            .iter()
-            .find(|(_, r)| r.terminal_id.as_deref() == Some(id))
-            .map(|(pane, _)| pane.clone())
-    }
-
-    /// The pane holding session `id` (either kind), if any.
-    pub fn pane_for_session(&self, id: &str) -> Option<String> {
-        let state = lock(&self.0.state);
-        [PaneKind::Claude, PaneKind::Codex]
-            .into_iter()
-            .find_map(|kind| state.model.pane_for_session(kind, id))
-            .map(|p| p.id.clone())
-    }
-
     /// Follow the snapshots; the first is refreshed for the new watcher.
     pub fn subscribe(&self) -> watch::Receiver<Arc<Published>> {
         let rx = self.0.published.subscribe();

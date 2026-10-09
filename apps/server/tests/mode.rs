@@ -60,19 +60,7 @@ async fn a_new_chat_restarts_in_the_picked_mode() {
         .await
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
-    let res = reqwest::Client::new()
-        .post(format!("{base}/agent/claude"))
-        .bearer_auth(TOKEN)
-        .json(&json!({ "projectPath": project, "sessionId": SID }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "{}",
-        res.text().await.unwrap_or_default()
-    );
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
 
     let ws_url = format!("ws://{}/agent/claude/{SID}/ws?token={TOKEN}", handle.addr());
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
@@ -119,12 +107,6 @@ async fn a_new_chat_restarts_in_the_picked_mode() {
     );
     assert!(launches[1].starts_with("mode=plan "), "{launches:?}");
 
-    let res = reqwest::Client::new()
-        .delete(format!("{base}/agent/claude/{SID}"))
-        .bearer_auth(TOKEN)
-        .send()
-        .await
-        .unwrap();
-    assert!(res.status().is_success());
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }

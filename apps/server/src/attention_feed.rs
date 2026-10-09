@@ -17,7 +17,7 @@ pub struct AttentionFeed {
     state: Arc<Mutex<FeedState>>,
     changed: broadcast::Sender<()>,
     /// Bumped on every session summary change and registry change, so a
-    /// session list (`/events/home`) can follow without polling.
+    /// the workspace fold can follow sessions without polling.
     listed: crate::changes::Changes,
 }
 

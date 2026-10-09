@@ -63,33 +63,7 @@ async fn cache_policy_is_shared_saved_and_a_ping_reaches_claude() {
         .expect("server should bind");
     let base = format!("http://{}", handle.addr());
     let ws_url = format!("ws://{}/agent/claude/{SID}/ws?token={TOKEN}", handle.addr());
-    let client = reqwest::Client::new();
-    let start = || async {
-        let res = client
-            .post(format!("{base}/agent/claude"))
-            .bearer_auth(TOKEN)
-            .json(&json!({ "projectPath": project, "sessionId": SID }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            200,
-            "{}",
-            res.text().await.unwrap_or_default()
-        );
-    };
-    let stop = || async {
-        let res = client
-            .delete(format!("{base}/agent/claude/{SID}"))
-            .bearer_auth(TOKEN)
-            .send()
-            .await
-            .unwrap();
-        assert!(res.status().is_success());
-    };
-
-    start().await;
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     let snapshot = next_json(&mut ws).await;
     assert_eq!(snapshot["cachePolicy"], json!({"compactOnExpiry": false}));
@@ -129,11 +103,12 @@ async fn cache_policy_is_shared_saved_and_a_ping_reaches_claude() {
     );
 
     // The policy outlives the process: a restarted chat gets it back.
-    stop().await;
-    start().await;
+    support::close_pane(&base, &pane).await;
+    support::wait_agent_gone(&base, SID).await;
+    let (pane, _) = support::start_claude(&base, &project, SID).await;
     let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.unwrap();
     assert_eq!(next_json(&mut ws).await["cachePolicy"], policy);
 
-    stop().await;
+    support::close_pane(&base, &pane).await;
     handle.stop().await;
 }
