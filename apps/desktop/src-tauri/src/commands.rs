@@ -210,12 +210,21 @@ pub fn load_workbench_settings() -> Result<WorkbenchSettings, String> {
 pub fn save_workbench_settings(mut settings: WorkbenchSettings) -> Result<bool, String> {
     // Each window holds its own settings store; one loaded before the LAN token
     // was generated must not wipe it (and lock paired phones out) on save.
+    let previous = config::load_workbench_settings().ok();
     if settings.server_token.is_none() {
-        settings.server_token = config::load_workbench_settings()
-            .ok()
-            .and_then(|s| s.server_token);
+        settings.server_token = previous.as_ref().and_then(|s| s.server_token.clone());
     }
     config::save_workbench_settings(&settings).map_err(|e| e.to_string())?;
+    let known: HashSet<String> = previous
+        .map(|s| s.claude_accounts.into_iter().map(|a| a.id).collect())
+        .unwrap_or_default();
+    let added: Vec<_> = claude_accounts::config_dirs(&settings)
+        .into_iter()
+        .filter(|(id, _)| id.as_ref().is_some_and(|id| !known.contains(id)))
+        .collect();
+    if !added.is_empty() {
+        crate::claude_plugin::spawn_disable_marketplace_install(added);
+    }
     Ok(true)
 }
 

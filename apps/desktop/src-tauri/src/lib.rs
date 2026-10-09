@@ -208,16 +208,13 @@ pub fn run() {
             let bridge = HookBridgeState::new(handle.clone(), hooks);
             app.manage(bridge);
             // Activity now comes from the `workbench` Claude Code plugin; drop the
-            // hook script older versions registered and a marketplace install, so events
-            // aren't reported twice.
+            // hook script older versions registered so events aren't reported twice.
             std::thread::spawn(|| {
                 if let Err(e) = settings::remove_workbench_hook_integration() {
                     log::warn!("failed to remove the old Claude hook script: {e}");
                 }
-                if let Err(e) = claude_plugin::disable_marketplace_install() {
-                    log::warn!("failed to disable the marketplace workbench plugin: {e}");
-                }
             });
+            claude_plugin::disable_marketplace_install_at_startup();
             let git_watcher = GitWatcher::new(handle);
             app.manage(git_watcher);
             let github_poller = GitHubPoller::new(app.handle().clone());

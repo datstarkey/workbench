@@ -18,7 +18,7 @@ Open the `.dmg` and drag Workbench to your Applications folder.
 
 ### Claude Code plugin
 
-Workbench tracks Claude session activity with its own Claude Code plugin ([`plugins/workbench`](plugins/workbench)), which it loads into every Claude process it starts, so there's nothing to install. It isn't published as a marketplace plugin: Workbench always injects the current copy, and disables an older marketplace install (`workbench@workbench`) at startup.
+Workbench tracks Claude session activity with its own Claude Code plugin ([`plugins/workbench`](plugins/workbench)), which it loads into every Claude process it starts, so there's nothing to install. It isn't published as a marketplace plugin: Workbench always injects the current copy, and at startup uninstalls an older marketplace install (`workbench@workbench`) with `claude plugin uninstall` and `claude plugin marketplace remove`.
 
 ## Features
 
