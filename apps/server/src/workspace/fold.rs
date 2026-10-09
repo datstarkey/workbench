@@ -158,6 +158,13 @@ impl WorkspaceService {
                         rt.ran = true;
                         rt.title = s.title.clone();
                         rt.busy = s.busy;
+                        rt.busy_since = s.busy_since;
+                        rt.turn_ended_at = s.turn_ended_at;
+                        rt.running = s.running.clone();
+                        let asked = s.waiting.as_ref().map(|w| &w.id);
+                        if asked != rt.waiting.as_ref().map(|w| &w.id) {
+                            rt.waiting_since = asked.map(|_| crate::agent::now_ms());
+                        }
                         rt.waiting = s.waiting.clone();
                         if s.terminal_id.is_some() {
                             rt.terminal_id = s.terminal_id.clone();
@@ -168,8 +175,7 @@ impl WorkspaceService {
                     }
                     (PaneKind::Claude, None) => {
                         rt.title = None;
-                        rt.busy = false;
-                        rt.waiting = None;
+                        rt.clear_activity();
                         rt.status = match term.filter(|t| t.alive) {
                             // `claude` left (`/exit`): the shell it ran in stays.
                             Some(_) if rt.ran => Status::Exited,
@@ -182,8 +188,7 @@ impl WorkspaceService {
                     (PaneKind::Codex, None) if pane.codex_mode == Some(CodexMode::AppServer) => {
                         if rt.ran {
                             rt.status = Status::Exited;
-                            rt.busy = false;
-                            rt.waiting = None;
+                            rt.clear_activity();
                         }
                     }
                     (_, None) => terminal_status(rt, term, pane.kind == PaneKind::Codex),
@@ -204,6 +209,18 @@ impl WorkspaceService {
                 });
             }
         }
+    }
+}
+
+impl PaneRuntime {
+    /// No session reports for the pane: nothing runs, waits or ended a turn.
+    fn clear_activity(&mut self) {
+        self.busy = false;
+        self.busy_since = None;
+        self.turn_ended_at = None;
+        self.running = None;
+        self.waiting = None;
+        self.waiting_since = None;
     }
 }
 
