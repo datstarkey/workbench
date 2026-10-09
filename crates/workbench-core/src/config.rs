@@ -1,9 +1,9 @@
-/// Project and workspace persistence (reads/writes ~/.workbench/).
+/// Project and settings persistence (reads/writes ~/.workbench/).
 use anyhow::Result;
 use std::path::PathBuf;
 
 use crate::paths;
-use crate::types::{ProjectConfig, ProjectsFile, WorkbenchSettings, WorkspaceFile};
+use crate::types::{ProjectConfig, ProjectsFile, WorkbenchSettings};
 
 fn config_path() -> PathBuf {
     paths::workbench_config_dir().join("projects.json")
@@ -22,25 +22,6 @@ pub fn save_projects(projects: &[ProjectConfig]) -> Result<()> {
     paths::save_json(&config_path(), &file)
 }
 
-fn workspace_path() -> PathBuf {
-    paths::workbench_config_dir().join("workspaces.json")
-}
-
-pub fn load_workspaces() -> Result<WorkspaceFile> {
-    paths::load_json_strict(
-        &workspace_path(),
-        WorkspaceFile {
-            workspaces: Vec::new(),
-            selected_id: None,
-            server_terminal_ids: Default::default(),
-        },
-    )
-}
-
-pub fn save_workspaces(file: &WorkspaceFile) -> Result<()> {
-    paths::save_json(&workspace_path(), file)
-}
-
 fn settings_path() -> PathBuf {
     paths::workbench_config_dir().join("settings.json")
 }
@@ -55,10 +36,7 @@ pub fn save_workbench_settings(settings: &WorkbenchSettings) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{
-        ProjectConfig, ProjectTask, ProjectsFile, TerminalPaneSnapshot, TerminalTabSnapshot,
-        WorkspaceFile, WorkspaceSnapshot,
-    };
+    use crate::types::{ProjectConfig, ProjectTask, ProjectsFile};
 
     #[test]
     fn projects_file_round_trip() {
@@ -132,104 +110,5 @@ mod tests {
         };
         let json = serde_json::to_string(&config).unwrap();
         assert!(!json.contains("tasks"));
-    }
-
-    #[test]
-    fn workspace_file_empty_workspaces() {
-        let file = WorkspaceFile {
-            workspaces: Vec::new(),
-            selected_id: None,
-            server_terminal_ids: Default::default(),
-        };
-        let json = serde_json::to_string(&file).unwrap();
-        let parsed: WorkspaceFile = serde_json::from_str(&json).unwrap();
-        assert!(parsed.workspaces.is_empty());
-        assert!(parsed.selected_id.is_none());
-    }
-
-    #[test]
-    fn workspace_file_with_populated_snapshots() {
-        let file = WorkspaceFile {
-            workspaces: vec![WorkspaceSnapshot {
-                id: "ws-1".into(),
-                project_path: "/Users/jake/project".into(),
-                project_name: "project".into(),
-                terminal_tabs: vec![TerminalTabSnapshot {
-                    id: "tab-1".into(),
-                    label: "Terminal".into(),
-                    split: "horizontal".into(),
-                    panes: vec![TerminalPaneSnapshot {
-                        id: "pane-1".into(),
-                        startup_command: Some("cargo test".into()),
-                        session_type: Some("claude".into()),
-                        claude_session_id: Some("sess-123".into()),
-                        view: Some("chat".into()),
-                        claude_account_id: Some("work".into()),
-                        claude_prompt: Some("review".into()),
-                    }],
-                    session_type: None,
-                }],
-                active_terminal_tab_id: "tab-1".into(),
-                split_view: None,
-                worktree_path: Some("/Users/jake/project-wt".into()),
-                branch: Some("feature/test".into()),
-                renderer: None,
-            }],
-            selected_id: Some("ws-1".into()),
-            server_terminal_ids: Default::default(),
-        };
-        let json = serde_json::to_string_pretty(&file).unwrap();
-        let parsed: WorkspaceFile = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.workspaces.len(), 1);
-        assert_eq!(parsed.selected_id, Some("ws-1".to_string()));
-
-        let ws = &parsed.workspaces[0];
-        assert_eq!(ws.project_name, "project");
-        assert_eq!(ws.terminal_tabs.len(), 1);
-        assert_eq!(ws.terminal_tabs[0].panes.len(), 1);
-        assert_eq!(
-            ws.terminal_tabs[0].panes[0].startup_command,
-            Some("cargo test".to_string())
-        );
-        assert_eq!(
-            ws.terminal_tabs[0].panes[0].view.as_deref(),
-            Some("chat"),
-            "the chat view choice must survive save_workspaces"
-        );
-        let pane = &ws.terminal_tabs[0].panes[0];
-        assert_eq!(pane.claude_account_id.as_deref(), Some("work"));
-        assert_eq!(pane.claude_prompt.as_deref(), Some("review"));
-        assert_eq!(ws.worktree_path, Some("/Users/jake/project-wt".to_string()));
-        assert_eq!(ws.branch, Some("feature/test".to_string()));
-    }
-
-    #[test]
-    fn workspace_file_camel_case_keys() {
-        let file = WorkspaceFile {
-            workspaces: vec![WorkspaceSnapshot {
-                id: "ws-1".into(),
-                project_path: "/test".into(),
-                project_name: "test".into(),
-                terminal_tabs: vec![],
-                active_terminal_tab_id: "tab-1".into(),
-                split_view: None,
-                worktree_path: None,
-                branch: None,
-                renderer: None,
-            }],
-            selected_id: Some("ws-1".into()),
-            server_terminal_ids: Default::default(),
-        };
-        let json = serde_json::to_string(&file).unwrap();
-        assert!(json.contains("projectPath"));
-        assert!(!json.contains("project_path"));
-        assert!(json.contains("projectName"));
-        assert!(!json.contains("project_name"));
-        assert!(json.contains("terminalTabs"));
-        assert!(!json.contains("terminal_tabs"));
-        assert!(json.contains("activeTerminalTabId"));
-        assert!(!json.contains("active_terminal_tab_id"));
-        assert!(json.contains("selectedId"));
-        assert!(!json.contains("selected_id"));
     }
 }
