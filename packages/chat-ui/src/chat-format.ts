@@ -537,10 +537,11 @@ export function limitNotice(
 
 /** The Claude accounts a chat can run under: the default (`~/.claude`), then each extra one. */
 export function accountChoices(
-	accounts: Pick<ClaudeAccount, 'id' | 'name'>[]
+	accounts: Pick<ClaudeAccount, 'id' | 'name'>[],
+	defaultName = 'Default'
 ): { key: string; id: string | undefined; name: string }[] {
 	return [
-		{ key: 'default', id: undefined, name: 'Default' },
+		{ key: 'default', id: undefined, name: defaultName },
 		...accounts.map(({ id, name }) => ({ key: id, id, name }))
 	];
 }

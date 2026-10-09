@@ -26,7 +26,7 @@
 	const settings = getWorkbenchSettingsStore();
 	/** Follows the active account; the other options are `accountChoices` keys. */
 	const ACTIVE = 'active';
-	const choices = $derived(accountChoices(settings.claudeAccounts));
+	const choices = $derived(accountChoices(settings.claudeAccounts, settings.defaultAccountName));
 	const accountOptions = $derived([
 		{ key: ACTIVE, label: 'Active account' },
 		...choices.map((c) => ({ key: c.key, label: c.id ? c.name : 'Default (~/.claude)' }))

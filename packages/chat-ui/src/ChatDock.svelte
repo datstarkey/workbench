@@ -23,6 +23,7 @@
 		onThread,
 		popover,
 		accounts = [],
+		defaultAccountName,
 		class: className
 	}: {
 		chat: AgentChat;
@@ -40,6 +41,8 @@
 		popover?: Snippet;
 		/** The extra Claude accounts a Claude chat can move to; none hides the picker. */
 		accounts?: Pick<ClaudeAccount, 'id' | 'name'>[];
+		/** What the default `~/.claude` account is called. */
+		defaultAccountName?: string;
 		class?: string;
 	} = $props();
 
@@ -58,7 +61,7 @@
 	/** At a limit, the other accounts to carry on under. */
 	const fallbacks = $derived(
 		switchable && limit?.tone === 'blocked'
-			? accountChoices(accounts).filter((c) => c.id !== chat.accountId)
+			? accountChoices(accounts, defaultAccountName).filter((c) => c.id !== chat.accountId)
 			: []
 	);
 	const commands = $derived([RESUME, ...chat.commands.filter((c) => c.name !== 'resume')]);
@@ -143,6 +146,7 @@
 			{#if switchable}
 				<ChatAccountPicker
 					{accounts}
+					{defaultAccountName}
 					accountId={chat.accountId}
 					disabled={disabledReason !== null || Boolean(chat.meta?.busy)}
 					onAccount={(id) => chat.setAccount(id)}

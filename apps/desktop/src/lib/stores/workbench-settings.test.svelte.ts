@@ -289,7 +289,8 @@ describe('WorkbenchSettingsStore', () => {
 					serverToken: null,
 					settingsWindowBounds: null,
 					claudeAccounts: [],
-					activeClaudeAccount: null
+					activeClaudeAccount: null,
+					defaultClaudeAccountName: null
 				}
 			});
 		});
@@ -552,7 +553,8 @@ describe('WorkbenchSettingsStore', () => {
 					serverToken: null,
 					settingsWindowBounds: null,
 					claudeAccounts: [],
-					activeClaudeAccount: null
+					activeClaudeAccount: null,
+					defaultClaudeAccountName: null
 				}
 			});
 			expect(store.agentActions[0].name).toBe('Review');
@@ -774,6 +776,20 @@ describe('WorkbenchSettingsStore', () => {
 			await store.removeClaudeAccount(account.id);
 			expect(store.activeClaudeAccountId).toBeUndefined();
 			expect(saved()?.activeClaudeAccount).toBeNull();
+		});
+
+		it('renames an extra account, or the default one', async () => {
+			const account = await store.addClaudeAccount('Work', '/w');
+			expect(store.defaultAccountName).toBe('Default');
+
+			await store.renameClaudeAccount(account.id, '  Greengage ');
+			expect(saved()?.claudeAccounts).toEqual([{ ...account, name: 'Greengage' }]);
+
+			await store.renameClaudeAccount(undefined, 'Personal');
+			expect(store.defaultAccountName).toBe('Personal');
+			expect(saved()?.defaultClaudeAccountName).toBe('Personal');
+
+			await expect(store.renameClaudeAccount(account.id, ' ')).rejects.toThrow('required');
 		});
 
 		it('ignores an active id that names no account', async () => {

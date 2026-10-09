@@ -9,7 +9,7 @@ import type {
 	ServerTerminalMeta as TerminalMeta,
 	WorkbenchSettings
 } from '@workbench/types';
-import { projectClaudeAccount } from '@workbench/types';
+import { defaultAccountName, projectClaudeAccount } from '@workbench/types';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { watch as watchValue } from 'runed';
 import { HomeStream, type OpenEventSource } from './home-stream.ts';
@@ -59,6 +59,8 @@ export class MobileClient {
 	drafts = new Drafts('disconnected');
 	projectPrefs = $state.raw(new ProjectPrefs('disconnected'));
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
+	/** What the machine calls its default `~/.claude` account. */
+	defaultAccountName = $state(defaultAccountName(null));
 	accountId = $state<string | undefined>(undefined);
 	/** The connected host's version and update; null while disconnected. */
 	hostUpdate = $state.raw<HostUpdate | null>(null);
@@ -78,6 +80,7 @@ export class MobileClient {
 			)) as WorkbenchSettings | null;
 			if (!live()) return;
 			this.accounts = (settings?.claudeAccounts ?? []).map(({ id, name }) => ({ id, name }));
+			this.defaultAccountName = defaultAccountName(settings);
 			const saved = this.machineId ? lsGet(machineKey('wb.account', this.machineId)) : null;
 			const selected = saved ?? settings?.activeClaudeAccount ?? '';
 			this.accountId = this.accounts.some((a) => a.id === selected) ? selected : undefined;
@@ -342,6 +345,7 @@ export class MobileClient {
 		this.controlPlane = null;
 		this.hostUpdate = null;
 		this.accounts = [];
+		this.defaultAccountName = defaultAccountName(null);
 		this.accountId = undefined;
 		this.machineId = null;
 		this.projectPrefs = new ProjectPrefs('disconnected');

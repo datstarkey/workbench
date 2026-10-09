@@ -486,6 +486,8 @@ export interface WorkbenchSettings {
 	claudeAccounts?: ClaudeAccount[];
 	/** Account new Claude sessions launch with; absent/null is the default `~/.claude`. */
 	activeClaudeAccount?: string | null;
+	/** What the default `~/.claude` account is called; absent/null shows "Default". */
+	defaultClaudeAccountName?: string | null;
 }
 
 export interface ClaudeAccount {
