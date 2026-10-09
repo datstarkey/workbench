@@ -571,15 +571,26 @@ describe('slash menu', () => {
 		const all = [
 			...commands,
 			{ name: 'starkeydigital:app-signing', description: 'Sign the app' },
+			{ name: 'pr-tools:review', description: 'A plugin review' },
 			{ name: 'add-dir', description: 'Add a working directory' },
-			{ name: 'agents', description: 'Manage agents' }
+			{ name: 'agents', description: 'Manage agents' },
+			{ name: 'ask:starkeydigital:audit', description: 'Contains the namespace' }
 		];
 		const names = (query: string) => matchCommands(all, query).map((c) => c.name);
-		expect(names('a').slice(0, 3)).toEqual(['add-dir', 'agents', 'starkeydigital:app-signing']);
+		expect(names('a').slice(0, 4)).toEqual([
+			'add-dir',
+			'agents',
+			'ask:starkeydigital:audit',
+			'starkeydigital:app-signing'
+		]);
 		expect(names('app')[0]).toBe('starkeydigital:app-signing');
 		expect(names('sign')[0]).toBe('starkeydigital:app-signing');
-		expect(names('starkeydigital:a')).toEqual(['starkeydigital:app-signing']);
-		expect(names('view')).toEqual(['review', 'security-review']);
+		expect(names('starkeydigital:a')).toEqual([
+			'starkeydigital:app-signing',
+			'ask:starkeydigital:audit'
+		]);
+		expect(names('review').slice(0, 2)).toEqual(['review', 'pr-tools:review']);
+		expect(names('view')).toEqual(['pr-tools:review', 'review', 'security-review']);
 	});
 
 	it('lists a command name once', () => {

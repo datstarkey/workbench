@@ -622,8 +622,9 @@ export function insertCommand(
 }
 
 /**
- * Commands for the `/` menu: name prefix matches (a plugin's `ns:name` counts
- * either part), then a word of the name, then anywhere in it, then description.
+ * Commands for the `/` menu: name prefix matches, then the prefix of a plugin
+ * command's own name (`ns:name`), of a word of the name, anywhere in it, then
+ * description matches.
  */
 export function matchCommands(all: SlashCommand[], query: string): SlashCommand[] {
 	// The menu is keyed by name, and a duplicate key stops Svelte rendering the
@@ -633,10 +634,14 @@ export function matchCommands(all: SlashCommand[], query: string): SlashCommand[
 	if (!query) return commands;
 	const rank = (c: SlashCommand) => {
 		const name = c.name.toLowerCase();
-		if (name.split(':').some((part) => part.startsWith(query))) return 0;
-		if (name.split(/[:\-_]/).some((word) => word.startsWith(query))) return 1;
-		if (name.includes(query)) return 2;
-		return c.description.toLowerCase().includes(query) ? 3 : -1;
+		const tiers = [
+			name.startsWith(query),
+			name.slice(name.indexOf(':') + 1).startsWith(query),
+			name.split(/[:\-_]/).some((word) => word.startsWith(query)),
+			name.includes(query),
+			c.description.toLowerCase().includes(query)
+		];
+		return tiers.indexOf(true);
 	};
 	return commands
 		.map((c) => ({ c, r: rank(c) }))
