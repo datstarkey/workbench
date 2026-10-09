@@ -8,16 +8,9 @@
 	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { MobileClient } from './client.svelte.ts';
-	import {
-		age,
-		answerableFromHome,
-		chatWhere,
-		baseName,
-		groupByWorkspace,
-		pathKey,
-		waitingLabel
-	} from './home-format.ts';
+	import { age, answerableFromHome, waitingLabel } from './home-format.ts';
 	import MachinesSheet from './MachinesSheet.svelte';
+	import { paneTitle, workspaceLabel, type PaneEntry } from './panes.ts';
 	import ProjectList from './ProjectList.svelte';
 	import Sheet from './Sheet.svelte';
 	import ProjectReviewSheet from './ProjectReviewSheet.svelte';
@@ -34,6 +27,7 @@
 	const status = $derived(
 		client.connecting ? 'switching' : client.online ? 'connected' : 'not responding'
 	);
+
 	/** Re-render relative times without refetching. */
 	let now = $state(Date.now());
 	onMount(() => {
@@ -41,22 +35,30 @@
 		return () => clearInterval(timer);
 	});
 
-	const needsYou = $derived(client.chats.filter((c) => !c.exited && c.waiting));
-	const runningChats = $derived(client.chats.filter((c) => !c.exited && !c.waiting));
-	/** Folder names as the project list shows them: `project`, `project · branch`. */
-	const folderLabels = $derived(
-		new Map(
-			store.projects.flatMap((p) => [
-				[pathKey(p.path), p.name] as const,
-				...(store.worktrees[p.path] ?? [])
-					.filter((w) => !w.isMain)
-					.map((w) => [pathKey(w.path), `${p.name} · ${w.branch || baseName(w.path)}`] as const)
-			])
-		)
-	);
+	const needsYou = $derived(client.panes.filter((e) => e.pane.waiting && e.pane.sessionId));
+	/** The host's workspaces as it orders them, each with its panes. */
 	const running = $derived(
-		groupByWorkspace(runningChats, client.standaloneTerminals, folderLabels)
+		(client.remote?.workspaces ?? [])
+			.map((workspace) => ({
+				workspace,
+				entries: client.panes.filter((e) => e.workspace === workspace && !e.pane.waiting)
+			}))
+			.filter((group) => group.entries.length > 0)
 	);
+	const runningCount = $derived(running.reduce((n, group) => n + group.entries.length, 0));
+
+	function activity({ pane, workspace }: PaneEntry): string {
+		if (pane.status === 'needsTrust') return 'Needs folder trust';
+		if (pane.status === 'starting') return 'Starting';
+		if (pane.status === 'exited') return 'Exited';
+		if (pane.kind === 'shell') return 'Terminal';
+		if (pane.running)
+			return (
+				shortPath(pane.running.detail, workspace.worktreePath ?? workspace.projectPath) ||
+				pane.running.name
+			);
+		return pane.busy ? 'Thinking' : 'Your turn';
+	}
 </script>
 
 {#snippet sectionTitle(label: string, count?: number, dot?: boolean)}
@@ -124,29 +126,35 @@
 		{#if needsYou.length > 0}
 			<section class="flex flex-col gap-2">
 				{@render sectionTitle('Needs you', needsYou.length, true)}
-				{#each needsYou as chat (chat.sessionId)}
-					{@const waiting = chat.waiting!}
+				{#each needsYou as entry (entry.pane.id)}
+					{@const pane = entry.pane}
+					{@const waiting = pane.waiting!}
+					{@const sessionId = pane.sessionId!}
 					<div
 						class="flex flex-col gap-2.5 rounded-xl border border-wb-warn/35 bg-wb-warn/[0.07] p-3"
 					>
 						<div class="flex items-center gap-2 text-xs">
-							<AgentIcon agent={chat.agent} class="size-3.5" /><span
-								class="font-semibold text-wb-warn">{waitingLabel(waiting)}</span
-							>
-							{#if chat.agent === 'codex'}
+							{#if pane.kind !== 'shell'}<AgentIcon agent={pane.kind} class="size-3.5" />{/if}
+							<span class="font-semibold text-wb-warn">{waitingLabel(waiting)}</span>
+							{#if pane.kind === 'codex'}
 								<span class="rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-codex"
 									>codex</span
 								>
 							{/if}
-							<span class="ml-auto font-mono text-[11px] text-wb-ink-soft"
-								>{age(chat.updatedAt, now)}</span
-							>
+							{#if pane.waitingSince}
+								<span class="ml-auto font-mono text-[11px] text-wb-ink-soft"
+									>{age(pane.waitingSince, now)}</span
+								>
+							{/if}
 						</div>
-						<span class="truncate text-[14px] font-semibold">{chat.title ?? chatWhere(chat)}</span>
+						<span class="truncate text-[14px] font-semibold">{paneTitle(entry)}</span>
 						{#if answerableFromHome(waiting)}
 							<code
 								class="truncate rounded-md border border-wb-hair bg-wb-rail px-2.5 py-1.5 font-mono text-[11.5px]"
-								>{shortPath(waiting.preview, chat.worktreePath ?? chat.projectPath)}</code
+								>{shortPath(
+									waiting.preview,
+									entry.workspace.worktreePath ?? entry.workspace.projectPath
+								)}</code
 							>
 						{/if}
 						<div class="flex gap-1.5">
@@ -154,7 +162,7 @@
 								<button
 									type="button"
 									class="h-9 flex-1 rounded-lg bg-wb-accent text-[13px] font-semibold text-wb-accent-ink active:brightness-90"
-									onclick={() => client.answer(chat.sessionId, waiting.id, 'allow')}
+									onclick={() => client.answer(sessionId, waiting.id, 'allow')}
 								>
 									Allow
 								</button>
@@ -162,7 +170,7 @@
 							<button
 								type="button"
 								class="h-9 flex-1 rounded-lg border border-wb-hair bg-wb-panel text-[13px] font-semibold text-wb-ink-mute active:bg-wb-panel2"
-								onclick={() => client.openChat(client.chatRef(chat))}
+								onclick={() => client.openPane(pane.id, waiting.inTerminal ? 'terminal' : 'chat')}
 							>
 								{answerableFromHome(waiting) ? 'Open' : 'Review'}
 							</button>
@@ -170,7 +178,7 @@
 								<button
 									type="button"
 									class="h-9 rounded-lg border border-wb-hair bg-wb-panel px-3.5 text-[13px] font-semibold text-wb-err active:bg-wb-panel2"
-									onclick={() => client.answer(chat.sessionId, waiting.id, 'deny')}
+									onclick={() => client.answer(sessionId, waiting.id, 'deny')}
 								>
 									Deny
 								</button>
@@ -183,100 +191,70 @@
 
 		{#if running.length > 0}
 			<section class="flex flex-col gap-2">
-				{@render sectionTitle('Running', runningChats.length + client.standaloneTerminals.length)}
-				{#each running as group (group.key)}
+				{@render sectionTitle('Running', runningCount)}
+				{#each running as group (group.workspace.id)}
 					<div class="flex flex-col gap-2">
 						<h3 class="truncate px-0.5 pt-1 font-mono text-[11px] text-wb-ink-mute">
-							{group.label}
+							{workspaceLabel(group.workspace)}
 						</h3>
-						{#each group.chats as chat (chat.sessionId)}
-							<button
-								type="button"
-								class="grid w-full grid-cols-[auto_1fr_auto] items-center gap-x-2.5 gap-y-0.5 rounded-xl border border-wb-hair-soft bg-wb-panel px-3 py-2.5 text-left active:bg-wb-panel2"
-								onclick={() => client.openChat(client.chatRef(chat))}
-							>
-								<span
-									class={cn(
-										'row-span-2 grid size-8 place-items-center rounded-lg bg-wb-panel2',
-										chat.agent === 'codex' ? 'text-wb-codex' : 'text-wb-claude'
-									)}
-								>
-									<AgentIcon agent={chat.agent} class="size-4" />
-								</span>
-								<span class="truncate text-[13.5px] font-medium">{chat.title ?? 'New chat'}</span>
-								<span
-									class="row-span-2 flex flex-col items-end gap-1 font-mono text-[11px] text-wb-ink-soft"
-								>
-									{#if chat.busy && chat.busySince}
-										<span class="spinner size-3"></span>
-										<Elapsed since={chat.busySince} />
-									{:else}
-										<span class="size-1.5 rounded-full bg-wb-ink-soft"></span>
-										{age(chat.updatedAt, now)}
-									{/if}
-								</span>
-								<span class="flex min-w-0 items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
-									{#if chat.agent === 'codex'}
-										<span
-											class="shrink-0 rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-codex"
-											>codex</span
-										>
-									{/if}
-									{#if chat.running}
-										<span class="truncate font-mono text-[11px] text-wb-ink"
-											>{shortPath(chat.running.detail, chat.worktreePath ?? chat.projectPath) ||
-												chat.running.name}</span
-										>
-									{:else if chat.busy}
-										<span class="truncate">Thinking</span>
-									{:else}
-										<span class="truncate">Your turn</span>
-									{/if}
-								</span>
-							</button>
-						{/each}
-						{#each group.terminals as t (t.id)}
-							{@const claude = client.terminalChats[t.id]}
+						{#each group.entries as entry (entry.pane.id)}
+							{@const pane = entry.pane}
+							{@const title = paneTitle(entry)}
 							<div
 								class="flex items-center gap-2.5 rounded-xl border border-wb-hair-soft bg-wb-panel py-2.5 pr-1.5 pl-3"
 							>
 								<button
 									type="button"
 									class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-									onclick={() => client.selectTerminal(t.id)}
+									onclick={() => client.openPane(pane.id)}
 								>
 									<span
 										class={cn(
 											'grid size-8 shrink-0 place-items-center rounded-lg bg-wb-panel2',
-											claude ? 'text-wb-claude' : 'text-wb-shell'
+											pane.kind === 'codex'
+												? 'text-wb-codex'
+												: pane.kind === 'claude'
+													? 'text-wb-claude'
+													: 'text-wb-shell'
 										)}
 									>
-										{#if claude}<AgentIcon
-												agent="claude"
-												class="size-4"
-											/>{:else}<SquareTerminalIcon class="size-4" />{/if}
+										{#if pane.kind === 'shell'}
+											<SquareTerminalIcon class="size-4" />
+										{:else}
+											<AgentIcon agent={pane.kind} class="size-4" />
+										{/if}
 									</span>
 									<span class="flex min-w-0 flex-col">
-										<span class="truncate text-[13.5px] font-medium"
-											>{t.name ?? t.id.slice(0, 8)}</span
+										<span class="truncate text-[13.5px] font-medium">{title}</span>
+										<span
+											class={cn(
+												'truncate text-[11.5px] text-wb-ink-mute',
+												pane.running && 'font-mono text-[11px] text-wb-ink'
+											)}>{activity(entry)}</span
 										>
-										<span class="flex items-center gap-1.5 text-[11.5px] text-wb-ink-mute">
-											<span
-												class="rounded bg-wb-panel2 px-1.5 py-px font-mono text-[10px] text-wb-shell"
-												>{claude ? 'claude · terminal' : 'terminal'}</span
-											>
-											{#if !t.alive}exited{/if}
-										</span>
+									</span>
+									<span
+										class="ml-auto flex shrink-0 flex-col items-end gap-1 font-mono text-[11px] text-wb-ink-soft"
+									>
+										{#if pane.busy && pane.busySince}
+											<span class="spinner size-3"></span>
+											<Elapsed since={pane.busySince} />
+										{:else if pane.turnEndedAt}
+											{age(pane.turnEndedAt, now)}
+										{/if}
 									</span>
 								</button>
-								<button
-									type="button"
-									class="grid size-8 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-err"
-									aria-label="Close {t.name ?? 'terminal'}"
-									onclick={() => client.killTerminal(t.id)}
-								>
-									<XIcon class="size-4" />
-								</button>
+								<!-- Ending a Claude or Codex session is in its chat's menu, not one stray tap away. -->
+								{#if pane.kind === 'shell'}
+									<button
+										type="button"
+										class="grid size-8 shrink-0 place-items-center rounded-lg text-wb-ink-soft active:bg-wb-panel2 active:text-wb-err"
+										aria-label="Close {title}"
+										onclick={() => client.endPane(pane.id)}
+									>
+										<XIcon class="size-4" />
+									</button>
+								{/if}
 							</div>
 						{/each}
 					</div>

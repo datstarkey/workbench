@@ -14,7 +14,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{watch, Notify};
-use workbench_core::claude_transcript::WaitingSummary;
+use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
 use workbench_core::workspace::persist::{self, LocalState, WorkspacesFile};
 use workbench_core::workspace::{ops, Command, Effect, Model, PaneKind};
 
@@ -51,7 +51,15 @@ pub struct PaneRuntime {
     pub status: Status,
     pub title: Option<String>,
     pub busy: bool,
+    /// Unix ms the current turn started; null while idle.
+    pub busy_since: Option<u64>,
+    /// Unix ms the last turn went idle.
+    pub turn_ended_at: Option<u64>,
+    /// The tool call the current turn is running.
+    pub running: Option<RunningSummary>,
     pub waiting: Option<WaitingSummary>,
+    /// Unix ms the pane started waiting on its current request.
+    pub waiting_since: Option<u64>,
     /// Why the last spawn failed.
     pub error: Option<String>,
     /// Bumped by every spawn (start, restart, mode switch), so a client knows
