@@ -24,7 +24,14 @@ export interface WorkspacePane {
 	status: PaneStatus;
 	title: string | null;
 	busy: boolean;
+	/** Unix ms: the current turn's start, the last turn's end. */
+	busySince?: number | null;
+	turnEndedAt?: number | null;
+	/** The tool call the turn is running. */
+	running?: AgentSummary['running'];
 	waiting: AgentSummary['waiting'];
+	/** Unix ms the pane started waiting on `waiting`. */
+	waitingSince?: number | null;
 	/** Why the last spawn failed. */
 	error: string | null;
 	/** Bumped by every spawn (start, restart, mode switch). */

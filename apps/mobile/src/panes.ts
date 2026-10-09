@@ -1,5 +1,9 @@
-import { baseName } from '@workbench/types';
-import type { Workspace, WorkspacePane, WorkspaceTab } from './workspace-stream.ts';
+import {
+	baseName,
+	type ServerWorkspace as Workspace,
+	type WorkspacePane,
+	type WorkspaceTab
+} from '@workbench/types';
 
 /** A pane with the tab and workspace it sits in. */
 export interface PaneEntry {
@@ -58,9 +62,9 @@ export async function attachThroughRelaunch(
 		try {
 			return await attach();
 		} catch (e) {
-			const { status, ended } = e as { status?: number; ended?: boolean };
+			const { status } = e as { status?: number };
 			const left = deadline - Date.now();
-			if (status !== 404 || ended || left <= 0 || !paneThere()) throw e;
+			if (status !== 404 || left <= 0 || !paneThere()) throw e;
 			await nextChange(left);
 		}
 	}

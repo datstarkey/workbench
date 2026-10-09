@@ -56,7 +56,6 @@
 			projectPath: opened.projectPath,
 			...(opened.worktreePath ? { worktreePath: opened.worktreePath } : {}),
 			sessionId: opened.sessionId,
-			attachOnly: true,
 			...(opened.claudeAccountId ? { claudeAccountId: opened.claudeAccountId } : {})
 		},
 		client.attachApi,

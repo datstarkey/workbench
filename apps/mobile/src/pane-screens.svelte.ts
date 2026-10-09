@@ -1,6 +1,6 @@
-import { findPane, type PaneEntry } from './panes.ts';
+import type { PaneEntry } from './panes.ts';
 import type { ClaudeView } from './types.ts';
-import type { PaneKind, WorkspacePane } from './workspace-stream.ts';
+import type { PaneKind, WorkspacePane } from '@workbench/types';
 
 /** How long a start may take to show its pane before the phone gives up on it. */
 export const START_TIMEOUT_MS = 15_000;
@@ -19,8 +19,6 @@ export class PaneScreens {
 	private readonly onTimeout: () => void;
 	/** The open pane has been in the model, so its absence means it left. */
 	private shown = false;
-	/** The open pane's conversation, to follow it to a new pane id. */
-	private sessionId: string | undefined;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private waiters: (() => void)[] = [];
 
@@ -80,16 +78,8 @@ export class PaneScreens {
 	reconcile(): void {
 		const id = this.openPaneId;
 		if (id) {
-			const panes = this.panes();
-			let entry = panes.find((e) => e.pane.id === id);
-			// A pane keyed by its session (an older host) changes id with `/clear`.
-			if (!entry && this.shown && this.sessionId) {
-				entry = findPane(panes, { sessionId: this.sessionId }) ?? undefined;
-				if (entry) this.follow(id, entry.pane.id);
-			}
-			if (entry) {
+			if (this.panes().some((e) => e.pane.id === id)) {
 				this.shown = true;
-				this.sessionId = entry.pane.sessionId;
 				this.endStart();
 			} else if (this.shown) this.openPaneId = null;
 		}
@@ -104,14 +94,7 @@ export class PaneScreens {
 		this.views = view ? { ...views, [paneId]: view } : views;
 		this.openPaneId = paneId;
 		this.shown = false;
-		this.sessionId = undefined;
 		this.reconcile();
-	}
-
-	private follow(from: string, to: string): void {
-		const view = this.views[from];
-		if (view) this.views = { ...this.views, [to]: view };
-		this.openPaneId = to;
 	}
 
 	private endStart(): void {

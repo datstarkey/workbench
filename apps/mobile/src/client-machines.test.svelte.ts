@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MobileClient } from './client.svelte.ts';
-import { jsonResponse, stubLocalStorage } from './test-helpers.ts';
-import type { ServerTerminalMeta as TerminalMeta } from '@workbench/types';
+import { FakeEventSource, jsonResponse, stubLocalStorage } from './test-helpers.ts';
 
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }));
 
@@ -10,7 +9,6 @@ const url = (host: string) => `http://${host}:4317`;
 const tokenOf = (host: string) => `${host}-token-0123456789abcdef0123456789`;
 
 interface FakeServer {
-	terminals: TerminalMeta[];
 	/** `METHOD /path` of every request, in order. */
 	calls: string[];
 	/** A request whose `METHOD /path` is here waits for the promise before answering. */
@@ -20,7 +18,7 @@ interface FakeServer {
 /** Fake Workbench servers keyed by host; an unknown host is unreachable. */
 function servers(...names: string[]) {
 	const hosts: Record<string, FakeServer> = {};
-	for (const name of names) hosts[name] = { terminals: [], calls: [], holds: {} };
+	for (const name of names) hosts[name] = { calls: [], holds: {} };
 	vi.stubGlobal(
 		'fetch',
 		vi.fn(async (input: string, init?: RequestInit) => {
@@ -30,21 +28,9 @@ function servers(...names: string[]) {
 			const method = init?.method ?? 'GET';
 			const call = `${method} ${u.pathname}`;
 			server.calls.push(call);
-			const list = [...server.terminals];
 			await server.holds[call];
-			if (u.pathname === '/health') return jsonResponse('ok');
-			if (u.pathname === '/remote/terminals' && method === 'POST') {
-				const meta = {
-					id: `${u.hostname}-t${server.terminals.length + 1}`,
-					cwd: '/repo',
-					createdAt: 0,
-					alive: true
-				};
-				server.terminals.push(meta);
-				return jsonResponse(meta);
-			}
-			if (u.pathname === '/remote/terminals') return jsonResponse(list);
-			if (method === 'DELETE') return new Response(null, { status: 204 });
+			if (u.pathname === '/health') return jsonResponse({ ok: true, workspaceApi: 1 });
+			if (u.pathname === '/workspace/commands') return jsonResponse({ rev: 1, paneId: 'p1' });
 			return jsonResponse([]);
 		})
 	);
@@ -203,10 +189,10 @@ describe('MobileClient with several machines', () => {
 		await connectedTo('pc', c);
 		await c.switchTo(idOf(c, 'mac'));
 		const creating = gate();
-		hosts.mac.holds['POST /remote/terminals'] = creating.promise;
+		hosts.mac.holds['POST /workspace/commands'] = creating.promise;
 
 		const opening = c.start('shell', { projectPath: '/repo' });
-		await vi.waitFor(() => expect(hosts.mac.calls).toContain('POST /remote/terminals'));
+		await vi.waitFor(() => expect(hosts.mac.calls).toContain('POST /workspace/commands'));
 		await c.switchTo(idOf(c, 'pc'));
 		const pcCalls = hosts.pc.calls.length;
 		creating.release();
@@ -216,23 +202,6 @@ describe('MobileClient with several machines', () => {
 		expect(c.screens.openPaneId).toBeNull();
 		expect(c.panes).toEqual([]);
 		expect(c.notice).toBeNull();
-	});
-
-	it('drops a terminal list that arrives from the previous machine after switching', async () => {
-		const hosts = servers('mac', 'pc');
-		const c = await connectedTo('mac');
-		await connectedTo('pc', c);
-		hosts.pc.terminals.push({ id: 'pc-late', cwd: '/repo', createdAt: 0, alive: true });
-		const late = gate();
-		hosts.pc.holds['GET /remote/terminals'] = late.promise;
-		const refreshing = c.remote!.refresh();
-
-		await c.switchTo(idOf(c, 'mac'));
-		late.release();
-		await refreshing;
-
-		expect(c.machine?.url).toBe(url('mac'));
-		expect(c.panes).toEqual([]);
 	});
 
 	it('a failed first connect leaves the saved machines and the active one alone', async () => {
@@ -301,33 +270,26 @@ describe('MobileClient with several machines', () => {
 		expect(c.machines.list.map((m) => m.url)).toEqual([url('mac-lan')]);
 	});
 
-	it('marks the machine offline when it stops answering, and online again when it does', async () => {
-		const hosts = servers('mac');
-		const c = await connectedTo('mac');
+	it('marks the machine offline while its stream is down, and online once it delivers', async () => {
+		servers('mac');
+		vi.stubGlobal('EventSource', FakeEventSource);
+		const sources: FakeEventSource[] = [];
+		const c = await connectedTo(
+			'mac',
+			new MobileClient(undefined, (u) => {
+				const source = new FakeEventSource(u);
+				sources.push(source);
+				return source as unknown as EventSource;
+			})
+		);
+		await vi.waitFor(() => expect(sources).toHaveLength(1));
 		expect(c.online).toBe(true);
 
-		const mac = hosts.mac;
-		delete hosts.mac;
-		await c.remote!.refresh();
+		sources[0].emit('error');
 		expect(c.online).toBe(false);
 
-		hosts.mac = mac;
-		await c.remote!.refresh();
+		await vi.waitFor(() => expect(sources).toHaveLength(2), { timeout: 3000 });
+		sources[1].emit('snapshot', { rev: 1, workspaces: [] });
 		expect(c.online).toBe(true);
-	});
-	it('does not restore an old terminal after switching during the post-create refresh', async () => {
-		const hosts = servers('mac', 'pc');
-		const c = await connectedTo('mac');
-		await connectedTo('pc', c);
-		await c.switchTo(idOf(c, 'mac'));
-		const late = gate();
-		hosts.mac.holds['GET /remote/terminals'] = late.promise;
-		const opening = c.start('shell', { projectPath: '/repo' });
-		await vi.waitFor(() => expect(hosts.mac.calls).toContain('GET /remote/terminals'));
-		await c.switchTo(idOf(c, 'pc'));
-		late.release();
-		await opening;
-		expect(c.panes).toEqual([]);
-		expect(c.screens.openPaneId).toBeNull();
 	});
 });

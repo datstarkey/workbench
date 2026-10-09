@@ -2,12 +2,15 @@
 export const CONNECT_TIMEOUT_MS = 8000;
 
 /** What `/health` says the server speaks; an older host answers plain `ok`. */
-export interface ServerHealth {
+interface ServerHealth {
 	workspaceApi?: number;
 }
 
-/** Throws a readable error unless `base` is a Workbench server that accepts `token`. */
-export async function verifyServer(base: string, token: string): Promise<ServerHealth> {
+/**
+ * Throws a readable error unless `base` is a Workbench server that accepts
+ * `token` and speaks the workspace API (older hosts need an update first).
+ */
+export async function verifyServer(base: string, token: string): Promise<void> {
 	try {
 		const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS) });
 		if (!res.ok) throw new Error(`health check returned ${res.status}`);
@@ -19,7 +22,8 @@ export async function verifyServer(base: string, token: string): Promise<ServerH
 		});
 		if (authed.status === 401) throw new Error('invalid token');
 		if (!authed.ok) throw new Error(`server returned ${authed.status}`);
-		return typeof health === 'object' && health ? health : {};
+		if (!health?.workspaceApi)
+			throw new Error('Update Workbench on your computer: this app needs a newer version.');
 	} catch (e) {
 		if ((e as Error)?.name === 'TimeoutError') throw new Error('not responding (timed out)');
 		throw e;

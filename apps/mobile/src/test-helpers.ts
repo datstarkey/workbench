@@ -40,7 +40,7 @@ export function routeFetch(routes: Record<string, Route>) {
 export const TOKEN = 'mobile-token-0123456789abcdef012345';
 
 export const CONNECT_ROUTES: Record<string, Route> = {
-	'/health': () => jsonResponse('ok'),
+	'/health': () => jsonResponse({ ok: true, workspaceApi: 1 }),
 	'/projects': () => jsonResponse([])
 };
 

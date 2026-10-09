@@ -1,15 +1,17 @@
 import { agentClient, agentName, type AgentApi } from '@workbench/chat-ui';
 import { ControlPlaneStore } from '@workbench/control-plane-ui';
-import { createHttpTransport } from '@workbench/transport';
+import { createHttpTransport, type OpenEventSource } from '@workbench/transport';
 import type {
 	AgentKind,
 	ApprovalDecision,
 	ClaudeAccount,
-	WorkbenchSettings
+	PaneKind,
+	WorkbenchSettings,
+	WorkspaceCommand,
+	WorkspacePane
 } from '@workbench/types';
 import { defaultAccountName } from '@workbench/types';
 import { HostUpdate } from './host-update.svelte.ts';
-import { LegacyRemote } from './legacy-remote.svelte.ts';
 import { hostOf, normalizeUrl, SavedMachines } from './machines.svelte.ts';
 import {
 	attachThroughRelaunch,
@@ -20,7 +22,7 @@ import {
 } from './panes.ts';
 import { PaneScreens } from './pane-screens.svelte.ts';
 import { PairingScan, type QrScanner } from './qr-scan.svelte.ts';
-import { WorkspaceRemote, type PaneRemote } from './remote.svelte.ts';
+import { WorkspaceRemote } from './remote.svelte.ts';
 import { verifyServer } from './server-check.ts';
 import { lsGet, lsSet } from './storage.ts';
 import { ProjectPrefs } from './project-prefs.svelte.ts';
@@ -28,12 +30,6 @@ import { Drafts } from './drafts.svelte';
 import { SessionNotifications, type NotificationSession } from './session-notifications.svelte';
 import { ProjectReview, type ReviewFolder } from './project-review.svelte';
 import type { ChatRef, ClaudeView } from './types.ts';
-import type {
-	OpenEventSource,
-	PaneKind,
-	WorkspaceCommand,
-	WorkspacePane
-} from './workspace-stream.ts';
 
 const LS_VIEW = 'wb.claudeView';
 /** While a host restarts into its update, check when it is back. */
@@ -61,7 +57,7 @@ export class MobileClient {
 	connection = $state<{ url: string; token: string } | null>(null);
 	store = $state<ControlPlaneStore | null>(null);
 	/** The connected machine's workspaces; null while disconnected. */
-	remote = $state.raw<PaneRemote | null>(null);
+	remote = $state.raw<WorkspaceRemote | null>(null);
 	drafts = new Drafts('disconnected');
 	projectPrefs = $state.raw(new ProjectPrefs('disconnected'));
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
@@ -91,10 +87,10 @@ export class MobileClient {
 	/** Chat screens only ever attach: starting a process is a command. */
 	readonly attachApi: AgentApi = {
 		...this.agents,
-		start: (body) =>
+		attach: (sessionId) =>
 			attachThroughRelaunch(
-				() => this.agents.start({ ...body, attachOnly: true }),
-				() => !!findPane(this.panes, { sessionId: body.sessionId }),
+				() => this.agents.attach(sessionId),
+				() => !!findPane(this.panes, { sessionId }),
 				(ms) => this.screens.nextChange(ms)
 			)
 	};
@@ -201,7 +197,7 @@ export class MobileClient {
 			if (!base) throw new Error('enter a server address');
 			// Every Workbench server requires a token (see Settings → Server mode).
 			if (!token) throw new Error('enter the server token');
-			const health = await verifyServer(base, token);
+			await verifyServer(base, token);
 			if (superseded()) return;
 			const next = new ControlPlaneStore(createHttpTransport({ baseUrl: base, token }));
 			await next.refresh();
@@ -217,19 +213,20 @@ export class MobileClient {
 			this.machineId = machine.id;
 			this.drafts = new Drafts(machine.id);
 			this.projectPrefs = new ProjectPrefs(machine.id);
-			const controlPlane = createHttpTransport({ baseUrl: base, token });
+			const controlPlane = createHttpTransport({
+				baseUrl: base,
+				token,
+				openEventSource: this.openEventSource
+			});
 			this.controlPlane = controlPlane;
 			this.store = next;
 			this.hostUpdate = new HostUpdate(controlPlane);
 			void this.hostUpdate.check();
-			// OLD-HOST FALLBACK: a host without `workspaceApi` (Phase 5 deletes this branch).
-			const remote: PaneRemote = health.workspaceApi
-				? new WorkspaceRemote(this.connection, this.openEventSource)
-				: new LegacyRemote(this.connection, this.openEventSource);
+			const remote = new WorkspaceRemote(controlPlane);
 			this.remote = remote;
 			remote.onChange = () => this.screens.reconcile();
 			remote.follow(this.visible);
-			await Promise.all([remote instanceof LegacyRemote && remote.refresh(), this.loadAccounts()]);
+			await this.loadAccounts();
 		} catch (e) {
 			if (superseded()) return;
 			if (this.store)
@@ -353,9 +350,7 @@ export class MobileClient {
 		this.notice = null;
 		try {
 			const result = await remote.command(cmd);
-			if (!live()) return null;
-			if (result.error) throw new Error(result.error);
-			return result;
+			return live() ? result : null;
 		} catch (e) {
 			if (live()) this.notice = `${failure}: ${errorText(e)}`;
 			return null;
@@ -430,7 +425,7 @@ export class MobileClient {
 	endPane = (paneId: string) =>
 		this.send({ type: 'closePane', paneId }, "Couldn't end the session");
 
-	canRestart = (pane: WorkspacePane): boolean => !!this.remote?.canRestart(pane);
+	canRestart = (pane: WorkspacePane): boolean => pane.kind !== 'shell';
 
 	restart = (tabId: string) =>
 		this.send({ type: 'restart', tabId }, "Couldn't restart the session");
