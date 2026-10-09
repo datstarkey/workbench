@@ -624,7 +624,11 @@ export function insertCommand(
 }
 
 /** Commands for the `/` menu: name prefix matches, then name, then description matches. */
-export function matchCommands(commands: SlashCommand[], query: string): SlashCommand[] {
+export function matchCommands(all: SlashCommand[], query: string): SlashCommand[] {
+	// The menu is keyed by name, and a duplicate key stops Svelte rendering the
+	// rest of the chat. Which copy Claude Code runs is unknown: the first stays.
+	const seen = new Set<string>();
+	const commands = all.filter((c) => !seen.has(c.name) && seen.add(c.name));
 	if (!query) return commands;
 	const rank = (c: SlashCommand) => {
 		const name = c.name.toLowerCase();
