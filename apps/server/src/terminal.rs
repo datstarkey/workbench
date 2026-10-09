@@ -504,9 +504,9 @@ pub async fn terminal_create(
         .map(Json)
 }
 
-/// Create a terminal, unless its Claude session already runs in one: then
-/// that terminal, since a second `claude` would write the same session file.
-/// Holds the session's start lock, as a chat start does. Blocking.
+/// Create a terminal, unless its Claude session already runs as a chat in a
+/// live server terminal for the same cwd and account: then that terminal,
+/// since a second `claude` would write the same session file. Blocking.
 fn create_or_join(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
@@ -516,42 +516,47 @@ fn create_or_join(
         return create_from_body(terminals, agents, body);
     };
     crate::agent::validate_claude_session_id(&session_id)?;
-    let starting = agents.start_lock(&session_id);
-    let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
-    match running_terminal(terminals, agents, &session_id)? {
+    let cwd = crate::cwd::resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
+    workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    // Decided under the start lock, so an in-flight chat start is seen; created outside it.
+    let running = {
+        let starting = agents.start_lock(&session_id);
+        let _starting = starting.lock().unwrap_or_else(|e| e.into_inner());
+        running_terminal(
+            terminals,
+            agents,
+            &session_id,
+            &cwd,
+            &body.claude_account_id,
+        )
+    };
+    match running {
         Some(meta) => Ok(meta),
         None => create_from_body(terminals, agents, body),
     }
 }
 
-/// The live terminal running `session_id`'s `claude`: the one its chat is
-/// linked to, or one opened for it whose plugin may still be starting.
-pub(crate) fn running_terminal(
+/// The live server terminal a chat session runs in, when the session's current
+/// id (not one it had before a `/clear`) is `session_id` and it runs in `cwd`
+/// under `account_id`.
+fn running_terminal(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
     session_id: &str,
-) -> anyhow::Result<Option<TerminalMeta>> {
-    let list = terminals.list();
-    if let Some(link) = agents
-        .get(session_id)
-        .filter(|s| !s.has_exited())
-        .and_then(|s| s.mod_link().cloned())
-    {
-        let Some(terminal_id) = &link.terminal_id else {
-            anyhow::bail!("{session_id} is already running in its own terminal");
-        };
-        if let Some(meta) = list.iter().find(|t| &t.id == terminal_id && t.alive) {
-            return Ok(Some(meta.clone()));
-        }
-    }
-    // Past the start window its `claude` has exited (the shell stays) or is stuck.
-    let since = SystemTime::now()
-        .checked_sub(crate::agent::TERMINAL_START)
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_millis() as u64);
-    Ok(list.into_iter().find(|t| {
-        t.alive && t.created_at >= since && t.claude_session_id.as_deref() == Some(session_id)
-    }))
+    cwd: &str,
+    account_id: &Option<String>,
+) -> Option<TerminalMeta> {
+    let session = agents.get(session_id).filter(|s| {
+        !s.has_exited()
+            && s.id() == session_id
+            && s.cwd() == std::path::Path::new(cwd)
+            && &s.claude_account_id() == account_id
+    })?;
+    let terminal_id = session.mod_link()?.terminal_id.clone()?;
+    terminals
+        .list()
+        .into_iter()
+        .find(|t| t.id == terminal_id && t.alive)
 }
 
 /// Create a terminal as `POST /remote/terminals` does (also how a Claude chat

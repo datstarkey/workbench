@@ -1075,6 +1075,24 @@ describe('WorkspaceStore', () => {
 			};
 		}
 
+		it('a resume focuses the tab running the session only while it is live there', async () => {
+			store.workspaces = [makeWorkspace({ id: 'ws-a' }), makeWorkspace({ id: 'ws-b' })];
+			store.resumeAISession('ws-a', id, 'S', 'claude', 'work');
+			const tabId = store.workspaces[0].terminalTabs[0].id;
+			store.resumeAISession('ws-a', '42345678-1234-1234-1234-123456789abc', 'Other', 'claude');
+			store.selectedId = 'ws-b';
+
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({ exited: true })]);
+			expect(await store.focusLiveSession(id, 'work')).toBe(false);
+			expect(await store.focusLiveSession(id, undefined)).toBe(false);
+			expect(store.selectedId).toBe('ws-b');
+
+			vi.mocked(listAgents).mockResolvedValueOnce([summary({})]);
+			expect(await store.focusLiveSession(id, 'work')).toBe(true);
+			expect(store.selectedId).toBe('ws-a');
+			expect(store.workspaces[0].activeTerminalTabId).toBe(tabId);
+		});
+
 		it("Chat attaches to the terminal's own claude, found by pane or terminal", async () => {
 			store.workspaces = [makeWorkspace({ id: 'ws-a' })];
 			store.resumeAISession('ws-a', id, 'S', 'claude');
@@ -1153,18 +1171,6 @@ describe('WorkspaceStore', () => {
 			expect(tab.panes[0].view).toBe('chat');
 			expect(tab.label).toBe('Older');
 		});
-
-		it('focuses the tab already showing a conversation instead of swapping', async () => {
-			store.workspaces = [makeWorkspace({ id: 'ws-a' }), makeWorkspace({ id: 'ws-b' })];
-			store.resumeAISession('ws-a', older, 'Older', 'claude');
-			store.resumeAISession('ws-b', current, 'Current', 'claude');
-			const paneId = store.workspaces[1].terminalTabs[0].panes[0].id;
-
-			await store.resumeInChat(paneId, older, 'Older');
-
-			expect(store.workspaces[1].terminalTabs[0].panes[0].claudeSessionId).toBe(current);
-			expect(store.selectedId).toBe('ws-a');
-		});
 	});
 
 	describe('resumeAISession', () => {
@@ -1195,22 +1201,6 @@ describe('WorkspaceStore', () => {
 			expect(tab.panes[0].startupCommand).toBe(
 				`codex -c tui.alternate_screen=never resume ${sessionId}`
 			);
-		});
-
-		it('focuses the tab already open on the session instead of adding one', () => {
-			store.workspaces = [makeWorkspace({ id: 'ws-a' }), makeWorkspace({ id: 'ws-b' })];
-			const sessionId = '12345678-1234-1234-1234-123456789abc';
-			store.resumeAISession('ws-a', sessionId, 'My Session', 'claude');
-			const tabId = store.workspaces[0].terminalTabs[0].id;
-			store.resumeAISession('ws-a', '22345678-1234-1234-1234-123456789abc', 'Other', 'claude');
-			store.selectedId = 'ws-b';
-
-			store.resumeAISession('ws-b', sessionId, 'My Session', 'claude');
-
-			expect(store.workspaces[0].terminalTabs).toHaveLength(2);
-			expect(store.workspaces[1].terminalTabs).toHaveLength(0);
-			expect(store.selectedId).toBe('ws-a');
-			expect(store.workspaces[0].activeTerminalTabId).toBe(tabId);
 		});
 	});
 

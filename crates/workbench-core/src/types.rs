@@ -130,6 +130,9 @@ pub struct WorkspaceSnapshot {
     pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// `"xterm"` | `"native"` (desktop `TerminalRenderer`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -833,6 +836,7 @@ mod tests {
                 split_view: None,
                 worktree_path: None,
                 branch: None,
+                renderer: Some("native".to_string()),
             }],
             selected_id: Some("ws-1".to_string()),
             server_terminal_ids: HashMap::from([("pane-1".to_string(), "term-1".to_string())]),
@@ -847,6 +851,11 @@ mod tests {
         assert_eq!(deserialized.workspaces[0].id, "ws-1");
         assert_eq!(deserialized.selected_id, Some("ws-1".to_string()));
         assert_eq!(deserialized.server_terminal_ids, ws.server_terminal_ids);
+        assert!(json.contains(r#""renderer":"native""#), "{json}");
+        assert_eq!(
+            deserialized.workspaces[0].renderer.as_deref(),
+            Some("native")
+        );
     }
 
     #[test]

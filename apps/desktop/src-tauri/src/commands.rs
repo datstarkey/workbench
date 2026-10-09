@@ -522,6 +522,7 @@ mod tests {
             split_view: None,
             worktree_path: None,
             branch: None,
+            renderer: None,
         }
     }
 

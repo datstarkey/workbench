@@ -189,6 +189,7 @@ export class ClaudeSessionStore {
 			type === 'claude'
 				? this.discoveredSessions.find((s) => s.sessionId === sessionId)?.accountId
 				: undefined;
+		if (type === 'claude' && (await this.workspaces.focusLiveSession(sessionId, accountId))) return;
 		this.workspaces.resumeAISession(workspaceId, sessionId, label, type, accountId);
 	}
 

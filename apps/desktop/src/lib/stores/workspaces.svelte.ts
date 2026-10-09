@@ -279,10 +279,12 @@ export class WorkspaceStore {
 		this.persist();
 	}
 
+	private allPanes(): TerminalPaneState[] {
+		return this.workspaces.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes));
+	}
+
 	private findPane(paneId: string): TerminalPaneState | undefined {
-		return this.workspaces
-			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
-			.find((p) => p.id === paneId);
+		return this.allPanes().find((p) => p.id === paneId);
 	}
 
 	/** Server terminal ids the adoption poller must skip: mapped to panes or released. */
@@ -849,7 +851,7 @@ export class WorkspaceStore {
 		const pane = this.workspaces
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
-		if (!pane || pane.claudeSessionId === sessionId || this.focusSession(sessionId)) return;
+		if (!pane || pane.claudeSessionId === sessionId) return;
 		this.adoption.takeOver(paneId);
 		releaseChat(paneId);
 		if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
@@ -894,12 +896,21 @@ export class WorkspaceStore {
 		return true;
 	}
 
-	/** Focus the tab already showing a session: a second one would run it twice. */
-	private focusSession(sessionId: string): boolean {
-		const pane = this.workspaces
-			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
-			.find((p) => p.claudeSessionId === sessionId);
-		return pane !== undefined && this.focusPane(pane.id);
+	/**
+	 * Focus the Claude tab already running a session under that account, so a
+	 * resume doesn't open it twice. False when no tab has it or it isn't live.
+	 */
+	async focusLiveSession(sessionId: string, accountId: string | undefined): Promise<boolean> {
+		const pane = this.allPanes().find(
+			(p) =>
+				p.type === 'claude' && p.claudeSessionId === sessionId && p.claudeAccountId === accountId
+		);
+		if (!pane) return false;
+		const agents = await listAgents();
+		const live = agents?.some(
+			(a) => a.agent === 'claude' && !a.exited && a.sessionId === sessionId
+		);
+		return live === true && this.focusPane(pane.id);
 	}
 
 	/** Find workspace/tab context for an AI pane. */
@@ -1016,7 +1027,6 @@ export class WorkspaceStore {
 		accountId?: string,
 		view?: 'chat' | 'terminal'
 	) {
-		if (this.focusSession(sessionId)) return;
 		this.updateWorkspace(workspaceId, (w) => {
 			const newTab = this.createAITab(
 				label,
