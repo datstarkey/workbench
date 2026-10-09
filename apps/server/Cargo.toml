@@ -24,6 +24,7 @@ base64 = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
+socket2 = "0.6"
 
 # Process-GROUP termination (kill the shell + its descendants) on Unix, so
 # closing a terminal doesn't orphan child processes.

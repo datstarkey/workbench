@@ -48,6 +48,29 @@ pub fn app(state: AppState) -> axum::Router {
         .layer(cors)
 }
 
+/// Idle this long, a connection is probed; unanswered probes close it.
+const KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Bind a listener whose accepted sockets inherit TCP keepalive, so a peer
+/// that vanished without closing (a phone asleep or off the network) has its
+/// idle connection, and the descriptor, freed instead of held forever.
+async fn listen(bind: &str, port: u16) -> anyhow::Result<tokio::net::TcpListener> {
+    watchdog::raise_fd_limit();
+    watchdog::spawn(tokio::runtime::Handle::current());
+    let addr = format!("{bind}:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .with_context(|| format!("failed to bind {addr}"))?;
+    let probes = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL);
+    if let Err(e) = socket2::SockRef::from(&listener).set_tcp_keepalive(&probes) {
+        tracing::warn!("couldn't turn on TCP keepalive for {addr}: {e}");
+    }
+    Ok(listener)
+}
+
 /// Serve until `shutdown` resolves (or forever if it never does). Returns the
 /// bound address via `on_bound` so embedders can learn the actual port when
 /// binding port 0.
@@ -57,13 +80,8 @@ pub async fn serve(
     token: Option<String>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    watchdog::raise_fd_limit();
-    watchdog::spawn(tokio::runtime::Handle::current());
     let (revoke, revoked) = watch::channel(false);
-    let addr = format!("{bind}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
+    let listener = listen(bind, port).await?;
     let local = listener.local_addr().context("failed to read local addr")?;
     let app = app(AppState::new(Managers::default(), token, revoked).with_local_port(local.port()));
     axum::serve(listener, app)
@@ -135,13 +153,8 @@ pub async fn spawn_embedded(
         "embedded server requires a token of at least {} characters",
         workbench_core::token::MIN_TOKEN_LEN
     );
-    watchdog::raise_fd_limit();
-    watchdog::spawn(tokio::runtime::Handle::current());
     let (revoke, revoked) = watch::channel(false);
-    let addr = format!("{bind}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("failed to bind {addr}"))?;
+    let listener = listen(bind, port).await?;
     let local_addr = listener.local_addr().context("failed to read local addr")?;
     let app = app(AppState::new(managers, Some(token), revoked).with_local_port(local_addr.port()));
 
