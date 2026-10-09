@@ -1,10 +1,15 @@
 //! Launch at login (macOS LaunchAgent, Windows HKCU Run key) over `auto-launch`.
 //! Never part of setup's error path: a broken registration must not stop the app.
 
-use tauri::{AppHandle, Env, Manager, Runtime};
+use std::time::Duration;
+
+use tauri::{AppHandle, Manager};
 
 /// Passed by every login launch, so the app starts minimised.
 pub const ARG: &str = "--autostart";
+
+/// An update's relaunch comes this soon after its installer starts.
+const UPDATE_RESTART_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn entry_name(app: &AppHandle) -> String {
@@ -160,13 +165,32 @@ fn refresh(app: &AppHandle) -> Result<(), String> {
     launcher.enable().map_err(|e| e.to_string())
 }
 
+/// `(minimise, delete_marker)` for a launch: an update's relaunch keeps a login
+/// launch's flag, but isn't one.
+fn startup_action(launched_with_autostart: bool, marker_age: Option<Duration>) -> (bool, bool) {
+    let after_update = marker_age.is_some_and(|age| age < UPDATE_RESTART_WINDOW);
+    (
+        launched_with_autostart && !after_update,
+        marker_age.is_some(),
+    )
+}
+
 /// Login launch: start minimised, then repair the login entry off the main thread.
 pub fn on_startup(app: &AppHandle) {
-    if std::env::args().any(|a| a == ARG) {
+    let autostart = app.env().args_os.iter().any(|a| a == ARG);
+    let dir = crate::paths::workbench_config_dir();
+    let marker_age = crate::host_update::restart_marker_age(&dir);
+    let (minimise, delete_marker) = startup_action(autostart, marker_age);
+    if delete_marker {
+        crate::host_update::remove_restart_marker(&dir);
+    }
+    if marker_age.is_some_and(|age| age < UPDATE_RESTART_WINDOW) {
+        log::info!("restarted after update");
+    }
+    if minimise {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.minimize();
         }
-        forget_login_launch(app);
     }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     if !cfg!(debug_assertions) {
@@ -179,35 +203,20 @@ pub fn on_startup(app: &AppHandle) {
     }
 }
 
-/// A restart (`process::restart`) and the Windows updater's relaunch (NSIS
-/// `/ARGS`, captured when the updater is built) reuse the managed `Env`'s args,
-/// so a login launch would come back minimised after an update.
-fn forget_login_launch<R: Runtime>(app: &AppHandle<R>) {
-    // Nothing keeps a `State<Env>`: `Manager::env` clones it.
-    #[allow(deprecated)]
-    let Some(mut env) = app.unmanage::<Env>() else {
-        return;
-    };
-    env.args_os.retain(|a| a != ARG);
-    app.manage(env);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_login_launch_restarts_without_the_login_flag() {
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("mock app");
-        let handle = app.handle();
-        #[allow(deprecated)]
-        let mut env = handle.unmanage::<Env>().expect("env");
-        env.args_os = vec!["workbench".into(), ARG.into(), "--x".into()];
-        handle.manage(env);
-        forget_login_launch(handle);
-        assert_eq!(handle.env().args_os, vec!["workbench", "--x"]);
+    fn an_update_relaunch_is_not_minimised_like_a_login() {
+        let fresh = Some(Duration::from_secs(30));
+        let stale = Some(UPDATE_RESTART_WINDOW);
+        assert_eq!(startup_action(true, None), (true, false));
+        assert_eq!(startup_action(true, fresh), (false, true));
+        assert_eq!(startup_action(true, stale), (true, true));
+        assert_eq!(startup_action(false, None), (false, false));
+        assert_eq!(startup_action(false, fresh), (false, true));
+        assert_eq!(startup_action(false, stale), (false, true));
     }
 
     #[test]
