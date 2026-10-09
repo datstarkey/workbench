@@ -522,6 +522,7 @@ mod tests {
             split_view: None,
             worktree_path: None,
             branch: None,
+            renderer: None,
         }
     }
 
@@ -534,6 +535,7 @@ mod tests {
                 make_workspace("3", "/repo/b"),
             ],
             selected_id: Some("1".to_string()),
+            server_terminal_ids: Default::default(),
         };
 
         let paths = workspace_project_paths(&snapshot);
@@ -550,6 +552,7 @@ mod tests {
         let snapshot = WorkspaceFile {
             workspaces: vec![],
             selected_id: None,
+            server_terminal_ids: Default::default(),
         };
 
         let paths = workspace_project_paths(&snapshot);

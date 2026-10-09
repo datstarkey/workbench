@@ -1499,6 +1499,111 @@ async fn concurrent_chat_starts_share_one_process() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_terminal_for_a_running_claude_session_is_that_sessions_terminal() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    env.set(
+        "WORKBENCH_FAKE_CLAUDE",
+        write_fake_stream_claude(tmp.path()),
+    );
+    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
+    let log = tmp.path().join("received.jsonl");
+    env.set("FAKE_CLAUDE_LOG", &log);
+
+    let (handle, base) = start().await;
+    let id = "5d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let create = || async {
+        let res = client()
+            .post(format!("{base}/remote/terminals"))
+            .json(
+                &json!({ "projectPath": tmp.path(), "claudeSession": {"id": id, "resume": true} }),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        res.json::<Value>().await.unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(), "sessionId": id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let a = res.json::<Value>().await.unwrap()["terminalId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A reloaded desktop pane and the phone's history pick, at once.
+    let (b, c) = tokio::join!(create(), create());
+    assert_eq!((b.as_str(), c.as_str()), (a.as_str(), a.as_str()));
+
+    let terminals: Vec<Value> = client()
+        .get(format!("{base}/remote/terminals"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(terminals.len(), 1, "one terminal: {terminals:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let received = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        received.matches(r#""subtype":"initialize""#).count(),
+        1,
+        "one claude process for the session"
+    );
+
+    // After a `/clear` the old id is only an alias: resuming that conversation
+    // is not the running one.
+    let res = client()
+        .post(format!("{base}/agent/claude/{id}/message"))
+        .json(&json!({"t":"prompt","text":"/clear"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    let new_id = "2d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let list: Vec<Value> = client()
+                .get(format!("{base}/agent/claude"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if list.iter().any(|s| s["sessionId"] == new_id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the session moved to its new id");
+    let old = create().await;
+    assert_ne!(old, a, "a pre-clear id doesn't join the running session");
+
+    for t in [&a, &old] {
+        let res = client()
+            .delete(format!("{base}/remote/terminals/{t}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 204);
+    }
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn closing_a_chats_terminal_ends_the_chat_everywhere() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();
