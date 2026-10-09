@@ -120,10 +120,6 @@ describe('WorkbenchSettingsStore', () => {
 
 			expect(store.codexSandboxMode).toBe('read-only');
 			expect(store.codexApprovalPolicy).toBe('default');
-			expect(store.launchOptions).toMatchObject({
-				codexApprovalPolicy: 'default',
-				codexSandboxMode: 'read-only'
-			});
 		});
 
 		it('sets loaded and clears dirty', async () => {

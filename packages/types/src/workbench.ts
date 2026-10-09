@@ -1,3 +1,5 @@
+import type { PaneStatus } from './workspace.ts';
+
 export type SplitDirection = 'horizontal' | 'vertical';
 
 /** Two terminal tabs of one workspace shown side by side (horizontal) or stacked (vertical). */
@@ -165,30 +167,30 @@ export function isAISessionType(type: SessionType | undefined): type is AISessio
 	return type === 'claude' || type === 'codex';
 }
 
+/**
+ * A pane as the desktop renders it: the server model's pane (`WorkspacePane`)
+ * plus this device's display choice (`view`).
+ */
 export interface TerminalPaneState {
 	id: string;
-	startupCommand?: string;
 	type?: SessionType;
+	/** The pane's Claude session or Codex thread. */
 	claudeSessionId?: string;
-	/**
-	 * When set, this pane's xterm is backed by a server TerminalManager session
-	 * (WS path). Persisted so the pane can reattach to the same PTY after a
-	 * webview reload. Absent for panes that have not yet been created or that
-	 * use the native SwiftTerm path.
-	 */
-	serverTerminalId?: string;
-	/** Claude panes can show their session as chat; the terminal keeps running underneath. */
+	/** Ids it had before a `/clear`. */
+	previousIds?: string[];
+	/** Claude: this device's choice. Codex: its mode on the server (`appServer` is chat). */
 	view?: PaneView;
-	/**
-	 * The chat view is the terminal's own `claude`, bridged by the Workbench
-	 * plugin: switching views keeps the one process. Cleared on load (the
-	 * terminal died with the app; the chat starts a new one, resumed).
-	 */
-	liveTerminal?: boolean;
-	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`; `''`: the default login); absent until the host picks one. */
+	/** Claude account the pane's process runs under (`''`: the default login); absent until the host picks one. */
 	claudeAccountId?: string;
-	/** An agent action's prompt: it starts the pane's Claude session if that is new. */
-	claudePrompt?: string;
+	/** The server terminal it shows; null until spawned, and for a Codex chat. */
+	terminalId?: string | null;
+	status?: PaneStatus;
+	/** The session's title (Claude, Codex chat). */
+	title?: string | null;
+	busy?: boolean;
+	waiting?: AgentSummary['waiting'];
+	/** Why its last start failed. */
+	error?: string | null;
 }
 
 export type PaneView = 'terminal' | 'chat';

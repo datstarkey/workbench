@@ -11,30 +11,23 @@ import { ClaudeSessionStore, type AttentionTarget } from './claudeSessions.svelt
 import type { IntegrationApprovalStore } from './integration-approval.svelte';
 import type { WorkspaceStore } from './workspaces.svelte';
 import type { ProjectStore } from './projects.svelte';
-import type {
-	AgentAction,
-	AgentAttention,
-	AgentSummary,
-	DiscoveredClaudeSession
-} from '$types/workbench';
+import type { AgentAction, AgentAttention, DiscoveredClaudeSession } from '$types/workbench';
 
 function createMockWorkspaceStore(workspaces: unknown[] = []) {
 	return {
 		workspaces,
-		addAISession: vi.fn(() => ({ tabId: 'tab-1' })),
-		addAIByProject: vi.fn(),
-		updateAISessionByPaneId: vi.fn(),
-		updateAITabLabelByPaneId: vi.fn(),
-		setPaneClaudeAccount: vi.fn(),
+		addAISession: vi.fn(async () => null),
+		addAIByProject: vi.fn(async () => null),
+		renameTab: vi.fn(async () => null),
 		findAIPaneContext: vi.fn(),
-		isChatPane: vi.fn(() => false),
-		paneForAgent: vi.fn((): string | null => null)
+		pane: vi.fn((): { id: string } | undefined => undefined),
+		paneForSession: vi.fn((): { id: string } | undefined => undefined)
 	} as unknown as WorkspaceStore;
 }
 
 function createMockProjectStore() {
 	return {
-		openProject: vi.fn()
+		getByPath: vi.fn((path: string) => ({ path, name: 'Test' }))
 	} as unknown as ProjectStore;
 }
 
@@ -67,8 +60,8 @@ describe('ClaudeSessionStore', () => {
 	});
 
 	describe('constructor', () => {
-		it('registers 4 event listeners', () => {
-			expect(listenSpy).toHaveBeenCalledTimes(4);
+		it('registers 2 event listeners', () => {
+			expect(listenSpy).toHaveBeenCalledTimes(2);
 		});
 
 		it('registers an agent:attention listener', () => {
@@ -77,14 +70,6 @@ describe('ClaudeSessionStore', () => {
 
 		it('registers a codex:notify listener', () => {
 			expect(listenSpy).toHaveBeenCalledWith('codex:notify', expect.any(Function));
-		});
-
-		it('registers a terminal:data listener', () => {
-			expect(listenSpy).toHaveBeenCalledWith('terminal:data', expect.any(Function));
-		});
-
-		it('registers a terminal:activity listener', () => {
-			expect(listenSpy).toHaveBeenCalledWith('terminal:activity', expect.any(Function));
 		});
 	});
 
@@ -166,128 +151,50 @@ describe('ClaudeSessionStore', () => {
 		});
 	});
 
-	describe('Claude panes follow agent summaries', () => {
-		const summary = (over: Partial<AgentSummary> = {}): AgentSummary => ({
-			agent: 'claude',
-			sessionId: 'sess-1',
+	describe('busy and waiting come from the snapshot', () => {
+		const tabWith = (pane: Record<string, unknown>) => ({
+			id: 'ws-1',
 			projectPath: '/test',
-			worktreePath: null,
-			paneId: 'pane-1',
-			claudeAccountId: null,
-			title: 'Fix the build',
-			model: null,
-			busy: false,
-			exited: false,
-			busySince: null,
-			updatedAt: 1,
-			waiting: null,
-			running: null,
-			previousIds: [],
-			...over
-		});
-
-		function setupClaudePane() {
-			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
+			projectName: 'Test',
+			terminalTabs: [
 				{
-					id: 'ws-1',
-					projectPath: '/test',
-					projectName: 'Test',
-					terminalTabs: [
-						{
-							id: 'tab-1',
-							label: 'Claude 1',
-							split: 'horizontal',
-							type: 'claude',
-							panes: [{ id: 'pane-1', type: 'claude' }]
-						}
-					],
-					activeTerminalTabId: 'tab-1'
+					id: 'tab-1',
+					label: 'Claude 1',
+					split: 'horizontal',
+					type: 'claude',
+					panes: [{ id: 'pane-1', type: 'claude', ...pane }]
+				},
+				{
+					id: 'tab-2',
+					label: 'Terminal 1',
+					split: 'horizontal',
+					type: 'shell',
+					panes: [{ id: 'shell-1', type: 'shell', busy: true }]
 				}
-			];
-			(mockWorkspaceStore.paneForAgent as ReturnType<typeof vi.fn>).mockReturnValue('pane-1');
-		}
+			],
+			activeTerminalTabId: 'tab-1'
+		});
+		const showing = (pane: Record<string, unknown>) =>
+			((mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [tabWith(pane)]);
 
-		it("labels the tab with the session's title and tracks its turn", () => {
-			setupClaudePane();
-
-			store.syncFromAgents([summary({ busy: true })]);
-			expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
-				'pane-1',
-				'Fix the build',
-				'claude'
-			);
+		it('is in progress while busy, and awaiting input (not in progress) while waiting', () => {
+			showing({ busy: true, waiting: null });
 			expect(store.panesInProgress.has('pane-1')).toBe(true);
-
-			store.syncFromAgents([summary({ title: 'Renamed' })]);
-			expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenLastCalledWith(
-				'pane-1',
-				'Renamed',
-				'claude'
-			);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
+			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
 		});
 
-		it("follows the pane's claude onto another session, newest first", () => {
-			setupClaudePane();
+		it('counts a waiting pane as awaiting input only', () => {
+			showing({ busy: true, waiting: { id: 'r1', tool: 'Bash', preview: 'ls' } });
+			expect(store.panesInProgress.has('pane-1')).toBe(false);
+			expect(store.panesAwaitingInput.has('pane-1')).toBe(true);
+		});
 
-			store.syncFromAgents([
-				summary({ sessionId: 'old', updatedAt: 1 }),
-				summary({ sessionId: 'resumed', updatedAt: 2 })
+		it('ignores shells', () => {
+			showing({ busy: false });
+			expect(store.panesInProgress.has('shell-1')).toBe(false);
+			expect(store.activeSessionsByProject['/test']).toEqual([
+				expect.objectContaining({ tabId: 'tab-1', needsAttention: true, awaitingInput: false })
 			]);
-
-			expect(mockWorkspaceStore.updateAISessionByPaneId).toHaveBeenCalledTimes(1);
-			expect(mockWorkspaceStore.updateAISessionByPaneId).toHaveBeenCalledWith(
-				'pane-1',
-				'resumed',
-				'claude'
-			);
-		});
-
-		it('moves the pane to the account its session now runs under', () => {
-			setupClaudePane();
-
-			store.syncFromAgents([summary({ claudeAccountId: 'work' })]);
-			expect(mockWorkspaceStore.setPaneClaudeAccount).toHaveBeenLastCalledWith('pane-1', 'work');
-			store.syncFromAgents([summary({ claudeAccountId: null })]);
-			expect(mockWorkspaceStore.setPaneClaudeAccount).toHaveBeenLastCalledWith('pane-1', undefined);
-		});
-
-		it("leaves a chat pane's session id to its chat", () => {
-			setupClaudePane();
-			(mockWorkspaceStore.isChatPane as ReturnType<typeof vi.fn>).mockReturnValue(true);
-
-			store.syncFromAgents([summary({ sessionId: 'new-session-after-clear' })]);
-
-			expect(mockWorkspaceStore.updateAISessionByPaneId).not.toHaveBeenCalled();
-		});
-
-		it('is not busy while waiting on someone, nor once its session is gone', () => {
-			setupClaudePane();
-			const waiting = { id: 'r1', tool: 'Bash', preview: 'ls' };
-
-			store.syncFromAgents([summary({ busy: true, waiting })]);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
-
-			store.syncFromAgents([summary({ busy: true })]);
-			expect(store.panesInProgress.has('pane-1')).toBe(true);
-			store.syncFromAgents([]);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
-
-			store.syncFromAgents([summary({ busy: true })]);
-			store.syncFromAgents([summary({ busy: true, exited: true })]);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
-		});
-
-		it('ignores exited sessions, Codex ones and panes that are not Claude', () => {
-			setupClaudePane();
-			store.syncFromAgents([summary({ exited: true, busy: true })]);
-			store.syncFromAgents([summary({ agent: 'codex', busy: true })]);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
-
-			(mockWorkspaceStore.paneForAgent as ReturnType<typeof vi.fn>).mockReturnValue('shell-pane');
-			store.syncFromAgents([summary({ busy: true })]);
-			expect(store.panesInProgress.has('shell-pane')).toBe(false);
-			expect(mockWorkspaceStore.updateAITabLabelByPaneId).not.toHaveBeenCalled();
 		});
 	});
 
@@ -349,11 +256,7 @@ describe('ClaudeSessionStore', () => {
 			notify(true);
 
 			await vi.waitFor(() =>
-				expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
-					'pane-1',
-					'Fix the polling bug',
-					'codex'
-				)
+				expect(mockWorkspaceStore.renameTab).toHaveBeenCalledWith('tab-1', 'Fix the polling bug')
 			);
 		});
 
@@ -423,30 +326,27 @@ describe('ClaudeSessionStore', () => {
 			store.onAttention((target, kind) => notified.push([target, kind]));
 		});
 
-		it("flags and notifies the session's pane, then clears it", () => {
-			(mockWorkspaceStore.paneForAgent as ReturnType<typeof vi.fn>).mockReturnValue('pane-1');
-			store.panesInProgress.add('pane-1');
+		it('notifies the pane the snapshot shows, by its pane id', () => {
+			(mockWorkspaceStore.pane as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+				id === 'pane-1' ? { id } : undefined
+			);
 
-			emitMockEvent('agent:attention', attention('waiting'));
-			expect(store.panesAwaitingInput.has('pane-1')).toBe(true);
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
+			emitMockEvent('agent:attention', attention('waiting', { paneId: 'pane-1' }));
+			emitMockEvent('agent:attention', attention('turnEnded', { paneId: 'pane-1' }));
 
-			// Answered mid-turn: the turn goes on.
-			emitMockEvent('agent:attention', attention('resolved', { busy: true }));
-			expect(store.panesAwaitingInput.has('pane-1')).toBe(false);
-			expect(store.panesInProgress.has('pane-1')).toBe(true);
-
-			emitMockEvent('agent:attention', attention('turnEnded'));
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
 			const pane = { paneId: 'pane-1', sessionId: 'sess-1' };
 			expect(notified).toEqual([
 				[pane, 'waiting'],
-				[pane, 'resolved'],
 				[pane, 'turnEnded']
 			]);
-			expect(mockWorkspaceStore.paneForAgent).toHaveBeenCalledWith(
-				expect.objectContaining({ sessionId: 'sess-1', terminalId: 'term-1' })
-			);
+		});
+
+		it('falls back to the pane on that session', () => {
+			(mockWorkspaceStore.paneForSession as ReturnType<typeof vi.fn>).mockReturnValue({
+				id: 'pane-2'
+			});
+			emitMockEvent('agent:attention', attention('waiting', { paneId: 'gone' }));
+			expect(notified).toEqual([[{ paneId: 'pane-2', sessionId: 'sess-1' }, 'waiting']]);
 		});
 
 		it('notifies about a session no pane shows, by its title', () => {
@@ -462,46 +362,6 @@ describe('ClaudeSessionStore', () => {
 		});
 	});
 
-	describe('terminal:activity events for Codex panes', () => {
-		function setupCodexPane() {
-			(mockWorkspaceStore as { workspaces: unknown[] }).workspaces = [
-				{
-					id: 'ws-1',
-					projectPath: '/test',
-					projectName: 'Test',
-					terminalTabs: [
-						{
-							id: 'tab-1',
-							label: 'Codex 1',
-							split: 'horizontal',
-							type: 'codex',
-							panes: [{ id: 'pane-1', type: 'codex' }]
-						}
-					],
-					activeTerminalTabId: 'tab-1'
-				}
-			];
-		}
-
-		it('clears panesInProgress on inactive event', () => {
-			setupCodexPane();
-			store.panesInProgress.add('pane-1');
-
-			emitMockEvent('terminal:activity', { sessionId: 'pane-1', active: false });
-
-			expect(store.panesInProgress.has('pane-1')).toBe(false);
-		});
-
-		it('ignores active events', () => {
-			setupCodexPane();
-			store.panesInProgress.add('pane-1');
-
-			emitMockEvent('terminal:activity', { sessionId: 'pane-1', active: true });
-
-			expect(store.panesInProgress.has('pane-1')).toBe(true);
-		});
-	});
-
 	describe('startSession', () => {
 		it('delegates to workspaces.addAISession', async () => {
 			await store.startSession('ws-1', 'claude');
@@ -510,10 +370,12 @@ describe('ClaudeSessionStore', () => {
 	});
 
 	describe('startSessionByProject', () => {
-		it('opens project and adds AI session by project', async () => {
+		it('starts a session in the project, which the server opens if need be', async () => {
 			await store.startSessionByProject('/projects/test', 'claude');
-			expect(mockProjectStore.openProject).toHaveBeenCalledWith('/projects/test');
-			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith('/projects/test', 'claude');
+			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith(
+				{ path: '/projects/test', name: 'Test' },
+				'claude'
+			);
 		});
 	});
 
@@ -531,11 +393,14 @@ describe('ClaudeSessionStore', () => {
 			await store.startAgentActionByProject('/projects/test', action, 'codex');
 
 			expect(mockIntegrationApprovalStore.ensureIntegration).toHaveBeenCalledWith('codex');
-			expect(mockProjectStore.openProject).toHaveBeenCalledWith('/projects/test');
-			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith('/projects/test', 'codex', {
-				label: 'Security Scan',
-				prompt: 'Scan this codebase for security issues'
-			});
+			expect(mockWorkspaceStore.addAIByProject).toHaveBeenCalledWith(
+				{ path: '/projects/test', name: 'Test' },
+				'codex',
+				{
+					label: 'Security Scan',
+					prompt: 'Scan this codebase for security issues'
+				}
+			);
 		});
 
 		it('starts nothing when the integration is declined', async () => {
@@ -547,7 +412,6 @@ describe('ClaudeSessionStore', () => {
 			await store.startAgentActionByProject('/projects/test', action, 'claude');
 			await store.startAgentActionInWorkspace({ id: 'ws-1' }, action, 'claude');
 
-			expect(mockProjectStore.openProject).not.toHaveBeenCalled();
 			expect(mockWorkspaceStore.addAIByProject).not.toHaveBeenCalled();
 			expect(mockWorkspaceStore.addAISession).not.toHaveBeenCalled();
 		});
@@ -599,8 +463,7 @@ describe('ClaudeSessionStore', () => {
 			setupCodexPane();
 			const alert = vi.fn();
 			store.onAttention(alert);
-			(mockWorkspaceStore.paneForAgent as ReturnType<typeof vi.fn>).mockReturnValue('pane-1');
-			emitMockEvent('terminal:data', { sessionId: 'pane-1', data: 'working' });
+			(mockWorkspaceStore.pane as ReturnType<typeof vi.fn>).mockReturnValue({ id: 'pane-1' });
 			emitMockEvent('codex:notify', {
 				paneId: 'pane-1',
 				sessionId: 'thread',
@@ -635,28 +498,9 @@ describe('ClaudeSessionStore', () => {
 				sessionId: 'codex-sess-1'
 			});
 
-			// Fallback label set synchronously
-			expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
-				'pane-1',
-				'Session codex-se',
-				'codex'
-			);
-
-			// Wait for async discover to complete
 			await vi.waitFor(() => {
-				expect(mockWorkspaceStore.updateAITabLabelByPaneId).toHaveBeenCalledWith(
-					'pane-1',
-					'Fix auth bug',
-					'codex'
-				);
+				expect(mockWorkspaceStore.renameTab).toHaveBeenCalledWith('tab-1', 'Fix auth bug');
 			});
-		});
-
-		it("codex:notify leaves a chat pane's thread id to its chat", () => {
-			setupCodexPane();
-			(mockWorkspaceStore.isChatPane as ReturnType<typeof vi.fn>).mockReturnValue(true);
-			emitMockEvent('codex:notify', { paneId: 'pane-1', sessionId: 'codex-sess-2' });
-			expect(mockWorkspaceStore.updateAISessionByPaneId).not.toHaveBeenCalled();
 		});
 
 		it('stale-session guard: does not update label if session changed before discover returns', async () => {
@@ -694,16 +538,10 @@ describe('ClaudeSessionStore', () => {
 			]);
 			await new Promise((r) => setTimeout(r, 0));
 
-			// The label should NOT have been updated with the stale session's label
-			const labelCalls = (mockWorkspaceStore.updateAITabLabelByPaneId as ReturnType<typeof vi.fn>)
-				.mock.calls;
-			const resolvedLabels = labelCalls
-				.filter((c: unknown[]) => !String(c[1]).startsWith('Session '))
-				.map((c: unknown[]) => c[1]);
-			expect(resolvedLabels).not.toContain('Stale label');
+			expect(mockWorkspaceStore.renameTab).not.toHaveBeenCalled();
 		});
 
-		it('keeps fallback label when discover returns no matching session', async () => {
+		it('keeps the label when discover returns no matching session', async () => {
 			setupCodexPane();
 
 			mockInvoke('discover_codex_sessions', () => [
@@ -726,12 +564,7 @@ describe('ClaudeSessionStore', () => {
 
 			await new Promise((r) => setTimeout(r, 0));
 
-			// Only the fallback label should have been set, not a resolved one
-			const labelCalls = (mockWorkspaceStore.updateAITabLabelByPaneId as ReturnType<typeof vi.fn>)
-				.mock.calls;
-			const labels = labelCalls.map((c: unknown[]) => c[1]);
-			expect(labels).toContain('Session my-sessi');
-			expect(labels).not.toContain('Other session');
+			expect(mockWorkspaceStore.renameTab).not.toHaveBeenCalled();
 		});
 	});
 

@@ -112,10 +112,9 @@ export class ProjectStore {
 	}
 
 	/** Open a project workspace (find by path, then open in workspace store) */
-	openProject(projectPath: string) {
+	openProject(projectPath: string): Promise<unknown> {
 		const project = this.getByPath(projectPath);
-		if (!project) return;
-		this.workspaces.open(project);
+		return project ? this.workspaces.open(project) : Promise.resolve();
 	}
 
 	/** Close all workspaces for a project, then remove it from the project list */

@@ -1,4 +1,4 @@
-import { browser, $, expect } from '@wdio/globals';
+import { browser, $, $$, expect } from '@wdio/globals';
 
 // Smoke checks that the built app boots and its main surfaces render. Not a
 // behaviour suite: logic is covered by the store/unit tests.
@@ -30,6 +30,26 @@ describe('Workbench smoke', () => {
 			{ interval: 1_000, timeoutMsg: 'the Scripts tab never listed the build script' }
 		);
 		await expect($('button=Install')).toBeDisplayed();
+	});
+
+	it('opens a terminal tab the server runs, and closes it', async () => {
+		const tabs = $$('[role="tab"]');
+		const before = await tabs.length;
+		await $('button[aria-label="New terminal"], button*=New Terminal').click();
+		// The tab appears once the server's workspace snapshot includes it.
+		await browser.waitUntil(async () => (await $$('[role="tab"]').length) === before + 1, {
+			timeoutMsg: 'the new terminal tab never appeared'
+		});
+		const tab = $$('[role="tab"]')[before];
+		await expect(tab).toHaveText(expect.stringContaining('Terminal'));
+		await expect($('.xterm')).toBeDisplayed({ wait: 15_000 });
+
+		const close = tab.parentElement().$('button[aria-label="Close terminal tab"]');
+		await tab.moveTo();
+		await close.click();
+		await browser.waitUntil(async () => (await $$('[role="tab"]').length) === before, {
+			timeoutMsg: 'the closed terminal tab stayed'
+		});
 	});
 
 	it('opens settings in its own window', async () => {

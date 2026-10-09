@@ -3,7 +3,6 @@ import { clearInvokeMocks } from '../../../test/tauri-mocks';
 import { ProjectManagerStore } from './project-manager.svelte';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
-import type { WorkspaceStore } from '$stores/workspaces.svelte';
 import type { ProjectConfig } from '$types/workbench';
 
 vi.mock('$lib/utils/dialog', () => ({
@@ -24,15 +23,11 @@ function createMocks() {
 		removeWithWorkspaces: vi.fn()
 	} as unknown as ProjectStore;
 
-	const workspaceStore = {
-		updateProjectInfo: vi.fn()
-	} as unknown as WorkspaceStore;
-
 	const gitStore = {
 		refreshGitState: vi.fn()
 	} as unknown as GitStore;
 
-	return { projectStore, workspaceStore, gitStore };
+	return { projectStore, gitStore };
 }
 
 describe('ProjectManagerStore', () => {
@@ -41,7 +36,7 @@ describe('ProjectManagerStore', () => {
 
 	beforeEach(() => {
 		mocks = createMocks();
-		manager = new ProjectManagerStore(mocks.projectStore, mocks.workspaceStore, mocks.gitStore);
+		manager = new ProjectManagerStore(mocks.projectStore, mocks.gitStore);
 	});
 
 	afterEach(() => {
@@ -207,7 +202,7 @@ describe('ProjectManagerStore', () => {
 	});
 
 	describe('save - edit mode', () => {
-		it('calls projectStore.update and workspaceStore.updateProjectInfo', async () => {
+		it('calls projectStore.update', async () => {
 			const project = makeProject({ name: 'Old', path: '/projects/old' });
 			mocks.projectStore.projects = [project];
 			vi.mocked(mocks.projectStore.getByPath).mockReturnValue(project);
@@ -219,11 +214,6 @@ describe('ProjectManagerStore', () => {
 			expect(mocks.projectStore.update).toHaveBeenCalledWith(
 				'/projects/old',
 				expect.objectContaining({ name: 'Updated', path: '/projects/updated' })
-			);
-			expect(mocks.workspaceStore.updateProjectInfo).toHaveBeenCalledWith(
-				'/projects/old',
-				'/projects/updated',
-				'Updated'
 			);
 		});
 

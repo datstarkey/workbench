@@ -9,50 +9,24 @@
 	import { SearchAddon } from '@xterm/addon-search';
 	import { openUrl } from '$lib/utils/open-url';
 	import '@xterm/xterm/css/xterm.css';
-	import type { ClaudeSessionLaunch, ProjectConfig } from '$types/workbench';
 	import { terminalOptions, TERMINAL_BG } from '$lib/terminal-config';
 	import { TerminalConnection } from './terminal-connection';
-	import { toast } from 'svelte-sonner';
 	import TerminalSearch from './TerminalSearch.svelte';
 	import { registerShellIntegration, type ShellIntegrationState } from './shell-integration';
 	import { TerminalInputDedup } from './input-dedup';
 	import { installTextareaResidueGuard } from './textarea-residue';
 	import { isLayoutDisabled } from './layout-guard';
-	import {
-		getClaudeSessionStore,
-		getWorkbenchSettingsStore,
-		getWorkspaceStore
-	} from '$stores/context';
+	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
-		sessionId: paneId,
-		project,
-		active,
-		startupCommand,
-		claudeSession,
-		claudeAccountId,
-		cwd,
-		existingServerTerminalId,
-		onServerTerminalIdChange
+		paneId,
+		terminalId,
+		active
 	}: {
-		/**
-		 * Stable pane identity (uid). Previously the Tauri PTY session ID; now used
-		 * as the loopback pane identity forwarded to the server for hook correlation.
-		 * Kept as `sessionId` for caller compatibility (TerminalGrid passes pane.id here).
-		 */
-		sessionId: string;
-		project: ProjectConfig;
+		paneId: string;
+		/** The server terminal the pane runs in; fixed for this component's life (the parent re-keys). */
+		terminalId: string;
 		active: boolean;
-		startupCommand?: string;
-		/** A Claude pane's session; the server builds its `claude` command. */
-		claudeSession?: ClaudeSessionLaunch;
-		/** Claude account the shell runs under (`CLAUDE_CONFIG_DIR`). */
-		claudeAccountId?: string;
-		cwd?: string;
-		/** If the workspace persisted a server terminal ID, try to re-attach on mount. */
-		existingServerTerminalId?: string;
-		/** Notify the workspace store when our server terminal ID changes (create / re-attach). */
-		onServerTerminalIdChange?: (paneId: string, serverTerminalId: string) => void;
 	} = $props();
 
 	// VS Code pattern: if WebGL fails once, all future terminals skip it
@@ -81,7 +55,6 @@
 	let perfLogInterval: ReturnType<typeof setInterval> | null = null;
 	const claudeSessionStore = getClaudeSessionStore();
 	const workbenchSettingsStore = getWorkbenchSettingsStore();
-	const workspaceStore = getWorkspaceStore();
 	let inputDedup: TerminalInputDedup;
 
 	// VS Code-style split-axis resize debouncing:
@@ -277,13 +250,6 @@
 			inputLatencySamplesSinceLog += 1;
 			inputLatencyTotalMsSinceLog += performance.now() - pendingInputAtMs;
 			pendingInputAtMs = null;
-		}
-
-		// Feed AI-pane output through the activity/quiescence tracker. Server-hosted
-		// panes stream over the WS and don't emit the terminal:data events the store
-		// listens to for local panes, so drive it here (shell panes skip the decode).
-		if (claudeSessionStore.paneType(paneId) !== null) {
-			claudeSessionStore.noteTerminalOutput(paneId, new TextDecoder().decode(bytes));
 		}
 
 		if (inPerformanceMode()) {
@@ -493,7 +459,6 @@
 				if (cols <= 0 || rows <= 0) return;
 				lastCols = cols;
 				lastRows = rows;
-				claudeSessionStore.noteLocalViewportChange(paneId);
 				// Guard on readyState===OPEN is inside conn.resize()
 				conn?.resize(cols, rows);
 			});
@@ -505,7 +470,6 @@
 				// PTY doesn't see the text twice; the guard reports each drop.
 				if (inputDedup.isDuplicateFlush(data, now)) return;
 				inputDedup.recordSent(data, now);
-				claudeSessionStore.noteLocalInput(paneId, data);
 				inputEventsSinceLog += 1;
 				pendingInputAtMs = now;
 				conn?.write(data);
@@ -517,9 +481,9 @@
 				terminal.resize(lastCols > 0 ? lastCols : 80, lastRows > 0 ? lastRows : 24);
 			}
 
-			// Create the WS connection. On (re)attach the server replays scrollback —
-			// reset xterm first to avoid double-rendering into the still-mounted terminal.
+			// On attach the server replays scrollback: reset xterm first so it isn't printed twice.
 			conn = new TerminalConnection(
+				terminalId,
 				(bytes: Uint8Array) => {
 					writeTerminalData(bytes);
 				},
@@ -540,35 +504,7 @@
 				}
 			);
 
-			const connectOpts = {
-				// projectPath MUST be the registered project — the server's
-				// resolve_cwd rejects an unregistered path; a worktree rides along in
-				// worktreePath (and is validated against the project's worktrees).
-				projectPath: project.path,
-				...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
-				name: workspaceStore.paneDisplayName(paneId) ?? project.name,
-				...(claudeSession ? { claudeSession } : { command: startupCommand }),
-				cols: terminal.cols,
-				rows: terminal.rows,
-				paneId,
-				shell: project.shell,
-				claudeAccountId
-			};
-			if (existingServerTerminalId && workspaceStore.isAdoptedPane(paneId)) {
-				conn.connectDetached(connectOpts, existingServerTerminalId);
-				takenOver = true;
-			} else {
-				await conn.connect(connectOpts, existingServerTerminalId);
-				if (conn.notice) toast.warning(conn.notice);
-				// The host picked the account; later launches of this pane keep it.
-				if (conn.claudeAccountId !== null)
-					workspaceStore.setPaneClaudeAccount(paneId, conn.claudeAccountId);
-			}
-
-			// Notify workspace store of the assigned server terminal ID.
-			if (conn.terminalId) {
-				onServerTerminalIdChange?.(paneId, conn.terminalId);
-			}
+			await conn.connect(terminal.cols, terminal.rows);
 
 			// VS Code-style resize: use ResizeObserver but with smart
 			// split-axis debouncing instead of a flat 500ms delay
@@ -614,7 +550,6 @@
 					const entry = entries[0];
 					terminalInView = Boolean(entry?.isIntersecting && entry.intersectionRatio > 0);
 					if (!active || !documentVisible || !terminalInView) return;
-					claudeSessionStore.noteLocalViewportChange(paneId);
 					fitTerminal();
 				},
 				{ threshold: 0.01 }
@@ -624,7 +559,6 @@
 			const onVisibilityChange = () => {
 				documentVisible = document.visibilityState === 'visible';
 				if (!active || !documentVisible || !terminalInView) return;
-				claudeSessionStore.noteLocalViewportChange(paneId);
 				flushPendingResize();
 				fitTerminal();
 			};
@@ -645,7 +579,6 @@
 		takenOver = false;
 		try {
 			await conn.takeControl(terminal.cols, terminal.rows);
-			if (conn.terminalId) onServerTerminalIdChange?.(paneId, conn.terminalId);
 			terminal.focus();
 		} catch (error) {
 			takenOver = true;
@@ -667,9 +600,7 @@
 		searchAddon?.dispose();
 		webglAddon?.dispose();
 		terminal?.dispose();
-		// Detach only — the PTY keeps running in the server so it survives a
-		// webview reload. Callers must call deleteServerTerminal(id) explicitly
-		// when the user intentionally closes the tab.
+		// Detach only: the terminal is the server's, and ends when its pane closes.
 		conn?.dispose();
 	});
 </script>

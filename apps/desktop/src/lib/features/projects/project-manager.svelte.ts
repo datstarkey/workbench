@@ -3,7 +3,6 @@ import { ConfirmAction } from '$lib/utils/confirm-action.svelte';
 import { baseName } from '$lib/utils/path';
 import type { GitStore } from '$stores/git.svelte';
 import type { ProjectStore } from '$stores/projects.svelte';
-import type { WorkspaceStore } from '$stores/workspaces.svelte';
 import type { ProjectConfig, ProjectFormState } from '$types/workbench';
 
 export class ProjectManagerStore {
@@ -23,12 +22,10 @@ export class ProjectManagerStore {
 
 	private editingProjectPath: string | null = null;
 	private projectStore: ProjectStore;
-	private workspaceStore: WorkspaceStore;
 	private gitStore: GitStore;
 
-	constructor(projectStore: ProjectStore, workspaceStore: WorkspaceStore, gitStore: GitStore) {
+	constructor(projectStore: ProjectStore, gitStore: GitStore) {
 		this.projectStore = projectStore;
-		this.workspaceStore = workspaceStore;
 		this.gitStore = gitStore;
 	}
 
@@ -117,7 +114,6 @@ export class ProjectManagerStore {
 				return;
 			}
 			await this.projectStore.update(previousPath, nextProject);
-			this.workspaceStore.updateProjectInfo(previousPath, nextProject.path, nextProject.name);
 		}
 
 		this.dialogOpen = false;

@@ -22,6 +22,7 @@
 	} from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { AgentKind, DiscoveredClaudeSession, ProjectConfig } from '$types/workbench';
+	import type { PaneStatus } from '$types/workspace';
 	import {
 		getClaudeSessionStore,
 		getGitHubStore,
@@ -40,27 +41,26 @@
 	let {
 		agent,
 		paneId,
+		tabId,
 		sessionId,
+		status,
 		project,
 		cwd,
 		claudeAccountId,
-		onShowTerminal,
-		onSessionIdChange
+		onShowTerminal
 	}: {
 		agent: AgentKind;
 		paneId: string;
-		/**
-		 * Fixed for this component's life — the parent re-keys on a new session.
-		 * Absent for a Codex pane with no thread yet: chat starts one.
-		 */
-		sessionId?: string;
+		tabId: string;
+		/** The running session to attach to; fixed for this component's life (the parent re-keys). */
+		sessionId: string;
+		/** The pane's process, as the server reports it. */
+		status?: PaneStatus;
 		project: ProjectConfig;
 		cwd?: string;
-		/** The pane's Claude account; chat runs under the same login as its terminal. */
+		/** The pane's Claude account, for its plan usage. */
 		claudeAccountId?: string;
 		onShowTerminal: () => void;
-		/** The chat got its session id (a new Codex thread) or moved to a new one (`/clear`). */
-		onSessionIdChange: (sessionId: string) => void;
 	} = $props();
 
 	setChatPlatform(desktopChatPlatform);
@@ -77,15 +77,8 @@
 		agent,
 		projectPath: project.path,
 		...(cwd && cwd !== project.path ? { worktreePath: cwd } : {}),
-		...(sessionId ? { sessionId } : {}),
-		paneId,
-		// Launch defaults (permission mode, Codex policies) are resolved on the server.
-		...(agent === 'claude' && claudeAccountId !== undefined ? { claudeAccountId } : {}),
-		// Another device's chat, or this pane's own terminal `claude`: join its
-		// process, never start one behind its back.
-		...(workspaceStore.isAdoptedPane(paneId) || workspaceStore.isLiveTerminalPane(paneId)
-			? { attachOnly: true }
-			: {})
+		sessionId,
+		paneId
 	});
 	const workspace = $derived(
 		cwd && cwd !== project.path
@@ -95,15 +88,13 @@
 	const branch = $derived(workspace && workspaceStore.resolvedBranch(workspace));
 	const pr = $derived(branch ? githubStore.getBranchStatus(project.path, branch)?.pr : null);
 
-	chat.onTakeOver = () => workspaceStore.takeOverPane(paneId);
-	chat.onEnded = () => workspaceStore.closeEndedChat(paneId);
-	chat.onTerminal = (terminalId) => workspaceStore.linkLiveTerminal(paneId, terminalId);
-	chat.onAccount = (accountId) => workspaceStore.setPaneClaudeAccount(paneId, accountId);
-
+	// The chat's Restart is the pane's: the server restarts it, then the chat re-attaches.
+	chat.onRestart = () => void workspaceStore.restartAISession('', tabId);
 	watch(
-		() => chat.sessionId,
-		(id) => {
-			if (id && id !== sessionId) onSessionIdChange(id);
+		() => status,
+		(now) => {
+			if (now === 'running' && (chat.status === 'exited' || chat.status === 'failed'))
+				void chat.attach();
 		}
 	);
 
@@ -120,9 +111,18 @@
 			.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 	}
 
+	/** Continue an earlier conversation: the server shows it (in its own tab) as chat. */
 	function resume(session: DiscoveredClaudeSession) {
 		resumeOpen = false;
-		void workspaceStore.resumeInChat(paneId, session.sessionId, session.label);
+		if (workspace)
+			void workspaceStore.resumeAISession(
+				workspace.id,
+				session.sessionId,
+				session.label,
+				agent,
+				session.accountId,
+				'chat'
+			);
 	}
 
 	/** The tasks panel as an overlay, for panes too narrow to dock it. */
