@@ -160,18 +160,15 @@ impl WorkspaceService {
         }
         if let Some(Some(held)) = held {
             let _ = self.0.lock.set(held);
-            // Until the desktop renders this model (Phase 3), its own
-            // `workspaces.json` describes panes it runs itself: only a saved v2
-            // file is booted, or each of those would run twice.
-            if dir.join(persist::FILE).exists() {
-                match persist::load(&dir) {
-                    Ok(file) => {
-                        let mut state = lock(&self.0.state);
-                        state.model = file.model;
-                        state.local = file.local;
-                    }
-                    Err(e) => tracing::error!("workspace model not loaded: {e:#}"),
+            // The saved model, else the desktop's older `workspaces.json`
+            // migrated, so an upgrade keeps every tab.
+            match persist::load(&dir) {
+                Ok(file) => {
+                    let mut state = lock(&self.0.state);
+                    state.model = file.model;
+                    state.local = file.local;
                 }
+                Err(e) => tracing::error!("workspace model not loaded: {e:#}"),
             }
             let _ = self.0.dir.set(dir);
         }
