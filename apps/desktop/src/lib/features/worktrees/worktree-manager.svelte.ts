@@ -126,14 +126,21 @@ export class WorktreeManagerStore {
 	async confirmRemove(force = false) {
 		const deleteBranch = this.deleteBranchOnRemove;
 		await this.removal.confirm(async ({ projectPath, worktreePath, branch }) => {
-			await invoke('remove_worktree', {
+			const removeBranch = deleteBranch && !!branch;
+			const removed = await invoke<{ branchDeleted?: boolean } | null>('remove_worktree', {
 				repoPath: projectPath,
 				worktreePath,
 				force,
-				deleteBranch: deleteBranch && !!branch
+				deleteBranch: removeBranch
 			});
 			const ws = this.workspaceStore.getByWorktreePath(worktreePath);
 			if (ws) this.workspaceStore.close(ws.id);
+			// A host that predates `deleteBranch` leaves the branch to us.
+			if (removeBranch && removed?.branchDeleted === undefined) {
+				await invoke('delete_branch', { repoPath: projectPath, branch, force: false }).catch((e) =>
+					console.warn('[WorktreeManager] Failed to delete branch:', e)
+				);
+			}
 			await this.gitStore.refreshGitState(projectPath);
 		});
 	}

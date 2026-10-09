@@ -61,20 +61,20 @@ export class MobileClient {
 	accounts = $state<Pick<ClaudeAccount, 'id' | 'name'>[]>([]);
 	/** What the machine calls its default `~/.claude` account. */
 	defaultAccountName = $state(defaultAccountName(null));
-	/** The host's active account, which new chats run under unless one is picked here. */
-	private hostAccountId = $state<string | undefined>(undefined);
-	/** An account picked on this phone for new chats (`''`: the default login); null follows the host. */
-	private pickedAccountId = $state<string | null>(null);
-	/** The account new chats start under, as the switcher shows it. */
-	readonly accountId = $derived(
-		this.pickedAccountId === null ? this.hostAccountId : this.pickedAccountId || undefined
-	);
+	/** The host's active account (absent: the default login); a project's own default still wins. */
+	accountId = $state<string | undefined>(undefined);
 	/** The connected host's version and update; null while disconnected. */
 	hostUpdate = $state.raw<HostUpdate | null>(null);
 	private controlPlane: ReturnType<typeof createHttpTransport> | null = null;
 
-	setAccount(id: string): void {
-		this.pickedAccountId = id;
+	/** Switch the host's active account, as the desktop's switcher does. */
+	async setAccount(id: string): Promise<void> {
+		try {
+			await this.controlPlane?.invoke('set_active_claude_account', { id: id || null });
+			this.accountId = id || undefined;
+		} catch (e) {
+			this.notice = `Couldn't switch the account: ${errorText(e)}`;
+		}
 	}
 
 	private async loadAccounts(): Promise<void> {
@@ -87,11 +87,10 @@ export class MobileClient {
 			if (!live()) return;
 			this.accounts = (settings?.claudeAccounts ?? []).map(({ id, name }) => ({ id, name }));
 			this.defaultAccountName = defaultAccountName(settings);
-			const known = (id: string | null | undefined) => this.accounts.some((a) => a.id === id);
-			this.hostAccountId = known(settings?.activeClaudeAccount)
-				? (settings?.activeClaudeAccount ?? undefined)
+			const active = settings?.activeClaudeAccount;
+			this.accountId = this.accounts.some((a) => a.id === active)
+				? (active ?? undefined)
 				: undefined;
-			if (this.pickedAccountId && !known(this.pickedAccountId)) this.pickedAccountId = null;
 		} catch {
 			/* Older servers still support the default account. */
 		}
@@ -354,8 +353,7 @@ export class MobileClient {
 		this.hostUpdate = null;
 		this.accounts = [];
 		this.defaultAccountName = defaultAccountName(null);
-		this.hostAccountId = undefined;
-		this.pickedAccountId = null;
+		this.accountId = undefined;
 		this.machineId = null;
 		this.projectPrefs = new ProjectPrefs('disconnected');
 		this.terminals = [];
@@ -419,15 +417,9 @@ export class MobileClient {
 		};
 	}
 
-	/** A new Claude conversation in the phone's default view. Without a pick here the host picks the account. */
+	/** A new Claude conversation in the phone's default view; the host picks its account. */
 	startClaude = (projectPath: string, worktreePath: string | undefined, name: string) =>
-		this.openClaude({
-			sessionId: crypto.randomUUID(),
-			projectPath,
-			worktreePath,
-			name,
-			...(this.pickedAccountId !== null ? { claudeAccountId: this.pickedAccountId } : {})
-		});
+		this.openClaude({ sessionId: crypto.randomUUID(), projectPath, worktreePath, name });
 
 	/** A Claude conversation, new or past (the server resumes one on disk), in the default view. */
 	async openClaude(ref: ChatRef): Promise<void> {
@@ -482,12 +474,10 @@ export class MobileClient {
 		if (this.activeChat && id) this.activeChat = { ...this.activeChat, sessionId: id };
 	}
 
-	/** The open chat moved to another Claude account: remount it for that login's usage. */
+	/** The open chat runs under this Claude account (the host named it, or it switched); its usage follows by itself. */
 	updateChatAccount(accountId: string | undefined): void {
-		// `''` (a pick of the default login) and undefined are the same login.
-		if (!this.activeChat || (this.activeChat.claudeAccountId || undefined) === accountId) return;
+		if (!this.activeChat || this.activeChat.claudeAccountId === accountId) return;
 		this.activeChat = { ...this.activeChat, claudeAccountId: accountId };
-		this.chatScreenKey++;
 	}
 
 	/** The open chat was ended on another device: leave it. An End from here leaves by itself. */
@@ -606,7 +596,7 @@ export class MobileClient {
 	private async openClaudeTerminal(ref: ChatRef): Promise<void> {
 		await this.createTerminal(ref.projectPath, ref.worktreePath, ref.name, {
 			claudeSession: { id: ref.sessionId },
-			...(ref.claudeAccountId !== undefined ? { claudeAccountId: ref.claudeAccountId } : {})
+			...(ref.claudeAccountId ? { claudeAccountId: ref.claudeAccountId } : {})
 		});
 	}
 

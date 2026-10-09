@@ -147,6 +147,7 @@ macro_rules! build_invoke_handler {
             server_control::server_status,
             server_control::terminal_server_status,
             server_control::rotate_server_token,
+            server_control::set_active_claude_account,
             server_control::pairing_addresses,
             host_update::host_update_status,
             host_update::host_update_install,
@@ -242,6 +243,7 @@ pub fn run() {
                 log::error!("failed to start loopback embedded server: {e}");
             }
             sc.watch_attention(app.handle().clone());
+            sc.watch_settings(app.handle().clone());
 
             Ok(())
         });

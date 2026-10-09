@@ -277,6 +277,7 @@ describe('WorktreeManagerStore', () => {
 		it('confirmRemove() asks the host to delete the branch when deleteBranchOnRemove is true', async () => {
 			vi.mocked(mocks.workspaceStore.getByWorktreePath).mockReturnValue(undefined);
 			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
+			mockInvoke('remove_worktree', () => ({ branchDeleted: false }));
 
 			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
 			manager.deleteBranchOnRemove = true;
@@ -287,6 +288,24 @@ describe('WorktreeManagerStore', () => {
 				worktreePath: '/projects/repo-wt',
 				force: false,
 				deleteBranch: true
+			});
+			expect(invokeSpy).not.toHaveBeenCalledWith('delete_branch', expect.anything());
+		});
+
+		it('confirmRemove() deletes the branch itself on a host that predates deleteBranch', async () => {
+			vi.mocked(mocks.workspaceStore.getByWorktreePath).mockReturnValue(undefined);
+			vi.mocked(mocks.gitStore.refreshGitState).mockResolvedValue();
+			mockInvoke('remove_worktree', () => null);
+			mockInvoke('delete_branch', () => true);
+
+			manager.remove('/projects/repo', '/projects/repo-wt', 'feature');
+			manager.deleteBranchOnRemove = true;
+			await manager.confirmRemove();
+
+			expect(invokeSpy).toHaveBeenCalledWith('delete_branch', {
+				repoPath: '/projects/repo',
+				branch: 'feature',
+				force: false
 			});
 		});
 

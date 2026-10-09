@@ -199,7 +199,7 @@ export class WorkspaceStore {
 					id: uid(),
 					type,
 					...pane,
-					...(type === 'claude' && claudeAccountId && { claudeAccountId })
+					...(type === 'claude' && claudeAccountId !== undefined && { claudeAccountId })
 				}
 			]
 		};
@@ -804,11 +804,15 @@ export class WorkspaceStore {
 		this.patchPane(paneId, patch);
 	}
 
-	/** A Claude pane's session moved to another account, so its restarts and resumes use that login. */
+	/**
+	 * The account a Claude pane's session runs under (the host picked it, or it
+	 * moved), so its restarts and resumes use that login. Stored as `''` for the
+	 * default login; an unset account is one the host has yet to pick.
+	 */
 	setPaneClaudeAccount(paneId: string, accountId: string | undefined): void {
+		const id = accountId ?? '';
 		const pane = this.findPane(paneId);
-		if (pane && pane.claudeAccountId !== accountId)
-			this.patchPane(paneId, { claudeAccountId: accountId });
+		if (pane && pane.claudeAccountId !== id) this.patchPane(paneId, { claudeAccountId: id });
 	}
 
 	private patchPane(paneId: string, patch: Partial<TerminalPaneState>): void {

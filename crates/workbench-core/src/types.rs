@@ -257,14 +257,14 @@ impl Default for WorktreeCopyOptions {
     }
 }
 
+/// No path: the host's layout (`strategy`) decides where it goes, and a
+/// client's `path` (older builds sent one) is ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateWorktreeRequest {
     pub repo_path: String,
     pub branch: String,
     pub new_branch: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_options: Option<WorktreeCopyOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]

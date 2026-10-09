@@ -201,18 +201,25 @@ pub fn set_hook_socket(address: Option<String>) {
 /// path. Every Claude launch does it (`claude_launch::startup_command`), so the
 /// allowlist is never staler than the launch, whoever wrote `projects.json`.
 pub fn refresh() -> Result<PathBuf> {
-    refresh_with(&crate::config::load_workbench_settings()?)
+    let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    write_current(
+        &crate::config::load_workbench_settings()?,
+        &crate::config::load_projects()?,
+    )
 }
 
-/// [`refresh`] with settings the caller already loaded.
-pub fn refresh_with(settings: &WorkbenchSettings) -> Result<PathBuf> {
+/// [`refresh`] from settings and projects the caller already loaded.
+pub fn refresh_with(settings: &WorkbenchSettings, projects: &[ProjectConfig]) -> Result<PathBuf> {
     let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-    let projects = crate::config::load_projects()?;
+    write_current(settings, projects)
+}
+
+fn write_current(settings: &WorkbenchSettings, projects: &[ProjectConfig]) -> Result<PathBuf> {
     let hook_socket = HOOK_SOCKET
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    write_settings(settings, &projects, hook_socket.as_deref())
+    write_settings(settings, projects, hook_socket.as_deref())
 }
 
 /// Build the config without touching the filesystem — the unit-testable half of

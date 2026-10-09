@@ -176,11 +176,10 @@ pub async fn remove_worktree(
     worktree_path: String,
     force: bool,
     delete_branch: bool,
-) -> Result<bool, String> {
+) -> Result<worktrees::RemovedWorktree, String> {
     crate::blocking(move || {
         worktrees::remove(&repo_path, &worktree_path, force, delete_branch)
-            .map_err(|e| e.to_string())?;
-        Ok(true)
+            .map_err(|e| e.to_string())
     })
     .await
 }

@@ -39,11 +39,11 @@ pub fn saved_config_dirs() -> Vec<(Option<String>, PathBuf)> {
     config_dirs(&crate::config::load_workbench_settings().unwrap_or_default())
 }
 
-/// The `CLAUDE_CONFIG_DIR` for `account_id`, or `None` for the default account.
-/// An id that names no account is an error rather than a silent fallback, so a
-/// session never runs (and bills) under the wrong login.
+/// The `CLAUDE_CONFIG_DIR` for `account_id`, or `None` for the default account
+/// (`None` or `""`). An id that names no account is an error rather than a
+/// silent fallback, so a session never runs (and bills) under the wrong login.
 pub fn resolve(settings: &WorkbenchSettings, account_id: Option<&str>) -> Result<Option<PathBuf>> {
-    let Some(id) = account_id else {
+    let Some(id) = account_id.filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
     let account = settings
@@ -61,15 +61,35 @@ pub fn resolve(settings: &WorkbenchSettings, account_id: Option<&str>) -> Result
 /// [`resolve`] against the saved settings, creating the dir so a first launch
 /// (before `claude auth login`) has somewhere to write.
 pub fn resolve_saved(account_id: Option<&str>) -> Result<Option<PathBuf>> {
-    if account_id.is_none() {
+    if account_id.is_none_or(str::is_empty) {
         return Ok(None);
     }
-    let dir = resolve(&crate::config::load_workbench_settings()?, account_id)?;
+    config_dir(&crate::config::load_workbench_settings()?, account_id)
+}
+
+/// [`resolve`], creating the dir so a first launch (before `claude auth login`)
+/// has somewhere to write.
+pub fn config_dir(
+    settings: &WorkbenchSettings,
+    account_id: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    let dir = resolve(settings, account_id)?;
     if let Some(dir) = &dir {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating Claude config dir {}", dir.display()))?;
     }
     Ok(dir)
+}
+
+/// Make `id` (`None` or `""`: the default login) the account new sessions
+/// start under, from the desktop's switcher or the phone's. Only that field of
+/// the saved settings changes, so no unsaved edit elsewhere rides along.
+pub fn set_active(id: Option<&str>) -> Result<()> {
+    let mut settings = crate::config::load_workbench_settings()?;
+    let id = id.filter(|id| !id.is_empty());
+    resolve(&settings, id)?;
+    settings.active_claude_account = id.map(String::from);
+    crate::config::save_workbench_settings(&settings)
 }
 
 /// The account a launch in `project_path` runs under (`None`: the default

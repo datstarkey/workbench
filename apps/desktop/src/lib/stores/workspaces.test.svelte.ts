@@ -987,7 +987,7 @@ describe('WorkspaceStore', () => {
 			store.setPaneClaudeAccount('pane-1', 'work');
 			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBe('work');
 			store.setPaneClaudeAccount('pane-1', undefined);
-			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBeUndefined();
+			expect(store.workspaces[0].terminalTabs[0].panes[0].claudeAccountId).toBe(''); // the default login, now known
 		});
 
 		it('resume uses the account owning the transcript, not the active one', () => {

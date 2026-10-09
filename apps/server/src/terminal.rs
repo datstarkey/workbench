@@ -99,6 +99,10 @@ pub struct TerminalMeta {
     /// On a create only: something the person should know about how it started.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
+    /// On a Claude create only: the account the host ran it under (`""`: the
+    /// default login), so the pane relaunches under the same one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_account_id: Option<String>,
 }
 
 struct TerminalSession {
@@ -265,6 +269,7 @@ impl TerminalManager {
             alive: true,
             claude_session_id,
             notice: None,
+            claude_account_id: None,
         };
         let (tx, _rx) = broadcast::channel::<Vec<u8>>(1024);
         let (done_tx, _done_rx) = watch::channel(false);
@@ -490,7 +495,7 @@ pub async fn terminal_list(State(state): State<AppState>) -> ApiResult<Json<Vec<
 
 pub async fn terminal_create(
     State(state): State<AppState>,
-    Json(mut body): Json<CreateTerminalBody>,
+    Json(body): Json<CreateTerminalBody>,
 ) -> ApiResult<Json<TerminalMeta>> {
     if body.command.is_some() && body.claude_session.is_some() {
         return Err(ApiError::bad_request(
@@ -501,35 +506,36 @@ pub async fn terminal_create(
     let agents = state.agents.clone();
     // openpty + fork/exec and the project-allowlist load are blocking — run them off
     // the async executor so a slow spawn doesn't stall a tokio worker thread.
-    crate::routes::blocking(move || {
-        // Decided before the join below, which compares it to the running session's.
-        if let Some(session) = body.claude_session.as_ref() {
-            body.claude_account_id = workbench_core::claude_accounts::for_launch_saved(
-                body.claude_account_id.as_deref(),
-                &body.project_path,
-                Some(&session.id),
-            )?;
-        }
-        create_or_join(&terminals, &agents, body)
-    })
-    .await
-    .map(Json)
+    crate::routes::blocking(move || create_or_join(&terminals, &agents, body))
+        .await
+        .map(Json)
 }
 
 /// Create a terminal, unless its Claude session already runs as a chat in a
 /// live server terminal for the same cwd and account: then that terminal,
-/// since a second `claude` would write the same session file. Blocking.
+/// since a second `claude` would write the same session file. A Claude
+/// session's account is picked here (`claude_accounts::for_launch`), before
+/// the join compares it to the running session's. Blocking.
 fn create_or_join(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
-    body: CreateTerminalBody,
+    mut body: CreateTerminalBody,
 ) -> anyhow::Result<TerminalMeta> {
+    let settings = workbench_core::config::load_workbench_settings()?;
+    let projects = workbench_core::config::load_projects()?;
+    let cwd =
+        crate::cwd::resolve_cwd_in(&projects, &body.project_path, body.worktree_path.as_deref())?;
     let Some(session_id) = body.claude_session.as_ref().map(|s| s.id.clone()) else {
-        return create_from_body(terminals, agents, body);
+        return create(terminals, agents, body, cwd, &settings, &projects);
     };
     crate::agent::validate_claude_session_id(&session_id)?;
-    let cwd = crate::cwd::resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
-    workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+    body.claude_account_id = workbench_core::claude_accounts::for_launch(
+        &settings,
+        &projects,
+        body.claude_account_id.as_deref(),
+        &body.project_path,
+        Some(&session_id),
+    )?;
     // Decided under the start lock, so an in-flight chat start is seen; created outside it.
     let running = {
         let starting = agents.start_lock(&session_id);
@@ -543,8 +549,11 @@ fn create_or_join(
         )
     };
     match running {
-        Some(meta) => Ok(meta),
-        None => create_from_body(terminals, agents, body),
+        Some(meta) => Ok(TerminalMeta {
+            claude_account_id: Some(body.claude_account_id.unwrap_or_default()),
+            ..meta
+        }),
+        None => create(terminals, agents, body, cwd, &settings, &projects),
     }
 }
 
@@ -572,16 +581,30 @@ fn running_terminal(
 }
 
 /// Create a terminal as `POST /remote/terminals` does (also how a Claude chat
-/// starts: its terminal runs `claude` and the plugin makes it the chat).
-/// Blocking.
+/// starts: its terminal runs `claude` and the plugin makes it the chat), its
+/// `claude_account_id` already decided (a chat start, a restart). Blocking.
 pub fn create_from_body(
     terminals: &TerminalManager,
     agents: &crate::agent::AgentManager,
-    mut body: CreateTerminalBody,
+    body: CreateTerminalBody,
 ) -> anyhow::Result<TerminalMeta> {
-    let cwd = crate::cwd::resolve_cwd(&body.project_path, body.worktree_path.as_deref())?;
+    let settings = workbench_core::config::load_workbench_settings()?;
+    let projects = workbench_core::config::load_projects()?;
+    let cwd =
+        crate::cwd::resolve_cwd_in(&projects, &body.project_path, body.worktree_path.as_deref())?;
+    create(terminals, agents, body, cwd, &settings, &projects)
+}
+
+fn create(
+    terminals: &TerminalManager,
+    agents: &crate::agent::AgentManager,
+    mut body: CreateTerminalBody,
+    cwd: String,
+    settings: &workbench_core::types::WorkbenchSettings,
+    projects: &[workbench_core::types::ProjectConfig],
+) -> anyhow::Result<TerminalMeta> {
     let claude_config_dir =
-        workbench_core::claude_accounts::resolve_saved(body.claude_account_id.as_deref())?;
+        workbench_core::claude_accounts::config_dir(settings, body.claude_account_id.as_deref())?;
     // Resume whatever has a transcript, as a chat start does: a client can't
     // know whether its session ever got a message written.
     if let Some(session) = body.claude_session.as_mut() {
@@ -592,17 +615,20 @@ pub fn create_from_body(
         .claude_session
         .as_ref()
         .and_then(workbench_core::claude_launch::prompt_notice);
-    let command =
-        workbench_core::claude_launch::startup_command(body.command, body.claude_session.as_ref())?;
+    let command = workbench_core::claude_launch::startup_command(
+        body.command,
+        body.claude_session.as_ref(),
+        settings,
+        projects,
+    )?;
     // The plugin reads no live mode until a hook reports one, so it's told the
     // one `claude` starts in rather than guessing the settings default. Read
     // before a token is granted: an error returns past the revoke below.
     let launch_mode = match body.claude_session.as_ref() {
-        Some(session) => workbench_core::claude_launch::launch_mode(
-            session.permission_mode.as_deref(),
-            &workbench_core::config::load_workbench_settings()?,
-        )
-        .map(String::from),
+        Some(session) => {
+            workbench_core::claude_launch::launch_mode(session.permission_mode.as_deref(), settings)
+                .map(String::from)
+        }
         None => None,
     };
     // The Workbench plugin in this pane's `claude` runs the session as a
@@ -653,7 +679,15 @@ pub fn create_from_body(
         (Err(_), Some(token)) => agents.revoke_grant(token),
         _ => {}
     }
-    created.map(|meta| TerminalMeta { notice, ..meta })
+    let claude_account_id = body
+        .claude_session
+        .is_some()
+        .then(|| body.claude_account_id.clone().unwrap_or_default());
+    created.map(|meta| TerminalMeta {
+        notice,
+        claude_account_id,
+        ..meta
+    })
 }
 
 pub async fn terminal_kill(

@@ -413,9 +413,7 @@ pub fn create_worktree(request: &CreateWorktreeRequest) -> Result<String> {
     let copy_options = request.copy_options.clone().unwrap_or_default();
     let strategy = request.strategy.as_deref().unwrap_or("sibling");
 
-    let worktree_path = if let Some(ref p) = request.path {
-        p.clone()
-    } else if strategy == "inside" {
+    let worktree_path = if strategy == "inside" {
         Path::new(&repo_root)
             .join(".worktrees")
             .join(&request.branch)

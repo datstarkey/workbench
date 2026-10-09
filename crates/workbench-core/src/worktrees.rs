@@ -54,27 +54,31 @@ fn start_point(settings: &WorkbenchSettings) -> Option<String> {
 
 /// Remove a known worktree of a registered project, then its branch when
 /// `delete_branch` is set. A branch git won't delete (unmerged) stays, logged:
-/// the worktree is already gone.
+/// the worktree is already gone. Returns whether the branch was deleted.
 pub fn remove(
     repo_path: &str,
     worktree_path: &str,
     force: bool,
     delete_branch: bool,
-) -> Result<()> {
-    crate::cwd::resolve_cwd(repo_path, Some(worktree_path))?;
-    let branch = delete_branch
-        .then(|| crate::git::list_worktrees(repo_path).ok())
-        .flatten()
-        .and_then(|list| list.into_iter().find(|w| w.path == worktree_path))
-        .map(|w| w.branch)
-        .filter(|b| !b.is_empty());
+) -> Result<RemovedWorktree> {
+    crate::cwd::ensure_registered(repo_path, &crate::cwd::registered()?)?;
+    let worktree = crate::cwd::known_worktree(repo_path, worktree_path)?;
     crate::git::remove_worktree(repo_path, worktree_path, force)?;
-    if let Some(branch) = branch {
-        if let Err(e) = crate::git::delete_branch(repo_path, &branch, false) {
-            log::warn!("[worktrees] Failed to delete branch {branch}: {e}");
-        }
-    }
-    Ok(())
+    let branch = Some(worktree.branch).filter(|b| delete_branch && !b.is_empty());
+    let branch_deleted = branch.is_some_and(|branch| {
+        crate::git::delete_branch(repo_path, &branch, false)
+            .inspect_err(|e| log::warn!("[worktrees] Failed to delete branch {branch}: {e}"))
+            .is_ok()
+    });
+    Ok(RemovedWorktree { branch_deleted })
+}
+
+/// What [`remove`] did beyond removing the worktree. Hosts that predate
+/// `deleteBranch` answer without it, so a client deletes the branch itself.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedWorktree {
+    pub branch_deleted: bool,
 }
 
 #[cfg(test)]
@@ -86,7 +90,6 @@ mod tests {
             repo_path: "/repo".into(),
             branch: "feature".into(),
             new_branch,
-            path: None,
             copy_options: None,
             strategy: None,
             start_point: None,

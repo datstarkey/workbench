@@ -163,6 +163,8 @@ export class TerminalConnection {
 	terminalId: string | null = null;
 	/** What the server said about how the PTY it created started, if anything. */
 	notice: string | null = null;
+	/** The account the server ran a Claude create under (`''`: the default login). */
+	claudeAccountId: string | null = null;
 
 	private ws: WebSocket | null = null;
 	/** Options from the last connect, reused by `takeControl()`. */
@@ -303,6 +305,7 @@ export class TerminalConnection {
 		const meta: TerminalMeta = await resp.json();
 		claimedIds.add(meta.id);
 		this.notice = meta.notice ?? null;
+		this.claudeAccountId = meta.claudeAccountId ?? null;
 		return meta.id;
 	}
 

@@ -771,7 +771,7 @@ describe('WorkbenchSettingsStore', () => {
 
 			await store.setActiveClaudeAccount(account.id);
 			expect(store.activeClaudeAccountId).toBe(account.id);
-			expect(saved()?.activeClaudeAccount).toBe(account.id);
+			expect(invokeSpy).toHaveBeenCalledWith('set_active_claude_account', { id: account.id });
 
 			await store.removeClaudeAccount(account.id);
 			expect(store.activeClaudeAccountId).toBeUndefined();

@@ -37,7 +37,8 @@ export interface ControlPlaneCommands {
 	create_worktree: { args: { request: unknown }; result: string };
 	remove_worktree: {
 		args: { repoPath: string; worktreePath: string; force: boolean; deleteBranch: boolean };
-		result: void;
+		/** Absent from hosts that predate `deleteBranch`. */
+		result: { branchDeleted?: boolean } | null;
 	};
 	list_branches: { args: { path: string }; result: BranchInfo[] };
 	git_info: { args: { path: string }; result: GitInfo };
@@ -52,6 +53,8 @@ export interface ControlPlaneCommands {
 	discover_codex_sessions: { args: { projectPath: string }; result: DiscoveredClaudeSession[] };
 	load_claude_settings: { args: { scope: string; projectPath?: string }; result: unknown };
 	load_workbench_settings: { args: void; result: unknown };
+	/** The host's account for new Claude sessions (`null`: the default login); changes only that setting. */
+	set_active_claude_account: { args: { id: string | null }; result: void };
 	/** Server only: the app hosting it (the desktop). 501 from a standalone server. */
 	host_update_status: { args: { fresh?: boolean } | void; result: HostUpdateStatus };
 	/** Server only: install the reviewed `version`; the host restarts. 501 from a standalone server. */

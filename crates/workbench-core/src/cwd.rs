@@ -22,6 +22,16 @@ pub fn resolve_cwd(project_path: &str, worktree_path: Option<&str>) -> Result<St
     resolve_in(project_path, worktree_path, &registered()?)
 }
 
+/// [`resolve_cwd`] against projects the caller already loaded.
+pub fn resolve_cwd_in(
+    projects: &[crate::types::ProjectConfig],
+    project_path: &str,
+    worktree_path: Option<&str>,
+) -> Result<String> {
+    let registered: Vec<String> = projects.iter().map(|p| p.path.clone()).collect();
+    resolve_in(project_path, worktree_path, &registered)
+}
+
 pub(crate) fn registered() -> Result<Vec<String>> {
     Ok(crate::config::load_projects()?
         .into_iter()
@@ -37,24 +47,9 @@ pub(crate) fn resolve_in(
     // BOTH branches must resolve inside a registered Workbench project — a
     // worktree path is only trusted because its project is. Otherwise a caller
     // could run in any git repo's worktree on the host.
-    if !is_registered_project(project_path, registered_projects) {
-        return Err(NotAllowed(format!(
-            "project path is not a registered Workbench project: {project_path}"
-        ))
-        .into());
-    }
+    ensure_registered(project_path, registered_projects)?;
     match worktree_path {
-        Some(wt) => {
-            let worktrees =
-                crate::git::list_worktrees(project_path).context("failed to list worktrees")?;
-            if !worktrees.iter().any(|w| w.path == wt) {
-                return Err(NotAllowed(format!(
-                    "worktree path is not a known worktree of this project: {wt}"
-                ))
-                .into());
-            }
-            Ok(wt.to_string())
-        }
+        Some(wt) => known_worktree(project_path, wt).map(|w| w.path),
         None => {
             if !std::path::Path::new(project_path).is_dir() {
                 bail!("project path does not exist: {project_path}");
@@ -62,6 +57,30 @@ pub(crate) fn resolve_in(
             Ok(project_path.to_string())
         }
     }
+}
+
+pub(crate) fn ensure_registered(project_path: &str, registered: &[String]) -> Result<()> {
+    if is_registered_project(project_path, registered) {
+        return Ok(());
+    }
+    Err(NotAllowed(format!(
+        "project path is not a registered Workbench project: {project_path}"
+    ))
+    .into())
+}
+
+/// `wt` as one of the project's worktrees, or refused.
+pub(crate) fn known_worktree(project_path: &str, wt: &str) -> Result<crate::types::WorktreeInfo> {
+    crate::git::list_worktrees(project_path)
+        .context("failed to list worktrees")?
+        .into_iter()
+        .find(|w| w.path == wt)
+        .ok_or_else(|| {
+            NotAllowed(format!(
+                "worktree path is not a known worktree of this project: {wt}"
+            ))
+            .into()
+        })
 }
 
 /// True if `path` is — or canonicalizes to — one of the registered project paths.

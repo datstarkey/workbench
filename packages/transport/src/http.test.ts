@@ -39,6 +39,16 @@ describe('HttpTransport route mapping', () => {
 		});
 	});
 
+	it("puts the host's active Claude account, null for the default login", async () => {
+		const f = mockFetch(() => new Response(null, { status: 204 }));
+		const t = createHttpTransport({ baseUrl: 'http://host:4317' });
+		await t.invoke('set_active_claude_account', { id: null });
+		const [url, init] = f.mock.calls[0];
+		expect(url).toBe('http://host:4317/settings/active-claude-account');
+		expect(init.method).toBe('PUT');
+		expect(JSON.parse(String(init.body))).toEqual({ id: null });
+	});
+
 	it('maps list_projects to GET /projects', async () => {
 		const f = mockFetch(() => json([{ name: 'a', path: '/a' }]));
 		const t = createHttpTransport({ baseUrl: 'http://host:4317' });

@@ -91,7 +91,7 @@ export interface CreateServerTerminalBody {
 	command?: string;
 	/** Run Claude on this session instead of `command`. */
 	claudeSession?: ClaudeSessionLaunch;
-	/** Saved Claude account whose config dir becomes the shell's `CLAUDE_CONFIG_DIR`. */
+	/** A Claude account (`''`: the default login); absent, the host picks one for a Claude session. */
 	claudeAccountId?: string;
 	cols: number;
 	rows: number;
@@ -118,6 +118,8 @@ export interface ServerTerminalMeta {
 	claudeSessionId?: string;
 	/** On a create only: something to tell the person about how it started. */
 	notice?: string;
+	/** On a Claude create only: the account the host ran it under (`''`: the default login). */
+	claudeAccountId?: string;
 }
 
 /** Who started a host update. Mirrors `UpdateOrigin` in crates/workbench-core/src/types.rs. */
@@ -181,7 +183,7 @@ export interface TerminalPaneState {
 	 * terminal died with the app; the chat starts a new one, resumed).
 	 */
 	liveTerminal?: boolean;
-	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`); absent is the default. */
+	/** Claude account the pane's shell runs under (`CLAUDE_CONFIG_DIR`; `''`: the default login); absent until the host picks one. */
 	claudeAccountId?: string;
 	/** An agent action's prompt: it starts the pane's Claude session if that is new. */
 	claudePrompt?: string;
@@ -976,7 +978,7 @@ export interface StartAgentBody {
 	codexSandboxMode?: Exclude<CodexSandboxMode, 'default'>;
 	paneId?: string;
 	hookSocket?: string;
-	/** The pane's Claude account; absent is the default login. */
+	/** The pane's Claude account (`''`: the default login); absent, the host picks one. */
 	claudeAccountId?: string;
 	/** Join the running session only (another device's chat); 404 instead of spawning. */
 	attachOnly?: boolean;

@@ -374,10 +374,16 @@ async fn worktree_create_follows_the_hosts_settings() {
     .unwrap();
 
     let (handle, base) = start().await;
-    // What a phone sends: no layout, start point or fetch.
+    // What a phone sends: no layout, start point or fetch. A path is ignored:
+    // the host's layout decides where it goes.
     let res = client()
         .post(format!("{base}/projects/worktrees"))
-        .json(&json!({ "repoPath": repo.path(), "branch": "feature", "newBranch": true }))
+        .json(&json!({
+            "repoPath": repo.path(),
+            "branch": "feature",
+            "newBranch": true,
+            "path": repo.path().join("elsewhere")
+        }))
         .send()
         .await
         .unwrap();
@@ -399,7 +405,9 @@ async fn worktree_create_follows_the_hosts_settings() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 204);
+    assert_eq!(res.status(), 200);
+    let removed: Value = res.json().await.unwrap();
+    assert_eq!(removed["branchDeleted"], true);
     assert!(!inside.exists());
     let branches = std::process::Command::new("git")
         .args(["branch", "--list", "feature"])
@@ -407,6 +415,46 @@ async fn worktree_create_follows_the_hosts_settings() {
         .output()
         .unwrap();
     assert!(branches.stdout.is_empty(), "the branch is deleted too");
+
+    handle.stop().await;
+}
+
+#[tokio::test]
+async fn the_phone_switches_the_hosts_active_claude_account() {
+    let env = env_guard();
+    let project = tempfile::tempdir().unwrap();
+    let cfg = register_project(&env, project.path());
+    let settings = cfg.path().join("settings.json");
+    std::fs::write(
+        &settings,
+        json!({
+            "claudeAccounts": [{ "id": "work", "name": "Work", "configDir": "/tmp/claude-work" }],
+            "accentColor": "ember"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let managers = Managers::default();
+    let changed = managers.settings.subscribe();
+    let (handle, base) = start_with(managers, TOKEN).await;
+    let put = |id: Value| {
+        client()
+            .put(format!("{base}/settings/active-claude-account"))
+            .json(&json!({ "id": id }))
+            .send()
+    };
+    let saved =
+        || -> Value { serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap() };
+
+    assert_eq!(put(json!("work")).await.unwrap().status(), 204);
+    assert_eq!(saved()["activeClaudeAccount"], "work");
+    assert_eq!(saved()["accentColor"], "ember", "only the account changes");
+    assert!(changed.has_changed().unwrap(), "the desktop hears it");
+
+    assert_eq!(put(json!("nope")).await.unwrap().status(), 400);
+    assert_eq!(saved()["activeClaudeAccount"], "work");
+    assert_eq!(put(Value::Null).await.unwrap().status(), 204);
+    assert_eq!(saved().get("activeClaudeAccount"), None);
 
     handle.stop().await;
 }
@@ -790,6 +838,10 @@ async fn terminal_claude_session_is_built_by_the_server() {
     assert_eq!(
         meta["claudeSessionId"], sid,
         "a Claude terminal is listed as its session: {meta}"
+    );
+    assert_eq!(
+        meta["claudeAccountId"], "",
+        "the create names the login the host picked (the default): {meta}"
     );
     let args = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
