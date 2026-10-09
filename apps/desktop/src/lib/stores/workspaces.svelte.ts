@@ -849,7 +849,7 @@ export class WorkspaceStore {
 		const pane = this.workspaces
 			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
 			.find((p) => p.id === paneId);
-		if (!pane || pane.claudeSessionId === sessionId) return;
+		if (!pane || pane.claudeSessionId === sessionId || this.focusSession(sessionId)) return;
 		this.adoption.takeOver(paneId);
 		releaseChat(paneId);
 		if (pane.claudeSessionId) await stopAgent(pane.claudeSessionId).catch(() => {});
@@ -892,6 +892,14 @@ export class WorkspaceStore {
 		this.selectedId = location.workspaceId;
 		this.setActiveTab(location.workspaceId, location.tabId);
 		return true;
+	}
+
+	/** Focus the tab already showing a session: a second one would run it twice. */
+	private focusSession(sessionId: string): boolean {
+		const pane = this.workspaces
+			.flatMap((w) => w.terminalTabs.flatMap((t) => t.panes))
+			.find((p) => p.claudeSessionId === sessionId);
+		return pane !== undefined && this.focusPane(pane.id);
 	}
 
 	/** Find workspace/tab context for an AI pane. */
@@ -1008,6 +1016,7 @@ export class WorkspaceStore {
 		accountId?: string,
 		view?: 'chat' | 'terminal'
 	) {
+		if (this.focusSession(sessionId)) return;
 		this.updateWorkspace(workspaceId, (w) => {
 			const newTab = this.createAITab(
 				label,

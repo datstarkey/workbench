@@ -137,6 +137,9 @@ pub struct WorkspaceSnapshot {
 pub struct WorkspaceFile {
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub selected_id: Option<String>,
+    /// Pane id → the server terminal it re-attaches to after a webview reload.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub server_terminal_ids: HashMap<String, String>,
 }
 
 // Claude CLI session discovery types
@@ -832,12 +835,25 @@ mod tests {
                 branch: None,
             }],
             selected_id: Some("ws-1".to_string()),
+            server_terminal_ids: HashMap::from([("pane-1".to_string(), "term-1".to_string())]),
         };
         let json = serde_json::to_string(&ws).unwrap();
+        assert!(
+            json.contains(r#""serverTerminalIds":{"pane-1":"term-1"}"#),
+            "{json}"
+        );
         let deserialized: WorkspaceFile = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.workspaces.len(), 1);
         assert_eq!(deserialized.workspaces[0].id, "ws-1");
         assert_eq!(deserialized.selected_id, Some("ws-1".to_string()));
+        assert_eq!(deserialized.server_terminal_ids, ws.server_terminal_ids);
+    }
+
+    #[test]
+    fn workspace_file_without_server_terminal_ids_loads() {
+        let file: WorkspaceFile =
+            serde_json::from_str(r#"{"workspaces":[],"selectedId":null}"#).unwrap();
+        assert!(file.server_terminal_ids.is_empty());
     }
 
     // DiscoveredClaudeSession round-trip

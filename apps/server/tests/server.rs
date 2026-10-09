@@ -1499,6 +1499,78 @@ async fn concurrent_chat_starts_share_one_process() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_terminal_for_a_running_claude_session_is_that_sessions_terminal() {
+    let env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let _cfg = register_project(&env, tmp.path());
+    env.set(
+        "WORKBENCH_FAKE_CLAUDE",
+        write_fake_stream_claude(tmp.path()),
+    );
+    env.set("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
+    let log = tmp.path().join("received.jsonl");
+    env.set("FAKE_CLAUDE_LOG", &log);
+
+    let (handle, base) = start().await;
+    let id = "5d6f2b1e-3c4a-4b5d-8e9f-a0b1c2d3e4f5";
+    let create = || async {
+        let res = client()
+            .post(format!("{base}/remote/terminals"))
+            .json(
+                &json!({ "projectPath": tmp.path(), "claudeSession": {"id": id, "resume": true} }),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        res.json::<Value>().await.unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // A reloaded desktop pane and the phone's history pick, at once.
+    let (a, b) = tokio::join!(create(), create());
+    assert_eq!(a, b, "both join the one terminal still starting its claude");
+
+    // Once the plugin attached, a resume from anywhere finds it too.
+    let res = client()
+        .post(format!("{base}/agent/claude"))
+        .json(&json!({ "projectPath": tmp.path(), "sessionId": id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["terminalId"], a);
+    assert_eq!(create().await, a);
+
+    let terminals: Vec<Value> = client()
+        .get(format!("{base}/remote/terminals"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(terminals.len(), 1, "one terminal: {terminals:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let received = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(
+        received.matches(r#""subtype":"initialize""#).count(),
+        1,
+        "one claude process for the session"
+    );
+
+    let res = client()
+        .delete(format!("{base}/remote/terminals/{a}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    handle.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn closing_a_chats_terminal_ends_the_chat_everywhere() {
     let env = env_guard();
     let tmp = tempfile::tempdir().unwrap();

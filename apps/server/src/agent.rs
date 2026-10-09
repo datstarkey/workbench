@@ -36,7 +36,7 @@ const DEFAULT_MAX_AGENTS: usize = 16;
 /// How long a start waits for codex to open (or resume) its thread.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a new terminal's `claude` gets to start and attach through the plugin.
-const TERMINAL_START: Duration = Duration::from_secs(30);
+pub(crate) const TERMINAL_START: Duration = Duration::from_secs(30);
 /// How far ahead a chat may be kept warm: every keep-alive turn costs usage.
 const MAX_KEEP_WARM_MS: u64 = 24 * 60 * 60 * 1000;
 
@@ -835,7 +835,11 @@ impl AgentManager {
             .as_ref()
             .map(|c| c.id.clone())
             .context("not a Claude session")?;
-        let terminal = crate::terminal::create_from_body(terminals, self, body)?;
+        // A terminal already opened for the session is joined: its `claude` may still be starting.
+        let terminal = match crate::terminal::running_terminal(terminals, self, &session_id)? {
+            Some(running) => running,
+            None => crate::terminal::create_from_body(terminals, self, body)?,
+        };
         let deadline = Instant::now() + TERMINAL_START;
         while Instant::now() < deadline {
             if let Some(session) = self.get(&session_id) {
