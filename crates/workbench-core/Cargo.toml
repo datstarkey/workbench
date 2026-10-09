@@ -19,6 +19,7 @@ base64 = "0.22"
 chrono = { workspace = true }
 portable-pty = { workspace = true }
 toml_edit = "0.20"
+uuid = { workspace = true }
 gix = { version = "0.89", default-features = false, features = ["sha1"] }
 
 [target.'cfg(unix)'.dependencies]

@@ -4,7 +4,7 @@
 pub use workbench_core::{
     claude_accounts, claude_sessions, codex_config, codex_sessions, config, git, github, net,
     package_scripts, paths, sandbox_runtime, session_utils, settings, shell, shell_integration,
-    text, trello, trello_automation, types,
+    text, trello, trello_automation, types, workspace,
 };
 
 // The e2e WebDriver server is unauthenticated control of the webview (and so of
