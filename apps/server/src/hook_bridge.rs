@@ -145,8 +145,15 @@ fn read_lines<R: Read>(
     secret: Option<&str>,
 ) {
     for line in reader.lines() {
-        let Ok(line) = line else {
-            break;
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => {
+                tracing::warn!("hook bridge: failed to read an event: {e}");
+                let _ = events.send(HookEvent::Invalid {
+                    summary: format!("Failed to read payload: {e}"),
+                });
+                break;
+            }
         };
         if line.trim().is_empty() {
             continue;
@@ -234,6 +241,16 @@ mod tests {
             &published(r#"{"pane_id":"p3"}"#, None)[..],
             [HookEvent::Invalid { .. }]
         ));
+    }
+
+    #[test]
+    fn a_read_error_is_logged() {
+        let bad: &[u8] = b"\xff\xfe not utf-8\n";
+        let (tx, mut rx) = broadcast::channel(4);
+        read_lines(BufReader::new(bad), &tx, None);
+        assert!(
+            matches!(rx.try_recv(), Ok(HookEvent::Invalid { summary }) if summary.starts_with("Failed to read"))
+        );
     }
 
     #[test]
