@@ -4,6 +4,7 @@
 	import { Input } from '@workbench/ui/input';
 	import * as Select from '@workbench/ui/select';
 	import type { ProjectFormState } from '$types/workbench';
+	import { accountChoices } from '@workbench/chat-ui';
 	import { getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
@@ -23,20 +24,24 @@
 	} = $props();
 
 	const settings = getWorkbenchSettingsStore();
-	/** Select values: `ACTIVE` follows the active account, `''` is the default login. */
+	/** Follows the active account; the other options are `accountChoices` keys. */
 	const ACTIVE = 'active';
+	const choices = $derived(accountChoices(settings.claudeAccounts));
 	const accountOptions = $derived([
-		{ value: ACTIVE, label: 'Active account' },
-		{ value: '', label: 'Default (~/.claude)' },
-		...settings.claudeAccounts.map((a) => ({ value: a.id, label: a.name }))
+		{ key: ACTIVE, label: 'Active account' },
+		...choices.map((c) => ({ key: c.key, label: c.id ? c.name : 'Default (~/.claude)' }))
 	]);
-	const accountValue = $derived(form.claudeAccountId ?? ACTIVE);
-	const accountLabel = $derived(
-		accountOptions.find((o) => o.value === accountValue)?.label ?? 'Active account'
+	// `''` saves the default login; a removed account's id behaves as (and shows) the active one.
+	const accountKey = $derived(
+		form.claudeAccountId === ''
+			? (choices.find((c) => !c.id)?.key ?? ACTIVE)
+			: (choices.find((c) => c.id && c.id === form.claudeAccountId)?.key ?? ACTIVE)
 	);
+	const accountLabel = $derived(accountOptions.find((o) => o.key === accountKey)?.label);
 
-	function setAccount(value: string) {
-		form = { ...form, claudeAccountId: value === ACTIVE ? undefined : value };
+	function setAccount(key: string) {
+		const choice = choices.find((c) => c.key === key);
+		form = { ...form, claudeAccountId: key === ACTIVE ? undefined : (choice?.id ?? '') };
 	}
 </script>
 
@@ -80,11 +85,11 @@
 			{#if settings.claudeAccounts.length > 0}
 				<div class="grid gap-1.5">
 					<label class="text-sm font-medium" for="project-account">Claude account</label>
-					<Select.Root type="single" value={accountValue} onValueChange={setAccount}>
+					<Select.Root type="single" value={accountKey} onValueChange={setAccount}>
 						<Select.Trigger id="project-account">{accountLabel}</Select.Trigger>
 						<Select.Content>
-							{#each accountOptions as option (option.value)}
-								<Select.Item value={option.value}>{option.label}</Select.Item>
+							{#each accountOptions as option (option.key)}
+								<Select.Item value={option.key}>{option.label}</Select.Item>
 							{/each}
 						</Select.Content>
 					</Select.Root>

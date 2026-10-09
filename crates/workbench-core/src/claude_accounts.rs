@@ -283,8 +283,9 @@ fn parse_usage(stdout: &str) -> Vec<UsageLimit> {
 
 /// Move a session to another account's config dir (`None` is `~/.claude`) so
 /// that login `--resume`s it: its JSONL, the folder beside it (subagents, tool
-/// results) and its file checkpoints. A move, not a copy: one id under two
-/// accounts is found under either. A session with no JSONL yet has nothing to move.
+/// results), its file checkpoints, session env and todos. A move, not a copy:
+/// one id under two accounts is found under either. A session with no JSONL
+/// yet has nothing to move.
 pub fn move_session(from: Option<&Path>, to: Option<&Path>, session_id: &str) -> Result<()> {
     let root = |dir: Option<&Path>| dir.map(Path::to_path_buf).unwrap_or_else(paths::claude_user_dir);
     let (from, to) = (root(from), root(to));
@@ -305,16 +306,28 @@ pub fn move_session(from: Option<&Path>, to: Option<&Path>, session_id: &str) ->
     let dest = to.join("projects").join(project);
     std::fs::create_dir_all(&dest)
         .with_context(|| format!("creating {}", dest.display()))?;
-    std::fs::rename(&jsonl, dest.join(format!("{session_id}.jsonl")))
+    let moved_jsonl = dest.join(format!("{session_id}.jsonl"));
+    // Config dirs on different volumes can't rename across: copy, then remove.
+    std::fs::rename(&jsonl, &moved_jsonl)
+        .or_else(|_| {
+            std::fs::copy(&jsonl, &moved_jsonl)?;
+            std::fs::remove_file(&jsonl)
+        })
         .with_context(|| format!("moving {}", jsonl.display()))?;
     // The transcript is what `--resume` needs; the rest only enriches it.
-    for (src, dst) in [
-        (jsonl.with_extension(""), dest.join(session_id)),
-        (
-            from.join("file-history").join(session_id),
-            to.join("file-history").join(session_id),
-        ),
-    ] {
+    let mut extras = vec![(jsonl.with_extension(""), dest.join(session_id))];
+    for dir in ["file-history", "session-env"] {
+        extras.push((from.join(dir).join(session_id), to.join(dir).join(session_id)));
+    }
+    // `todos/<session>-agent-<agent>.json`, one per agent of the session.
+    if let Ok(entries) = std::fs::read_dir(from.join("todos")) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(session_id) {
+                extras.push((entry.path(), to.join("todos").join(entry.file_name())));
+            }
+        }
+    }
+    for (src, dst) in extras {
         if !src.exists() || dst.exists() {
             continue;
         }
@@ -342,6 +355,11 @@ mod tests {
         std::fs::create_dir_all(project.join(id).join("subagents")).unwrap();
         std::fs::write(project.join(format!("{id}.jsonl")), "{}\n").unwrap();
         std::fs::create_dir_all(a.path().join("file-history").join(id)).unwrap();
+        std::fs::create_dir_all(a.path().join("session-env").join(id)).unwrap();
+        std::fs::create_dir_all(a.path().join("todos")).unwrap();
+        let todo = format!("{id}-agent-{id}.json");
+        std::fs::write(a.path().join("todos").join(&todo), "[]").unwrap();
+        std::fs::write(a.path().join("todos/other-agent-x.json"), "[]").unwrap();
 
         move_session(Some(a.path()), Some(b.path()), id).unwrap();
 
@@ -349,6 +367,9 @@ mod tests {
         assert!(moved.join(format!("{id}.jsonl")).is_file());
         assert!(moved.join(id).join("subagents").is_dir());
         assert!(b.path().join("file-history").join(id).is_dir());
+        assert!(b.path().join("session-env").join(id).is_dir());
+        assert!(b.path().join("todos").join(&todo).is_file());
+        assert!(a.path().join("todos/other-agent-x.json").is_file());
         assert!(!project.join(format!("{id}.jsonl")).exists());
         assert!(!project.join(id).exists());
     }

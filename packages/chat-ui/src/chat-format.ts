@@ -540,7 +540,7 @@ export function accountChoices(
 	accounts: Pick<ClaudeAccount, 'id' | 'name'>[]
 ): { key: string; id: string | undefined; name: string }[] {
 	return [
-		{ key: '', id: undefined, name: 'Default' },
+		{ key: 'default', id: undefined, name: 'Default' },
 		...accounts.map(({ id, name }) => ({ key: id, id, name }))
 	];
 }

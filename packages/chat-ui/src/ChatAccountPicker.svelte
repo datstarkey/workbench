@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CheckIcon from '@lucide/svelte/icons/check';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
 	import type { ClaudeAccount } from '@workbench/types';
@@ -41,13 +42,12 @@
 			Continue this chat on another account. It restarts there and re-reads the conversation, so the
 			next reply starts with a cold cache.
 		</DropdownMenu.Label>
-		<DropdownMenu.RadioGroup
-			value={current.key}
-			onValueChange={(key) => onAccount(choices.find((c) => c.key === key)?.id)}
-		>
-			{#each choices as choice (choice.key)}
-				<DropdownMenu.RadioItem value={choice.key}>{choice.name}</DropdownMenu.RadioItem>
-			{/each}
-		</DropdownMenu.RadioGroup>
+		<!-- Checked from `accountId`, the server's account: a refused switch never shows as picked. -->
+		{#each choices as choice (choice.key)}
+			<DropdownMenu.Item onSelect={() => onAccount(choice.id)}>
+				<CheckIcon class={['size-3.5', choice.key !== current.key && 'invisible']} />
+				{choice.name}
+			</DropdownMenu.Item>
+		{/each}
 	</DropdownMenu.Content>
 </DropdownMenu.Root>

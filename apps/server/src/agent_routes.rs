@@ -27,7 +27,7 @@
 //!   (git-tracked and untracked, not ignored) for the composer's `@` mentions.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -38,7 +38,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 use workbench_core::claude_accounts::{self, UsageLimit};
-use workbench_core::claude_launch;
 use workbench_core::claude_transcript::{ApprovalDecision, ElicitationAction};
 
 use crate::agent::{
@@ -83,11 +82,6 @@ pub async fn agent_start(
         .map(|v| Json(v).into_response())
 }
 
-/// Between Claude Code's trust dialog appearing and it reading keys.
-const TRUST_SETTLE: Duration = Duration::from_secs(1);
-/// After answering the trust dialog, how long before answering once more.
-const TRUST_RETRY: Duration = Duration::from_secs(5);
-
 /// A Claude chat is always an interactive `claude` in a server terminal, run
 /// as a chat by the Workbench plugin (`mod_routes`): the terminal and the chat
 /// are one process. Blocking: waits for the plugin to attach.
@@ -127,31 +121,12 @@ fn claude_start(
         shell: None,
         claude_account_id: body.claude_account_id,
     };
-    // When the trust dialog was answered; again once if `claude` still hasn't attached.
-    let mut trust_answers: Vec<Instant> = Vec::new();
-    let started = agents.open_terminal(terminals, launch, |terminal| {
-        let answer_again = trust_answers.len() == 1 && trust_answers[0].elapsed() > TRUST_RETRY;
-        let asks = (trust_answers.is_empty() || answer_again)
-            && terminals
-                .recent_output(terminal)
-                .is_some_and(|out| claude_launch::shows_trust_prompt(&out));
-        if !asks {
-            return None;
-        }
-        if !trust_folder {
-            // The chat asks instead; trusting starts it again with `trustFolder`.
-            terminals.kill(terminal);
-            return Some(json!({ "needsTrust": cwd }));
-        }
-        // Keys typed as the dialog first draws are lost.
-        std::thread::sleep(TRUST_SETTLE);
-        for keys in claude_launch::TRUST_ACCEPT_KEYS {
-            terminals.type_keys(terminal, keys);
-            std::thread::sleep(Duration::from_millis(300));
-        }
-        trust_answers.push(Instant::now());
-        None
-    })?;
+    // The chat asks instead; trusting starts it again with `trustFolder`.
+    let started = agents.open_terminal(
+        terminals,
+        launch,
+        crate::agent::trust_watch(terminals, trust_folder, cwd),
+    )?;
     Ok(match started {
         TerminalStart::Attached(session) => start_reply(&session),
         TerminalStart::Stopped(answer) => answer,
@@ -785,6 +760,7 @@ pub async fn agent_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<Vec<Stri
 mod tests {
     use super::*;
     use crate::agent::ModGrant;
+    use std::time::Instant;
 
     /// A session's driver lock is held for as long as its holder needs (a
     /// snapshot of a long chat): the list must not wait for it on an async

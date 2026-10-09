@@ -50,10 +50,14 @@ async fn a_chat_moves_to_another_account_and_resumes_there() {
     )
     .unwrap();
     let work = tmp.path().join("work-account");
+    let broken = tmp.path().join("broken-account");
     std::fs::write(
         tmp.path().join("settings.json"),
-        json!({ "claudeAccounts": [{ "id": "work", "name": "Work", "configDir": work }] })
-            .to_string(),
+        json!({ "claudeAccounts": [
+            { "id": "work", "name": "Work", "configDir": work },
+            { "id": "broken", "name": "Broken", "configDir": broken },
+        ] })
+        .to_string(),
     )
     .unwrap();
     // A session the default account has written to, so it is resumed.
@@ -72,7 +76,18 @@ async fn a_chat_moves_to_another_account_and_resumes_there() {
     std::env::remove_var("CLAUDE_CONFIG_DIR");
     std::env::set_var("HOME", tmp.path());
     std::env::set_var("WORKBENCH_FAKE_CLAUDE", &fake);
-    std::env::set_var("WORKBENCH_CLAUDE_BIN", support::mod_bridge(tmp.path()));
+    // Under the broken login `claude` exits before its plugin attaches.
+    let wrapper = tmp.path().join("claude-wrapper.sh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$CLAUDE_CONFIG_DIR\" in *broken*) exit 1;; esac\nexec '{}' \"$@\"\n",
+            support::mod_bridge(tmp.path()).display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("WORKBENCH_CLAUDE_BIN", &wrapper);
     std::env::set_var("WORKBENCH_CONFIG_DIR", tmp.path());
     std::env::set_var("FAKE_CLAUDE_ARGS", &args);
 
@@ -154,6 +169,35 @@ async fn a_chat_moves_to_another_account_and_resumes_there() {
     .unwrap();
     let frame = next_json(&mut ws).await;
     assert_eq!(frame["t"], "error", "{frame}");
+
+    // A login whose `claude` never attaches: the files go back and the chat
+    // reopens under the account it was on, with its history.
+    ws.send(Message::Text(
+        json!({"t": "account", "accountId": "broken"}).to_string(),
+    ))
+    .await
+    .unwrap();
+    // The socket only hears back once the switch gives up (30s) and reopens.
+    for _ in 0..450 {
+        if std::fs::read_to_string(&args).unwrap_or_default().lines().count() >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let launches = std::fs::read_to_string(&args).unwrap_or_default();
+    let launches: Vec<&str> = launches.lines().collect();
+    assert_eq!(launches.len(), 3, "{launches:?}");
+    assert!(
+        launches[2].starts_with(&format!("dir={} ", work.display())),
+        "{launches:?}"
+    );
+    assert!(launches[2].contains(&format!("--resume {SID}")), "{launches:?}");
+    assert!(work
+        .join("projects")
+        .join(&encoded)
+        .join(format!("{SID}.jsonl"))
+        .is_file());
+    assert!(!broken.join("projects").join(&encoded).join(format!("{SID}.jsonl")).exists());
 
     let res = client
         .delete(format!("{base}/agent/claude/{SID}"))

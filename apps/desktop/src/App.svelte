@@ -69,7 +69,6 @@
 	const gitStore = setGitStore(new GitStore());
 	const workspaceStore = setWorkspaceStore(new WorkspaceStore());
 	const projectStore = setProjectStore(new ProjectStore(workspaceStore));
-	workspaceStore.projectLookup = (path) => projectStore.getByPath(path);
 	const integrationApprovalStore = setIntegrationApprovalStore(new IntegrationApprovalStore());
 	const claudeSessionStore = setClaudeSessionStore(
 		new ClaudeSessionStore(workspaceStore, projectStore, integrationApprovalStore)
