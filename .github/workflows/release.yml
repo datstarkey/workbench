@@ -149,11 +149,53 @@ jobs:
             echo "APPLE_API_KEY_PATH=$KEY_PATH"
           } >> "$GITHUB_ENV"
 
+      # Azure Artifact Signing (Starkey Digital Ltd, see docs/SIGNING.md §Windows). The
+      # signCommand lives in tauri.windows-sign.json and is merged in only here, so local
+      # `tauri build` never needs Azure credentials. Same rules as the Apple step: check
+      # values, not presence, and fail unless ALLOW_UNSIGNED_RELEASE=true.
+      - name: Configure Windows code signing
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ALLOW_UNSIGNED: ${{ vars.ALLOW_UNSIGNED_RELEASE }}
+        run: |
+          missing=""
+          for v in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+
+          if [ -n "$missing" ]; then
+            if [ "$ALLOW_UNSIGNED" = "true" ]; then
+              echo "::warning::empty or unset:$missing — ALLOW_UNSIGNED_RELEASE is set, shipping UNSIGNED"
+              exit 0
+            fi
+            echo "::error::empty or unset:$missing"
+            echo "::error::Refusing to publish an unsigned release. See docs/SIGNING.md (Windows)."
+            echo "::error::A secret can exist but be empty — 'gh secret set' without a TTY stores ''."
+            exit 1
+          fi
+
+          # Pinned prebuilt release, checked against its published digest: this binary
+          # runs with the Azure signing secret in its environment.
+          BIN="$RUNNER_TEMP/artifact-signing-cli"
+          mkdir -p "$BIN"
+          curl -fsSL -o "$BIN/artifact-signing-cli.exe" \
+            https://github.com/Levminer/artifact-signing-cli/releases/download/0.11.0/artifact-signing-cli.exe
+          echo "ddc6f6ef68631bf367ad051d7d37109e58d46095406e1fbba60d553b10f94393  $BIN/artifact-signing-cli.exe" | sha256sum -c -
+          echo "$BIN" >> "$GITHUB_PATH"
+          echo "WINDOWS_SIGN_ARGS=--config src-tauri/tauri.windows-sign.json" >> "$GITHUB_ENV"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
         with:
           projectPath: apps/desktop
           tagName: v__VERSION__
@@ -162,7 +204,26 @@ jobs:
           releaseDraft: true
           prerelease: false
           tauriScript: bunx tauri
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ env.WINDOWS_SIGN_ARGS }}
+
+      # Check the files, not the log: the app exe and the NSIS installer must carry a
+      # valid, timestamped Starkey Digital Ltd signature (the cert lives 3 days).
+      - name: Verify Windows signatures
+        if: runner.os == 'Windows' && env.WINDOWS_SIGN_ARGS != ''
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem target/release/workbench.exe, target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue)
+          $bad = 0
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            Write-Host "$($f.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'CN=Starkey Digital Ltd' -or -not $sig.TimeStamperCertificate) {
+              Write-Host "::error::$($f.Name) is not validly signed and timestamped"
+              $bad++
+            }
+          }
+          if ($files.Count -lt 2) { Write-Host "::error::expected the app exe and an NSIS installer"; $bad++ }
+          if ($bad) { exit 1 }
 
       # Tauri notarizes and staples the .app but only *signs* the .dmg, and Gatekeeper
       # assesses the container the user downloads — an unnotarized DMG still warns on

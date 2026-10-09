@@ -1,6 +1,6 @@
 export const LATEST_RELEASE_URL =
-	'https://api.github.com/repos/datstarkey/workbench/releases/latest';
-const RELEASE_DOWNLOAD_PREFIX = 'https://github.com/datstarkey/workbench/releases/download/';
+	'https://api.github.com/repos/starkey-digital/workbench/releases/latest';
+const RELEASE_DOWNLOAD_PREFIX = 'https://github.com/starkey-digital/workbench/releases/download/';
 
 type Semver = [number, number, number];
 

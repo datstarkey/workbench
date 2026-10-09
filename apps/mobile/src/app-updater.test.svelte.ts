@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AppUpdater, type DownloadProgress, type UpdaterDeps } from './app-updater.svelte.ts';
 
-const DOWNLOAD = 'https://github.com/datstarkey/workbench/releases/download/v0.29.0';
+const DOWNLOAD = 'https://github.com/starkey-digital/workbench/releases/download/v0.29.0';
 const UPDATE = {
 	version: '0.29.0',
 	apkUrl: `${DOWNLOAD}/workbench-android-0.29.0.apk`,
