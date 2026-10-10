@@ -1,112 +1,155 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Terminal } from '@xterm/xterm';
 
 type Canvas = { width: number; height: number };
-type Listener = (c: Canvas) => void;
+type Listener<T> = (v: T) => void;
 
-/** Stands in for a WebglAddon: only the two atlas events `watchAtlas` reads. */
-function fakeAddon() {
-	const add = new Set<Listener>();
-	const remove = new Set<Listener>();
-	const on = (set: Set<Listener>) => (fn: Listener) => {
-		set.add(fn);
-		return { dispose: () => set.delete(fn) };
-	};
+function emitter<T>() {
+	const listeners = new Set<Listener<T>>();
 	return {
-		onAddTextureAtlasCanvas: on(add),
-		onRemoveTextureAtlasCanvas: on(remove),
-		addPage: (c: Canvas) => add.forEach((fn) => fn(c)),
-		removePage: (c: Canvas) => remove.forEach((fn) => fn(c)),
-		listeners: () => add.size + remove.size
+		event: (fn: Listener<T>) => {
+			listeners.add(fn);
+			return { dispose: () => listeners.delete(fn) };
+		},
+		fire: (v: T) => listeners.forEach((fn) => fn(v)),
+		clear: () => listeners.clear()
 	};
 }
 
-const page = (): Canvas => ({ width: 512, height: 512 });
+/** Stands in for WebglAddon: the atlas and context-loss events, and dispose. */
+class FakeAddon {
+	static all: FakeAddon[] = [];
+	static log: string[] = [];
+	static failNext = false;
+	change = emitter<Canvas>();
+	add = emitter<Canvas>();
+	remove = emitter<Canvas>();
+	lost = emitter<void>();
+	onChangeTextureAtlas = this.change.event;
+	onAddTextureAtlasCanvas = this.add.event;
+	onRemoveTextureAtlasCanvas = this.remove.event;
+	onContextLoss = this.lost.event;
+	disposed = false;
+	constructor() {
+		if (FakeAddon.failNext) {
+			FakeAddon.failNext = false;
+			throw new Error('WebGL2 not supported');
+		}
+		FakeAddon.all.push(this);
+		FakeAddon.log.push('load');
+	}
+	dispose() {
+		this.disposed = true;
+		FakeAddon.log.push('drop');
+		for (const e of [this.change, this.add, this.remove, this.lost]) e.clear();
+	}
+}
+
+const page = (width = 512): Canvas => ({ width, height: width });
+const terminal = { loadAddon: vi.fn() } as unknown as Terminal;
 
 async function load() {
 	vi.resetModules();
+	vi.doMock('@xterm/addon-webgl', () => ({ WebglAddon: FakeAddon }));
+	FakeAddon.all = [];
+	FakeAddon.log = [];
 	return import('./webgl-atlas');
 }
 
-describe('watchAtlas', () => {
+/** Atlas pages of a shared atlas, reported by every renderer using it. */
+function addShared(addons: FakeAddon[], canvas: Canvas) {
+	for (const a of addons) a.add.fire(canvas);
+}
+
+describe('WebglRenderer', () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => vi.useRealTimers());
 
-	it('reloads nothing while the atlas stays within budget', async () => {
-		const { watchAtlas } = await load();
-		const addon = fakeAddon();
-		const renderer = { drop: vi.fn(), load: vi.fn() };
-		watchAtlas(addon as never, renderer);
-		for (let i = 0; i < 12; i++) addon.addPage(page());
+	it('keeps its renderer while the atlas stays within budget', async () => {
+		const { WebglRenderer, ATLAS_PAGE_BUDGET } = await load();
+		new WebglRenderer(terminal, vi.fn()).load();
+		const [addon] = FakeAddon.all;
+		addon.change.fire(page());
+		for (let i = 1; i < ATLAS_PAGE_BUDGET; i++) addon.add.fire(page());
 		vi.runAllTimers();
-		expect(renderer.drop).not.toHaveBeenCalled();
+		expect(addon.disposed).toBe(false);
 	});
 
-	it('drops every renderer before reloading any once the budget is passed', async () => {
-		const { watchAtlas } = await load();
-		const calls: string[] = [];
-		const a = fakeAddon();
-		const b = fakeAddon();
-		watchAtlas(a as never, { drop: () => calls.push('drop a'), load: () => calls.push('load a') });
-		watchAtlas(b as never, { drop: () => calls.push('drop b'), load: () => calls.push('load b') });
-		// The atlas is shared: both addons report the same canvases.
-		for (let i = 0; i < 13; i++) {
-			const c = page();
-			a.addPage(c);
-			b.addPage(c);
-		}
-		expect(calls).toEqual([]); // deferred until the frame is done
+	it('drops every renderer before reloading any once past the budget', async () => {
+		const { WebglRenderer, ATLAS_PAGE_BUDGET } = await load();
+		new WebglRenderer(terminal, vi.fn()).load();
+		new WebglRenderer(terminal, vi.fn()).load();
+		const [a, b] = FakeAddon.all;
+		const first = page();
+		a.change.fire(first);
+		b.change.fire(first);
+		for (let i = 0; i < ATLAS_PAGE_BUDGET; i++) addShared([a, b], page());
+		expect(a.disposed).toBe(false); // deferred until the frame is done
 		vi.runAllTimers();
-		expect(calls).toEqual(['drop a', 'drop b', 'load a', 'load b']);
+		expect(FakeAddon.log).toEqual(['load', 'load', 'drop', 'drop', 'load', 'load']);
 	});
 
-	it('counts a merged page by its size and forgets removed ones', async () => {
-		const { watchAtlas } = await load();
-		const addon = fakeAddon();
-		const renderer = { drop: vi.fn(), load: vi.fn() };
-		watchAtlas(addon as never, renderer);
-		const small = Array.from({ length: 4 }, page);
-		small.forEach(addon.addPage);
-		small.forEach(addon.removePage);
-		addon.addPage({ width: 1024, height: 1024 });
+	it("ignores xterm's fixed overflow page", async () => {
+		const { WebglRenderer } = await load();
+		new WebglRenderer(terminal, vi.fn()).load();
+		const [addon] = FakeAddon.all;
+		addon.change.fire(page());
+		addon.add.fire(page(16384));
 		vi.runAllTimers();
-		expect(renderer.drop).not.toHaveBeenCalled();
-		addon.addPage({ width: 4096, height: 4096 });
-		vi.runAllTimers();
-		expect(renderer.drop).toHaveBeenCalledOnce();
+		expect(addon.disposed).toBe(false);
 	});
 
-	it('starts counting afresh after a reload, and waits before the next one', async () => {
-		const { watchAtlas, MIN_RELOAD_INTERVAL_MS } = await load();
-		const addon = fakeAddon();
-		const renderer = { drop: vi.fn(), load: vi.fn() };
-		watchAtlas(addon as never, renderer);
-		const huge = { width: 16384, height: 16384 };
-		addon.addPage(huge);
+	it('forgets the old atlas when it moves to a new one', async () => {
+		const { WebglRenderer, ATLAS_PAGE_BUDGET } = await load();
+		new WebglRenderer(terminal, vi.fn()).load();
+		const [addon] = FakeAddon.all;
+		addon.change.fire(page());
+		for (let i = 1; i < ATLAS_PAGE_BUDGET; i++) addon.add.fire(page());
+		// e.g. a DPR change: a new atlas, and no remove events for the old pages
+		addon.change.fire(page());
+		addon.add.fire(page());
 		vi.runAllTimers();
-		expect(renderer.drop).toHaveBeenCalledTimes(1);
-
-		// An oversized glyph drawn again at once: no reload loop.
-		addon.addPage({ ...huge });
-		vi.runAllTimers();
-		expect(renderer.drop).toHaveBeenCalledTimes(1);
-
-		vi.advanceTimersByTime(MIN_RELOAD_INTERVAL_MS);
-		addon.addPage({ ...huge });
-		vi.runAllTimers();
-		expect(renderer.drop).toHaveBeenCalledTimes(2);
+		expect(addon.disposed).toBe(false);
 	});
 
-	it('unwatching removes the listeners and the renderer', async () => {
-		const { watchAtlas } = await load();
-		const addon = fakeAddon();
-		const renderer = { drop: vi.fn(), load: vi.fn() };
-		const unwatch = watchAtlas(addon as never, renderer);
-		unwatch();
-		expect(addon.listeners()).toBe(0);
-		const other = fakeAddon();
-		watchAtlas(other as never, { drop: vi.fn(), load: vi.fn() });
-		other.addPage({ width: 16384, height: 16384 });
+	it('counts removed pages out', async () => {
+		const { WebglRenderer, ATLAS_PAGE_BUDGET } = await load();
+		new WebglRenderer(terminal, vi.fn()).load();
+		const [addon] = FakeAddon.all;
+		addon.change.fire(page());
+		const pages = Array.from({ length: ATLAS_PAGE_BUDGET - 1 }, () => page());
+		pages.forEach((p) => addon.add.fire(p));
+		pages.forEach((p) => addon.remove.fire(p));
+		addon.add.fire(page());
 		vi.runAllTimers();
-		expect(renderer.drop).not.toHaveBeenCalled();
+		expect(addon.disposed).toBe(false);
+	});
+
+	it('drops itself on context loss and tells the pane', async () => {
+		const { WebglRenderer, ATLAS_PAGE_BUDGET } = await load();
+		const onContextLoss = vi.fn();
+		new WebglRenderer(terminal, onContextLoss).load();
+		const [lost] = FakeAddon.all;
+		lost.lost.fire();
+		expect(lost.disposed).toBe(true);
+		expect(onContextLoss).toHaveBeenCalledOnce();
+
+		// A dropped renderer is out of later reloads.
+		new WebglRenderer(terminal, vi.fn()).load();
+		const live = FakeAddon.all[1];
+		live.change.fire(page());
+		for (let i = 0; i < ATLAS_PAGE_BUDGET; i++) live.add.fire(page());
+		vi.runAllTimers();
+		expect(FakeAddon.all).toHaveLength(3);
+	});
+
+	it('keeps the DOM renderer when WebGL fails, and can load later', async () => {
+		const { WebglRenderer } = await load();
+		FakeAddon.failNext = true;
+		const renderer = new WebglRenderer(terminal, vi.fn());
+		expect(() => renderer.load()).not.toThrow();
+		expect(FakeAddon.all).toHaveLength(0);
+		renderer.load();
+		expect(FakeAddon.all).toHaveLength(1);
 	});
 });
