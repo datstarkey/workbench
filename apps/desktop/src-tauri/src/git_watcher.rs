@@ -15,6 +15,9 @@ type FileWatcher = Debouncer<notify::RecommendedWatcher>;
 pub struct GitWatcher {
     debouncer: Mutex<Option<FileWatcher>>,
     watched_paths: Mutex<HashSet<PathBuf>>,
+    /// Projects that couldn't be watched (no `.git` yet): retried each sync,
+    /// reported once.
+    failed: Mutex<HashSet<PathBuf>>,
 }
 
 impl GitWatcher {
@@ -24,6 +27,7 @@ impl GitWatcher {
         Self {
             debouncer: Mutex::new(debouncer),
             watched_paths: Mutex::new(HashSet::new()),
+            failed: Mutex::new(HashSet::new()),
         }
     }
 
@@ -173,12 +177,22 @@ impl GitWatcher {
             .clone();
         let (to_watch, to_unwatch) = watch_diff(&current, &desired);
 
+        let mut failed = self.failed.lock().unwrap_or_else(|e| e.into_inner());
+        failed.retain(|p| desired.contains(p));
         for path in to_watch {
             let project_path = path.to_string_lossy().to_string();
-            if let Err(err) = self.watch_project(&project_path) {
-                log::warn!("[GitWatcher] Failed to watch {project_path}: {err}");
+            match self.watch_project(&project_path) {
+                Ok(()) => {
+                    failed.remove(&path);
+                }
+                Err(err) => {
+                    if failed.insert(path) {
+                        log::warn!("[GitWatcher] Failed to watch {project_path}: {err}");
+                    }
+                }
             }
         }
+        drop(failed);
 
         for path in to_unwatch {
             let project_path = path.to_string_lossy().to_string();

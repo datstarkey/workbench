@@ -123,6 +123,8 @@ struct Inner {
     /// Recent commands by their client `requestId`, so a retry gets the first
     /// answer instead of a second session.
     requests: Mutex<VecDeque<(String, Instant, Applied)>>,
+    /// The model generation last written to disk.
+    saved: Mutex<u64>,
 }
 
 /// How many request ids, and for how long, a command's answer is kept.
@@ -155,6 +157,7 @@ impl WorkspaceService {
             ctx: OnceLock::new(),
             lock: OnceLock::new(),
             requests: Mutex::new(VecDeque::new()),
+            saved: Mutex::new(0),
         }))
     }
 
@@ -336,6 +339,7 @@ impl WorkspaceService {
         let mut applied = Applied::default();
         let mut state = lock(&self.0.state);
         let mut job = Vec::new();
+        let mut persist = false;
         for effect in effects {
             match &effect {
                 Effect::Opened {
@@ -347,7 +351,7 @@ impl WorkspaceService {
                     applied.tab_id = tab_id.clone();
                     applied.pane_id = pane_id.clone();
                 }
-                Effect::Persist => self.save(&state),
+                Effect::Persist => persist = true,
                 Effect::SpawnShell { pane_id, .. }
                 | Effect::SpawnClaude { pane_id, .. }
                 | Effect::SpawnCodex { pane_id, .. } => {
@@ -378,7 +382,17 @@ impl WorkspaceService {
             }
         }
         state.gen += 1;
+        let save = persist.then(|| {
+            let file = WorkspacesFile {
+                model: state.model.clone(),
+                local: state.local.clone(),
+            };
+            (state.gen, file)
+        });
         drop(state);
+        if let Some((gen, file)) = save {
+            self.save(gen, &file);
+        }
         if let (false, Some(ctx)) = (job.is_empty(), self.ctx()) {
             let _ = lock(&ctx.jobs).send(job);
         }
@@ -386,15 +400,20 @@ impl WorkspaceService {
         applied
     }
 
-    fn save(&self, state: &State) {
+    /// Write `file`, the model at `gen`, outside the state lock: a slow disk
+    /// must not hold up every reader of the model (the publish loop takes it
+    /// on an async worker). Writes queue on `saved`, so an older model never
+    /// lands after a newer one.
+    fn save(&self, gen: u64, file: &WorkspacesFile) {
         let Some(dir) = self.0.dir.get() else {
             return;
         };
-        let file = WorkspacesFile {
-            model: state.model.clone(),
-            local: state.local.clone(),
-        };
-        if let Err(e) = persist::save(dir, &file) {
+        let mut saved = lock(&self.0.saved);
+        if gen <= *saved {
+            return;
+        }
+        *saved = gen;
+        if let Err(e) = persist::save(dir, file) {
             tracing::error!("workspace model not saved: {e:#}");
         }
     }

@@ -87,17 +87,24 @@ impl AttentionFeed {
 
     /// Called synchronously when the plugin or app-server changes a session.
     /// No polling, timers or attached chat UI are involved in producing alerts.
-    pub(crate) fn observe(&self, source: u64, session: AgentSummary) {
+    pub(crate) fn observe(&self, source: u64, mut session: AgentSummary) {
         if session.session_id.is_empty() {
             return;
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state
-            .sessions
-            .get(&session.session_id)
-            .is_some_and(|(owner, _)| *owner > source)
-        {
+        let known = state.sessions.get(&session.session_id);
+        if known.is_some_and(|(owner, _)| *owner > source) {
             return;
+        }
+        // Every streamed line touches its session; one that changed nothing
+        // but the time wakes no one (it ran the tracker over every session and
+        // refolded the workspace, under locks the long polls wait on).
+        if let Some((_, old)) = known.filter(|(owner, _)| *owner == source) {
+            let at = std::mem::replace(&mut session.updated_at, old.updated_at);
+            if session == *old {
+                return;
+            }
+            session.updated_at = at;
         }
         self.listed.notify();
         for alias in &session.previous_ids {
@@ -267,6 +274,23 @@ mod tests {
         assert!(feed.since(Some("other-server:0")).events.is_empty());
         assert!(feed.since(Some(&expired)).events.is_empty());
         assert_eq!(feed.since(Some(&recent)).events.len(), 1);
+    }
+
+    #[test]
+    fn a_line_that_changes_only_the_time_wakes_no_one() {
+        let feed = AttentionFeed::default();
+        let source = feed.source();
+        let mut listed = feed.subscribe_sessions();
+        let mut s = summary();
+        feed.observe(source, s.clone());
+        assert!(listed.has_changed().unwrap());
+        listed.mark_unchanged();
+        s.updated_at = 5;
+        feed.observe(source, s.clone());
+        assert!(!listed.has_changed().unwrap(), "a streamed chunk");
+        s.busy = true;
+        feed.observe(source, s);
+        assert!(listed.has_changed().unwrap(), "a real change");
     }
 
     #[test]

@@ -111,11 +111,7 @@ fn note_freeze(late: Duration) {
 
 /// Log when `start`'s task waits past [`STALL`] for a thread, and again when
 /// it runs. False once the runtime is gone.
-fn probe(
-    what: &str,
-    sampled: &mut Option<Instant>,
-    start: impl FnOnce(mpsc::Sender<()>),
-) -> bool {
+fn probe(what: &str, sampled: &mut Option<Instant>, start: impl FnOnce(mpsc::Sender<()>)) -> bool {
     let (done, ran) = mpsc::channel();
     let started = Instant::now();
     start(done);
