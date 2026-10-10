@@ -722,6 +722,8 @@ export interface TranscriptMeta {
 	/** Claude only: that cache's lifetime in seconds (3600 or 300). */
 	cacheTtlSecs?: number;
 	busy: boolean;
+	/** Claude only: unix ms since the conversation has been compacting. */
+	compactingSince?: number;
 	tasks: TaskInfo[];
 	retry: RetryInfo | null;
 	rateLimit: RateLimitInfo | null;

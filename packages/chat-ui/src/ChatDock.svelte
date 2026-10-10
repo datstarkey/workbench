@@ -8,6 +8,7 @@
 	import ChatAccountPicker from './ChatAccountPicker.svelte';
 	import ChatCacheHint from './ChatCacheHint.svelte';
 	import ChatComposer from './ChatComposer.svelte';
+	import ChatCompacting from './ChatCompacting.svelte';
 	import ChatGoal from './ChatGoal.svelte';
 	import ChatModelPicker from './ChatModelPicker.svelte';
 	import ChatPlan from './ChatPlan.svelte';
@@ -118,6 +119,9 @@
 	{/if}
 	<CodexControls {chat} {onThread} />
 	<ChatCacheHint {chat} />
+	{#if chat.meta?.compactingSince && chat.live}
+		<ChatCompacting since={chat.meta.compactingSince} tokens={chat.meta.contextTokens} />
+	{/if}
 	{#if chat.meta?.goal && chat.live}
 		<ChatGoal goal={chat.meta.goal} />
 	{/if}

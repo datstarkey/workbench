@@ -22,6 +22,7 @@ const HANDLED: &[&str] = &[
     "system:init",
     "system:local_command_output",
     "system:compact_boundary",
+    "system:status",
     "system:task_started",
     "system:task_progress",
     "system:task_updated",

@@ -100,6 +100,8 @@ let chatTurn = false;
 type ChatCommand = { answered: boolean; settled: boolean };
 let chatCommand: ChatCommand | undefined;
 const PANEL_WAIT_MS = 3000;
+/** How long Send now waits for the turn to end before submitting anyway (queued until idle). */
+const SEND_NOW_ABORT_MS = 3000;
 const LIVE_AGENT = new Set(['pending', 'running', 'waiting']);
 // Chat prompts appended into the running turn that no request has read yet.
 let injected: string[] = [];
@@ -382,7 +384,12 @@ export const register: Register = (on) => {
 			// Send now (the TUI's ctrl+enter): the running turn ends, its running Bash
 			// moves to the background, and the prompt starts the next turn.
 			const now = line.workbench_now === true && runningTurn !== undefined;
-			if (now) await $.turn.abort({ turnId: runningTurn! }).catch(() => {});
+			// Bounded: polling (approval answers, interrupts) waits on this.
+			if (now)
+				await Promise.race([
+					$.turn.abort({ turnId: runningTurn! }).catch(() => {}),
+					$.clock.sleep(SEND_NOW_ABORT_MS)
+				]);
 			const appended =
 				runningTurn && !now
 					? await $.session
@@ -944,7 +951,16 @@ export const register: Register = (on) => {
 		const ours = !e.agentId && e.trigger !== 'precompute';
 		// The chat's `/compact` running: not a panel waiting to be closed, however long it takes.
 		if (ours && e.trigger === 'manual' && chatCommand) chatCommand.answered = true;
-		const result = await next(e);
+		// The chat's "Compacting" bar: the engine reports no progress, only the start and end.
+		const status = (s: 'compacting' | null) =>
+			ours && server.current() && emit({ type: 'system', subtype: 'status', status: s });
+		status('compacting');
+		let result: Awaited<ReturnType<typeof next>>;
+		try {
+			result = await next(e);
+		} finally {
+			status(null);
+		}
 		if (!server.current() || !ours) return result;
 		if (!result.messages) {
 			emit({

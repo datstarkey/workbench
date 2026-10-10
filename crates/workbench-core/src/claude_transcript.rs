@@ -349,6 +349,16 @@ impl Transcript {
                     );
                     self.meta.context_tokens = None;
                     self.meta.cache_expires_at = None;
+                    self.meta.compacting_since = None;
+                }
+                Some("status") => {
+                    self.meta.compacting_since = match str_at(obj, "status") {
+                        Some("compacting") => self
+                            .meta
+                            .compacting_since
+                            .or_else(|| u64::try_from(chrono::Utc::now().timestamp_millis()).ok()),
+                        _ => None,
+                    }
                 }
                 _ => {
                     if let Some(item) = events::system_event(obj, self.event_id(obj)) {
@@ -490,6 +500,7 @@ impl Transcript {
     fn reset(&mut self) {
         let meta = TranscriptMeta {
             busy: false,
+            compacting_since: None,
             title: None,
             context_tokens: None,
             cache_expires_at: None,
@@ -923,6 +934,7 @@ impl Transcript {
         self.meta.busy = false;
         self.keepalive = false;
         self.meta.retry = None;
+        self.meta.compacting_since = None;
         self.streaming_message = None;
         // Keyed by model id. The plugin's key may lack the `[1m]` init reported
         // (it reports one model only), so a lone entry counts too.
