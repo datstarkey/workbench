@@ -211,6 +211,9 @@ enum ClientMsg {
         images: Vec<PromptImage>,
         #[serde(default)]
         files: Vec<PromptFile>,
+        /// Send now: end the running turn and start this prompt's.
+        #[serde(default)]
+        now: bool,
     },
     #[serde(rename_all = "camelCase")]
     Approve {
@@ -345,11 +348,13 @@ fn handle(
             text,
             images,
             files,
+            ..
         } if text.trim().is_empty() && images.is_empty() && files.is_empty() => Ok(()),
         ClientMsg::Prompt {
             text,
             images,
             files,
+            now,
         } => {
             if images.len() > MAX_IMAGES {
                 anyhow::bail!("attach at most {MAX_IMAGES} images per message");
@@ -359,7 +364,7 @@ fn handle(
             }
             images.iter().try_for_each(PromptImage::validate)?;
             files.iter().try_for_each(PromptFile::validate)?;
-            session.prompt(&text, &images, &files)
+            session.prompt(&text, &images, &files, now)
         }
         ClientMsg::Approve {
             request_id,

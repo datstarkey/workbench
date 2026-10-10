@@ -131,8 +131,9 @@
 		mode={chat.mode}
 		busy={Boolean(chat.meta?.busy) && chat.live}
 		stoppable={chat.stoppable}
+		sendNow={chat.canSendNow && chat.live}
 		{disabledReason}
-		onSend={(text, images, files) => chat.prompt(text, images, files)}
+		onSend={(text, images, files, now) => chat.prompt(text, images, files, now)}
 		onStop={() => chat.interrupt()}
 		{commands}
 		{onCommand}

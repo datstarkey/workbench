@@ -894,7 +894,14 @@ export type ChatAttachment = ({ kind: 'image' } & ChatImage) | ({ kind: 'file' }
 export type AgentClientMsg =
 	| { t: 'codex'; requestId: string; action: CodexAction; params?: Record<string, unknown> }
 	| { t: 'artifacts'; id: string }
-	| { t: 'prompt'; text: string; images?: Omit<ChatImage, 'name'>[]; files?: ChatFile[] }
+	| {
+			t: 'prompt';
+			text: string;
+			images?: Omit<ChatImage, 'name'>[];
+			files?: ChatFile[];
+			/** Claude: end the running turn (its running Bash moves to the background) and send. */
+			now?: boolean;
+	  }
 	| {
 			t: 'approve';
 			requestId: string;

@@ -505,10 +505,16 @@ export class AgentChat {
 		return true;
 	}
 
+	/** Whether a prompt may end the running turn instead of joining it (the TUI's send now). */
+	get canSendNow(): boolean {
+		return this.agent === 'claude' && Boolean(this.meta?.busy);
+	}
+
 	prompt(
 		text: string,
 		images: ChatImage[] = [],
-		files: ChatFile[] = []
+		files: ChatFile[] = [],
+		now = false
 	): boolean | Promise<boolean> {
 		const model = this.meta?.models.find(
 			(m) =>
@@ -548,6 +554,7 @@ export class AgentChat {
 		const msg: AgentClientMsg = { t: 'prompt', text: trimmed };
 		if (payload.length > 0) msg.images = payload;
 		if (files.length > 0) msg.files = files;
+		if (now && this.canSendNow) msg.now = true;
 		if (!this.send(msg)) return false;
 		this.pending = [
 			...this.pending,

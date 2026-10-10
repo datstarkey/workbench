@@ -200,6 +200,18 @@ describe('AgentChat', () => {
 		chat.dispose();
 	});
 
+	it('sends now only while a Claude turn runs', async () => {
+		const { chat, ws } = await connected();
+		chat.prompt('idle', [], [], true);
+		ws.emit({ t: 'update', changes: [], meta: meta(true) });
+		chat.prompt('stop and read this', [], [], true);
+		expect(ws.sent).toEqual([
+			{ t: 'prompt', text: 'idle' },
+			{ t: 'prompt', text: 'stop and read this', now: true }
+		]);
+		chat.dispose();
+	});
+
 	it('shows a prompt at once and drops it when Claude echoes it', async () => {
 		const { chat, ws } = await connected();
 		expect(chat.prompt('  fix the build  ')).toBe(true);

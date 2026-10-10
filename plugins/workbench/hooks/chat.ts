@@ -379,13 +379,18 @@ export const register: Register = (on) => {
 				})();
 				return;
 			}
-			const appended = runningTurn
-				? await $.session
-						.append({
-							message: { type: 'user', content: [{ type: 'text', text: midTurn(text, files) }] }
-						})
-						.catch((err: unknown) => ({ deny: String(err) }))
-				: undefined;
+			// Send now (the TUI's ctrl+enter): the running turn ends, its running Bash
+			// moves to the background, and the prompt starts the next turn.
+			const now = line.workbench_now === true && runningTurn !== undefined;
+			if (now) await $.turn.abort({ turnId: runningTurn! }).catch(() => {});
+			const appended =
+				runningTurn && !now
+					? await $.session
+							.append({
+								message: { type: 'user', content: [{ type: 'text', text: midTurn(text, files) }] }
+							})
+							.catch((err: unknown) => ({ deny: String(err) }))
+					: undefined;
 			if (appended && !appended.deny && runningTurn) {
 				injected.push(text);
 				emit({

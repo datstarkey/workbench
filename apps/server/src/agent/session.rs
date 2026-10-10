@@ -718,14 +718,21 @@ impl AgentSession {
         self.run(|d| d.codex_action(request_id, action, params))
     }
 
-    pub fn prompt(&self, text: &str, images: &[PromptImage], files: &[PromptFile]) -> Result<()> {
+    /// `now`: a Claude chat ends its running turn first; Codex ignores it (it steers).
+    pub fn prompt(
+        &self,
+        text: &str,
+        images: &[PromptImage],
+        files: &[PromptFile],
+        now: bool,
+    ) -> Result<()> {
         self.keepalive_turn
             .store(text == KEEPALIVE_PROMPT, Ordering::SeqCst);
         let sent = if self.link.is_some() && !(images.is_empty() && files.is_empty()) {
             super::attachment::attachments_saved(&self.id(), text, images, files)
-                .and_then(|(text, paths)| self.run(|d| d.prompt_attached(&text, &paths)))
+                .and_then(|(text, paths)| self.run(|d| d.prompt_attached(&text, &paths, now)))
         } else {
-            self.run(|d| d.prompt(text, images, files))
+            self.run(|d| d.prompt(text, images, files, now))
         };
         // No turn started, so the flag must not swallow the next one's end.
         if sent.is_err() {
@@ -818,7 +825,7 @@ impl AgentSession {
         if !self.is_idle() {
             bail!("Claude is mid-turn, which keeps the cache warm anyway.");
         }
-        self.prompt(KEEPALIVE_PROMPT, &[], &[])
+        self.prompt(KEEPALIVE_PROMPT, &[], &[], false)
     }
 
     fn is_idle(&self) -> bool {
@@ -849,7 +856,7 @@ impl AgentSession {
             Upkeep::KeepAlive => KEEPALIVE_PROMPT,
             Upkeep::Compact => "/compact",
         };
-        if let Err(e) = self.prompt(text, &[], &[]) {
+        if let Err(e) = self.prompt(text, &[], &[], false) {
             tracing::warn!("cache upkeep ({due:?}) failed: {e}");
         }
     }

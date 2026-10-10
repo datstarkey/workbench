@@ -97,21 +97,22 @@ impl Driver {
         text: &str,
         images: &[PromptImage],
         files: &[PromptFile],
+        now: bool,
     ) -> Result<Effects> {
         match self {
             Self::Claude(_) if !(images.is_empty() && files.is_empty()) => {
                 anyhow::bail!("a Claude chat takes attachments as `@path` mentions")
             }
-            Self::Claude(t) => Ok(claude::prompt(t, text, &[])),
+            Self::Claude(t) => Ok(claude::prompt(t, text, &[], now)),
             Self::Codex(c) => c.prompt(text, images, files),
         }
     }
 
     /// A Claude terminal session's prompt naming the files saved for it
     /// (`workbench_attachments`), which its plugin lists for Claude to Read.
-    pub fn prompt_attached(&mut self, text: &str, files: &[String]) -> Result<Effects> {
+    pub fn prompt_attached(&mut self, text: &str, files: &[String], now: bool) -> Result<Effects> {
         match self {
-            Self::Claude(t) => Ok(claude::prompt(t, text, files)),
+            Self::Claude(t) => Ok(claude::prompt(t, text, files, now)),
             Self::Codex(_) => anyhow::bail!("a Codex chat takes attachments as uploads"),
         }
     }
