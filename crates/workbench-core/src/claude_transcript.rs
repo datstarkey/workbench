@@ -493,7 +493,15 @@ impl Transcript {
             title: None,
             context_tokens: None,
             cache_expires_at: None,
-            tasks: Vec::new(),
+            // Background shells and agents outlive a `/clear` or `/resume` in
+            // the same `claude`: their ends still come, and still count.
+            tasks: self
+                .meta
+                .tasks
+                .iter()
+                .filter(|t| t.is_running())
+                .cloned()
+                .collect(),
             artifacts: Vec::new(),
             prompt_suggestion: None,
             goal: None,
@@ -635,9 +643,10 @@ impl Transcript {
     }
 
     fn background_agents_running(&self) -> bool {
-        self.meta.tasks.iter().any(|t| {
-            t.background && t.kind == "agent" && matches!(t.status.as_str(), "pending" | "running")
-        })
+        self.meta
+            .tasks
+            .iter()
+            .any(|t| t.background && t.kind == "agent" && t.is_running())
     }
 
     /// Show a line from Workbench itself in the chat; its index.

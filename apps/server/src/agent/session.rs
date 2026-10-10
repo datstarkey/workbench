@@ -613,7 +613,12 @@ impl AgentSession {
             running: view
                 .running_tool()
                 .and_then(TranscriptItem::running_summary),
-            running_tasks: RunningTasks::of(&meta.tasks),
+            // Its process is gone, and its tasks with it.
+            running_tasks: if self.has_exited() {
+                RunningTasks::default()
+            } else {
+                RunningTasks::of(&meta.tasks)
+            },
             previous_ids: lock(&self.previous_ids).clone(),
             terminal_id: self.link.as_ref().and_then(|l| l.terminal_id.clone()),
         }
