@@ -83,7 +83,10 @@ impl AttentionTracker {
                     out.push(attention(kind, s));
                 }
                 let ended = old.is_some_and(|o| s.turn_ended_at > o.turn_ended_at);
-                if ended && waiting.is_none() && !s.busy && !s.exited {
+                // Background work still going isn't done: its notification
+                // starts another turn, and that one's end is reported.
+                let working = s.running_tasks.agents + s.running_tasks.tasks > 0;
+                if ended && waiting.is_none() && !s.busy && !s.exited && !working {
                     out.push(attention(AttentionKind::TurnEnded, s));
                 }
             }
@@ -231,6 +234,20 @@ mod tests {
         s.previous_ids = vec!["old".into()];
         assert!(t.update(&[s.clone()]).is_empty());
         s.turn_ended_at = Some(4);
+        assert_eq!(kinds(t.update(&[s])), [AttentionKind::TurnEnded]);
+    }
+
+    #[test]
+    fn a_turn_ending_with_background_work_waits_for_the_next() {
+        let mut t = AttentionTracker::default();
+        let mut s = summary("a");
+        t.update(&[s.clone()]);
+        s.turn_ended_at = Some(5);
+        s.running_tasks.tasks = 1;
+        assert!(t.update(&[s.clone()]).is_empty());
+        s.running_tasks.tasks = 0;
+        assert!(t.update(&[s.clone()]).is_empty(), "no turn ended since");
+        s.turn_ended_at = Some(9);
         assert_eq!(kinds(t.update(&[s])), [AttentionKind::TurnEnded]);
     }
 }
