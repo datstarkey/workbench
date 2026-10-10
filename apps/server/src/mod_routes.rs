@@ -86,13 +86,19 @@ pub async fn hello(
     let loaded = state.agents.mod_session(&token, &body.session_id).is_none();
     let agents = state.agents.clone();
     let session_id = body.session_id.clone();
-    let session = crate::routes::blocking(move || agents.attach_mod(&token, &session_id)).await?;
-    let link = session.mod_link();
-    if let Some(link) = link {
-        link.hello_from(body.epoch.as_deref());
-    }
-    // Where its `/mod/in` lines stand: 0 for a new link.
-    let in_seq = link.map_or(0, |l| l.acked());
+    // `hello_from` waits for a batch `/mod/out` is folding, which may read the
+    // JSONL or wait for a process: never on an async worker.
+    let (session, in_seq) = crate::routes::blocking(move || {
+        let session = agents.attach_mod(&token, &session_id)?;
+        let link = session.mod_link();
+        if let Some(link) = link {
+            link.hello_from(body.epoch.as_deref());
+        }
+        // Where its `/mod/in` lines stand: 0 for a new link.
+        let in_seq = link.map_or(0, |l| l.acked());
+        Ok((session, in_seq))
+    })
+    .await?;
     // The plugin can only guess the model list; the CLI's own replaces it
     // when the (cached) probe answers.
     // A stale list is pinned at once; a newer one fetched behind it goes to

@@ -218,34 +218,32 @@ where
         self
     }
 
-    /// Snapshot the good results now; the write happens off the async thread.
+    /// Snapshot the good results now; `keep` (a stat per cwd, which can hang
+    /// on a stale mount) and the write happen off the async thread.
     fn save(&self) {
         let Some(store) = self.store.clone() else {
             return;
         };
         let now = unix_now();
-        let snapshot = {
-            let slots = lock(&self.slots);
-            let saved: Vec<Saved<&K, T>> = slots
-                .iter()
-                .filter(|(key, _)| (self.keep)(key))
-                .filter_map(|(key, slot)| {
-                    let (at, value) = slot.good()?;
-                    Some(Saved {
-                        key,
-                        saved_at: now.saturating_sub(at.elapsed().as_secs()),
-                        value,
-                    })
+        let saved: Vec<Saved<K, T>> = lock(&self.slots)
+            .iter()
+            .filter_map(|(key, slot)| {
+                let (at, value) = slot.good()?;
+                Some(Saved {
+                    key: key.clone(),
+                    saved_at: now.saturating_sub(at.elapsed().as_secs()),
+                    value,
                 })
-                .collect();
-            serde_json::to_string_pretty(&saved)
-        };
-        let content = match snapshot {
-            Ok(content) => content,
-            Err(e) => return tracing::warn!("could not save the models cache: {e}"),
-        };
+            })
+            .collect();
+        let keep = self.keep;
         let taken = store.taken.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::task::spawn_blocking(move || {
+            let saved: Vec<_> = saved.into_iter().filter(|s| keep(&s.key)).collect();
+            let content = match serde_json::to_string_pretty(&saved) {
+                Ok(content) => content,
+                Err(e) => return tracing::warn!("could not save the models cache: {e}"),
+            };
             let mut written = lock(&store.written);
             if taken <= *written {
                 return;

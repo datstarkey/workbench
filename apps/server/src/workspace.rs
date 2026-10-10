@@ -125,11 +125,23 @@ struct Inner {
     /// Recent commands by their client `requestId`, so a retry gets the first
     /// answer instead of a second session.
     requests: Mutex<VecDeque<(String, Instant, Applied)>>,
+    saving: Mutex<Saving>,
 }
 
 /// How many request ids, and for how long, a command's answer is kept.
 const REQUESTS_KEPT: usize = 256;
 const REQUEST_TTL: Duration = Duration::from_secs(300);
+
+/// The model file's writes ([`WorkspaceService::save`]).
+#[derive(Default)]
+struct Saving {
+    /// The newest model handed in and not yet written, with its generation.
+    next: Option<(u64, WorkspacesFile)>,
+    /// A caller is writing; it takes `next` when done.
+    writing: bool,
+    /// The generation last written.
+    written: u64,
+}
 
 #[derive(Clone)]
 pub struct WorkspaceService(Arc<Inner>);
@@ -157,6 +169,7 @@ impl WorkspaceService {
             ctx: OnceLock::new(),
             lock: OnceLock::new(),
             requests: Mutex::new(VecDeque::new()),
+            saving: Mutex::default(),
         }))
     }
 
@@ -338,6 +351,7 @@ impl WorkspaceService {
         let mut applied = Applied::default();
         let mut state = lock(&self.0.state);
         let mut job = Vec::new();
+        let mut persist = false;
         for effect in effects {
             match &effect {
                 Effect::Opened {
@@ -349,7 +363,7 @@ impl WorkspaceService {
                     applied.tab_id = tab_id.clone();
                     applied.pane_id = pane_id.clone();
                 }
-                Effect::Persist => self.save(&state),
+                Effect::Persist => persist = true,
                 Effect::SpawnShell { pane_id, .. }
                 | Effect::SpawnClaude { pane_id, .. }
                 | Effect::SpawnCodex { pane_id, .. } => {
@@ -380,7 +394,17 @@ impl WorkspaceService {
             }
         }
         state.gen += 1;
+        let save = persist.then(|| {
+            let file = WorkspacesFile {
+                model: state.model.clone(),
+                local: state.local.clone(),
+            };
+            (state.gen, file)
+        });
         drop(state);
+        if let Some((gen, file)) = save {
+            self.save(gen, file);
+        }
         if let (false, Some(ctx)) = (job.is_empty(), self.ctx()) {
             let _ = lock(&ctx.jobs).send(job);
         }
@@ -388,16 +412,40 @@ impl WorkspaceService {
         applied
     }
 
-    fn save(&self, state: &State) {
+    /// Write `file`, the model at `gen`, outside the state lock: a slow disk
+    /// must not hold up every reader of the model (the publish loop takes it
+    /// on an async worker). One caller writes at a time, and always the newest
+    /// model handed in: the others leave theirs and return at once, and an
+    /// older model never lands after a newer one.
+    fn save(&self, gen: u64, file: WorkspacesFile) {
         let Some(dir) = self.0.dir.get() else {
             return;
         };
-        let file = WorkspacesFile {
-            model: state.model.clone(),
-            local: state.local.clone(),
-        };
-        if let Err(e) = persist::save(dir, &file) {
-            tracing::error!("workspace model not saved: {e:#}");
+        {
+            let mut saving = lock(&self.0.saving);
+            let queued = saving.next.as_ref().map_or(0, |(g, _)| *g);
+            if gen <= saving.written || gen <= queued {
+                return;
+            }
+            saving.next = Some((gen, file));
+            if saving.writing {
+                return;
+            }
+            saving.writing = true;
+        }
+        loop {
+            let (gen, file) = {
+                let mut saving = lock(&self.0.saving);
+                let Some(next) = saving.next.take() else {
+                    saving.writing = false;
+                    return;
+                };
+                next
+            };
+            if let Err(e) = persist::save(dir, &file) {
+                tracing::error!("workspace model not saved: {e:#}");
+            }
+            lock(&self.0.saving).written = gen;
         }
     }
 

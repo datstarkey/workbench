@@ -188,6 +188,8 @@ pub async fn agent_attach(
 }
 
 const MAX_PROMPT_BYTES: usize = 160 * 1024 * 1024;
+/// Client messages waiting behind a slow one; a client sending more is dropped.
+const MAX_QUEUED_MESSAGES: usize = 32;
 /// The close code of a socket opened on a session that isn't running.
 pub const SESSION_GONE: u16 = 4404;
 
@@ -468,14 +470,44 @@ async fn stream(
         return;
     }
     let mut heartbeat = crate::state::Heartbeat::new();
+    // Client messages run one at a time, in order, on the blocking pool; the
+    // loop keeps serving pings, pongs and a revoke while one does (a restart
+    // waits up to 30s for its new `claude`). Session frames wait until its reply
+    // is sent: a rewind's reply must come before the `replaced` that closes
+    // the socket.
+    let mut queued = std::collections::VecDeque::<String>::new();
+    let mut running = None;
     loop {
+        if running.is_none() {
+            if let Some(text) = queued.pop_front() {
+                // Restarts (a rewind, a mode switch), saving attachments and the
+                // task-output directory walk block, so keep them off the async workers.
+                let (worker, state) = (session.clone(), state.clone());
+                running = Some(tokio::task::spawn_blocking(move || {
+                    handle(&state, &worker, &text)
+                }));
+            }
+        }
         tokio::select! {
+            result = async { running.as_mut().expect("guarded").await }, if running.is_some() => {
+                running = None;
+                let frame = match result {
+                    Ok(Ok(reply)) => reply,
+                    Ok(Err(e)) => Some(json!({"t": "error", "message": e.to_string()})),
+                    Err(e) => Some(json!({"t": "error", "message": e.to_string()})),
+                };
+                if let Some(frame) = frame {
+                    if !ws_send(&mut socket, Message::Text(frame.to_string())).await {
+                        return;
+                    }
+                }
+            }
             alive = heartbeat.due(true) => {
                 if !alive || !ws_send(&mut socket, Message::Ping(Vec::new())).await {
                     return;
                 }
             }
-            frame = rx.recv() => {
+            frame = rx.recv(), if running.is_none() => {
                 let (frame, ended) = match frame {
                     Ok(frame) => (frame.render(every_meta).into_owned(), frame.ends()),
                     // Fell behind: start over from a fresh snapshot.
@@ -499,22 +531,13 @@ async fn stream(
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(text))) => {
                     heartbeat.heard();
-                    // Restarts (a rewind, a mode switch), saving attachments and the
-                    // task-output directory walk block, so keep them off the async workers.
-                    let worker = session.clone();
-                    let state = state.clone();
-                    let result =
-                        tokio::task::spawn_blocking(move || handle(&state, &worker, &text)).await;
-                    let frame = match result {
-                        Ok(Ok(reply)) => reply,
-                        Ok(Err(e)) => Some(json!({"t": "error", "message": e.to_string()})),
-                        Err(e) => Some(json!({"t": "error", "message": e.to_string()})),
-                    };
-                    if let Some(frame) = frame {
-                        if !ws_send(&mut socket, Message::Text(frame.to_string())).await {
-                            return;
-                        }
+                    if queued.len() >= MAX_QUEUED_MESSAGES {
+                        let why = json!({"t": "error", "message":
+                            "Too many messages while the session was busy restarting; reconnecting."});
+                        ws_close(socket, Some(Message::Text(why.to_string()))).await;
+                        return;
                     }
+                    queued.push_back(text);
                 }
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
                 Some(Ok(_)) => heartbeat.heard(),
