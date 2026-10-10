@@ -4,7 +4,6 @@
 	import { Terminal } from '@xterm/xterm';
 	import { FitAddon } from '@xterm/addon-fit';
 	import { WebLinksAddon } from '@xterm/addon-web-links';
-	import { WebglAddon } from '@xterm/addon-webgl';
 	import { LigaturesAddon } from '@xterm/addon-ligatures';
 	import { SearchAddon } from '@xterm/addon-search';
 	import { openUrl } from '$lib/utils/open-url';
@@ -16,6 +15,7 @@
 	import { TerminalInputDedup } from './input-dedup';
 	import { installTextareaResidueGuard } from './textarea-residue';
 	import { isLayoutDisabled } from './layout-guard';
+	import { WebglRenderer } from './webgl-atlas';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
@@ -29,13 +29,10 @@
 		active: boolean;
 	} = $props();
 
-	// VS Code pattern: if WebGL fails once, all future terminals skip it
-	let webglUnavailable = false;
-
 	let container: HTMLDivElement;
 	let terminal: Terminal | null = null;
 	let fitAddon: FitAddon | null = null;
-	let webglAddon: WebglAddon | null = null;
+	let webgl: WebglRenderer | null = null;
 	let webLinksLoaded = false;
 	let conn: TerminalConnection | null = null;
 	let resizeObserver: ResizeObserver | null = null;
@@ -188,24 +185,6 @@
 		if (!terminal || webLinksLoaded) return;
 		terminal.loadAddon(new WebLinksAddon(openLink));
 		webLinksLoaded = true;
-	}
-
-	function loadWebGlAddon() {
-		if (!terminal || webglUnavailable || webglAddon) return;
-		try {
-			webglAddon = new WebglAddon();
-			webglAddon.onContextLoss(() => {
-				webglAddon?.dispose();
-				webglAddon = null;
-				// After context loss, re-fit to recalculate cell metrics
-				// (different renderers may have slightly different measurements)
-				requestAnimationFrame(() => fitTerminal());
-			});
-			terminal.loadAddon(webglAddon);
-		} catch {
-			webglUnavailable = true;
-			webglAddon = null;
-		}
 	}
 
 	function logPerfSnapshotIfEnabled() {
@@ -444,7 +423,10 @@
 			if (terminal.textarea) removeResidueGuard = installTextareaResidueGuard(terminal.textarea);
 
 			// Load addons that require the canvas element to exist
-			loadWebGlAddon();
+			// After context loss, re-fit to recalculate cell metrics
+			// (different renderers may have slightly different measurements)
+			webgl = new WebglRenderer(terminal, () => requestAnimationFrame(() => fitTerminal()));
+			webgl.load();
 			try {
 				terminal.loadAddon(new LigaturesAddon());
 			} catch (error) {
@@ -598,7 +580,7 @@
 		intersectionObserver?.disconnect();
 		shellState?.dispose();
 		searchAddon?.dispose();
-		webglAddon?.dispose();
+		webgl?.drop();
 		terminal?.dispose();
 		// Detach only: the terminal is the server's, and ends when its pane closes.
 		conn?.dispose();
