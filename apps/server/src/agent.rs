@@ -129,6 +129,10 @@ pub struct AgentSummary {
     pub running: Option<RunningSummary>,
     /// Subagents and background tasks still going.
     pub running_tasks: RunningTasks,
+    /// A background subagent will start another turn when it ends, so this
+    /// turn's end isn't the work's (Claude only; see `TaskInfo::wakes_parent`).
+    #[serde(skip)]
+    pub awaiting_wake: bool,
     /// Ids it ran under before a `/clear`, so a client holding one follows the re-key.
     pub previous_ids: Vec<String>,
     /// The server terminal whose interactive `claude` this chat is.

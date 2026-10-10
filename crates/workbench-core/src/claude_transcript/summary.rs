@@ -62,6 +62,13 @@ impl TaskInfo {
     pub fn is_running(&self) -> bool {
         matches!(self.status.as_str(), "pending" | "running" | "paused")
     }
+
+    /// A Claude background subagent still going: when it ends, Claude Code
+    /// starts another turn with its result. A background shell may never end
+    /// (a dev server), so it doesn't count.
+    pub fn wakes_parent(&self) -> bool {
+        self.background && self.kind == "agent" && self.is_running()
+    }
 }
 
 impl TranscriptItem {

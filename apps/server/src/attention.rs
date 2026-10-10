@@ -83,7 +83,8 @@ impl AttentionTracker {
                     out.push(attention(kind, s));
                 }
                 let ended = old.is_some_and(|o| s.turn_ended_at > o.turn_ended_at);
-                if ended && waiting.is_none() && !s.busy && !s.exited {
+                // The next turn's end is reported instead.
+                if ended && waiting.is_none() && !s.busy && !s.exited && !s.awaiting_wake {
                     out.push(attention(AttentionKind::TurnEnded, s));
                 }
             }
@@ -151,6 +152,7 @@ mod tests {
             waiting: None,
             running: None,
             running_tasks: Default::default(),
+            awaiting_wake: false,
             previous_ids: Vec::new(),
             terminal_id: None,
         }
@@ -231,6 +233,30 @@ mod tests {
         s.previous_ids = vec!["old".into()];
         assert!(t.update(&[s.clone()]).is_empty());
         s.turn_ended_at = Some(4);
+        assert_eq!(kinds(t.update(&[s])), [AttentionKind::TurnEnded]);
+    }
+
+    #[test]
+    fn a_turn_ending_before_a_background_agent_waits_for_the_next() {
+        let mut t = AttentionTracker::default();
+        let mut s = summary("a");
+        t.update(&[s.clone()]);
+        s.turn_ended_at = Some(5);
+        s.awaiting_wake = true;
+        assert!(t.update(&[s.clone()]).is_empty());
+        s.awaiting_wake = false;
+        assert!(t.update(&[s.clone()]).is_empty(), "no turn ended since");
+        s.turn_ended_at = Some(9);
+        assert_eq!(kinds(t.update(&[s])), [AttentionKind::TurnEnded]);
+    }
+
+    #[test]
+    fn other_background_tasks_dont_hold_a_turn_end() {
+        let mut t = AttentionTracker::default();
+        let mut s = summary("a");
+        t.update(&[s.clone()]);
+        s.turn_ended_at = Some(5);
+        s.running_tasks.tasks = 1;
         assert_eq!(kinds(t.update(&[s])), [AttentionKind::TurnEnded]);
     }
 }

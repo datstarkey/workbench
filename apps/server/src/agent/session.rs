@@ -15,8 +15,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
 use workbench_core::claude_transcript::{
-    ApprovalDecision, ChatView, ElicitationAction, RunningTasks, TranscriptItem, TranscriptMeta,
-    WaitingSummary, KEEPALIVE_PROMPT,
+    ApprovalDecision, ChatView, ElicitationAction, RunningTasks, TaskInfo, TranscriptItem,
+    TranscriptMeta, WaitingSummary, KEEPALIVE_PROMPT,
 };
 
 use super::cache::{self, CachePolicy, PolicyStore, Upkeep};
@@ -619,6 +619,9 @@ impl AgentSession {
             } else {
                 RunningTasks::of(&meta.tasks)
             },
+            awaiting_wake: self.kind == AgentKind::Claude
+                && !self.has_exited()
+                && meta.tasks.iter().any(TaskInfo::wakes_parent),
             previous_ids: lock(&self.previous_ids).clone(),
             terminal_id: self.link.as_ref().and_then(|l| l.terminal_id.clone()),
         }

@@ -76,6 +76,7 @@ fn watch(handle: tokio::runtime::Handle) {
     let mut watch = Watch::default();
     loop {
         let slept = Instant::now();
+        watch.swapins = swapins();
         std::thread::sleep(CHECK_EVERY);
         watch.note_freeze(slept.elapsed().saturating_sub(CHECK_EVERY));
         let async_ran = watch.probe("async workers", |done| {
@@ -95,6 +96,8 @@ fn watch(handle: tokio::runtime::Handle) {
 struct Watch {
     files_low: bool,
     sampled: Option<Instant>,
+    /// Swap-ins so far, as of this tick's start.
+    swapins: Option<u64>,
     reported: std::collections::HashMap<&'static str, Instant>,
 }
 
@@ -128,7 +131,7 @@ impl Watch {
         tracing::warn!(
             "no thread of the process ran for {:.1}s{}",
             late.as_secs_f64(),
-            memory_note()
+            memory_note(self.swapins)
         );
         let message = format!(
             "process froze: the server watchdog ran over {}s late",
@@ -236,27 +239,42 @@ fn prune_samples(dir: &std::path::Path) {
     }
 }
 
-/// `; swap 5837 of 6144 MB used, memory pressure warn` on macOS, where a
-/// frozen process is most often one swapped out.
+/// A plain C value (an int, `xsw_usage`) by name; `T` must be valid all zeroes.
 #[cfg(target_os = "macos")]
-fn memory_note() -> String {
-    /// `T` is a plain C value (an int, `xsw_usage`), valid all zeroes.
-    fn read<T: Copy>(name: &std::ffi::CStr) -> Option<T> {
-        let mut value: T = unsafe { std::mem::zeroed() };
-        let mut len = std::mem::size_of::<T>();
-        let ok = unsafe {
-            libc::sysctlbyname(
-                name.as_ptr(),
-                (&mut value as *mut T).cast(),
-                &mut len,
-                std::ptr::null_mut(),
-                0,
-            )
-        } == 0;
-        ok.then_some(value)
-    }
+fn sysctl<T: Copy>(name: &std::ffi::CStr) -> Option<T> {
+    let mut value: T = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<T>();
+    let ok = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut T).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    ok.then_some(value)
+}
+
+/// How often the compressor has read memory back from swap since boot, for
+/// the whole machine (in segments, not pages).
+#[cfg(target_os = "macos")]
+fn swapins() -> Option<u64> {
+    sysctl(c"vm.compressor.swapper.swapins_total")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn swapins() -> Option<u64> {
+    None
+}
+
+/// `; swap 5837 of 6144 MB used, 1234 system swap-ins during the freeze` on macOS, where a
+/// frozen process is most often one swapped out. Not the kernel's pressure
+/// level: it stayed `normal` through freezes with swap nearly full.
+#[cfg(target_os = "macos")]
+fn memory_note(swapins_before: Option<u64>) -> String {
     let mut note = String::new();
-    if let Some(swap) = read::<libc::xsw_usage>(c"vm.swapusage") {
+    if let Some(swap) = sysctl::<libc::xsw_usage>(c"vm.swapusage") {
         let mb = |b: u64| b / (1024 * 1024);
         note += &format!(
             "; swap {} of {} MB used",
@@ -264,20 +282,17 @@ fn memory_note() -> String {
             mb(swap.xsu_total)
         );
     }
-    if let Some(level) = read::<libc::c_int>(c"kern.memorystatus_vm_pressure_level") {
-        let level = match level {
-            1 => "normal",
-            2 => "warn",
-            4 => "critical",
-            _ => "unknown",
-        };
-        note += &format!(", memory pressure {level}");
+    if let (Some(before), Some(now)) = (swapins_before, swapins()) {
+        note += &format!(
+            ", {} system swap-ins during the freeze",
+            now.saturating_sub(before)
+        );
     }
     note
 }
 
 #[cfg(not(target_os = "macos"))]
-fn memory_note() -> String {
+fn memory_note(_: Option<u64>) -> String {
     String::new()
 }
 
@@ -363,9 +378,12 @@ mod tests {
     }
 
     #[test]
-    fn the_memory_note_reads_swap_and_pressure() {
-        let note = memory_note();
+    fn the_memory_note_reads_swap_and_swapins_since() {
+        let note = memory_note(swapins());
         assert!(note.starts_with("; swap "), "{note}");
-        assert!(note.contains(", memory pressure "), "{note}");
+        assert!(
+            note.contains(" system swap-ins during the freeze"),
+            "{note}"
+        );
     }
 }
