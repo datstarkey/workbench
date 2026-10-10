@@ -15,8 +15,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use tokio::sync::broadcast;
 use workbench_core::claude_transcript::{
-    ApprovalDecision, ChatView, ElicitationAction, TranscriptItem, TranscriptMeta, WaitingSummary,
-    KEEPALIVE_PROMPT,
+    ApprovalDecision, ChatView, ElicitationAction, RunningTasks, TranscriptItem, TranscriptMeta,
+    WaitingSummary, KEEPALIVE_PROMPT,
 };
 
 use super::cache::{self, CachePolicy, PolicyStore, Upkeep};
@@ -613,6 +613,12 @@ impl AgentSession {
             running: view
                 .running_tool()
                 .and_then(TranscriptItem::running_summary),
+            // Its process is gone, and its tasks with it.
+            running_tasks: if self.has_exited() {
+                RunningTasks::default()
+            } else {
+                RunningTasks::of(&meta.tasks)
+            },
             previous_ids: lock(&self.previous_ids).clone(),
             terminal_id: self.link.as_ref().and_then(|l| l.terminal_id.clone()),
         }
