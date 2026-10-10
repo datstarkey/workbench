@@ -120,7 +120,7 @@
 	<CodexControls {chat} {onThread} />
 	<ChatCacheHint {chat} />
 	{#if chat.meta?.compactingSince && chat.live}
-		<ChatCompacting since={chat.meta.compactingSince} tokens={chat.meta.contextTokens} />
+		<ChatCompacting tokens={chat.meta.contextTokens} />
 	{/if}
 	{#if chat.meta?.goal && chat.live}
 		<ChatGoal goal={chat.meta.goal} />

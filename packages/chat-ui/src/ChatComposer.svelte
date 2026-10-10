@@ -103,6 +103,8 @@
 
 	const platform = getChatPlatform();
 	const enterSends = platform.enterSends ?? true;
+	/** Either works; the hint names the platform's own. */
+	const sendNowKey = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘↩' : 'Ctrl+Enter';
 	const dictation = platform.dictate ? new Dictation(platform.dictate) : null;
 	onDestroy(() => dictation?.dispose());
 
@@ -504,12 +506,12 @@
 				<SquareIcon class="size-2.5 fill-current" />
 			</button>
 		{/if}
-		{#if sendNow && busy}
+		{#if sendNow}
 			<button
 				type="button"
 				class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-wb-hair bg-wb-panel2 text-wb-ink-mute hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-30"
 				aria-label="Send now"
-				title={`Send now${enterSends ? ' (Ctrl+Enter)' : ''}: stops this turn, running commands move to the background`}
+				title={`Send now (${sendNowKey}): stops this turn, running commands move to the background`}
 				disabled={!canSend}
 				onclick={() => send(true)}
 			>

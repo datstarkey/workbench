@@ -2,8 +2,10 @@
 	import LayersIcon from '@lucide/svelte/icons/layers';
 	import Elapsed from './Elapsed.svelte';
 
-	/** `since`: unix ms the compaction started; `tokens`: the context being summarized, if known. */
-	let { since, tokens }: { since: number; tokens: number | null } = $props();
+	/** `tokens`: the context being summarized, if known. */
+	let { tokens }: { tokens: number | null } = $props();
+	// This device's clock: the host's `compactingSince` may be minutes off from it.
+	const since = Date.now();
 </script>
 
 <!-- The engine reports only start and end, so the bar shows activity, not a percentage. -->
