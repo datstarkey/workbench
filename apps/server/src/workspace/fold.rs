@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use tokio::time::Instant;
+use workbench_core::claude_transcript::RunningTasks;
 use workbench_core::workspace::{CodexMode, Command, Effect, PaneKind};
 
 use super::{lock, PaneRuntime, Status, WorkspaceService};
@@ -162,6 +163,7 @@ impl WorkspaceService {
                         rt.busy_since = s.busy_since;
                         rt.turn_ended_at = s.turn_ended_at;
                         rt.running = s.running.clone();
+                        rt.running_tasks = s.running_tasks;
                         let asked = s.waiting.as_ref().map(|w| &w.id);
                         if asked != rt.waiting.as_ref().map(|w| &w.id) {
                             rt.waiting_since = asked.map(|_| crate::agent::now_ms());
@@ -233,6 +235,7 @@ impl PaneRuntime {
         self.busy_since = None;
         self.turn_ended_at = None;
         self.running = None;
+        self.running_tasks = RunningTasks::default();
         self.waiting = None;
         self.waiting_since = None;
     }

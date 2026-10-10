@@ -15,7 +15,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{watch, Notify};
-use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
+use workbench_core::claude_transcript::{RunningSummary, RunningTasks, WaitingSummary};
 use workbench_core::workspace::persist::{self, LocalState, WorkspacesFile};
 use workbench_core::workspace::{ops, Command, Effect, Model, PaneKind};
 
@@ -58,6 +58,8 @@ pub struct PaneRuntime {
     pub turn_ended_at: Option<u64>,
     /// The tool call the current turn is running.
     pub running: Option<RunningSummary>,
+    /// Subagents and background tasks still going.
+    pub running_tasks: RunningTasks,
     pub waiting: Option<WaitingSummary>,
     /// Unix ms the pane started waiting on its current request.
     pub waiting_since: Option<u64>,

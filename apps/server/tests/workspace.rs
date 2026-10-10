@@ -158,6 +158,10 @@ async fn a_new_session_shows_its_pane_then_runs() {
     for field in ["busySince", "turnEndedAt", "running", "waitingSince"] {
         assert!(ran.get(field).is_some(), "{field} in {ran}");
     }
+    assert_eq!(
+        ran["runningTasks"],
+        serde_json::json!({"agents": 0, "tasks": 0})
+    );
     handle.stop().await;
 }
 

@@ -1,6 +1,25 @@
-import { baseName, type AgentSummary } from '@workbench/types';
+import { baseName, type AgentSummary, type RunningTasks } from '@workbench/types';
 
 type Waiting = NonNullable<AgentSummary['waiting']>;
+
+/** "2 agents · 1 task"; null when nothing runs (or an older host sent no counts). */
+export function runningTasksLabel(counts: RunningTasks | undefined): string | null {
+	if (!counts) return null;
+	const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+	const parts = [
+		counts.agents ? plural(counts.agents, 'agent') : '',
+		counts.tasks ? plural(counts.tasks, 'task') : ''
+	].filter(Boolean);
+	return parts.length ? parts.join(' · ') : null;
+}
+
+/** Every pane's running counts added up. */
+export function totalRunningTasks(all: (RunningTasks | undefined)[]): RunningTasks {
+	return all.reduce<RunningTasks>(
+		(sum, c) => ({ agents: sum.agents + (c?.agents ?? 0), tasks: sum.tasks + (c?.tasks ?? 0) }),
+		{ agents: 0, tasks: 0 }
+	);
+}
 
 /** "now", "4m", "2h", "3d": how long since `then` (both unix ms). */
 export function age(then: number, now: number): string {
