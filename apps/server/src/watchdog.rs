@@ -15,7 +15,10 @@ const CHECK_EVERY: Duration = Duration::from_secs(1);
 const STALL: Duration = Duration::from_secs(1);
 /// How far the watchdog's own sleep may overrun before the whole process counts
 /// as frozen: no thread of it ran, so neither probe could notice.
-const FROZE: Duration = Duration::from_secs(3);
+const FROZE: Duration = Duration::from_secs(5);
+/// Each kind of report is a Sentry error at most this often, a warning (a
+/// breadcrumb) otherwise: a machine under load would report every second.
+const REPORT_EVERY: Duration = Duration::from_secs(600);
 /// At most one thread sample per this long, and this many kept.
 const SAMPLE_EVERY: Duration = Duration::from_secs(600);
 const SAMPLES_KEPT: usize = 10;
@@ -70,67 +73,101 @@ pub fn start(handle: tokio::runtime::Handle) {
 }
 
 fn watch(handle: tokio::runtime::Handle) {
-    let mut files_low = false;
-    let mut sampled = None;
+    let mut watch = Watch::default();
     loop {
         let slept = Instant::now();
         std::thread::sleep(CHECK_EVERY);
-        note_freeze(slept.elapsed().saturating_sub(CHECK_EVERY));
-        let async_ran = probe("async workers", &mut sampled, |done| {
+        watch.note_freeze(slept.elapsed().saturating_sub(CHECK_EVERY));
+        let async_ran = watch.probe("async workers", |done| {
             handle.spawn(async move { done.send(()) });
         });
-        let blocking_ran = probe("blocking pool", &mut sampled, |done| {
+        let blocking_ran = watch.probe("blocking pool", |done| {
             handle.spawn_blocking(move || done.send(()));
         });
         if !async_ran || !blocking_ran {
             return; // the runtime shut down
         }
-        files_low = check_files(files_low);
+        watch.files_low = check_files(watch.files_low);
     }
 }
 
-/// Report a sleep that overran by `late`: the whole process stopped (memory
-/// pressure swapping it out, a fork holding the allocator's locks), which no
-/// probe can see from inside. Unix monotonic clocks stop while the machine
-/// sleeps, so a sleeping laptop isn't reported; Windows' may not, so it's skipped.
-fn note_freeze(late: Duration) {
-    if cfg!(windows) || late < FROZE {
-        return;
-    }
-    // A breadcrumb first: Sentry attaches it to the error that follows.
-    tracing::warn!(
-        "no thread of the process ran for {:.1}s{}",
-        late.as_secs_f64(),
-        memory_note()
-    );
-    tracing::error!(
-        "process froze: the server watchdog ran over {}s late",
-        FROZE.as_secs()
-    );
+#[derive(Default)]
+struct Watch {
+    files_low: bool,
+    sampled: Option<Instant>,
+    reported: std::collections::HashMap<&'static str, Instant>,
 }
 
-/// Log when `start`'s task waits past [`STALL`] for a thread, and again when
-/// it runs. False once the runtime is gone.
-fn probe(what: &str, sampled: &mut Option<Instant>, start: impl FnOnce(mpsc::Sender<()>)) -> bool {
-    let (done, ran) = mpsc::channel();
-    let started = Instant::now();
-    start(done);
-    match ran.recv_timeout(STALL) {
-        Ok(()) => return true,
-        Err(mpsc::RecvTimeoutError::Disconnected) => return false,
-        Err(mpsc::RecvTimeoutError::Timeout) => {}
+impl Watch {
+    /// `message` as a Sentry error, unless one of this `kind` went within
+    /// [`REPORT_EVERY`]; then as a warning.
+    fn report(&mut self, kind: &'static str, message: &str) {
+        let now = Instant::now();
+        if self
+            .reported
+            .get(kind)
+            .is_some_and(|at| now.duration_since(*at) < REPORT_EVERY)
+        {
+            tracing::warn!("{message}");
+        } else {
+            self.reported.insert(kind, now);
+            tracing::error!("{message}");
+        }
     }
-    sample_threads(sampled);
-    tracing::error!(
-        "server {what} stalled: a task waited over {}s to run",
-        STALL.as_secs()
-    );
-    let alive = ran.recv().is_ok();
-    tracing::warn!(
-        "server {what} ran again after {:.1}s",
-        started.elapsed().as_secs_f64()
-    );
-    alive
+
+    /// Report the watchdog running `late`: the whole process stopped (memory
+    /// pressure swapping it out, a fork holding the allocator's locks), which
+    /// no probe can see from inside. Unix monotonic clocks stop while the
+    /// machine sleeps, so a sleeping laptop isn't reported; Windows' may not,
+    /// so it's skipped.
+    fn note_freeze(&mut self, late: Duration) {
+        if cfg!(windows) || late < FROZE {
+            return;
+        }
+        // A breadcrumb first: Sentry attaches it to the error that follows.
+        tracing::warn!(
+            "no thread of the process ran for {:.1}s{}",
+            late.as_secs_f64(),
+            memory_note()
+        );
+        let message = format!(
+            "process froze: the server watchdog ran over {}s late",
+            FROZE.as_secs()
+        );
+        self.report("froze", &message);
+    }
+
+    /// Log when `start`'s task waits past [`STALL`] for a thread, and again
+    /// when it runs. False once the runtime is gone.
+    fn probe(&mut self, what: &'static str, start: impl FnOnce(mpsc::Sender<()>)) -> bool {
+        let (done, ran) = mpsc::channel();
+        let started = Instant::now();
+        start(done);
+        match ran.recv_timeout(STALL) {
+            Ok(()) => return true,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // The wait itself ran this late: the whole process stopped, the
+        // runtime with it, so it's a freeze and not the runtime's stall.
+        let waited = started.elapsed();
+        if waited >= STALL + FROZE {
+            self.note_freeze(waited - STALL);
+            return ran.recv().is_ok();
+        }
+        sample_threads(&mut self.sampled);
+        let message = format!(
+            "server {what} stalled: a task waited over {}s to run",
+            STALL.as_secs()
+        );
+        self.report(what, &message);
+        let alive = ran.recv().is_ok();
+        tracing::warn!(
+            "server {what} ran again after {:.1}s",
+            started.elapsed().as_secs_f64()
+        );
+        alive
+    }
 }
 
 /// Every thread's stack while a stall lasts, which says what the workers wait
@@ -151,16 +188,24 @@ fn sample_threads(last: &mut Option<Instant>) {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let file = dir.join(format!("stall-{secs}.txt"));
-    let started = workbench_core::shell::spawn_detached(
-        workbench_core::shell::command("/usr/bin/sample")
-            .arg(std::process::id().to_string())
-            .args(["3", "-file"])
-            .arg(&file)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()),
-    );
+    let started = workbench_core::shell::command("/usr/bin/sample")
+        .arg(std::process::id().to_string())
+        .args(["3", "-file"])
+        .arg(&file)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
     match started {
-        Ok(()) => tracing::warn!("sampling every thread to {}", file.display()),
+        Ok(mut sample) => {
+            tracing::warn!("sampling every thread to {}", file.display());
+            // Reaped here, and a failed sample said so: the breadcrumb above
+            // would otherwise name a file that never came.
+            std::thread::spawn(move || match sample.wait() {
+                Ok(status) if status.success() => {}
+                Ok(status) => tracing::warn!("thread sample failed ({status})"),
+                Err(e) => tracing::warn!("thread sample failed: {e}"),
+            });
+        }
         Err(e) => tracing::warn!("couldn't sample threads: {e}"),
     }
 }

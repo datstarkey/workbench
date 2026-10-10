@@ -21,7 +21,10 @@ use tokio::sync::watch;
 /// Idle this long, a connection is probed; unanswered probes close it.
 const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
-/// How long a client may take to send a request's headers.
+/// How long a client may take to send a request's headers. hyper also counts a
+/// kept-alive connection's idle wait for its next request, so this closes
+/// those after 30s idle too: clients open a new one, as with any server's
+/// idle timeout.
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a write may wait for room in the socket before the connection is
 /// dropped: its peer stopped reading.
@@ -136,7 +139,16 @@ impl<T: AsyncRead + Unpin> AsyncRead for WriteDeadline<T> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let read = Pin::new(&mut this.inner).poll_read(cx, buf);
+        // A peer still sending is alive: a timer left by a write nobody went
+        // back to (a WebSocket pong flush whose future was dropped) must not
+        // cut it off at its next full buffer.
+        if matches!(read, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            this.stalled = None;
+        }
+        read
     }
 }
 
@@ -208,5 +220,26 @@ mod tests {
             socket.write_all(&[0; 8]).await.unwrap();
         }
         reader.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_write_given_up_on_leaves_no_timer_once_the_peer_speaks() {
+        use futures_util::FutureExt;
+        use tokio::io::AsyncReadExt;
+        let (ours, mut theirs) = tokio::io::duplex(8);
+        let mut socket = WriteDeadline::new(ours);
+        socket.write_all(&[0; 8]).await.unwrap();
+        // A write that waits once and is dropped (its future abandoned).
+        assert!(socket.write(&[0; 8]).now_or_never().is_none());
+        tokio::time::sleep(WRITE_STALL * 2).await;
+        theirs.write_all(b"ping").await.unwrap();
+        let mut buf = [0; 4];
+        socket.read_exact(&mut buf).await.unwrap();
+        // The next write meets the still-full buffer: that's no stall yet.
+        let next = tokio::spawn(async move { socket.write_all(&[0; 8]).await.map(|_| socket) });
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut drained = [0; 8];
+        theirs.read_exact(&mut drained).await.unwrap();
+        assert!(next.await.unwrap().is_ok());
     }
 }

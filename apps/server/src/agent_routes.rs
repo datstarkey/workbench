@@ -532,7 +532,9 @@ async fn stream(
                 Some(Ok(Message::Text(text))) => {
                     heartbeat.heard();
                     if queued.len() >= MAX_QUEUED_MESSAGES {
-                        ws_close(socket, None).await;
+                        let why = json!({"t": "error", "message":
+                            "Too many messages while the session was busy restarting; reconnecting."});
+                        ws_close(socket, Some(Message::Text(why.to_string()))).await;
                         return;
                     }
                     queued.push_back(text);

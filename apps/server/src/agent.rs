@@ -559,20 +559,14 @@ impl AgentManager {
             let transcript =
                 claude::history_transcript(config_dir.as_deref(), session_id, peeked.as_deref());
             let _lifecycle = lock(&self.lifecycle);
-            // Only the first attach after a rewind cuts history there: what is
-            // typed since continues that branch, which a re-attach must show.
-            // Another attach with this token took the cut meanwhile: read again,
-            // outside the lock.
-            {
-                let mut grants = lock(&self.mod_grants);
-                let now = grants.get(token).and_then(|g| g.resume_at.clone());
-                if now != peeked {
-                    peeked = now;
-                    continue;
-                }
-                if let Some(grant) = grants.get_mut(token) {
-                    grant.resume_at = None;
-                }
+            // Another attach with this token took the rewind cut meanwhile:
+            // read again, outside the lock.
+            let now = lock(&self.mod_grants)
+                .get(token)
+                .and_then(|g| g.resume_at.clone());
+            if now != peeked {
+                peeked = now;
+                continue;
             }
             self.ensure_exited(session_id)?;
             let stale = match self.get(session_id) {
@@ -587,6 +581,18 @@ impl AgentManager {
                     Some(existing)
                 }
                 None => None,
+            };
+            // Only the first attach after a rewind cuts history there: what is
+            // typed since continues that branch, which a re-attach must show.
+            // Taken once nothing above can refuse the attach, so a retried
+            // hello still gets the cut.
+            let cut = lock(&self.mod_grants)
+                .get_mut(token)
+                .and_then(|g| g.resume_at.take());
+            let transcript = if cut == peeked {
+                transcript
+            } else {
+                claude::history_transcript(config_dir.as_deref(), session_id, cut.as_deref())
             };
             let req = StartAgent {
                 cwd: grant.cwd,

@@ -15,13 +15,24 @@ type FileWatcher = Debouncer<notify::RecommendedWatcher>;
 pub struct GitWatcher {
     debouncer: Mutex<Option<FileWatcher>>,
     watched_paths: Mutex<HashSet<PathBuf>>,
-    /// Projects that couldn't be watched (no `.git` yet): retried each sync,
-    /// reported once.
+    /// Projects that couldn't be watched (no `.git` yet): reported once,
+    /// retried every [`RETRY_FAILED`] (a `git init` later) and on each sync.
     failed: Mutex<HashSet<PathBuf>>,
 }
 
+/// How often a project that couldn't be watched is tried again: syncs only
+/// come when the open projects change.
+const RETRY_FAILED: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl GitWatcher {
     pub fn new(app_handle: AppHandle) -> Self {
+        let app = app_handle.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(RETRY_FAILED);
+            if let Some(watcher) = app.try_state::<GitWatcher>() {
+                watcher.retry_failed();
+            }
+        });
         let debouncer = Self::create_debouncer(app_handle);
 
         Self {
@@ -166,6 +177,11 @@ impl GitWatcher {
 
         watched.insert(path);
         Ok(())
+    }
+
+    fn retry_failed(&self) {
+        let mut failed = self.failed.lock().unwrap_or_else(|e| e.into_inner());
+        failed.retain(|path| self.watch_project(&path.to_string_lossy()).is_err());
     }
 
     pub fn sync_projects(&self, project_paths: Vec<String>) {
