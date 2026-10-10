@@ -946,6 +946,12 @@ export interface ChatTarget {
 	claudeAccountId?: string;
 }
 
+/** Counts of a session's unfinished subagents (`agents`) and other tasks. */
+export interface RunningTasks {
+	agents: number;
+	tasks: number;
+}
+
 /** A running chat session, as `GET /agent` lists it (phone home screen). */
 export interface AgentSummary {
 	agent: AgentKind;
@@ -972,6 +978,8 @@ export interface AgentSummary {
 	waiting: { id: string; tool: string; preview: string; inTerminal?: boolean } | null;
 	/** The newest tool call still running in this turn. */
 	running: { name: string; detail: string } | null;
+	/** Subagents and other tasks (background shells) still going; absent from older servers. */
+	runningTasks?: RunningTasks;
 	/** Ids it ran under before a `/clear`, so a client holding one follows the re-key. */
 	previousIds: string[];
 	/** The server terminal whose interactive `claude` this chat is. */

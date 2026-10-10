@@ -29,6 +29,8 @@ export interface WorkspacePane {
 	turnEndedAt?: number | null;
 	/** The tool call the turn is running. */
 	running?: AgentSummary['running'];
+	/** Subagents and background tasks still going; absent from older hosts. */
+	runningTasks?: AgentSummary['runningTasks'];
 	waiting: AgentSummary['waiting'];
 	/** Unix ms the pane started waiting on `waiting`. */
 	waitingSince?: number | null;

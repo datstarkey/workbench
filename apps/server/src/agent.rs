@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use workbench_core::claude_transcript::{RunningSummary, WaitingSummary};
+use workbench_core::claude_transcript::{RunningSummary, RunningTasks, WaitingSummary};
 
 mod attachment;
 mod cache;
@@ -127,6 +127,8 @@ pub struct AgentSummary {
     pub turn_ended_at: Option<u64>,
     pub waiting: Option<WaitingSummary>,
     pub running: Option<RunningSummary>,
+    /// Subagents and background tasks still going.
+    pub running_tasks: RunningTasks,
     /// Ids it ran under before a `/clear`, so a client holding one follows the re-key.
     pub previous_ids: Vec<String>,
     /// The server terminal whose interactive `claude` this chat is.

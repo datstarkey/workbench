@@ -1386,3 +1386,39 @@ fn compacting_shows_from_its_status_until_the_boundary_or_turn_end() {
     t.apply(&status(Value::Null));
     assert_eq!(t.meta().compacting_since, None, "skipped");
 }
+
+#[test]
+fn a_clear_keeps_the_tasks_still_running() {
+    let mut t = Transcript::default();
+    let sys = |sub: &str, extra: Value| {
+        let mut v = json!({"type":"system","subtype":sub,"uuid":"x","session_id":"s"});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        v
+    };
+    t.apply(&sys(
+        "task_started",
+        json!({"task_id":"b1","task_type":"local_bash","description":"bun run dev"}),
+    ));
+    t.apply(&sys(
+        "task_started",
+        json!({"task_id":"a1","task_type":"local_agent","description":"Done already"}),
+    ));
+    t.apply(&sys(
+        "task_notification",
+        json!({"task_id":"a1","status":"completed"}),
+    ));
+    t.apply(&json!({"type":"conversation_reset","new_conversation_id":SID}));
+    let ids: Vec<_> = t.meta().tasks.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, ["b1"]);
+    // Its end still lands on it, not on a new "agent".
+    t.apply(&sys(
+        "task_notification",
+        json!({"task_id":"b1","status":"killed"}),
+    ));
+    let tasks = &t.meta().tasks;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].status, "killed");
+    assert_ne!(tasks[0].kind, "agent");
+}

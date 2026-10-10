@@ -231,6 +231,7 @@ mod tests {
             turn_ended_at: None,
             waiting: None,
             running: None,
+            running_tasks: Default::default(),
             previous_ids: vec![],
             terminal_id: None,
         }

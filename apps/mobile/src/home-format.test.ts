@@ -5,9 +5,30 @@ import {
 	answerableFromHome,
 	pathKey,
 	repoLabel,
+	runningTasksLabel,
 	tildePath,
+	totalRunningTasks,
 	waitingLabel
 } from './home-format.ts';
+
+describe('runningTasksLabel', () => {
+	it('names what runs and leaves out what does not', () => {
+		expect(runningTasksLabel({ agents: 2, tasks: 1 })).toBe('2 agents · 1 task');
+		expect(runningTasksLabel({ agents: 1, tasks: 0 })).toBe('1 agent');
+		expect(runningTasksLabel({ agents: 0, tasks: 3 })).toBe('3 tasks');
+	});
+
+	it('is null when nothing runs or an older host sent no counts', () => {
+		expect(runningTasksLabel({ agents: 0, tasks: 0 })).toBeNull();
+		expect(runningTasksLabel(undefined)).toBeNull();
+	});
+
+	it('adds up every pane, missing counts as none', () => {
+		expect(
+			totalRunningTasks([{ agents: 1, tasks: 2 }, undefined, { agents: 3, tasks: 0 }])
+		).toEqual({ agents: 4, tasks: 2 });
+	});
+});
 
 const approval = (tool: string): NonNullable<AgentSummary['waiting']> => ({
 	id: 'r1',
