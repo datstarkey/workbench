@@ -34,7 +34,7 @@ pub use cache::{written_cache_ttl, KEEPALIVE_PROMPT};
 pub use elicitation::{ElicitationAction, TERMINAL_ELICITATION, TERMINAL_ELICITATION_ANSWERED};
 pub(crate) use elicitation::{Pending as PendingElicitation, Request as ElicitationRequest};
 pub use goal::goal_status_entry;
-pub use summary::{RunningSummary, WaitingSummary};
+pub use summary::{RunningSummary, RunningTasks, WaitingSummary};
 pub(crate) use title::SavedTitle;
 
 pub use items::{

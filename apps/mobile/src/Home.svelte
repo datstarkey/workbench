@@ -8,7 +8,13 @@
 	import { Elapsed, shortPath } from '@workbench/chat-ui';
 	import { cn } from '@workbench/ui';
 	import type { MobileClient } from './client.svelte.ts';
-	import { age, answerableFromHome, waitingLabel } from './home-format.ts';
+	import {
+		age,
+		answerableFromHome,
+		runningTasksLabel,
+		totalRunningTasks,
+		waitingLabel
+	} from './home-format.ts';
 	import MachinesSheet from './MachinesSheet.svelte';
 	import { paneTitle, workspaceLabel, type PaneEntry } from './panes.ts';
 	import ProjectList from './ProjectList.svelte';
@@ -46,6 +52,10 @@
 			.filter((group) => group.entries.length > 0)
 	);
 	const runningCount = $derived(running.reduce((n, group) => n + group.entries.length, 0));
+	/** Every session's unfinished subagents and tasks on this machine, for the top bar. */
+	const machineTasks = $derived(
+		runningTasksLabel(totalRunningTasks(client.panes.map((e) => e.pane.runningTasks)))
+	);
 
 	function activity({ pane, workspace }: PaneEntry): string {
 		if (pane.status === 'needsTrust') return 'Needs folder trust';
@@ -78,6 +88,15 @@
 		style="padding-top: env(safe-area-inset-top); min-height: calc(3rem + env(safe-area-inset-top));"
 	>
 		<span class="text-[15px] font-semibold tracking-tight">Workbench</span>
+		{#if machineTasks}
+			<span
+				class="flex min-w-0 shrink items-center gap-1.5 rounded-full bg-wb-panel2 px-2 py-0.5 text-[11px] text-wb-ink-mute"
+				aria-label="Running on this machine: {machineTasks}"
+			>
+				<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-wb-accent"></span>
+				<span class="truncate">{machineTasks}</span>
+			</span>
+		{/if}
 		<button
 			type="button"
 			class="ml-auto flex h-9 min-w-0 items-center gap-1.5 rounded-full border border-wb-hair px-3 text-[12px] text-wb-ink-mute active:bg-wb-panel2"
@@ -200,6 +219,7 @@
 						{#each group.entries as entry (entry.pane.id)}
 							{@const pane = entry.pane}
 							{@const title = paneTitle(entry)}
+							{@const tasksLabel = runningTasksLabel(pane.runningTasks)}
 							<div
 								class="flex items-center gap-2.5 rounded-xl border border-wb-hair-soft bg-wb-panel py-2.5 pr-1.5 pl-3"
 							>
@@ -232,6 +252,13 @@
 												pane.running && 'font-mono text-[11px] text-wb-ink'
 											)}>{activity(entry)}</span
 										>
+										{#if tasksLabel}
+											<span class="flex items-center gap-1.5 text-[11px] text-wb-ink-soft">
+												<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-wb-accent"
+												></span>
+												<span class="truncate">{tasksLabel}</span>
+											</span>
+										{/if}
 									</span>
 									<span
 										class="ml-auto flex shrink-0 flex-col items-end gap-1 font-mono text-[11px] text-wb-ink-soft"

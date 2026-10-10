@@ -4,7 +4,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use super::TranscriptItem;
+use super::{TaskInfo, TranscriptItem};
 use crate::text::truncate_chars;
 
 const MAX_CHARS: usize = 240;
@@ -33,6 +33,35 @@ pub struct WaitingSummary {
 pub struct RunningSummary {
     pub name: String,
     pub detail: String,
+}
+
+/// How many of a session's subagents, and of its other tasks (background
+/// shells and the like), are still going; finished ones don't count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct RunningTasks {
+    pub agents: u32,
+    pub tasks: u32,
+}
+
+impl RunningTasks {
+    pub fn of(tasks: &[TaskInfo]) -> Self {
+        let mut counts = Self::default();
+        for task in tasks.iter().filter(|t| t.is_running()) {
+            if task.kind == "agent" {
+                counts.agents += 1;
+            } else {
+                counts.tasks += 1;
+            }
+        }
+        counts
+    }
+}
+
+impl TaskInfo {
+    /// Not yet finished: chat-ui's `isRunning` counts the same statuses.
+    pub fn is_running(&self) -> bool {
+        matches!(self.status.as_str(), "pending" | "running" | "paused")
+    }
 }
 
 impl TranscriptItem {
@@ -96,6 +125,43 @@ mod tests {
     use super::super::ToolStatus;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn running_tasks_count_unfinished_agents_and_other_tasks_apart() {
+        let task = |kind: &str, status: &str| TaskInfo {
+            id: format!("{kind}-{status}"),
+            tool_use_id: None,
+            kind: kind.into(),
+            subagent_type: None,
+            description: String::new(),
+            status: status.into(),
+            background: true,
+            tool_uses: 0,
+            tokens: 0,
+            duration_ms: 0,
+            activity: None,
+            last_tool: None,
+            summary: None,
+            output_id: None,
+        };
+        let tasks = [
+            task("agent", "running"),
+            task("agent", "pending"),
+            task("agent", "completed"),
+            task("local_bash", "running"),
+            task("local_bash", "paused"),
+            task("local_bash", "killed"),
+            task("local_bash", "failed"),
+        ];
+        assert_eq!(
+            RunningTasks::of(&tasks),
+            RunningTasks {
+                agents: 2,
+                tasks: 2
+            }
+        );
+        assert_eq!(RunningTasks::of(&[]), RunningTasks::default());
+    }
 
     fn approval(input: Value) -> TranscriptItem {
         TranscriptItem::Approval {
