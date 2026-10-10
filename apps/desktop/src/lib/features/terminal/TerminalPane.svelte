@@ -16,6 +16,7 @@
 	import { TerminalInputDedup } from './input-dedup';
 	import { installTextareaResidueGuard } from './textarea-residue';
 	import { isLayoutDisabled } from './layout-guard';
+	import { watchAtlas } from './webgl-atlas';
 	import { getClaudeSessionStore, getWorkbenchSettingsStore } from '$stores/context';
 
 	let {
@@ -36,6 +37,7 @@
 	let terminal: Terminal | null = null;
 	let fitAddon: FitAddon | null = null;
 	let webglAddon: WebglAddon | null = null;
+	let unwatchAtlas: (() => void) | null = null;
 	let webLinksLoaded = false;
 	let conn: TerminalConnection | null = null;
 	let resizeObserver: ResizeObserver | null = null;
@@ -194,18 +196,25 @@
 		if (!terminal || webglUnavailable || webglAddon) return;
 		try {
 			webglAddon = new WebglAddon();
+			unwatchAtlas = watchAtlas(webglAddon, { drop: dropWebGlAddon, load: loadWebGlAddon });
 			webglAddon.onContextLoss(() => {
-				webglAddon?.dispose();
-				webglAddon = null;
+				dropWebGlAddon();
 				// After context loss, re-fit to recalculate cell metrics
 				// (different renderers may have slightly different measurements)
 				requestAnimationFrame(() => fitTerminal());
 			});
 			terminal.loadAddon(webglAddon);
 		} catch {
+			dropWebGlAddon();
 			webglUnavailable = true;
-			webglAddon = null;
 		}
+	}
+
+	function dropWebGlAddon() {
+		unwatchAtlas?.();
+		unwatchAtlas = null;
+		webglAddon?.dispose();
+		webglAddon = null;
 	}
 
 	function logPerfSnapshotIfEnabled() {
@@ -598,7 +607,7 @@
 		intersectionObserver?.disconnect();
 		shellState?.dispose();
 		searchAddon?.dispose();
-		webglAddon?.dispose();
+		dropWebGlAddon();
 		terminal?.dispose();
 		// Detach only: the terminal is the server's, and ends when its pane closes.
 		conn?.dispose();
