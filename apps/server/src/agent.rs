@@ -108,7 +108,7 @@ impl Launch {
 }
 
 /// One live session as the phone's home screen lists it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSummary {
     pub agent: AgentKind,
@@ -556,11 +556,20 @@ impl AgentManager {
             workbench_core::claude_accounts::resolve_saved(grant.claude_account_id.as_deref())?;
         // Read before taking the lifecycle lock: a long history would hold up
         // every other start and stop.
-        let peeked = grant.resume_at.clone();
-        let mut transcript =
-            claude::history_transcript(config_dir.as_deref(), session_id, peeked.as_deref());
-        let (attached, stale) = {
+        let mut peeked = grant.resume_at.clone();
+        let (attached, stale) = loop {
+            let transcript =
+                claude::history_transcript(config_dir.as_deref(), session_id, peeked.as_deref());
             let _lifecycle = lock(&self.lifecycle);
+            // Another attach with this token took the rewind cut meanwhile:
+            // read again, outside the lock.
+            let now = lock(&self.mod_grants)
+                .get(token)
+                .and_then(|g| g.resume_at.clone());
+            if now != peeked {
+                peeked = now;
+                continue;
+            }
             self.ensure_exited(session_id)?;
             let stale = match self.get(session_id) {
                 Some(existing) => {
@@ -577,17 +586,16 @@ impl AgentManager {
             };
             // Only the first attach after a rewind cuts history there: what is
             // typed since continues that branch, which a re-attach must show.
-            let resume_at = lock(&self.mod_grants)
+            // Taken once nothing above can refuse the attach, so a retried
+            // hello still gets the cut.
+            let cut = lock(&self.mod_grants)
                 .get_mut(token)
                 .and_then(|g| g.resume_at.take());
-            if resume_at != peeked {
-                // Another attach with this token took the cut meanwhile.
-                transcript = claude::history_transcript(
-                    config_dir.as_deref(),
-                    session_id,
-                    resume_at.as_deref(),
-                );
-            }
+            let transcript = if cut == peeked {
+                transcript
+            } else {
+                claude::history_transcript(config_dir.as_deref(), session_id, cut.as_deref())
+            };
             let req = StartAgent {
                 cwd: grant.cwd,
                 project_path: grant.project_path,
@@ -615,7 +623,7 @@ impl AgentManager {
                 lock(&self.inner).insert(session_id.to_string(), session.clone());
                 Ok(session)
             });
-            (attached, stale)
+            break (attached, stale);
         };
         // The stale session ends outside the lock: its end waits on its driver lock.
         if let Some(stale) = stale {

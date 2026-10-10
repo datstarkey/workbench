@@ -177,13 +177,16 @@
 	onDestroy(() => workspaceStore.dispose());
 
 	// Watch the git state of every open project (worktrees resolve to theirs in Rust).
+	// Derived, so an unchanged list doesn't re-sync on every workspace snapshot.
+	const gitProjectPaths = $derived(
+		workspaceStore.workspaces
+			.map((w) => w.projectPath)
+			.filter((p, i, all) => all.indexOf(p) === i)
+			.sort()
+			.join('\n')
+	);
 	watch(
-		() =>
-			workspaceStore.workspaces
-				.map((w) => w.projectPath)
-				.filter((p, i, all) => all.indexOf(p) === i)
-				.sort()
-				.join('\n'),
+		() => gitProjectPaths,
 		(paths) => {
 			void invoke('watch_git_projects', { projectPaths: paths ? paths.split('\n') : [] }).catch(
 				(e) => console.warn('[App] git watch:', e)
