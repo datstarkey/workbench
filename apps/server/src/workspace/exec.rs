@@ -328,7 +328,7 @@ fn start_codex_chat(
         session_id: session.id(),
     })?;
     if let Some(prompt) = prompt {
-        session.prompt(&prompt, &[], &[])?;
+        session.prompt(&prompt, &[], &[], false)?;
     }
     Ok(())
 }

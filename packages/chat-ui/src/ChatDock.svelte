@@ -8,6 +8,7 @@
 	import ChatAccountPicker from './ChatAccountPicker.svelte';
 	import ChatCacheHint from './ChatCacheHint.svelte';
 	import ChatComposer from './ChatComposer.svelte';
+	import ChatCompacting from './ChatCompacting.svelte';
 	import ChatGoal from './ChatGoal.svelte';
 	import ChatModelPicker from './ChatModelPicker.svelte';
 	import ChatPlan from './ChatPlan.svelte';
@@ -118,6 +119,9 @@
 	{/if}
 	<CodexControls {chat} {onThread} />
 	<ChatCacheHint {chat} />
+	{#if chat.meta?.compactingSince && chat.live}
+		<ChatCompacting tokens={chat.meta.contextTokens} />
+	{/if}
 	{#if chat.meta?.goal && chat.live}
 		<ChatGoal goal={chat.meta.goal} />
 	{/if}
@@ -131,8 +135,9 @@
 		mode={chat.mode}
 		busy={Boolean(chat.meta?.busy) && chat.live}
 		stoppable={chat.stoppable}
+		sendNow={chat.canSendNow && chat.live}
 		{disabledReason}
-		onSend={(text, images, files) => chat.prompt(text, images, files)}
+		onSend={(text, images, files, now) => chat.prompt(text, images, files, now)}
 		onStop={() => chat.interrupt()}
 		{commands}
 		{onCommand}

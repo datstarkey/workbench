@@ -73,11 +73,15 @@ pub(super) fn apply_line(t: &mut Transcript, line: &str) -> Effects {
 }
 
 /// Attachments are already `@path` mentions in `text` (see `attachment`).
-pub(super) fn prompt(t: &mut Transcript, text: &str, attachments: &[String]) -> Effects {
+/// `now` has the plugin end a running turn first (`workbench_now`, the TUI's send now).
+pub(super) fn prompt(t: &mut Transcript, text: &str, attachments: &[String], now: bool) -> Effects {
     t.set_busy();
     let mut line = json!({"type": "user", "message": {"role": "user", "content": text}});
     if !attachments.is_empty() {
         line["workbench_attachments"] = json!(attachments);
+    }
+    if now {
+        line["workbench_now"] = json!(true);
     }
     Effects {
         send: vec![line],
@@ -159,6 +163,14 @@ fn changed_meta(msg: Value) -> Effects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_send_now_prompt_asks_the_plugin_to_end_the_turn() {
+        let mut t = Transcript::default();
+        let line = |t: &mut Transcript, now| prompt(t, "hi", &[], now).send[0].clone();
+        assert_eq!(line(&mut t, true)["workbench_now"], true);
+        assert!(line(&mut t, false).get("workbench_now").is_none());
+    }
 
     #[test]
     fn a_refused_model_switch_is_rolled_back() {

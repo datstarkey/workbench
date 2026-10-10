@@ -100,6 +100,14 @@ let chatTurn = false;
 type ChatCommand = { answered: boolean; settled: boolean };
 let chatCommand: ChatCommand | undefined;
 const PANEL_WAIT_MS = 3000;
+/** How long Send now waits for the turn to end before sending into it anyway. */
+const SEND_NOW_ABORT_MS = 3000;
+/** The turn Send now is ending: its end sends no `result`, so the chat stays busy into the next. */
+let replacing: string | undefined;
+/** A replaced turn's `result` is owed until the next turn starts. */
+let owedResult = false;
+/** Send now's abort and prompt, which later chat prompts wait behind. */
+let sendingNow: Promise<void> | undefined;
 const LIVE_AGENT = new Set(['pending', 'running', 'waiting']);
 // Chat prompts appended into the running turn that no request has read yet.
 let injected: string[] = [];
@@ -318,11 +326,32 @@ export const register: Register = (on) => {
 
 		// A chat prompt. A plugin's submit waits for the turn to end, so
 		// mid-turn it joins the running turn the way a typed prompt would.
-		const chatPrompt = async (line: Line) => {
+		const chatPrompt = async (line: Line, sentNow = false) => {
 			const message = line.message as { content?: unknown } | undefined;
 			const text = promptText(message?.content);
 			const files = attachedFiles(line);
 			if (!text) return;
+			if (sendingNow && !sentNow) await sendingNow;
+			// Send now (the TUI's ctrl+enter): the running turn ends, its running
+			// Bash moves to the background, and this prompt (or command) comes next.
+			// The abort runs off the poll loop, which answers approvals and stops;
+			// a prompt sent meanwhile waits behind it.
+			if (line.workbench_now === true && runningTurn !== undefined) {
+				const turnId = runningTurn;
+				replacing = turnId;
+				const after = { ...line, workbench_now: false };
+				sendingNow = (async () => {
+					await Promise.race([
+						$.turn.abort({ turnId }).catch(() => {}),
+						$.clock.sleep(SEND_NOW_ABORT_MS)
+					]);
+					// Still running: it ends on its own, with its own `result`, and
+					// this prompt joins it as any mid-turn prompt does.
+					if (replacing === turnId) replacing = undefined;
+					await chatPrompt(after, true);
+				})().finally(() => (sendingNow = undefined));
+				return;
+			}
 			// A plugin's submit refuses a leading `/`, so a known command runs as one
 			// (queued until idle); `/tmp is full` stays a prompt. A command that starts
 			// no turn (a forked skill, `/rename`) resolves to nothing for the model, so
@@ -397,7 +426,13 @@ export const register: Register = (on) => {
 			} else {
 				// Not awaited: it resolves when its turn starts, and polling must go
 				// on meanwhile (approval answers, interrupts).
-				void $.prompt.submit({ text: withAttachments(text, files), asUser: true });
+				void $.prompt.submit({ text: withAttachments(text, files), asUser: true }).catch(() => {
+					// A replaced turn sent no `result`; nothing replaced it after all.
+					if (owedResult && !runningTurn) {
+						owedResult = false;
+						emit({ type: 'result', subtype: 'success', is_error: false });
+					}
+				});
 			}
 		};
 
@@ -551,6 +586,7 @@ export const register: Register = (on) => {
 	// re-read here.
 	on('turn.start', async ($, e, next) => {
 		runningTurn = e.turnId;
+		owedResult = false;
 		// A prompt-type command's turn ends with its own `result`.
 		if (chatCommand) chatCommand.answered = true;
 		failure = undefined;
@@ -781,7 +817,12 @@ export const register: Register = (on) => {
 					uuid: `wbmod-refusal-${++askSeq}`
 				});
 			const modelUsage = contextWindow ? { [model]: { contextWindow } } : undefined;
-			if (e.reason === 'error') {
+			const replaced = e.reason === 'aborted' && e.turnId === replacing;
+			if (replaced) {
+				// Send now's next turn follows at once: no idle flash, no "finished" alert.
+				replacing = undefined;
+				owedResult = true;
+			} else if (e.reason === 'error') {
 				failedResult = `wbmod-result-${++askSeq}`;
 				emit({
 					type: 'result',
@@ -939,7 +980,16 @@ export const register: Register = (on) => {
 		const ours = !e.agentId && e.trigger !== 'precompute';
 		// The chat's `/compact` running: not a panel waiting to be closed, however long it takes.
 		if (ours && e.trigger === 'manual' && chatCommand) chatCommand.answered = true;
-		const result = await next(e);
+		// The chat's "Compacting" bar: the engine reports no progress, only the start and end.
+		const status = (s: 'compacting' | null) =>
+			ours && server.current() && emit({ type: 'system', subtype: 'status', status: s });
+		status('compacting');
+		let result: Awaited<ReturnType<typeof next>>;
+		try {
+			result = await next(e);
+		} finally {
+			status(null);
+		}
 		if (!server.current() || !ours) return result;
 		if (!result.messages) {
 			emit({

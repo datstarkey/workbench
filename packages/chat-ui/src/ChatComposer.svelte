@@ -8,6 +8,7 @@
 	import MicIcon from '@lucide/svelte/icons/mic';
 	import PaperclipIcon from '@lucide/svelte/icons/paperclip';
 	import SquareIcon from '@lucide/svelte/icons/square';
+	import ZapIcon from '@lucide/svelte/icons/zap';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { cn } from '@workbench/ui';
 	import * as DropdownMenu from '@workbench/ui/dropdown-menu';
@@ -45,6 +46,7 @@
 		mode,
 		busy,
 		stoppable,
+		sendNow = false,
 		disabledReason,
 		onSend,
 		onStop,
@@ -66,10 +68,17 @@
 		busy: boolean;
 		/** Whether Stop shows: also while only background agents run (the chat is idle). */
 		stoppable: boolean;
+		/** Whether Send now shows (Ctrl/⌘+Enter): ends the running turn instead of joining it. */
+		sendNow?: boolean;
 		/** Set when nothing can be sent right now; shown as the placeholder. */
 		disabledReason: string | null;
 		/** Returns false if the message could not be sent (the draft is kept). */
-		onSend: (text: string, images: ChatImage[], files: ChatFile[]) => boolean | Promise<boolean>;
+		onSend: (
+			text: string,
+			images: ChatImage[],
+			files: ChatFile[],
+			now: boolean
+		) => boolean | Promise<boolean>;
 		onStop: () => void;
 		onMode: (mode: PermissionMode | CodexMode) => void;
 		/** More pickers for the toolbar (model, effort). */
@@ -94,6 +103,8 @@
 
 	const platform = getChatPlatform();
 	const enterSends = platform.enterSends ?? true;
+	/** Either works; the hint names the platform's own. */
+	const sendNowKey = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘↩' : 'Ctrl+Enter';
 	const dictation = platform.dictate ? new Dictation(platform.dictate) : null;
 	onDestroy(() => dictation?.dispose());
 
@@ -232,7 +243,7 @@
 			}
 		});
 
-	async function send() {
+	async function send(now = false) {
 		const typed = /^\/(\S+)$/.exec(draft.trim());
 		if (typed && images.length === 0 && files.length === 0 && onCommand?.(typed[1])) {
 			draft = '';
@@ -244,7 +255,7 @@
 		const sentFiles = files;
 		sending = true;
 		try {
-			if (!(await onSend(sentDraft, sentImages, sentFiles))) return;
+			if (!(await onSend(sentDraft, sentImages, sentFiles, now && sendNow))) return;
 		} finally {
 			sending = false;
 		}
@@ -278,9 +289,11 @@
 				return;
 			}
 		}
-		if (event.key === 'Enter' && enterSends && !event.shiftKey && !event.isComposing) {
+		if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+			const now = sendNow && (event.ctrlKey || event.metaKey);
+			if (!enterSends && !now) return;
 			event.preventDefault();
-			send();
+			send(now);
 		}
 	}
 </script>
@@ -493,6 +506,18 @@
 				<SquareIcon class="size-2.5 fill-current" />
 			</button>
 		{/if}
+		{#if sendNow}
+			<button
+				type="button"
+				class="flex size-7 shrink-0 items-center justify-center rounded-lg border border-wb-hair bg-wb-panel2 text-wb-ink-mute hover:text-wb-ink focus-visible:ring-1 focus-visible:ring-wb-accent focus-visible:outline-none disabled:opacity-30"
+				aria-label="Send now"
+				title={`Send now (${sendNowKey}): stops this turn, running commands move to the background`}
+				disabled={!canSend}
+				onclick={() => send(true)}
+			>
+				<ZapIcon class="size-3.5" />
+			</button>
+		{/if}
 		<button
 			type="button"
 			class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-wb-accent text-wb-accent-ink transition-opacity hover:brightness-110 focus-visible:ring-2 focus-visible:ring-wb-accent/50 focus-visible:outline-none disabled:opacity-30"
@@ -503,7 +528,7 @@
 					? 'Send (Enter)'
 					: 'Send'}
 			disabled={!canSend}
-			onclick={send}
+			onclick={() => send()}
 		>
 			<ArrowUpIcon class="size-3.5" />
 		</button>

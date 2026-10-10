@@ -1360,6 +1360,34 @@ fn a_command_echo_shows_as_typed_without_starting_a_turn() {
 }
 
 #[test]
+fn compacting_shows_from_its_status_until_the_boundary_or_turn_end() {
+    let mut t = Transcript::default();
+    let status = |s: Value| json!({"type":"system","subtype":"status","status":s});
+    t.apply(&status(json!("compacting")));
+    let since = t.meta().compacting_since.expect("compacting");
+    t.apply(&status(json!("compacting")));
+    assert_eq!(
+        t.meta().compacting_since,
+        Some(since),
+        "a repeat keeps the start"
+    );
+    t.apply(&json!({"type":"system","subtype":"compact_boundary","uuid":"c"}));
+    assert_eq!(t.meta().compacting_since, None);
+
+    t.apply(&status(json!("compacting")));
+    t.apply(&json!({"type":"result","subtype":"success","is_error":false}));
+    assert_eq!(
+        t.meta().compacting_since,
+        None,
+        "a turn that ended mid-compact"
+    );
+
+    t.apply(&status(json!("compacting")));
+    t.apply(&status(Value::Null));
+    assert_eq!(t.meta().compacting_since, None, "skipped");
+}
+
+#[test]
 fn a_clear_keeps_the_tasks_still_running() {
     let mut t = Transcript::default();
     let sys = |sub: &str, extra: Value| {

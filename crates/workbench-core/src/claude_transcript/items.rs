@@ -293,6 +293,10 @@ pub struct TranscriptMeta {
     /// A turn is in progress: set by a prompt or the first model event,
     /// cleared by `result`, the JSONL `turn_duration` line or an interrupt.
     pub busy: bool,
+    /// Unix ms since the conversation has been compacting (`system:status`
+    /// `compacting`); cleared by its boundary, a skip, or the turn's end.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compacting_since: Option<u64>,
     /// Subagents and background jobs, in start order.
     pub tasks: Vec<TaskInfo>,
     /// Set while the CLI waits to retry a failed API call.
