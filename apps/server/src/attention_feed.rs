@@ -239,6 +239,7 @@ mod tests {
             waiting: None,
             running: None,
             running_tasks: Default::default(),
+            awaiting_wake: false,
             previous_ids: vec![],
             terminal_id: None,
         }

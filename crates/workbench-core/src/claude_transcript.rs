@@ -654,10 +654,7 @@ impl Transcript {
     }
 
     fn background_agents_running(&self) -> bool {
-        self.meta
-            .tasks
-            .iter()
-            .any(|t| t.background && t.kind == "agent" && t.is_running())
+        self.meta.tasks.iter().any(TaskInfo::wakes_parent)
     }
 
     /// Show a line from Workbench itself in the chat; its index.

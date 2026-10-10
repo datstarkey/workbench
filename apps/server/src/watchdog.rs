@@ -256,7 +256,8 @@ fn sysctl<T: Copy>(name: &std::ffi::CStr) -> Option<T> {
     ok.then_some(value)
 }
 
-/// How often the compressor has read memory back from swap since boot.
+/// How often the compressor has read memory back from swap since boot, for
+/// the whole machine (in segments, not pages).
 #[cfg(target_os = "macos")]
 fn swapins() -> Option<u64> {
     sysctl(c"vm.compressor.swapper.swapins_total")
@@ -267,7 +268,7 @@ fn swapins() -> Option<u64> {
     None
 }
 
-/// `; swap 5837 of 6144 MB used, 1234 swap-ins while frozen` on macOS, where a
+/// `; swap 5837 of 6144 MB used, 1234 system swap-ins during the freeze` on macOS, where a
 /// frozen process is most often one swapped out. Not the kernel's pressure
 /// level: it stayed `normal` through freezes with swap nearly full.
 #[cfg(target_os = "macos")]
@@ -282,7 +283,10 @@ fn memory_note(swapins_before: Option<u64>) -> String {
         );
     }
     if let (Some(before), Some(now)) = (swapins_before, swapins()) {
-        note += &format!(", {} swap-ins while frozen", now.saturating_sub(before));
+        note += &format!(
+            ", {} system swap-ins during the freeze",
+            now.saturating_sub(before)
+        );
     }
     note
 }
@@ -377,6 +381,9 @@ mod tests {
     fn the_memory_note_reads_swap_and_swapins_since() {
         let note = memory_note(swapins());
         assert!(note.starts_with("; swap "), "{note}");
-        assert!(note.contains(" swap-ins while frozen"), "{note}");
+        assert!(
+            note.contains(" system swap-ins during the freeze"),
+            "{note}"
+        );
     }
 }

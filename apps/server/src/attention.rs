@@ -83,10 +83,8 @@ impl AttentionTracker {
                     out.push(attention(kind, s));
                 }
                 let ended = old.is_some_and(|o| s.turn_ended_at > o.turn_ended_at);
-                // Background work still going isn't done: its notification
-                // starts another turn, and that one's end is reported.
-                let working = s.running_tasks.agents + s.running_tasks.tasks > 0;
-                if ended && waiting.is_none() && !s.busy && !s.exited && !working {
+                // The next turn's end is reported instead.
+                if ended && waiting.is_none() && !s.busy && !s.exited && !s.awaiting_wake {
                     out.push(attention(AttentionKind::TurnEnded, s));
                 }
             }
@@ -154,6 +152,7 @@ mod tests {
             waiting: None,
             running: None,
             running_tasks: Default::default(),
+            awaiting_wake: false,
             previous_ids: Vec::new(),
             terminal_id: None,
         }
@@ -238,16 +237,26 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_ending_with_background_work_waits_for_the_next() {
+    fn a_turn_ending_before_a_background_agent_waits_for_the_next() {
+        let mut t = AttentionTracker::default();
+        let mut s = summary("a");
+        t.update(&[s.clone()]);
+        s.turn_ended_at = Some(5);
+        s.awaiting_wake = true;
+        assert!(t.update(&[s.clone()]).is_empty());
+        s.awaiting_wake = false;
+        assert!(t.update(&[s.clone()]).is_empty(), "no turn ended since");
+        s.turn_ended_at = Some(9);
+        assert_eq!(kinds(t.update(&[s])), [AttentionKind::TurnEnded]);
+    }
+
+    #[test]
+    fn other_background_tasks_dont_hold_a_turn_end() {
         let mut t = AttentionTracker::default();
         let mut s = summary("a");
         t.update(&[s.clone()]);
         s.turn_ended_at = Some(5);
         s.running_tasks.tasks = 1;
-        assert!(t.update(&[s.clone()]).is_empty());
-        s.running_tasks.tasks = 0;
-        assert!(t.update(&[s.clone()]).is_empty(), "no turn ended since");
-        s.turn_ended_at = Some(9);
         assert_eq!(kinds(t.update(&[s])), [AttentionKind::TurnEnded]);
     }
 }
